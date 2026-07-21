@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act as reactAct } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +29,15 @@ vi.mock("@/lib/router", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+function act(callback: () => void) {
+  if (typeof reactAct === "function") {
+    reactAct(callback);
+    return;
+  }
+
+  flushSync(callback);
+}
+
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
     id: "issue-1",
@@ -43,6 +53,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: 1,
@@ -84,6 +95,25 @@ describe("IssueRow", () => {
     container.remove();
   });
 
+  it("renders the list status glyph at md (16px)", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue({ status: "in_progress" })} />);
+    });
+
+    const glyphs = container.querySelectorAll('svg[viewBox="0 0 24 24"]');
+    expect(glyphs.length).toBeGreaterThan(0);
+    glyphs.forEach((glyph) => {
+      expect(glyph.getAttribute("width")).toBe("16");
+      expect(glyph.getAttribute("height")).toBe("16");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("suppresses accent hover styling when the row is selected", () => {
     const root = createRoot(container);
     const issue = createIssue();
@@ -111,7 +141,10 @@ describe("IssueRow", () => {
 
     const markReadButton = container.querySelector('button[aria-label="Mark as read"]');
     const unreadDot = markReadButton?.querySelector("span");
-    const statusIcon = container.querySelector('span[class*="border-muted-foreground"]');
+    // Selected rows neutralize the status glyph to muted via `!`-important
+    // utilities, which override the glyph's inline colour var. The glyph is an
+    // <svg> (SVGAnimatedString className), so match on the class attribute.
+    const statusGlyph = container.querySelector('svg[class*="text-muted-foreground"]');
 
     expect(markReadButton).not.toBeNull();
     expect(markReadButton?.className).toContain("hover:bg-muted/80");
@@ -119,9 +152,56 @@ describe("IssueRow", () => {
     expect(unreadDot).not.toBeNull();
     expect(unreadDot?.className).toContain("bg-muted-foreground/70");
     expect(unreadDot?.className).not.toContain("bg-blue-600");
-    expect(statusIcon).not.toBeNull();
-    expect(statusIcon?.className).toContain("!border-muted-foreground");
-    expect(statusIcon?.className).toContain("!text-muted-foreground");
+    expect(statusGlyph).not.toBeNull();
+    expect(statusGlyph?.getAttribute("class")).toContain("!text-muted-foreground");
+    expect(statusGlyph?.getAttribute("class")).toContain("!border-muted-foreground");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("reserves the leading dot slot on read rows so unread rows never indent past them", () => {
+    const root = createRoot(container);
+    act(() => {
+      // A read inbox row still supplies `unreadState` (as "hidden").
+      root.render(<IssueRow issue={createIssue()} unreadState="hidden" />);
+    });
+
+    // The desktop dot slot is reserved even when read (empty), so unread rows
+    // add no column and line up with read rows.
+    const slot = container.querySelector('[data-testid="issue-row-unread-slot"]');
+    expect(slot).not.toBeNull();
+    expect(slot?.className).toContain("w-4");
+    expect(slot?.className).toContain("sm:inline-flex");
+    // In flow, not an absolute overlay.
+    expect(slot?.className).not.toContain("absolute");
+    // Read rows carry no dot button in the slot.
+    expect(slot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("puts the unread dot in the reserved far-left slot on desktop and in flow on mobile", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} unreadState="visible" />);
+    });
+
+    // Desktop: the dot lives in the reserved leading slot (far left, ahead of
+    // any leading control such as a parent's collapse caret).
+    const slot = container.querySelector('[data-testid="issue-row-unread-slot"]');
+    expect(slot).not.toBeNull();
+    expect(slot?.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
+
+    // Mobile: a separate in-flow, order-first dot (mobile has no reserved slot).
+    const mobileDot = container
+      .querySelector('button[aria-label="Mark as read"].sm\\:hidden, span.sm\\:hidden button[aria-label="Mark as read"]')
+      ?.closest("span.sm\\:hidden");
+    expect(mobileDot).not.toBeNull();
+    expect(mobileDot?.className).toContain("order-first");
 
     act(() => {
       root.unmount();
@@ -228,7 +308,32 @@ describe("IssueRow", () => {
     });
   });
 
-  it("renders planning mode marker for planning work mode issues", () => {
+  it("marks the current checklist step without adding a left border", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue({ identifier: "PAP-42" })}
+          checklistStepNumber="2.1"
+          checklistCurrentStep
+        />,
+      );
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("aria-current")).toBe("step");
+    expect(link?.className).toContain("bg-primary/5");
+    expect(link?.className).not.toContain("border-l-");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not render a planning mode marker for planning work mode issues", () => {
     const root = createRoot(container);
 
     act(() => {
@@ -237,7 +342,7 @@ describe("IssueRow", () => {
 
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
     expect(link).not.toBeNull();
-    expect(link?.textContent).toContain("Planning");
+    expect(link?.textContent).not.toContain("Planning");
 
     act(() => {
       root.unmount();

@@ -1,6 +1,6 @@
 import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
-import { betterAuth } from "better-auth";
+import { betterAuth, type Auth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
@@ -24,7 +24,17 @@ export type BetterAuthSessionResult = {
   user: BetterAuthSessionUser | null;
 };
 
-type BetterAuthInstance = ReturnType<typeof betterAuth>;
+type BetterAuthGetSessionApi = {
+  getSession?: (input: { headers: Headers }) => Promise<unknown>;
+};
+
+type BetterAuthHandlerTarget = Extract<Parameters<typeof toNodeHandler>[0], { handler: Auth["handler"] }>;
+
+type BetterAuthSessionResolver = {
+  api?: BetterAuthGetSessionApi;
+};
+
+type BetterAuthInstance = BetterAuthHandlerTarget & BetterAuthSessionResolver;
 
 const AUTH_COOKIE_PREFIX_FALLBACK = "default";
 const AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE = /[^a-zA-Z0-9_-]+/g;
@@ -42,6 +52,50 @@ export function buildBetterAuthAdvancedOptions(input: { disableSecureCookies: bo
     cookiePrefix: deriveAuthCookiePrefix(),
     ...(input.disableSecureCookies ? { useSecureCookies: false } : {}),
   };
+}
+
+export function shouldEnableAuthRateLimit(input: {
+  deploymentMode: Config["deploymentMode"];
+  deploymentExposure?: Config["deploymentExposure"];
+  override?: string | undefined;
+}): boolean {
+  const override = input.override?.trim().toLowerCase();
+  if (override === "true") return true;
+  if (override === "false") return false;
+
+  return input.deploymentMode === "authenticated";
+}
+
+export function buildBetterAuthRateLimitOptions(input: {
+  deploymentMode: Config["deploymentMode"];
+  deploymentExposure?: Config["deploymentExposure"];
+  override?: string | undefined;
+}) {
+  return {
+    enabled: shouldEnableAuthRateLimit(input),
+  };
+}
+
+export function shouldDisableSecureAuthCookies(input: {
+  deploymentMode: Config["deploymentMode"];
+  deploymentExposure?: Config["deploymentExposure"];
+  authBaseUrlMode: Config["authBaseUrlMode"];
+  authPublicBaseUrl: string | undefined;
+  publicUrl?: string | undefined;
+}): boolean {
+  const publicUrl = (
+    input.publicUrl?.trim() ||
+    (input.authBaseUrlMode === "explicit" ? input.authPublicBaseUrl?.trim() : "")
+  );
+  if (publicUrl) return publicUrl.startsWith("http://");
+
+  return (
+    input.deploymentMode === "authenticated" &&
+    (
+      (input.deploymentExposure === "private" && input.authBaseUrlMode === "auto") ||
+      input.deploymentExposure === undefined
+    )
+  );
 }
 
 function headersFromNodeHeaders(rawHeaders: IncomingHttpHeaders): Headers {
@@ -92,6 +146,7 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
 
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
+  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
   if (!secret) {
     throw new Error(
@@ -99,8 +154,13 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
     );
   }
-  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
-  const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
+  const disableSecureCookies = shouldDisableSecureAuthCookies({
+    deploymentMode: config.deploymentMode,
+    deploymentExposure: config.deploymentExposure,
+    authBaseUrlMode: config.authBaseUrlMode,
+    authPublicBaseUrl: config.authPublicBaseUrl,
+    publicUrl,
+  });
 
   const authConfig = {
     baseURL: baseUrl,
@@ -120,7 +180,12 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
-    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: isHttpOnly }),
+    rateLimit: buildBetterAuthRateLimitOptions({
+      deploymentMode: config.deploymentMode,
+      deploymentExposure: config.deploymentExposure,
+      override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
+    }),
+    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
   };
 
   if (!baseUrl) {
@@ -130,7 +195,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
   return betterAuth(authConfig);
 }
 
-export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandler {
+export function createBetterAuthHandler(auth: BetterAuthHandlerTarget): RequestHandler {
   const handler = toNodeHandler(auth);
   return (req, res, next) => {
     void Promise.resolve(handler(req, res)).catch(next);
@@ -138,10 +203,10 @@ export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandle
 }
 
 export async function resolveBetterAuthSessionFromHeaders(
-  auth: BetterAuthInstance,
+  auth: BetterAuthSessionResolver,
   headers: Headers,
 ): Promise<BetterAuthSessionResult | null> {
-  const api = (auth as unknown as { api?: { getSession?: (input: unknown) => Promise<unknown> } }).api;
+  const api = auth.api;
   if (!api?.getSession) return null;
 
   const sessionValue = await api.getSession({
@@ -169,7 +234,7 @@ export async function resolveBetterAuthSessionFromHeaders(
 }
 
 export async function resolveBetterAuthSession(
-  auth: BetterAuthInstance,
+  auth: BetterAuthSessionResolver,
   req: Request,
 ): Promise<BetterAuthSessionResult | null> {
   return resolveBetterAuthSessionFromHeaders(auth, headersFromExpressRequest(req));

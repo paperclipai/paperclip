@@ -70,4 +70,12 @@ describe("parseGeminiStdoutLine", () => {
     const line = JSON.stringify({ type: "message", role: "system", content: "ignored" });
     expect(parseGeminiStdoutLine(line, ts)).toEqual([]);
   });
+
+  it("delegates ACPX events to the shared ACPX transcript parser", () => {
+    const line = JSON.stringify({ type: "acpx.text_delta", text: "hello from acp" });
+
+    expect(parseGeminiStdoutLine(line, ts)).toEqual([
+      { kind: "assistant", ts, text: "hello from acp", delta: true },
+    ]);
+  });
 });

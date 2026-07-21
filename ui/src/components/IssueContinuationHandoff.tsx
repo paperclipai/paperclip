@@ -3,17 +3,20 @@ import type { IssueDocument } from "@paperclipai/shared";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { cn, relativeTime } from "../lib/utils";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { Check, ChevronDown, ChevronRight, Copy, History } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
 type IssueContinuationHandoffProps = {
   document: IssueDocument | null | undefined;
   focusSignal?: number;
+  externalReferences?: MarkdownExternalReferenceMap;
 };
 
 export function IssueContinuationHandoff({
   document,
   focusSignal = 0,
+  externalReferences,
 }: IssueContinuationHandoffProps) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -75,11 +78,11 @@ export function IssueContinuationHandoff({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium text-foreground">{title}</span>
-            <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase text-muted-foreground">
+            <Badge variant="outline" className="border-border font-mono text-(length:--text-nano) uppercase text-muted-foreground">
               handoff
-            </span>
+            </Badge>
           </div>
-          <div className="text-[11px] text-muted-foreground">
+          <div className="text-(length:--text-micro) text-muted-foreground">
             Updated {relativeTime(document.updatedAt)}
             {document.latestRevisionNumber > 0 ? ` - revision ${document.latestRevisionNumber}` : ""}
           </div>
@@ -91,7 +94,11 @@ export function IssueContinuationHandoff({
       </div>
       {expanded ? (
         <div className="mt-3 rounded-md border border-border bg-background/80 p-3">
-          <MarkdownBody className="paperclip-edit-in-place-content text-sm leading-6" softBreaks={false}>
+          <MarkdownBody
+            className="paperclip-edit-in-place-content text-sm leading-6"
+            softBreaks={false}
+            externalReferences={externalReferences}
+          >
             {document.body}
           </MarkdownBody>
         </div>

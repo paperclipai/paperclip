@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
@@ -55,12 +56,12 @@ export function CliAuthPage() {
   if (challengeQuery.error) {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <Card className="block p-6">
           <h1 className="text-lg font-semibold">CLI auth challenge unavailable</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             {challengeQuery.error instanceof Error ? challengeQuery.error.message : "Challenge is invalid or expired."}
           </p>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -73,7 +74,7 @@ export function CliAuthPage() {
   if (challenge.status === "approved") {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <Card className="block p-6">
           <h1 className="text-xl font-semibold">CLI access approved</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             The Paperclip CLI can now finish authentication on the requesting machine.
@@ -81,7 +82,7 @@ export function CliAuthPage() {
           <p className="mt-4 text-sm text-muted-foreground">
             Command: <span className="font-mono text-foreground">{challenge.command}</span>
           </p>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -89,14 +90,14 @@ export function CliAuthPage() {
   if (challenge.status === "cancelled" || challenge.status === "expired") {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <Card className="block p-6">
           <h1 className="text-xl font-semibold">
             {challenge.status === "expired" ? "CLI auth challenge expired" : "CLI auth challenge cancelled"}
           </h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Start the CLI auth flow again from your terminal to generate a new approval request.
           </p>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -104,7 +105,7 @@ export function CliAuthPage() {
   if (challenge.requiresSignIn || !sessionQuery.data) {
     return (
       <div className="mx-auto max-w-xl py-10">
-        <div className="rounded-lg border border-border bg-card p-6">
+        <Card className="block p-6">
           <h1 className="text-xl font-semibold">Sign in required</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Sign in or create an account, then return to this page to approve the CLI access request.
@@ -112,14 +113,14 @@ export function CliAuthPage() {
           <Button asChild className="mt-4">
             <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>Sign in / Create account</Link>
           </Button>
-        </div>
+        </Card>
       </div>
     );
   }
 
   return (
     <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
+      <Card className="block p-6">
         <h1 className="text-xl font-semibold">Approve Paperclip CLI access</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           A local Paperclip CLI process is requesting board access to this instance.
@@ -178,7 +179,7 @@ export function CliAuthPage() {
             {cancelMutation.isPending ? "Cancelling..." : "Cancel"}
           </Button>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

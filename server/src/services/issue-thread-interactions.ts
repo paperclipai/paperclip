@@ -1,7 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   documents,
   heartbeatRuns,
   issueComments,
@@ -9,6 +10,7 @@ import {
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
+import { trackInteractionResolved } from "@paperclipai/shared/telemetry";
 import type {
   AcceptIssueThreadInteraction,
   AskUserQuestionsAnswer,
@@ -16,12 +18,17 @@ import type {
   CancelIssueThreadInteraction,
   CreateIssueThreadInteraction,
   IssueThreadInteraction,
+  RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   RequestConfirmationTarget,
+  RequestItemVerdictsInteraction,
+  RequestItemVerdictsResult,
+  RequestItemVerdictsResultItem,
   RejectIssueThreadInteraction,
   RespondIssueThreadInteraction,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
+  SubmitIssueThreadInteractionVerdicts,
 } from "@paperclipai/shared";
 import {
   acceptIssueThreadInteractionSchema,
@@ -30,13 +37,19 @@ import {
   cancelIssueThreadInteractionSchema,
   createIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
+  requestCheckboxConfirmationPayloadSchema,
+  requestCheckboxConfirmationResultSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
+  requestItemVerdictsPayloadSchema,
+  requestItemVerdictsResultSchema,
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
+  submitIssueThreadInteractionVerdictsSchema,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { issueService } from "./issues.js";
+import { getTelemetryClient } from "../telemetry.js";
+import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 
 type InteractionActor = {
   agentId?: string | null;
@@ -69,6 +82,45 @@ type IssueResolutionContext = {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
 };
+
+const REQUEST_CONFIRMATION_INTERACTION_KINDS = [
+  "request_confirmation",
+  "request_checkbox_confirmation",
+] as const;
+type RequestConfirmationLikeKind = (typeof REQUEST_CONFIRMATION_INTERACTION_KINDS)[number];
+type RequestConfirmationLikeInteraction =
+  | RequestConfirmationInteraction
+  | RequestCheckboxConfirmationInteraction;
+
+const TARGET_BOUND_INTERACTION_KINDS = [
+  ...REQUEST_CONFIRMATION_INTERACTION_KINDS,
+  "request_item_verdicts",
+] as const;
+type TargetBoundInteractionKind = (typeof TARGET_BOUND_INTERACTION_KINDS)[number];
+type TargetBoundInteraction =
+  | RequestConfirmationLikeInteraction
+  | RequestItemVerdictsInteraction;
+
+const USER_COMMENT_SUPERSEDABLE_INTERACTION_KINDS = [
+  ...TARGET_BOUND_INTERACTION_KINDS,
+  "ask_user_questions",
+] as const;
+type UserCommentSupersedableKind = (typeof USER_COMMENT_SUPERSEDABLE_INTERACTION_KINDS)[number];
+type UserCommentSupersedableInteraction =
+  | TargetBoundInteraction
+  | AskUserQuestionsInteraction;
+
+function isRequestConfirmationLikeKind(kind: string): kind is RequestConfirmationLikeKind {
+  return (REQUEST_CONFIRMATION_INTERACTION_KINDS as readonly string[]).includes(kind);
+}
+
+function isTargetBoundInteractionKind(kind: string): kind is TargetBoundInteractionKind {
+  return (TARGET_BOUND_INTERACTION_KINDS as readonly string[]).includes(kind);
+}
+
+function isUserCommentSupersedableKind(kind: string): kind is UserCommentSupersedableKind {
+  return (USER_COMMENT_SUPERSEDABLE_INTERACTION_KINDS as readonly string[]).includes(kind);
+}
 
 function isIssueThreadInteractionIdempotencyConflict(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
@@ -128,6 +180,20 @@ function hydrateInteraction(
         payload: requestConfirmationPayloadSchema.parse(row.payload),
         result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
       } satisfies RequestConfirmationInteraction;
+    case "request_checkbox_confirmation":
+      return {
+        ...base,
+        kind: "request_checkbox_confirmation",
+        payload: requestCheckboxConfirmationPayloadSchema.parse(row.payload),
+        result: row.result ? requestCheckboxConfirmationResultSchema.parse(row.result) : null,
+      } satisfies RequestCheckboxConfirmationInteraction;
+    case "request_item_verdicts":
+      return {
+        ...base,
+        kind: "request_item_verdicts",
+        payload: requestItemVerdictsPayloadSchema.parse(row.payload),
+        result: row.result ? requestItemVerdictsResultSchema.parse(row.result) : null,
+      } satisfies RequestItemVerdictsInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
   }
@@ -149,13 +215,280 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   current: IssueThreadInteractionRow;
   actor: InteractionActor;
 }) {
-  if (args.current.kind !== "request_confirmation") return false;
+  if (!isRequestConfirmationLikeKind(args.current.kind)) return false;
   if (!args.current.createdByAgentId) return false;
   if (!args.actor.userId) return false;
   if (!args.issue.assigneeUserId) return false;
   if (args.issue.assigneeAgentId) return false;
   if (isTerminalIssueStatus(args.issue.status)) return false;
   return true;
+}
+
+function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedableInteraction) {
+  return interaction.payload.supersedeOnUserComment === true;
+}
+
+function normalizeCreateInteractionInput(input: CreateIssueThreadInteraction): CreateIssueThreadInteraction {
+  switch (input.kind) {
+    case "ask_user_questions":
+      return {
+        ...input,
+        payload: {
+          ...input.payload,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+        },
+      };
+    case "request_confirmation":
+      return {
+        ...input,
+        payload: {
+          ...input.payload,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+        },
+      };
+    case "request_checkbox_confirmation":
+      return {
+        ...input,
+        payload: {
+          ...input.payload,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+        },
+      };
+    case "request_item_verdicts":
+      return {
+        ...input,
+        payload: {
+          ...input.payload,
+          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+        },
+      };
+    default:
+      return input;
+  }
+}
+
+function buildSupersededByCommentResult(row: IssueThreadInteractionRow, commentId: string) {
+  if (row.kind === "ask_user_questions") {
+    return {
+      version: 1,
+      answers: [],
+      expirationReason: "superseded_by_comment",
+      commentId,
+      summaryMarkdown: null,
+    } as const;
+  }
+
+  if (row.kind === "request_item_verdicts") {
+    const interaction = hydrateInteraction(row) as RequestItemVerdictsInteraction;
+    return {
+      version: 1,
+      outcome: "superseded_by_comment",
+      complete: false,
+      items: interaction.result?.items ?? [],
+      commentId,
+    } satisfies RequestItemVerdictsResult;
+  }
+
+  return {
+    version: 1,
+    outcome: "superseded_by_comment",
+    commentId,
+  } as const;
+}
+
+function buildStaleTargetResult(
+  row: IssueThreadInteractionRow,
+  staleTarget: RequestConfirmationTarget | null,
+) {
+  if (row.kind === "request_item_verdicts") {
+    const interaction = hydrateInteraction(row) as RequestItemVerdictsInteraction;
+    return {
+      version: 1,
+      outcome: "stale_target",
+      complete: false,
+      items: interaction.result?.items ?? [],
+      staleTarget,
+    } satisfies RequestItemVerdictsResult;
+  }
+
+  return {
+    version: 1,
+    outcome: "stale_target",
+    staleTarget,
+  } as const;
+}
+
+function resolveActorKind(interaction: Pick<IssueThreadInteraction, "resolvedByAgentId" | "resolvedByUserId">) {
+  if (interaction.resolvedByAgentId) return "agent";
+  if (interaction.resolvedByUserId) return "user";
+  return "system";
+}
+
+function resolveCreatorKind(interaction: Pick<IssueThreadInteraction, "createdByAgentId" | "createdByUserId">) {
+  if (interaction.createdByAgentId) return "agent";
+  if (interaction.createdByUserId) return "user";
+  return undefined;
+}
+
+function deriveTargetType(interaction: IssueThreadInteraction) {
+  switch (interaction.kind) {
+    case "request_confirmation":
+    case "request_checkbox_confirmation":
+    case "request_item_verdicts":
+      return interaction.payload.target?.type ?? "none";
+    default:
+      return "none";
+  }
+}
+
+function deriveResolutionReason(interaction: IssueThreadInteraction) {
+  switch (interaction.status) {
+    case "accepted":
+      return "accepted";
+    case "rejected":
+      return "rejected";
+    case "cancelled":
+      return "cancelled";
+    case "expired": {
+      if (interaction.kind === "ask_user_questions") {
+        return interaction.result?.expirationReason ?? "expired";
+      }
+      if (interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation") {
+        return interaction.result?.outcome ?? "expired";
+      }
+      if (interaction.kind === "request_item_verdicts") {
+        return interaction.result?.outcome ?? "expired";
+      }
+      return "expired";
+    }
+    case "answered": {
+      if (interaction.kind === "request_item_verdicts") {
+        return interaction.result?.outcome ?? "answered";
+      }
+      return "answered";
+    }
+    default:
+      return undefined;
+  }
+}
+
+function nonNegativeInteger(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.trunc(value));
+}
+
+function buildInteractionResolvedCounts(interaction: IssueThreadInteraction, args?: {
+  createdTaskCount?: number;
+}) {
+  switch (interaction.kind) {
+    case "suggest_tasks":
+      return {
+        createdTaskCount: nonNegativeInteger(args?.createdTaskCount ?? 0),
+        skippedTaskCount: nonNegativeInteger(interaction.result?.skippedClientKeys?.length ?? 0),
+      };
+    case "request_checkbox_confirmation":
+      return {
+        optionCount: nonNegativeInteger(interaction.payload.options.length),
+        selectedOptionCount: nonNegativeInteger(interaction.result?.selectedOptionIds?.length ?? 0),
+      };
+    case "ask_user_questions":
+      return {
+        questionCount: nonNegativeInteger(interaction.payload.questions.length),
+        answeredQuestionCount: nonNegativeInteger(interaction.result?.answers?.length ?? 0),
+      };
+    case "request_item_verdicts":
+      return {
+        itemCount: nonNegativeInteger(interaction.payload.items.length),
+        resolvedItemCount: nonNegativeInteger(interaction.result?.items?.length ?? 0),
+      };
+    default:
+      return {};
+  }
+}
+
+async function fetchCreatorAgentRoleById(
+  db: Pick<Db, "select">,
+  interactions: readonly IssueThreadInteraction[],
+) {
+  const creatorAgentIds = [...new Set(interactions
+    .map((interaction) => interaction.createdByAgentId)
+    .filter((value): value is string => Boolean(value)))];
+  if (creatorAgentIds.length === 0) return new Map<string, string | null>();
+
+  const rows = await db
+    .select({
+      id: agents.id,
+      role: agents.role,
+    })
+    .from(agents)
+    .where(inArray(agents.id, creatorAgentIds));
+
+  return new Map(rows.map((row) => [row.id, row.role] as const));
+}
+
+async function emitInteractionResolvedTelemetry(
+  db: Pick<Db, "select">,
+  interaction: IssueThreadInteraction,
+  args?: { createdTaskCount?: number; creatorRoleByAgentId?: ReadonlyMap<string, string | null> },
+) {
+  const telemetryClient = getTelemetryClient();
+  if (!telemetryClient) return;
+
+  try {
+    let roleByAgentId = args?.creatorRoleByAgentId ?? new Map<string, string | null>();
+    if (!args?.creatorRoleByAgentId) {
+      try {
+        roleByAgentId = await fetchCreatorAgentRoleById(db, [interaction]);
+      } catch (error) {
+        console.error("[paperclip] Failed to load interaction.resolved creator role", error);
+      }
+    }
+    const creatorAgentRole = interaction.createdByAgentId
+      ? roleByAgentId.get(interaction.createdByAgentId) ?? undefined
+      : undefined;
+
+    trackInteractionResolved(telemetryClient, {
+      interactionKind: interaction.kind,
+      status: interaction.status,
+      resolvedByKind: resolveActorKind(interaction),
+      resolutionReason: deriveResolutionReason(interaction),
+      createdByKind: resolveCreatorKind(interaction),
+      creatorAgentRole,
+      continuationPolicy: interaction.continuationPolicy,
+      targetType: deriveTargetType(interaction),
+      ...buildInteractionResolvedCounts(interaction, {
+        createdTaskCount: args?.createdTaskCount,
+      }),
+    });
+  } catch (error) {
+    console.error("[paperclip] Failed to emit interaction.resolved telemetry", error);
+  }
+}
+
+async function emitResolvedInteractionsTelemetry(
+  db: Pick<Db, "select">,
+  interactions: readonly IssueThreadInteraction[],
+) {
+  if (interactions.length === 0 || !getTelemetryClient()) return;
+  let roleByAgentId = new Map<string, string | null>();
+  try {
+    roleByAgentId = await fetchCreatorAgentRoleById(db, interactions);
+  } catch (error) {
+    console.error("[paperclip] Failed to load interaction.resolved creator roles", error);
+  }
+  await Promise.all(interactions.map((interaction) =>
+    emitInteractionResolvedTelemetry(db, interaction, { creatorRoleByAgentId: roleByAgentId })
+  ));
+}
+
+function isCommentAtOrAfterInteraction(args: {
+  commentCreatedAt: Date | string;
+  interactionCreatedAt: Date | string;
+}) {
+  const commentCreatedAtMs = new Date(args.commentCreatedAt).getTime();
+  const interactionCreatedAtMs = new Date(args.interactionCreatedAt).getTime();
+  if (!Number.isFinite(commentCreatedAtMs) || !Number.isFinite(interactionCreatedAtMs)) return false;
+  return commentCreatedAtMs >= interactionCreatedAtMs;
 }
 
 function buildTaskCreationOrder(tasks: ReadonlyArray<SuggestTasksInteraction["payload"]["tasks"][number]>) {
@@ -230,6 +563,98 @@ function resolveSelectedSuggestedTasks(args: {
   };
 }
 
+function resolveSelectedCheckboxConfirmationOptions(args: {
+  interaction: RequestCheckboxConfirmationInteraction;
+  selectedOptionIds?: AcceptIssueThreadInteraction["selectedOptionIds"];
+}) {
+  const optionIds = new Set(args.interaction.payload.options.map((option) => option.id));
+  const selectedOptionIds = args.selectedOptionIds ?? args.interaction.payload.defaultSelectedOptionIds ?? [];
+  const selectedOptionIdSet = new Set<string>();
+
+  for (const optionId of selectedOptionIds) {
+    if (!optionIds.has(optionId)) {
+      throw unprocessable(`Unknown checkbox confirmation optionId: ${optionId}`);
+    }
+    selectedOptionIdSet.add(optionId);
+  }
+
+  const selectedCount = selectedOptionIdSet.size;
+  const minSelected = args.interaction.payload.minSelected ?? 0;
+  const maxSelected = args.interaction.payload.maxSelected ?? null;
+  if (selectedCount < minSelected) {
+    throw unprocessable(`Select at least ${minSelected} checkbox confirmation option(s)`);
+  }
+  if (maxSelected != null && selectedCount > maxSelected) {
+    throw unprocessable(`Select no more than ${maxSelected} checkbox confirmation option(s)`);
+  }
+
+  return args.interaction.payload.options
+    .filter((option) => selectedOptionIdSet.has(option.id))
+    .map((option) => option.id);
+}
+
+function resolveRequestItemVerdictSubmissions(args: {
+  interaction: RequestItemVerdictsInteraction;
+  input: SubmitIssueThreadInteractionVerdicts;
+  actor: InteractionActor;
+  now: Date;
+}) {
+  if (!args.actor.userId) {
+    throw unprocessable("request_item_verdicts submissions require a user actor");
+  }
+
+  const existingItems = args.interaction.result?.items ?? [];
+  const existingById = new Map(existingItems.map((item) => [item.id, item] as const));
+  const payloadItemIds = new Set(args.interaction.payload.items.map((item) => item.id));
+  const enabledVerdicts = new Set(args.interaction.payload.verdicts ?? ["approve", "reject"]);
+  const requireReasonOn = new Set(args.interaction.payload.requireReasonOn ?? ["reject"]);
+  const newlyResolvedById = new Map<string, RequestItemVerdictsResultItem>();
+  const newlyResolvedItemIds: string[] = [];
+
+  for (const submitted of args.input.verdicts) {
+    if (!payloadItemIds.has(submitted.id)) {
+      throw unprocessable(`Unknown item verdict id: ${submitted.id}`);
+    }
+    if (existingById.has(submitted.id)) {
+      continue;
+    }
+    if (!enabledVerdicts.has(submitted.verdict)) {
+      throw unprocessable(`Verdict ${submitted.verdict} is not enabled for this item verdict request`);
+    }
+
+    const reason = submitted.reason?.trim() ?? "";
+    if (requireReasonOn.has(submitted.verdict) && reason.length === 0) {
+      throw unprocessable(`A reason is required when verdict is ${submitted.verdict}`);
+    }
+
+    if (newlyResolvedById.has(submitted.id)) {
+      continue;
+    }
+    newlyResolvedById.set(submitted.id, {
+      id: submitted.id,
+      verdict: submitted.verdict,
+      ...(reason ? { reason } : {}),
+      resolvedByUserId: args.actor.userId,
+      resolvedAt: args.now,
+    });
+    newlyResolvedItemIds.push(submitted.id);
+  }
+
+  const nextById = new Map<string, RequestItemVerdictsResultItem>(existingItems.map((item) => [item.id, item]));
+  for (const [id, item] of newlyResolvedById) {
+    nextById.set(id, item);
+  }
+  const items = args.interaction.payload.items
+    .map((item) => nextById.get(item.id))
+    .filter((item): item is RequestItemVerdictsResultItem => Boolean(item));
+
+  return {
+    items,
+    complete: items.length === args.interaction.payload.items.length,
+    newlyResolvedItemIds,
+  };
+}
+
 function normalizeQuestionAnswers(args: {
   questions: AskUserQuestionsInteraction["payload"]["questions"];
   answers: RespondIssueThreadInteraction["answers"];
@@ -258,15 +683,20 @@ function normalizeQuestionAnswers(args: {
       throw unprocessable(`Question ${answer.questionId} only allows one answer`);
     }
 
+    const otherText = answer.otherText?.trim() ?? "";
     answerByQuestionId.set(answer.questionId, {
       questionId: answer.questionId,
       optionIds: uniqueOptionIds,
+      ...(otherText ? { otherText } : {}),
     });
   }
 
   for (const question of args.questions) {
     const answer = answerByQuestionId.get(question.id);
-    if (question.required && (!answer || answer.optionIds.length === 0)) {
+    if (
+      question.required
+      && (!answer || (answer.optionIds.length === 0 && !answer.otherText))
+    ) {
       throw unprocessable(`Question ${question.id} requires an answer`);
     }
   }
@@ -371,8 +801,8 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
   row: IssueThreadInteractionRow;
   actor: InteractionActor;
 }): Promise<IssueThreadInteraction | null> {
-  if (args.row.kind !== "request_confirmation" || args.row.status !== "pending") return null;
-  const interaction = hydrateInteraction(args.row) as RequestConfirmationInteraction;
+  if (!isTargetBoundInteractionKind(args.row.kind) || args.row.status !== "pending") return null;
+  const interaction = hydrateInteraction(args.row) as TargetBoundInteraction;
   const target = interaction.payload.target ?? null;
   if (!target) return null;
   if (target.type !== "issue_document") return null;
@@ -404,9 +834,7 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
           }
         : interaction.payload,
       result: {
-        version: 1,
-        outcome: "stale_target",
-        staleTarget: target,
+        ...buildStaleTargetResult(args.row, target),
       },
       resolvedByAgentId: args.actor.agentId ?? null,
       resolvedByUserId: args.actor.userId ?? null,
@@ -423,7 +851,9 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
     throw conflict("Interaction has already been resolved");
   }
   await touchIssue(db, args.row.issueId);
-  return hydrateInteraction(updated);
+  const expired = hydrateInteraction(updated);
+  await emitInteractionResolvedTelemetry(db, expired);
+  return expired;
 }
 
 export function issueThreadInteractionService(db: Db) {
@@ -441,6 +871,36 @@ export function issueThreadInteractionService(db: Db) {
         eq(issueThreadInteractions.idempotencyKey, args.idempotencyKey),
       ))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function assertIssueWorkspaceFinalizedForAccept(args: {
+    db: Pick<Db, "select">;
+    issue: { id: string; companyId: string };
+    sourceRunId: string | null;
+  }) {
+    if (!args.sourceRunId) return;
+
+    const executionWorkspaceId = await args.db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, args.issue.id))
+      .then((rows: Array<{ executionWorkspaceId: string | null }>) => rows[0]?.executionWorkspaceId ?? null);
+
+    if (!executionWorkspaceId) return;
+
+    const isFinalized = await runWorkspaceIsFinalized(
+      args.db,
+      args.issue.companyId,
+      executionWorkspaceId,
+      args.sourceRunId,
+    );
+    if (isFinalized) return;
+
+    throw conflict(
+      "Cannot accept interaction: the run that created this interaction has not finished syncing its workspace. "
+        + "Retry once the local worktree has finished syncing.",
+      { executionWorkspaceId, sourceRunId: args.sourceRunId },
+    );
   }
 
   async function getPendingInteractionForResolution(args: {
@@ -466,6 +926,7 @@ export function issueThreadInteractionService(db: Db) {
   async function acceptRequestConfirmation(args: {
     issue: { id: string; companyId: string };
     current: IssueThreadInteractionRow;
+    input: AcceptIssueThreadInteraction;
     actor: InteractionActor;
   }): Promise<{
     interaction: IssueThreadInteraction;
@@ -479,8 +940,17 @@ export function issueThreadInteractionService(db: Db) {
       return { interaction: expired, continuationIssue: null };
     }
 
+    const interaction = hydrateInteraction(args.current);
+    const selectedOptionIds =
+      interaction.kind === "request_checkbox_confirmation"
+        ? resolveSelectedCheckboxConfirmationOptions({
+            interaction,
+            selectedOptionIds: args.input.selectedOptionIds,
+          })
+        : undefined;
+
     const now = new Date();
-    return db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       const [updated] = await tx
         .update(issueThreadInteractions)
         .set({
@@ -488,6 +958,7 @@ export function issueThreadInteractionService(db: Db) {
           result: {
             version: 1,
             outcome: "accepted",
+            ...(selectedOptionIds ? { selectedOptionIds } : {}),
           },
           resolvedByAgentId: args.actor.agentId ?? null,
           resolvedByUserId: args.actor.userId ?? null,
@@ -552,6 +1023,8 @@ export function issueThreadInteractionService(db: Db) {
         continuationIssue,
       };
     });
+    await emitInteractionResolvedTelemetry(db, result.interaction);
+    return result;
   }
 
   async function rejectRequestConfirmation(args: {
@@ -568,7 +1041,7 @@ export function issueThreadInteractionService(db: Db) {
       return expired;
     }
 
-    const interaction = hydrateInteraction(args.current) as RequestConfirmationInteraction;
+    const interaction = hydrateInteraction(args.current) as RequestConfirmationLikeInteraction;
     const reason = args.input.reason?.trim() ?? "";
     if (interaction.payload.rejectRequiresReason === true && reason.length === 0) {
       throw unprocessable("A decline reason is required for this confirmation");
@@ -599,7 +1072,9 @@ export function issueThreadInteractionService(db: Db) {
       throw conflict("Interaction has already been resolved");
     }
     await touchIssue(db, args.issue.id);
-    return hydrateInteraction(updated);
+    const rejected = hydrateInteraction(updated);
+    await emitInteractionResolvedTelemetry(db, rejected);
+    return rejected;
   }
 
   return {
@@ -628,7 +1103,7 @@ export function issueThreadInteractionService(db: Db) {
       input: CreateIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      const data = createIssueThreadInteractionSchema.parse(input);
+      const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
 
       if (data.idempotencyKey) {
         const existing = await getIdempotentInteraction({
@@ -673,7 +1148,11 @@ export function issueThreadInteractionService(db: Db) {
         }
       }
 
-      if (data.kind === "request_confirmation") {
+      if (
+        data.kind === "request_confirmation"
+        || data.kind === "request_checkbox_confirmation"
+        || data.kind === "request_item_verdicts"
+      ) {
         await assertRequestConfirmationTargetIsCurrent(db, {
           companyId: issue.companyId,
           issueId: issue.id,
@@ -733,11 +1212,30 @@ export function issueThreadInteractionService(db: Db) {
       const current = await getPendingInteractionForResolution({ issue, interactionId });
       switch (current.kind) {
         case "suggest_tasks":
+          // Accepting suggest_tasks only creates follow-up issues; it does not
+          // approve code state or move the source workspace forward, so the
+          // workspace_finalize gate (PAPA-440) does not apply here.
           return issueThreadInteractionService(db).acceptSuggestedTasks(issue, interactionId, data, actor);
         case "request_confirmation": {
+          await assertIssueWorkspaceFinalizedForAccept({ db, issue, sourceRunId: current.sourceRunId });
           const accepted = await acceptRequestConfirmation({
             issue,
             current,
+            input: data,
+            actor,
+          });
+          return {
+            interaction: accepted.interaction,
+            continuationIssue: accepted.continuationIssue,
+            createdIssues: [],
+          };
+        }
+        case "request_checkbox_confirmation": {
+          await assertIssueWorkspaceFinalizedForAccept({ db, issue, sourceRunId: current.sourceRunId });
+          const accepted = await acceptRequestConfirmation({
+            issue,
+            current,
+            input: data,
             actor,
           });
           return {
@@ -892,8 +1390,12 @@ export function issueThreadInteractionService(db: Db) {
         current.updatedAt = updated.updatedAt;
       });
 
+      const accepted = hydrateInteraction(current);
+      await emitInteractionResolvedTelemetry(db, accepted, {
+        createdTaskCount: createdWakeTargets.length,
+      });
       return {
-        interaction: hydrateInteraction(current),
+        interaction: accepted,
         createdIssues: createdWakeTargets,
       };
     },
@@ -910,6 +1412,7 @@ export function issueThreadInteractionService(db: Db) {
         case "suggest_tasks":
           return issueThreadInteractionService(db).rejectSuggestedTasks(issue, interactionId, data, actor, current);
         case "request_confirmation":
+        case "request_checkbox_confirmation":
           return rejectRequestConfirmation({
             issue,
             current,
@@ -919,6 +1422,106 @@ export function issueThreadInteractionService(db: Db) {
         default:
           throw unprocessable(`Interactions of kind ${current.kind} cannot be rejected`);
       }
+    },
+
+    submitItemVerdicts: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      input: SubmitIssueThreadInteractionVerdicts,
+      actor: InteractionActor,
+    ): Promise<{ interaction: IssueThreadInteraction; newlyResolvedItemIds: string[] }> => {
+      const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
+      const submission = await db.transaction(async (tx) => {
+        const current = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+
+        if (!current) throw notFound("Interaction not found");
+        if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+          throw notFound("Interaction not found");
+        }
+        if (current.kind !== "request_item_verdicts") {
+          throw unprocessable("Only request_item_verdicts interactions can receive item verdicts");
+        }
+
+        const interaction = hydrateInteraction(current) as RequestItemVerdictsInteraction;
+        if (current.status !== "pending") {
+          if (current.status === "answered") {
+            const resolvedIds = new Set(interaction.result?.items.map((item) => item.id) ?? []);
+            const payloadIds = new Set(interaction.payload.items.map((item) => item.id));
+            for (const submitted of data.verdicts) {
+              if (!payloadIds.has(submitted.id)) {
+                throw unprocessable(`Unknown item verdict id: ${submitted.id}`);
+              }
+              if (!resolvedIds.has(submitted.id)) {
+                throw conflict("Interaction has already been resolved");
+              }
+            }
+            return { interaction, newlyResolvedItemIds: [], resolved: false };
+          }
+          throw conflict("Interaction has already been resolved");
+        }
+
+        const expired = await expireStaleRequestConfirmationTarget(tx, {
+          row: current,
+          actor,
+        });
+        if (expired) {
+          return { interaction: expired, newlyResolvedItemIds: [], resolved: false };
+        }
+
+        const now = new Date();
+        const { items, complete, newlyResolvedItemIds } = resolveRequestItemVerdictSubmissions({
+          interaction,
+          input: data,
+          actor,
+          now,
+        });
+        if (newlyResolvedItemIds.length === 0) {
+          return { interaction, newlyResolvedItemIds: [], resolved: false };
+        }
+
+        const result = {
+          version: 1,
+          outcome: "resolved",
+          complete,
+          items,
+        } satisfies RequestItemVerdictsResult;
+        const [updated] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: complete ? "answered" : "pending",
+            result,
+            resolvedByAgentId: complete ? actor.agentId ?? null : null,
+            resolvedByUserId: complete ? actor.userId ?? null : null,
+            resolvedAt: complete ? now : null,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+
+        if (!updated) {
+          throw conflict("Interaction has already been resolved");
+        }
+
+        await touchIssue(tx, issue.id);
+        return {
+          interaction: hydrateInteraction(updated),
+          newlyResolvedItemIds,
+          resolved: complete,
+        };
+      });
+
+      if (submission.resolved) {
+        await emitInteractionResolvedTelemetry(db, submission.interaction);
+      }
+      return submission;
     },
 
     rejectSuggestedTasks: async (
@@ -962,15 +1565,20 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
-      return hydrateInteraction(updated);
+      const rejected = hydrateInteraction(updated);
+      await emitInteractionResolvedTelemetry(db, rejected);
+      return rejected;
     },
 
     expireRequestConfirmationsSupersededByComment: async (
       issue: { id: string; companyId: string },
-      comment: { id: string; authorUserId?: string | null },
+      comment: { id: string; createdAt: Date | string; authorUserId?: string | null; createdByRunId?: string | null },
       actor: InteractionActor,
     ) => {
       if (!comment.authorUserId) return [];
+      // Local-CLI adapters post under user auth, so authorUserId can't tell a human from a
+      // machine; createdByRunId can. Only genuine human comments (no run context) supersede.
+      if (comment.createdByRunId) return [];
 
       const rows = await db
         .select()
@@ -978,13 +1586,20 @@ export function issueThreadInteractionService(db: Db) {
         .where(and(
           eq(issueThreadInteractions.companyId, issue.companyId),
           eq(issueThreadInteractions.issueId, issue.id),
-          eq(issueThreadInteractions.kind, "request_confirmation"),
+          inArray(issueThreadInteractions.kind, [...USER_COMMENT_SUPERSEDABLE_INTERACTION_KINDS]),
           eq(issueThreadInteractions.status, "pending"),
         ));
 
       const superseded = rows.filter((row) => {
-        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
-        return interaction.payload.supersedeOnUserComment === true;
+        if (!isUserCommentSupersedableKind(row.kind)) return false;
+        const interaction = hydrateInteraction(row) as UserCommentSupersedableInteraction;
+        return (
+          shouldSupersedeInteractionOnUserComment(interaction)
+          && isCommentAtOrAfterInteraction({
+            commentCreatedAt: comment.createdAt,
+            interactionCreatedAt: row.createdAt,
+          })
+        );
       });
 
       if (superseded.length === 0) return [];
@@ -996,11 +1611,7 @@ export function issueThreadInteractionService(db: Db) {
           .update(issueThreadInteractions)
           .set({
             status: "expired",
-            result: {
-              version: 1,
-              outcome: "superseded_by_comment",
-              commentId: comment.id,
-            },
+            result: buildSupersededByCommentResult(row, comment.id),
             resolvedByAgentId: actor.agentId ?? null,
             resolvedByUserId: actor.userId ?? null,
             resolvedAt: now,
@@ -1016,6 +1627,149 @@ export function issueThreadInteractionService(db: Db) {
 
       if (expired.length > 0) {
         await touchIssue(db, issue.id);
+        await emitResolvedInteractionsTelemetry(db, expired);
+      }
+      return expired;
+    },
+
+    expireRequestConfirmationsSupersededByHistoricalComments: async (
+      issue: { id: string; companyId: string },
+    ) => {
+      const [rows, comments] = await Promise.all([
+        db
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            inArray(issueThreadInteractions.kind, [...USER_COMMENT_SUPERSEDABLE_INTERACTION_KINDS]),
+            eq(issueThreadInteractions.status, "pending"),
+          )),
+        db
+          .select()
+          .from(issueComments)
+          .where(and(
+            eq(issueComments.companyId, issue.companyId),
+            eq(issueComments.issueId, issue.id),
+            isNotNull(issueComments.authorUserId),
+            // Only genuine human comments supersede; machine-originated ones carry createdByRunId.
+            isNull(issueComments.createdByRunId),
+          ))
+          .orderBy(asc(issueComments.createdAt)),
+      ]);
+
+      if (rows.length === 0 || comments.length === 0) return [];
+
+      const now = new Date();
+      const expired: IssueThreadInteraction[] = [];
+      const supersededByComment = new Map<
+        string,
+        {
+          comment: (typeof comments)[number];
+          rowIds: string[];
+        }
+      >();
+      for (const row of rows) {
+        if (!isUserCommentSupersedableKind(row.kind)) continue;
+        const interaction = hydrateInteraction(row) as UserCommentSupersedableInteraction;
+        if (!shouldSupersedeInteractionOnUserComment(interaction)) continue;
+
+        const supersedingComment = comments.find((comment) => isCommentAtOrAfterInteraction({
+          commentCreatedAt: comment.createdAt,
+          interactionCreatedAt: row.createdAt,
+        }));
+        if (!supersedingComment) continue;
+
+        const group = supersededByComment.get(supersedingComment.id);
+        if (group) {
+          group.rowIds.push(row.id);
+        } else {
+          supersededByComment.set(supersedingComment.id, {
+            comment: supersedingComment,
+            rowIds: [row.id],
+          });
+        }
+      }
+
+      const rowById = new Map(rows.map((row) => [row.id, row] as const));
+      for (const { comment, rowIds } of supersededByComment.values()) {
+        const commentRows = rowIds
+          .map((rowId) => rowById.get(rowId))
+          .filter((row): row is IssueThreadInteractionRow => Boolean(row));
+        const questionRowIds = commentRows
+          .filter((row) => row.kind === "ask_user_questions")
+          .map((row) => row.id);
+        const confirmationRowIds = commentRows
+          .filter((row) => isRequestConfirmationLikeKind(row.kind))
+          .map((row) => row.id);
+        const itemVerdictRows = commentRows
+          .filter((row) => row.kind === "request_item_verdicts");
+
+        if (questionRowIds.length > 0) {
+          const sampleQuestionRow = commentRows.find((row) => row.kind === "ask_user_questions");
+          if (!sampleQuestionRow) continue;
+          const updatedRows = await db
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: buildSupersededByCommentResult(sampleQuestionRow, comment.id),
+              resolvedByAgentId: null,
+              resolvedByUserId: comment.authorUserId,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              inArray(issueThreadInteractions.id, questionRowIds),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .returning();
+          expired.push(...updatedRows.map(hydrateInteraction));
+        }
+
+        if (confirmationRowIds.length > 0) {
+          const sampleConfirmationRow = commentRows.find((row) => isRequestConfirmationLikeKind(row.kind));
+          if (!sampleConfirmationRow) continue;
+          const updatedRows = await db
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: buildSupersededByCommentResult(sampleConfirmationRow, comment.id),
+              resolvedByAgentId: null,
+              resolvedByUserId: comment.authorUserId,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              inArray(issueThreadInteractions.id, confirmationRowIds),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .returning();
+          expired.push(...updatedRows.map(hydrateInteraction));
+        }
+
+        for (const row of itemVerdictRows) {
+          const [updated] = await db
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: buildSupersededByCommentResult(row, comment.id),
+              resolvedByAgentId: null,
+              resolvedByUserId: comment.authorUserId,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueThreadInteractions.id, row.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .returning();
+          if (updated) expired.push(hydrateInteraction(updated));
+        }
+      }
+
+      if (expired.length > 0) {
+        await touchIssue(db, issue.id);
+        await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
     },
@@ -1031,12 +1785,12 @@ export function issueThreadInteractionService(db: Db) {
         .where(and(
           eq(issueThreadInteractions.companyId, issue.companyId),
           eq(issueThreadInteractions.issueId, issue.id),
-          eq(issueThreadInteractions.kind, "request_confirmation"),
+          inArray(issueThreadInteractions.kind, [...TARGET_BOUND_INTERACTION_KINDS]),
           eq(issueThreadInteractions.status, "pending"),
         ));
 
       const staleRows = rows.filter((row) => {
-        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+        const interaction = hydrateInteraction(row) as TargetBoundInteraction;
         const target = interaction.payload.target;
         if (!target || target.type !== "issue_document") return false;
         const targetIssueId = target.issueId ?? issue.id;
@@ -1055,7 +1809,7 @@ export function issueThreadInteractionService(db: Db) {
       const now = new Date();
       const expired: IssueThreadInteraction[] = [];
       for (const row of staleRows) {
-        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+        const interaction = hydrateInteraction(row) as TargetBoundInteraction;
         const target = interaction.payload.target ?? null;
         const currentTarget = buildIssueDocumentTargetFromDocument({
           issueId: issue.id,
@@ -1071,11 +1825,7 @@ export function issueThreadInteractionService(db: Db) {
                   target: currentTarget,
                 }
               : interaction.payload,
-            result: {
-              version: 1,
-              outcome: "stale_target",
-              staleTarget: target,
-            },
+            result: buildStaleTargetResult(row, target),
             resolvedByAgentId: actor.agentId ?? null,
             resolvedByUserId: actor.userId ?? null,
             resolvedAt: now,
@@ -1091,6 +1841,7 @@ export function issueThreadInteractionService(db: Db) {
 
       if (expired.length > 0) {
         await touchIssue(db, issue.id);
+        await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
     },
@@ -1149,7 +1900,9 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
-      return hydrateInteraction(updated);
+      const answered = hydrateInteraction(updated);
+      await emitInteractionResolvedTelemetry(db, answered);
+      return answered;
     },
 
     cancelQuestions: async (
@@ -1204,7 +1957,9 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
-      return hydrateInteraction(updated);
+      const cancelled = hydrateInteraction(updated);
+      await emitInteractionResolvedTelemetry(db, cancelled);
+      return cancelled;
     },
   };
 }

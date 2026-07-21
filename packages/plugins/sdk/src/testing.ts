@@ -33,10 +33,15 @@ import type {
   ToolResult,
   ToolRunContext,
   PluginWorkspace,
+  PluginExecutionWorkspaceMetadata,
   AgentSession,
   AgentSessionEvent,
   PluginLocalFolderEntry,
   PluginLocalFolderStatus,
+  PluginAccessMember,
+  PrincipalPermissionGrant,
+  PermissionKey,
+  PrincipalType,
 } from "./types.js";
 import type {
   PluginEnvironmentValidateConfigParams,
@@ -52,6 +57,17 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentInteractiveSetupSession,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCaptureTemplateResult,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentCancelInteractiveSetupResult,
+  PluginEnvironmentDeleteTemplateParams,
+  PluginEnvironmentDeleteTemplateResult,
+  PluginPerformActionActorContext,
+  PluginPerformActionContext,
 } from "./protocol.js";
 
 export interface TestHarnessOptions {
@@ -59,7 +75,7 @@ export interface TestHarnessOptions {
   manifest: PaperclipPluginManifestV1;
   /** Optional capability override. Defaults to `manifest.capabilities`. */
   capabilities?: PluginCapability[];
-  /** Initial config returned by `ctx.config.get()`. */
+  /** Initial config returned by `ctx.config.get(companyId)`. */
   config?: Record<string, unknown>;
 }
 
@@ -69,10 +85,24 @@ export interface TestHarnessLogEntry {
   meta?: Record<string, unknown>;
 }
 
+export interface TestHarnessPerformActionOptions {
+  /**
+   * Authenticated actor context to expose to the action handler. Omitted fields
+   * default to null, and `type` defaults to `system`.
+   */
+  actor?: Partial<PluginPerformActionActorContext> | null;
+  /**
+   * Host-authorized company scope. When provided, this is injected into
+   * `params.companyId` so tests match the production bridge's anti-spoofing
+   * behavior.
+   */
+  companyId?: string | null;
+}
+
 export interface TestHarness {
   /** Fully-typed in-memory plugin context passed to `plugin.setup(ctx)`. */
   ctx: PluginContext;
-  /** Seed host entities for `ctx.companies/projects/issues/agents/goals` reads. */
+  /** Seed host entities for `ctx.companies/projects/issues/agents/goals/access/authorization` reads. */
   seed(input: {
     companies?: Company[];
     projects?: Project[];
@@ -80,6 +110,10 @@ export interface TestHarness {
     issueComments?: IssueComment[];
     agents?: Agent[];
     goals?: Goal[];
+    projectWorkspaces?: PluginWorkspace[];
+    executionWorkspaces?: PluginExecutionWorkspaceMetadata[];
+    accessMembers?: PluginAccessMember[];
+    principalGrants?: PrincipalPermissionGrant[];
   }): void;
   setConfig(config: Record<string, unknown>): void;
   /** Dispatch a host or plugin event to registered handlers. */
@@ -89,7 +123,11 @@ export interface TestHarness {
   /** Invoke a `ctx.data.register(...)` handler by key. */
   getData<T = unknown>(key: string, params?: Record<string, unknown>): Promise<T>;
   /** Invoke a `ctx.actions.register(...)` handler by key. */
-  performAction<T = unknown>(key: string, params?: Record<string, unknown>): Promise<T>;
+  performAction<T = unknown>(
+    key: string,
+    params?: Record<string, unknown>,
+    options?: TestHarnessPerformActionOptions,
+  ): Promise<T>;
   /** Execute a registered tool handler via `ctx.tools.execute(...)`. */
   executeTool<T = ToolResult>(name: string, params: unknown, runCtx?: Partial<ToolRunContext>): Promise<T>;
   /** Read raw in-memory state for assertions. */
@@ -118,7 +156,12 @@ export interface EnvironmentEventRecord {
     | "releaseLease"
     | "destroyLease"
     | "realizeWorkspace"
-    | "execute";
+    | "execute"
+    | "startInteractiveSetup"
+    | "getInteractiveSetup"
+    | "captureTemplate"
+    | "cancelInteractiveSetup"
+    | "deleteTemplate";
   driverKey: string;
   environmentId: string;
   timestamp: string;
@@ -140,6 +183,11 @@ export interface EnvironmentTestHarnessOptions extends TestHarnessOptions {
     onDestroyLease?: (params: PluginEnvironmentDestroyLeaseParams) => Promise<void>;
     onRealizeWorkspace?: (params: PluginEnvironmentRealizeWorkspaceParams) => Promise<PluginEnvironmentRealizeWorkspaceResult>;
     onExecute?: (params: PluginEnvironmentExecuteParams) => Promise<PluginEnvironmentExecuteResult>;
+    onStartInteractiveSetup?: (params: PluginEnvironmentStartInteractiveSetupParams) => Promise<PluginEnvironmentInteractiveSetupSession>;
+    onGetInteractiveSetup?: (params: PluginEnvironmentGetInteractiveSetupParams) => Promise<PluginEnvironmentInteractiveSetupSession>;
+    onCaptureTemplate?: (params: PluginEnvironmentCaptureTemplateParams) => Promise<PluginEnvironmentCaptureTemplateResult>;
+    onCancelInteractiveSetup?: (params: PluginEnvironmentCancelInteractiveSetupParams) => Promise<PluginEnvironmentCancelInteractiveSetupResult>;
+    onDeleteTemplate?: (params: PluginEnvironmentDeleteTemplateParams) => Promise<PluginEnvironmentDeleteTemplateResult>;
   };
 }
 
@@ -163,6 +211,16 @@ export interface EnvironmentTestHarness extends TestHarness {
   realizeWorkspace(params: PluginEnvironmentRealizeWorkspaceParams): Promise<PluginEnvironmentRealizeWorkspaceResult>;
   /** Invoke the environment driver's execute hook. */
   execute(params: PluginEnvironmentExecuteParams): Promise<PluginEnvironmentExecuteResult>;
+  /** Invoke the environment driver's interactive setup start hook. */
+  startInteractiveSetup(params: PluginEnvironmentStartInteractiveSetupParams): Promise<PluginEnvironmentInteractiveSetupSession>;
+  /** Invoke the environment driver's interactive setup status hook. */
+  getInteractiveSetup(params: PluginEnvironmentGetInteractiveSetupParams): Promise<PluginEnvironmentInteractiveSetupSession>;
+  /** Invoke the environment driver's template capture hook. */
+  captureTemplate(params: PluginEnvironmentCaptureTemplateParams): Promise<PluginEnvironmentCaptureTemplateResult>;
+  /** Invoke the environment driver's interactive setup cancel hook. */
+  cancelInteractiveSetup(params: PluginEnvironmentCancelInteractiveSetupParams): Promise<PluginEnvironmentCancelInteractiveSetupResult>;
+  /** Invoke the environment driver's optional template delete hook. */
+  deleteTemplate(params: PluginEnvironmentDeleteTemplateParams): Promise<PluginEnvironmentDeleteTemplateResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +495,41 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const issueDocuments = new Map<string, IssueDocument>();
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
+  const accessMembers = new Map<string, PluginAccessMember>();
+  const principalGrants = new Map<string, PrincipalPermissionGrant[]>();
+
+  function principalGrantsKey(companyId: string, principalType: PrincipalType, principalId: string) {
+    return `${companyId}:${principalType}:${principalId}`;
+  }
+  function getPrincipalGrants(companyId: string, principalType: PrincipalType, principalId: string) {
+    return principalGrants.get(principalGrantsKey(companyId, principalType, principalId)) ?? [];
+  }
+  function setPrincipalGrants(
+    companyId: string,
+    principalType: PrincipalType,
+    principalId: string,
+    grants: Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>,
+  ) {
+    const stamped = grants.map((grant) => ({
+      principalType,
+      principalId,
+      permissionKey: grant.permissionKey,
+      scope: grant.scope && typeof grant.scope === "object" ? grant.scope : null,
+    })) as PrincipalPermissionGrant[];
+    principalGrants.set(principalGrantsKey(companyId, principalType, principalId), stamped);
+    const member = [...accessMembers.values()].find(
+      (entry) =>
+        entry.companyId === companyId
+        && entry.principalType === principalType
+        && entry.principalId === principalId,
+    );
+    if (member) {
+      accessMembers.set(member.id, { ...member, grants: stamped, updatedAt: new Date().toISOString() });
+    }
+    return stamped;
+  }
   const projectWorkspaces = new Map<string, PluginWorkspace[]>();
+  const executionWorkspaces = new Map<string, PluginExecutionWorkspaceMetadata>();
   const localFolderStatuses = new Map<string, PluginLocalFolderStatus>();
   const localFolderFiles = new Map<string, string>();
 
@@ -448,7 +540,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const jobs = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launchers = new Map<string, PluginLauncherRegistration>();
   const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
-  const actionHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
+  const actionHandlers = new Map<
+    string,
+    (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
+  >();
   const toolHandlers = new Map<string, (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>>();
 
   function localFolderKey(companyId: string, folderKey: string): string {
@@ -457,6 +552,41 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
 
   function localFolderFileKey(companyId: string, folderKey: string, relativePath: string): string {
     return `${localFolderKey(companyId, folderKey)}:${relativePath}`;
+  }
+
+  function stringOrNull(value: unknown): string | null {
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  function actorTypeOrSystem(value: unknown): PluginPerformActionActorContext["type"] {
+    return value === "user" || value === "agent" || value === "system" ? value : "system";
+  }
+
+  function actionContextFor(
+    params: Record<string, unknown>,
+    options?: TestHarnessPerformActionOptions,
+  ): PluginPerformActionContext {
+    const actorInput = options?.actor ?? null;
+    const companyId = stringOrNull(options?.companyId) ?? stringOrNull(actorInput?.companyId) ?? stringOrNull(params.companyId);
+    const actor = Object.freeze({
+      type: actorTypeOrSystem(actorInput?.type),
+      userId: stringOrNull(actorInput?.userId),
+      agentId: stringOrNull(actorInput?.agentId),
+      runId: stringOrNull(actorInput?.runId),
+      companyId,
+    });
+    return Object.freeze({ actor, companyId });
+  }
+
+  function paramsWithHostCompanyScope(
+    params: Record<string, unknown>,
+    context: PluginPerformActionContext,
+    options?: TestHarnessPerformActionOptions,
+  ): Record<string, unknown> {
+    if (Object.prototype.hasOwnProperty.call(options ?? {}, "companyId")) {
+      return context.companyId ? { ...params, companyId: context.companyId } : { ...params };
+    }
+    return params;
   }
 
   function normalizeLocalFolderRelativePath(relativePath: string): string {
@@ -907,6 +1037,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             leadAgentId: null,
             targetDate: null,
             color: declaration.color ?? null,
+            icon: null,
             env: null,
             pauseReason: null,
             pausedAt: null,
@@ -973,6 +1104,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           const resolved = await this.get(projectKey, companyId);
           return { ...resolved, status: resolved.project ? "reset" : resolved.status };
         },
+      },
+    },
+    executionWorkspaces: {
+      async get(workspaceId, companyId) {
+        requireCapability(manifest, capabilitySet, "execution.workspaces.read");
+        const workspace = executionWorkspaces.get(workspaceId);
+        return workspace?.companyId === companyId ? workspace : null;
       },
     },
     routines: {
@@ -1068,6 +1206,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             parentIssueId: null,
             title: declaration.title,
             description: declaration.description ?? null,
+            responsibleUserId: null,
             assigneeAgentId,
             priority: declaration.priority ?? "medium",
             status: declaration.status ?? (assigneeAgentId ? "active" : "paused"),
@@ -1238,6 +1377,20 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             trustLevel: "markdown_only",
             compatibility: "compatible",
             fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+            iconUrl: null,
+            color: null,
+            tagline: declaration.description?.slice(0, 120) ?? null,
+            authorName: null,
+            homepageUrl: null,
+            categories: [],
+            sharingScope: "company",
+            publicShareToken: null,
+            forkedFromSkillId: null,
+            forkedFromCompanyId: null,
+            starCount: 0,
+            installCount: 1,
+            forkCount: 0,
+            currentVersionId: null,
             metadata: {
               sourceKind: "catalog",
               pluginManagedResource: {
@@ -1294,6 +1447,20 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             trustLevel: "markdown_only",
             compatibility: "compatible",
             fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+            iconUrl: null,
+            color: null,
+            tagline: declaration.description?.slice(0, 120) ?? null,
+            authorName: null,
+            homepageUrl: null,
+            categories: [],
+            sharingScope: "company",
+            publicShareToken: null,
+            forkedFromSkillId: null,
+            forkedFromCompanyId: null,
+            starCount: existing.skill?.starCount ?? 0,
+            installCount: existing.skill?.installCount ?? 1,
+            forkCount: existing.skill?.forkCount ?? 0,
+            currentVersionId: existing.skill?.currentVersionId ?? null,
             metadata: {
               sourceKind: "catalog",
               pluginManagedResource: {
@@ -1408,6 +1575,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           executionLockedAt: null,
           createdByAgentId: null,
           createdByUserId: null,
+          responsibleUserId: null,
           issueNumber: null,
           identifier: null,
           originKind,
@@ -1499,7 +1667,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async listComments(issueId, companyId) {
         requireCapability(manifest, capabilitySet, "issue.comments.read");
         if (!isInCompany(issues.get(issueId), companyId)) return [];
-        return issueComments.get(issueId) ?? [];
+        return (issueComments.get(issueId) ?? []).map((comment) =>
+          comment.deletedAt ? { ...comment, body: "", presentation: null, metadata: null } : comment
+        );
       },
       async createComment(issueId, body, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.comments.create");
@@ -1570,6 +1740,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async requestConfirmation(issueId, interaction, companyId, options) {
         return this.createInteraction(issueId, { ...interaction, kind: "request_confirmation" }, companyId, options) as Promise<any>;
       },
+      async requestCheckboxConfirmation(issueId, interaction, companyId, options) {
+        return this.createInteraction(issueId, { ...interaction, kind: "request_checkbox_confirmation" }, companyId, options) as Promise<any>;
+      },
       documents: {
         async list(issueId, companyId) {
           requireCapability(manifest, capabilitySet, "issue.documents.read");
@@ -1604,6 +1777,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             createdByUserId: existing?.createdByUserId ?? null,
             updatedByAgentId: null,
             updatedByUserId: null,
+            lockedAt: existing?.lockedAt ?? null,
+            lockedByAgentId: existing?.lockedByAgentId ?? null,
+            lockedByUserId: existing?.lockedByUserId ?? null,
             createdAt: existing?.createdAt ?? now,
             updatedAt: now,
             body: input.body,
@@ -1811,7 +1987,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             spentMonthlyCents: 0,
             pauseReason: null,
             pausedAt: null,
-            permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+            permissions: {
+              canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+              canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+            },
             lastHeartbeatAt: null,
             metadata: managedAgentMetadata(agentKey),
             createdAt: now,
@@ -1849,7 +2028,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
               spentMonthlyCents: 0,
               pauseReason: null,
               pausedAt: null,
-              permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+              permissions: {
+                canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+                canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+              },
               lastHeartbeatAt: null,
               metadata: managedAgentMetadata(agentKey),
               createdAt: now,
@@ -1870,7 +2052,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             adapterConfig: declaration.adapterConfig ?? {},
             runtimeConfig: declaration.runtimeConfig ?? {},
             budgetMonthlyCents: declaration.budgetMonthlyCents ?? 0,
-            permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+            permissions: {
+              canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+              canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+            },
             metadata: managedAgentMetadata(agentKey, resolved.agent.metadata),
             updatedAt: new Date(),
           };
@@ -1969,6 +2154,156 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         return updated;
       },
     },
+    access: {
+      members: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "access.members.read");
+          const cid = requireCompanyId(input.companyId);
+          const includeArchived = input.includeArchived === true;
+          return [...accessMembers.values()]
+            .filter((member) => member.companyId === cid)
+            .filter((member) => includeArchived || member.status !== ("archived" as PluginAccessMember["status"]))
+            .map((member) => ({
+              ...member,
+              grants: getPrincipalGrants(cid, member.principalType, member.principalId),
+            }));
+        },
+        async get(memberId, companyId) {
+          requireCapability(manifest, capabilitySet, "access.members.read");
+          const cid = requireCompanyId(companyId);
+          const member = accessMembers.get(memberId);
+          if (!member || member.companyId !== cid) return null;
+          return {
+            ...member,
+            grants: getPrincipalGrants(cid, member.principalType, member.principalId),
+          };
+        },
+        async update(memberId, patch, companyId) {
+          requireCapability(manifest, capabilitySet, "access.members.write");
+          const cid = requireCompanyId(companyId);
+          const member = accessMembers.get(memberId);
+          if (!member || member.companyId !== cid) {
+            throw new Error(`Membership not found: ${memberId}`);
+          }
+          const updated: PluginAccessMember = {
+            ...member,
+            membershipRole: patch.membershipRole === undefined ? member.membershipRole : patch.membershipRole,
+            status: patch.status === undefined ? member.status : patch.status,
+            updatedAt: new Date().toISOString(),
+          };
+          accessMembers.set(memberId, updated);
+          return {
+            ...updated,
+            grants: getPrincipalGrants(cid, updated.principalType, updated.principalId),
+          };
+        },
+      },
+      invites: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "access.invites.read");
+          requireCompanyId(input.companyId);
+          return { invites: [], nextOffset: null };
+        },
+        async create(input) {
+          requireCapability(manifest, capabilitySet, "access.invites.write");
+          requireCompanyId(input.companyId);
+          throw new Error("Invite creation is not implemented in the plugin test harness");
+        },
+        async revoke(inviteId, companyId) {
+          requireCapability(manifest, capabilitySet, "access.invites.write");
+          requireCompanyId(companyId);
+          throw new Error(`Invite not found: ${inviteId}`);
+        },
+      },
+    },
+    authorization: {
+      grants: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "authorization.grants.read");
+          const cid = requireCompanyId(input.companyId);
+          if (input.principalType && input.principalId) {
+            return getPrincipalGrants(cid, input.principalType, input.principalId);
+          }
+          const out: PrincipalPermissionGrant[] = [];
+          for (const [key, grants] of principalGrants.entries()) {
+            if (!key.startsWith(`${cid}:`)) continue;
+            for (const grant of grants) {
+              if (input.principalType && grant.principalType !== input.principalType) continue;
+              if (input.principalId && grant.principalId !== input.principalId) continue;
+              out.push(grant);
+            }
+          }
+          return out;
+        },
+        async set(input) {
+          requireCapability(manifest, capabilitySet, "authorization.grants.write");
+          const cid = requireCompanyId(input.companyId);
+          return setPrincipalGrants(cid, input.principalType, input.principalId, input.grants);
+        },
+      },
+      policies: {
+        async summary(companyId) {
+          requireCapability(manifest, capabilitySet, "authorization.policies.read");
+          const cid = requireCompanyId(companyId);
+          const members = [...accessMembers.values()].filter((member) => member.companyId === cid);
+          let grantCount = 0;
+          for (const [key, grants] of principalGrants.entries()) {
+            if (key.startsWith(`${cid}:`)) grantCount += grants.length;
+          }
+          return {
+            companyId: cid,
+            permissionsMode: "simple",
+            memberCount: members.length,
+            activeMemberCount: members.filter((member) => member.status === "active").length,
+            grantCount,
+            advancedPolicyAvailable: false,
+          };
+        },
+        async get(input) {
+          requireCapability(manifest, capabilitySet, "authorization.policies.read");
+          requireCompanyId(input.companyId);
+          return null;
+        },
+        async update(input) {
+          requireCapability(manifest, capabilitySet, "authorization.policies.write");
+          const cid = requireCompanyId(input.companyId);
+          return {
+            companyId: cid,
+            resourceType: input.resourceType,
+            resourceId: input.resourceId,
+            policy: input.policy,
+            updatedAt: new Date().toISOString(),
+          };
+        },
+        async previewAssignment(input) {
+          requireCapability(manifest, capabilitySet, "authorization.policies.read");
+          requireCompanyId(input.companyId);
+          return {
+            allowed: true,
+            action: "issue.assign",
+            explanation: "Allowed by simple company-wide defaults in the plugin test harness.",
+            reason: "simple_mode",
+          };
+        },
+        async explainAssignment(input) {
+          requireCapability(manifest, capabilitySet, "authorization.policies.read");
+          requireCompanyId(input.companyId);
+          return {
+            allowed: true,
+            action: "issue.assign",
+            explanation: "Allowed by simple company-wide defaults in the plugin test harness.",
+            reason: "simple_mode",
+          };
+        },
+      },
+      audit: {
+        async search(input) {
+          requireCapability(manifest, capabilitySet, "authorization.audit.read");
+          requireCompanyId(input.companyId);
+          return [];
+        },
+      },
+    },
     data: {
       register(key, handler) {
         dataHandlers.set(key, handler);
@@ -2045,6 +2380,18 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       }
       for (const row of input.agents ?? []) agents.set(row.id, row);
       for (const row of input.goals ?? []) goals.set(row.id, row);
+      for (const row of input.projectWorkspaces ?? []) {
+        const list = projectWorkspaces.get(row.projectId) ?? [];
+        list.push(row);
+        projectWorkspaces.set(row.projectId, list);
+      }
+      for (const row of input.executionWorkspaces ?? []) executionWorkspaces.set(row.id, row);
+      for (const row of input.accessMembers ?? []) accessMembers.set(row.id, row);
+      for (const row of input.principalGrants ?? []) {
+        const list = principalGrants.get(principalGrantsKey(row.companyId, row.principalType, row.principalId)) ?? [];
+        list.push(row);
+        principalGrants.set(principalGrantsKey(row.companyId, row.principalType, row.principalId), list);
+      }
     },
     setConfig(config) {
       currentConfig = { ...config };
@@ -2087,10 +2434,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       if (!handler) throw new Error(`No data handler registered for '${key}'`);
       return await handler(params) as T;
     },
-    async performAction<T = unknown>(key: string, params: Record<string, unknown> = {}) {
+    async performAction<T = unknown>(
+      key: string,
+      params: Record<string, unknown> = {},
+      options?: TestHarnessPerformActionOptions,
+    ) {
       const handler = actionHandlers.get(key);
       if (!handler) throw new Error(`No action handler registered for '${key}'`);
-      return await handler(params) as T;
+      const context = actionContextFor(params, options);
+      return await handler(paramsWithHostCompanyScope(params, context, options), context) as T;
     },
     async executeTool<T = ToolResult>(name: string, params: unknown, runCtx: Partial<ToolRunContext> = {}) {
       const handler = toolHandlers.get(name);
@@ -2202,6 +2554,46 @@ export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOpti
     },
     async execute(params) {
       return callHook("execute", driver.onExecute, params, "onExecute");
+    },
+    async startInteractiveSetup(params) {
+      return callHook(
+        "startInteractiveSetup",
+        driver.onStartInteractiveSetup,
+        params,
+        "onStartInteractiveSetup",
+      );
+    },
+    async getInteractiveSetup(params) {
+      return callHook(
+        "getInteractiveSetup",
+        driver.onGetInteractiveSetup,
+        params,
+        "onGetInteractiveSetup",
+      );
+    },
+    async captureTemplate(params) {
+      return callHook(
+        "captureTemplate",
+        driver.onCaptureTemplate,
+        params,
+        "onCaptureTemplate",
+      );
+    },
+    async cancelInteractiveSetup(params) {
+      return callHook(
+        "cancelInteractiveSetup",
+        driver.onCancelInteractiveSetup,
+        params,
+        "onCancelInteractiveSetup",
+      );
+    },
+    async deleteTemplate(params) {
+      return callHook(
+        "deleteTemplate",
+        driver.onDeleteTemplate,
+        params,
+        "onDeleteTemplate",
+      );
     },
   };
 

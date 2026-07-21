@@ -1,14 +1,104 @@
 import { describe, expect, it } from "vitest";
 import {
+  createUserSecretDefinitionSchema,
+  createUserSecretDeclarationSchema,
+  createUserSecretValueSchema,
   createSecretProviderConfigSchema,
   createSecretSchema,
+  envBindingUserSecretRefSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
+  rotateSecretSchema,
+  rotateUserSecretValueSchema,
+  secretProviderConfigDiscoveryPreviewSchema,
   secretProviderConfigPayloadSchema,
+  updateUserSecretValueSchema,
+  updateUserSecretDefinitionSchema,
   updateSecretProviderConfigSchema,
 } from "./secret.js";
 
 describe("secret validators", () => {
+  it("defaults user secret refs to required and no missing override", () => {
+    expect(
+      envBindingUserSecretRefSchema.parse({
+        type: "user_secret_ref",
+        key: "github_api_token",
+      }),
+    ).toEqual({
+      type: "user_secret_ref",
+      key: "github_api_token",
+      required: true,
+      allowMissingOverride: false,
+    });
+  });
+
+  it("validates user secret declarations and current-user value payloads", () => {
+    expect(
+      createUserSecretDeclarationSchema.parse({
+        targetType: "agent",
+        targetId: "agent-1",
+        configPath: "env.GITHUB_TOKEN",
+        envKey: "GITHUB_TOKEN",
+        definitionKey: "github_api_token",
+      }),
+    ).toMatchObject({
+      versionSelector: "latest",
+      required: true,
+      allowMissingOverride: false,
+    });
+
+    expect(() =>
+      createUserSecretValueSchema.parse({
+        value: "secret-value",
+      }),
+    ).toThrow(/definitionId or definitionKey/);
+  });
+
+  it("does not allow user secret definition keys to be renamed through updates", () => {
+    expect(
+      updateUserSecretDefinitionSchema.parse({
+        key: "renamed_key",
+        name: "Renamed",
+      }),
+    ).toEqual({
+      name: "Renamed",
+    });
+  });
+
+  it("does not allow user secret definitions to be created as deleted", () => {
+    expect(() =>
+      createUserSecretDefinitionSchema.parse({
+        key: "github_api_token",
+        name: "GitHub API token",
+        status: "deleted",
+      }),
+    ).toThrow();
+  });
+
+  it("requires secret rotation payloads to include rotation input", () => {
+    expect(() => rotateSecretSchema.parse({})).toThrow(/requires value, externalRef/);
+    expect(() => rotateUserSecretValueSchema.parse({})).toThrow(/requires value, externalRef/);
+    expect(() => rotateUserSecretValueSchema.parse({ providerVersionRef: null })).toThrow(/requires value, externalRef/);
+    expect(() => rotateUserSecretValueSchema.parse({ providerConfigId: null })).toThrow(/requires value, externalRef/);
+    expect(() => rotateUserSecretValueSchema.parse({ externalRef: "" })).toThrow();
+    expect(() => rotateUserSecretValueSchema.parse({ providerVersionRef: "" })).toThrow();
+    expect(rotateUserSecretValueSchema.parse({ value: "new-secret" })).toEqual({
+      value: "new-secret",
+    });
+    expect(rotateUserSecretValueSchema.parse({ providerVersionRef: "version-2" })).toEqual({
+      providerVersionRef: "version-2",
+    });
+  });
+
+  it("rejects empty external selectors in user secret patches", () => {
+    expect(() => updateUserSecretValueSchema.parse({ externalRef: "" })).toThrow();
+    expect(() => updateUserSecretValueSchema.parse({ providerVersionRef: "" })).toThrow();
+    expect(updateUserSecretValueSchema.parse({ externalRef: null, providerVersionRef: null })).toEqual({
+      externalRef: null,
+      providerVersionRef: null,
+    });
+  });
+
   it("rejects externalRef on managed secrets", () => {
     expect(() =>
       createSecretSchema.parse({
@@ -138,6 +228,40 @@ describe("secret validators", () => {
         }),
       ],
     });
+  });
+
+  it("validates AWS provider vault discovery draft config without allowing sensitive keys", () => {
+    expect(
+      secretProviderConfigDiscoveryPreviewSchema.parse({
+        provider: "aws_secrets_manager",
+        config: {
+          region: "us-east-1",
+          namespace: "production",
+          secretNamePrefix: "paperclip",
+        },
+        query: "paperclip",
+        pageSize: 50,
+      }),
+    ).toEqual({
+      provider: "aws_secrets_manager",
+      config: {
+        region: "us-east-1",
+        namespace: "production",
+        secretNamePrefix: "paperclip",
+      },
+      query: "paperclip",
+      pageSize: 50,
+    });
+
+    expect(() =>
+      secretProviderConfigDiscoveryPreviewSchema.parse({
+        provider: "aws_secrets_manager",
+        config: {
+          region: "us-east-1",
+          accessKeyId: "AKIA...",
+        },
+      }),
+    ).toThrow(/sensitive field/i);
   });
 
   it("caps AWS remote import paging and row counts", () => {

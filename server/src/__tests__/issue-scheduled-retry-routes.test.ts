@@ -72,14 +72,14 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     return app;
   }
 
-  function boardActor(companyId: string): Express.Request["actor"] {
+  function boardActor(companyId: string, source: "session" | "local_implicit" = "session"): Express.Request["actor"] {
     return {
       type: "board",
       userId: "board-user",
       companyIds: [companyId],
       memberships: [{ companyId, membershipRole: "admin", status: "active" }],
       isInstanceAdmin: false,
-      source: "session",
+      source,
     };
   }
 
@@ -208,7 +208,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
   it("surfaces the current scheduled retry in the issue read model", async () => {
     const { companyId, issueId, agentId, sourceRunId, retryRunId, scheduledRetryAt } = await seedIssueWithRetry();
 
-    const res = await request(createApp(boardActor(companyId))).get(`/api/issues/${issueId}`);
+    const res = await request(createApp(boardActor(companyId, "local_implicit"))).get(`/api/issues/${issueId}`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.scheduledRetry).toMatchObject({
@@ -348,14 +348,14 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     expect(res.status).toBe(403);
   });
 
-  it("enforces company scoping for retry-now", async () => {
+  it("enforces company scoping for retry-now with a uniform 404", async () => {
     const { issueId } = await seedIssueWithRetry();
 
     const res = await request(createApp(boardActor(randomUUID())))
       .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
       .send({});
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it("suppresses retry-now when the issue is under a budget hard-stop", async () => {

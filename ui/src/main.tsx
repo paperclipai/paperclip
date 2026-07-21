@@ -17,10 +17,16 @@ import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
+import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
 initPluginBridge(React, ReactDOM);
+
+// React 19.2 emits an unbounded stream of performance.measure() entries for its
+// DevTools performance tracks and never clears them; on a long-lived tab they
+// accumulate into millions of native objects (GBs). Reap them periodically.
+startPerfMeasureReaper();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -32,6 +38,10 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
+      // Explicit so cross-tab-published cache entries for resources this tab
+      // isn't observing get collected promptly rather than lingering. Single
+      // tuning point if we need to trim the cache footprint further.
+      gcTime: 5 * 60_000,
       refetchOnWindowFocus: true,
     },
   },

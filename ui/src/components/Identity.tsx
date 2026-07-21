@@ -2,12 +2,14 @@ import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 type IdentitySize = "xs" | "sm" | "default" | "lg";
+type IdentityShape = "circle" | "square";
 
 export interface IdentityProps {
   name: string;
   avatarUrl?: string | null;
   initials?: string;
   size?: IdentitySize;
+  shape?: IdentityShape;
   className?: string;
 }
 
@@ -24,12 +26,15 @@ const textSize: Record<IdentitySize, string> = {
   lg: "text-sm",
 };
 
-export function Identity({ name, avatarUrl, initials, size = "default", className }: IdentityProps) {
+export function Identity({ name, avatarUrl, initials, size = "default", shape = "circle", className }: IdentityProps) {
   const displayInitials = initials ?? deriveInitials(name);
 
   return (
-    <span className={cn("inline-flex gap-1.5 items-center", size === "xs" && "gap-1", size === "lg" && "gap-2", className)}>
-      <Avatar size={size}>
+    <span
+      className={cn("inline-flex min-w-0 gap-1.5 items-center", size === "xs" && "gap-1", size === "lg" && "gap-2", className)}
+      title={name}
+    >
+      <Avatar size={size} shape={shape}>
         {avatarUrl && <AvatarImage src={avatarUrl} alt={name} />}
         <AvatarFallback>{displayInitials}</AvatarFallback>
       </Avatar>

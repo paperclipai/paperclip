@@ -135,16 +135,26 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
         },
       };
     }
-    await db.insert(environments).values({
-      id: environmentId,
-      companyId,
-      name: `${input.driver} contract`,
-      driver: input.driver,
-      status: "active",
-      config,
-      createdAt: now,
-      updatedAt: now,
-    });
+    const existingLocal =
+      input.driver === "local"
+        ? await db.query.environments.findFirst({
+            where: (environment, { eq }) => eq(environment.driver, "local"),
+          })
+        : null;
+    const resolvedEnvironmentId = existingLocal?.id ?? environmentId;
+    if (!existingLocal) {
+      await db.insert(environments).values({
+        id: resolvedEnvironmentId,
+        name: `${input.driver} contract`,
+        driver: input.driver,
+        status: "active",
+        config,
+        createdAt: now,
+        updatedAt: now,
+      });
+    } else {
+      config = (existingLocal.config as Record<string, unknown> | null) ?? {};
+    }
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -160,7 +170,7 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
       issueId: null,
       runId,
       environment: {
-        id: environmentId,
+        id: resolvedEnvironmentId,
         companyId,
         name: `${input.driver} contract`,
         description: null,

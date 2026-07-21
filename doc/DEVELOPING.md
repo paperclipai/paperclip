@@ -56,6 +56,46 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+The Storybook visual regression suite uses external PNG baselines instead of
+committed screenshots:
+
+```sh
+pnpm test:storybook-visual
+pnpm test:storybook-visual:update
+```
+
+`pnpm test:storybook-visual` downloads and verifies the baseline archive from
+`tests/storybook-visual/baseline-manifest.json` before running Playwright.
+Accepted visual changes should update the manifest metadata and publish a new
+immutable archive with `pnpm storybook-visual:baseline pack` and
+`pnpm storybook-visual:baseline upload`; do not commit generated PNG snapshots.
+
+Known limitation: Storybook visual baselines are Linux/Ubuntu-only. The manifest
+pins the capture environment to `ubuntu-24.04` and the Playwright suite uses
+pixel-exact comparison, so local runs on macOS, Windows, or other non-matching
+platforms can report false-positive diffs from font rasterization and subpixel
+rendering. Use the `Storybook Visual` GitHub Actions workflow on `ubuntu-latest`
+as the source of truth, or run locally in a matching Linux environment before
+accepting or updating baselines.
+
+PR visual checks are opt-in while the suite stabilizes. Add the
+`storybook-visual` label to a PR, or run the `Storybook Visual` GitHub Actions
+workflow manually, to produce downloadable Playwright report/test-result
+artifacts. Normal PR visual runs use read-only repository permissions and do not
+upload or mutate baseline objects.
+
+## UI Fonts And Screenshots
+
+The board UI ships its own sans-serif webfont assets in `ui/public/fonts/`.
+`ui/src/index.css` declares Inter v4.1 variable regular and italic faces and wires
+the Tailwind `font-sans` token to those bundled files before system fallbacks.
+Linux screenshot or Storybook capture jobs should not install host Inter packages
+or inject external font CSS to make Paperclip text render correctly.
+
+Font assets live in Vite's public directory so `pnpm --filter @paperclipai/ui build`
+emits them under `ui/dist/fonts/`. The server package copies the same output into
+`server/ui-dist/fonts/` through `scripts/prepare-server-ui-dist.sh`.
+
 Inspect or stop the current repo's managed dev runner:
 
 ```sh
@@ -65,6 +105,20 @@ pnpm dev:stop
 
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
+## Hot-Restart Deploys
+
+Primary-instance rebuilds that restart `paperclip.service` can request one-shot live-run adoption instead of using the normal graceful shutdown drain. Before restarting the service, write the marker from the newly staged app with the current service PID:
+
+```sh
+old_main_pid="$(systemctl show paperclip.service -p MainPID --value)"
+pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts --server-pid "$old_main_pid"
+systemctl restart paperclip.service
+```
+
+Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+
+A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
+
 Tailscale/private-auth dev mode:
 
 ```sh
@@ -72,6 +126,13 @@ pnpm dev --bind lan
 ```
 
 This runs dev as `authenticated/private` with a private-network bind preset.
+On a fresh authenticated/private instance, open the app, sign in or create an
+account, and use the setup screen to claim the first instance admin from the
+browser. The CLI fallback remains:
+
+```sh
+pnpm paperclipai auth bootstrap-ceo
+```
 
 For Tailscale-only reachability on a detected tailnet address:
 
@@ -125,6 +186,22 @@ For a first-time local install, you can bootstrap and run in one command:
 pnpm paperclipai run
 ```
 
+> **Note: private npm registry `.npmrc` + first-run onboarding**
+>
+> The first-run experience often starts with `npx paperclipai onboard --yes` (before you have a repo checkout). If your global `~/.npmrc` sets `registry` to a private registry (for example GitHub Packages), `npx` may try to resolve `paperclipai` from that private registry and fail with `E404`.
+>
+> Diagnostic:
+>
+> ```sh
+> npm config get registry
+> ```
+>
+> Workaround (cross-platform; force the public npm registry for this command):
+>
+> ```sh
+> npx --registry https://registry.npmjs.org paperclipai onboard --yes
+> ```
+
 `paperclipai run` does:
 
 1. auto-onboard if config is missing
@@ -173,7 +250,8 @@ Every local install keeps runtime state directly under the selected instance roo
   secrets/master.key                             # local_encrypted master key
   workspaces/<agent-id>/                         # default agent workspaces
   projects/                                      # project execution workspaces
-  companies/<company-id>/codex-home/             # per-company codex_local home
+  companies/<company-id>/agents/<agent-id>/codex-home/
+                                                   # per-agent codex_local home
 ```
 
 `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
@@ -205,6 +283,36 @@ Configure storage provider/settings:
 pnpm paperclipai configure --section storage
 ```
 
+## Agent Artifact Uploads
+
+When an agent generates a file that a board user or reviewer should inspect as
+a deliverable, attach it to the issue before marking the task complete. Do not
+rely on a local workspace path as the only access path.
+
+Use the helper bundled with the Paperclip skill from the repo root:
+
+```sh
+skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
+  --title "Demo video render" \
+  --summary "MP4 render for board review"
+```
+
+For WebM output:
+
+```sh
+skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
+  --title "Walkthrough video" \
+  --summary "WebM walkthrough render"
+```
+
+The helper uploads the file as an issue attachment, creates an artifact work
+product by default, and prints markdown links for the final issue comment. See
+`doc/AGENT-ARTIFACTS.md` for the full completion pattern and direct API shape.
+If a file intentionally remains workspace-only, create a work product with
+`metadata.resourceRef.kind: "workspace_file"` and include the workspace-relative
+path in the final comment. Use browse/search only as the fallback for recovering
+that file, not as the main completion path for deliverables.
+
 ## Default Agent Workspaces
 
 When a local agent run has no resolved project/session workspace, Paperclip falls back to an agent home workspace under the instance root:
@@ -213,13 +321,21 @@ When a local agent run has no resolved project/session workspace, Paperclip fall
 
 This path honors `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` in non-default setups.
 
-For `codex_local`, Paperclip also manages a per-company Codex home under the instance root and seeds it from the shared Codex login/config home (`$CODEX_HOME` or `~/.codex`):
+For `codex_local`, Paperclip assigns new and updated agents an isolated Codex home under the instance root and blocks shared host/company Codex homes:
 
-- `~/.paperclip/instances/default/companies/<company-id>/codex-home`
+- `~/.paperclip/instances/default/companies/<company-id>/agents/<agent-id>/codex-home`
+
+Paperclip also persists an empty `OPENAI_API_KEY` override for those agents so a host-level `OPENAI_API_KEY` cannot leak into Codex runs through process inheritance. If an operator explicitly configures `adapterConfig.env.CODEX_HOME`, it must not point at the shared company `codex-home`, `$CODEX_HOME`, or `~/.codex`.
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
 
 Local adapters require their corresponding CLI/session setup on the machine running Paperclip. External adapters are installed through the adapter/plugin flow and should not require hardcoded imports in `server/` or `ui/`.
+
+## Config Freshness
+
+Agent, project, environment, secret, skill, and workspace config edits are sampled at the next run boundary. A heartbeat that is already running finishes with the config it started with.
+
+When effective run config changes, Paperclip may intentionally skip a saved adapter session, refresh persisted workspace runtime config, replace a reused execution workspace, or avoid reusing a sandbox/environment lease. Fresh execution can lose adapter-specific session, workspace, or sandbox state; correctness of the next run's config takes priority over continuity. Plain environment values affect freshness through value hashes; run result JSON and workspace operation logs expose only the non-sensitive freshness decision categories, without storing secret values, full env maps, provider credentials, or private path details.
 
 ## Worktree-local Instances
 
@@ -413,6 +529,94 @@ eval "$(pnpm paperclipai worktree env)"
 
 For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
 
+## App-Shipped Skills Catalog
+
+The Paperclip app ships a curated catalog of company skills out of the box. The
+catalog is a workspace package at `packages/skills-catalog`:
+
+```text
+packages/skills-catalog/
+  catalog/
+    bundled/<category>/<slug>/SKILL.md   # recommended defaults
+    optional/<category>/<slug>/SKILL.md  # role/domain-specific
+  generated/catalog.json                  # checked-in manifest
+  scripts/
+    build-catalog-manifest.ts             # regenerate generated/catalog.json
+    validate-catalog.ts                   # validation only
+  src/                                    # builder + types consumed by server/CLI
+```
+
+Server and CLI import the generated manifest; they do not crawl repository
+paths at request time. Root `skills/` remains reserved for Paperclip runtime
+skills and is not part of the catalog.
+
+Validate the catalog without writing the manifest:
+
+```sh
+pnpm --filter @paperclipai/skills-catalog validate
+```
+
+Regenerate `generated/catalog.json` after editing any catalog `SKILL.md`,
+frontmatter, file inventory, category, or slug:
+
+```sh
+pnpm --filter @paperclipai/skills-catalog build:manifest
+```
+
+The package's `build` script runs `build:manifest` and then `tsc`; tests live
+under `pnpm --filter @paperclipai/skills-catalog test`. Validation fails when:
+
+- a catalog entry is not under `catalog/bundled/<category>/<slug>` or
+  `catalog/optional/<category>/<slug>`
+- `SKILL.md` is missing or the frontmatter `name`/`description` is empty
+- the frontmatter `key` disagrees with the generated canonical key
+- two catalog entries share an `id`, `key`, or `slug`
+- file inventory contains absolute paths, `..`, broken symlinks, or files
+  outside the skill directory
+- the regenerated manifest differs from the checked-in
+  `generated/catalog.json`
+
+Trust level is derived from inventory: `markdown_only` (markdown + references
+only), `assets` (other non-script files), or `scripts_executables` (any
+executable script). The build contract is documented in
+`doc/plans/2026-05-26-skills-cli-catalog-contract.md`.
+
+CI runs `pnpm --filter @paperclipai/skills-catalog validate` and the package's
+vitest suite, so always regenerate the manifest in the same commit as the
+catalog change.
+
+## App-Shipped Teams Catalog
+
+The team catalog package mirrors the skills catalog workflow for
+agentcompanies/v1 team packages:
+
+```text
+packages/teams-catalog/
+  catalog/
+    bundled/<category>/<slug>/TEAM.md
+    optional/<category>/<slug>/TEAM.md
+  generated/catalog.json
+  scripts/
+    build-catalog-manifest.ts
+    validate-catalog.ts
+```
+
+Validate without writing the manifest:
+
+```sh
+pnpm --filter @paperclipai/teams-catalog validate
+```
+
+Regenerate `generated/catalog.json` after editing catalog team files:
+
+```sh
+pnpm --filter @paperclipai/teams-catalog build:manifest
+```
+
+Team install/preview APIs enforce source policy. External skill sources require
+explicit approval flags, and local-path skill sources are development-only
+unless `allowLocalPathSources` is set by the caller.
+
 ## Quick Health Checks
 
 In another terminal:
@@ -471,6 +675,14 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
+- `PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS=<hours>` controls the `/api/health`
+  stale-backup warning threshold
+- `PAPERCLIP_DB_BACKUP_ALERT_FILE=/path/to/failure-marker` lets external cron
+  wrappers surface the last failed backup in `/api/health`
+
+Without `PAPERCLIP_DB_BACKUP_ALERT_FILE`, health checks look for
+`db-backup-to-s3.failure` in the backup directory, beside the backup directory,
+and in the default sibling `health/` directory.
 
 DB backups are not full instance filesystem backups. For full local disaster
 recovery, also back up local storage files and the local encrypted secrets key if
@@ -554,15 +766,24 @@ pnpm paperclipai dashboard get
 
 See full command reference in `doc/CLI.md`.
 
-## OpenClaw Invite Onboarding Endpoints
+## Agent Invite Onboarding Endpoints
 
 Agent-oriented invite onboarding now exposes machine-readable API docs:
+
+The board UI generates agent onboarding prompts from the add-agent modal (`+` in the agent sidebar), so agent onboarding sits with the rest of agent creation rather than company member invite settings.
 
 - `GET /api/invites/:token` returns invite summary plus onboarding and skills index links.
 - `GET /api/invites/:token/onboarding` returns onboarding manifest details (registration endpoint, claim endpoint template, skill install hints).
 - `GET /api/invites/:token/onboarding.txt` returns a plain-text onboarding doc intended for both human operators and agents (llm.txt-style handoff), including optional inviter message and suggested network host candidates.
 - `GET /api/skills/index` lists available skill documents.
 - `GET /api/skills/paperclip` returns the Paperclip heartbeat skill markdown.
+
+Hermes gateway agents use this same generic agent invite flow with
+`adapterType=hermes_gateway` and `agentDefaultsPayload.apiBaseUrl` /
+`agentDefaultsPayload.apiKey`. See
+[HERMES_GATEWAY_ONBOARDING.md](./HERMES_GATEWAY_ONBOARDING.md) for the full
+operator path, including Hermes credentials, invite approval, key claim, and
+fresh-state Docker smoke setup.
 
 ## OpenClaw Join Smoke Test
 
@@ -575,7 +796,7 @@ pnpm smoke:openclaw-join
 What it validates:
 
 - invite creation for agent-only join
-- agent join request using `adapterType=openclaw`
+- agent join request using `adapterType=openclaw_gateway`
 - board approval + one-time API key claim semantics
 - callback delivery on wakeup to a dockerized OpenClaw-style webhook receiver
 

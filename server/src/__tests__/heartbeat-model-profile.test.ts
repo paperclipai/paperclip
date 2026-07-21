@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { AdapterModelProfileDefinition } from "../adapters/index.js";
+import {
+  listAdapterModelProfiles,
+  type AdapterModelProfileDefinition,
+} from "../adapters/index.js";
 import {
   mergeModelProfileAdapterConfig,
   normalizeModelProfileWakeContext,
   resolveModelProfileApplication,
+  isConfigurationIncompleteFailedRun,
 } from "../services/heartbeat.ts";
 
 const cheapProfile: AdapterModelProfileDefinition = {
@@ -17,6 +21,27 @@ const cheapProfile: AdapterModelProfileDefinition = {
 };
 
 describe("heartbeat model profile application", () => {
+  it("uses the Codex local adapter cheap default when the agent has no runtime override", async () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: await listAdapterModelProfiles("codex_local"),
+      agentRuntimeConfig: {},
+      issueModelProfile: "cheap",
+      contextSnapshot: {},
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      requestedBy: "issue_override",
+      applied: "cheap",
+      configSource: "adapter_default",
+      fallbackReason: null,
+      adapterConfig: {
+        model: "gpt-5.3-codex-spark",
+        modelReasoningEffort: "high",
+      },
+    });
+  });
+
   it("applies cheap profile patches before explicit issue adapter config overrides", () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: [cheapProfile],
@@ -119,5 +144,10 @@ describe("heartbeat model profile application", () => {
     });
 
     expect(contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+  });
+
+  it("treats model resolution failures as non-retryable configuration failures", () => {
+    expect(isConfigurationIncompleteFailedRun({ errorCode: "model_not_found" })).toBe(true);
+    expect(isConfigurationIncompleteFailedRun({ errorCode: "provider_quota" })).toBe(false);
   });
 });
