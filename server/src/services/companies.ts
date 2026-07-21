@@ -121,15 +121,18 @@ export function companyService(db: Db) {
   }
 
   function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
+    const source = typeof error === "object" && error !== null && "cause" in error
+      ? (error as { cause?: unknown }).cause
+      : error;
+    const constraint = typeof source === "object" && source !== null && "constraint" in source
+      ? (source as { constraint?: string }).constraint
+      : typeof source === "object" && source !== null && "constraint_name" in source
+        ? (source as { constraint_name?: string }).constraint_name
         : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
+    return typeof source === "object"
+      && source !== null
+      && "code" in source
+      && (source as { code?: string }).code === "23505"
       && constraint === "companies_issue_prefix_idx";
   }
 
