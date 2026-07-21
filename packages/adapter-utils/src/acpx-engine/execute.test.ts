@@ -8,6 +8,7 @@ import type { AcpRuntimeOptions } from "acpx/runtime";
 import type { AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
 import { DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC } from "@paperclipai/adapter-utils/execution-target";
 import {
+  AcpxSessionInitError,
   createAcpxEngineExecutor,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
@@ -939,6 +940,170 @@ describe("shared ACPX engine runtime behavior", () => {
     const stderrLog = logs.find((entry) => entry.stream === "stderr" && entry.text.includes("ACPX child stderr tail"));
     expect(stderrLog).toBeTruthy();
     expect(stderrLog!.text).toContain(stderrTail);
+  });
+
+  it("throws AcpxSessionInitError (so the adapter can fall back) when session init fails and lane fallback is allowed", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const runStderrDir = path.join(stateDir, "run-stderr");
+    await fs.mkdir(runStderrDir, { recursive: true });
+    // A JSON-RPC -32603 handshake failure: the throw carries the bare
+    // "Internal error" message; the real cause lives only in child stderr.
+    const stderrTail = "session/new failed: -32603 backend unavailable while starting agent process";
+    await fs.writeFile(path.join(runStderrDir, "run-fallback-1.log"), `${stderrTail}\n`, "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      allowSessionInitLaneFallback: () => true,
+      createRuntime: () => ({
+        ensureSession: async () => {
+          throw new Error("Internal error");
+        },
+        startTurn: () => ({
+          events: (async function* () {})(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const thrown = await execute({
+      runId: "run-fallback-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never).then(
+      () => null,
+      (err: unknown) => err,
+    );
+
+    expect(thrown).toBeInstanceOf(AcpxSessionInitError);
+    const sessionErr = thrown as AcpxSessionInitError;
+    expect(sessionErr.errorCode).toBe("acpx_session_init_failed");
+    // The bare "Internal error" is folded together with the real child stderr.
+    expect(sessionErr.message).toContain("Internal error");
+    expect(sessionErr.message).toContain(stderrTail);
+    expect(sessionErr.childStderrTail).toContain(stderrTail);
+  });
+
+  it("returns the terminal failed result (no lane switch) for an explicit ACP run", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const runStderrDir = path.join(stateDir, "run-stderr");
+    await fs.mkdir(runStderrDir, { recursive: true });
+    const stderrTail = "session/new failed: -32603 backend unavailable while starting agent process";
+    await fs.writeFile(path.join(runStderrDir, "run-explicit-1.log"), `${stderrTail}\n`, "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      allowSessionInitLaneFallback: () => false,
+      createRuntime: () => ({
+        ensureSession: async () => {
+          throw new Error("Internal error");
+        },
+        startTurn: () => ({
+          events: (async function* () {})(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-explicit-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_session_init_failed");
+    // Requirement 2: the real child stderr is folded into the tenant-facing text.
+    expect(result.errorMessage).toContain(stderrTail);
+    expect(result.summary).toContain(stderrTail);
+  });
+
+  it("classifies an auth-indicating session-init stderr as acpx_auth_required (returned result)", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const runStderrDir = path.join(stateDir, "run-stderr");
+    await fs.mkdir(runStderrDir, { recursive: true });
+    const stderrTail = "AI_APICallError: 401 status: invalid x-api-key credential";
+    await fs.writeFile(path.join(runStderrDir, "run-auth-1.log"), `${stderrTail}\n`, "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      allowSessionInitLaneFallback: () => false,
+      createRuntime: () => ({
+        ensureSession: async () => {
+          throw new Error("Internal error");
+        },
+        startTurn: () => ({
+          events: (async function* () {})(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-auth-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_auth_required");
+  });
+
+  it("carries the auth classification on the thrown error for a fallback-eligible run", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const runStderrDir = path.join(stateDir, "run-stderr");
+    await fs.mkdir(runStderrDir, { recursive: true });
+    const stderrTail = "Unauthorized (401): missing credential for provider";
+    await fs.writeFile(path.join(runStderrDir, "run-auth-2.log"), `${stderrTail}\n`, "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      allowSessionInitLaneFallback: () => true,
+      createRuntime: () => ({
+        ensureSession: async () => {
+          throw new Error("Internal error");
+        },
+        startTurn: () => ({
+          events: (async function* () {})(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const thrown = await execute({
+      runId: "run-auth-2",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never).then(
+      () => null,
+      (err: unknown) => err,
+    );
+
+    expect(thrown).toBeInstanceOf(AcpxSessionInitError);
+    expect((thrown as AcpxSessionInitError).errorCode).toBe("acpx_auth_required");
   });
 
   it("writes wrapper that redirects child stderr to a per-run log file", async () => {

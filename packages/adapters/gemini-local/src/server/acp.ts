@@ -119,6 +119,10 @@ export function buildGeminiAcpConfig(config: Record<string, unknown>): Record<st
 
 function withGeminiAcpDefaults(options: GeminiAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
+    // Auto-selected (non-explicit) ACP runs may throw on session-init failure so
+    // execute() falls back to the proven CLI lane; explicit engine=acp runs keep
+    // the terminal failed result instead of silently switching lanes.
+    allowSessionInitLaneFallback: (ctx) => !normalizeEngine(ctx.config.engine).explicit,
     ...options,
     adapterType: "gemini_local",
     moduleDir,

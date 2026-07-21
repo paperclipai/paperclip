@@ -483,6 +483,59 @@ describe("claude_local ACP lane", () => {
   });
 });
 
+describe("claude_local ACP session-init lane fallback", () => {
+  function throwingRuntime() {
+    return {
+      ensureSession: async () => {
+        throw new Error("Internal error");
+      },
+      startTurn: () => ({
+        events: (async function* () {})(),
+        result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+        cancel: async () => {},
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+  }
+
+  it("throws AcpxSessionInitError for an auto-selected run so execute() can fall back to CLI", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-fallback-");
+    const execute = createClaudeAcpExecutor({
+      createRuntime: () => throwingRuntime() as never,
+    });
+    const ctx = buildContext(root, {
+      // No engine=acp: an auto-selected default ACP run is fallback-eligible.
+      config: {
+        cwd: root,
+        stateDir: path.join(root, "state"),
+        promptTemplate: "Do the assigned work.",
+      },
+    });
+
+    const thrown = await execute(ctx).then(
+      () => null,
+      (err: unknown) => err,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).name).toBe("AcpxSessionInitError");
+    expect((thrown as { errorCode?: string }).errorCode).toBe("acpx_session_init_failed");
+  });
+
+  it("returns the terminal failed result for an explicit engine=acp run (no lane switch)", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-explicit-");
+    const execute = createClaudeAcpExecutor({
+      createRuntime: () => throwingRuntime() as never,
+    });
+    // buildContext defaults to config.engine === "acp" (explicit).
+    const result = await execute(buildContext(root));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_session_init_failed");
+  });
+});
+
 describe("resolveClaudeAcpBillingIdentity", () => {
   const originalApiKey = process.env.ANTHROPIC_API_KEY;
   const originalBedrock = process.env.CLAUDE_CODE_USE_BEDROCK;

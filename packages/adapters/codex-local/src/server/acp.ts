@@ -135,6 +135,10 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
 function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveCodexAcpBillingIdentity,
+    // Auto-selected (non-explicit) ACP runs may throw on session-init failure so
+    // execute() falls back to the proven CLI lane; explicit engine=acp runs keep
+    // the terminal failed result instead of silently switching lanes.
+    allowSessionInitLaneFallback: (ctx) => !normalizeEngine(ctx.config.engine).explicit,
     ...options,
     adapterType: "codex_local",
     moduleDir,
