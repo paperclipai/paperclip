@@ -16575,12 +16575,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const finishedAt = new Date();
-    const cancelled = await setRunStatus(run.id, "cancelled", {
+    const cancelledWrite = await setRunStatusIfRunning(run.id, "cancelled", {
       finishedAt,
       error: reason,
       errorCode,
       ...(resultJson ? { resultJson } : {}),
-    });
+    }, null, CANCELLABLE_HEARTBEAT_RUN_STATUSES);
+    if (!cancelledWrite.updated) return cancelledWrite.run;
+    const cancelled = cancelledWrite.run;
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt,
@@ -16610,8 +16612,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
+    let cancelledCount = 0;
     for (const run of runs) {
-      await setRunStatus(run.id, "cancelled", {
+      const cancelledWrite = await setRunStatusIfRunning(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,
         errorCode,
@@ -16622,12 +16625,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             errorMessage: reason,
           }),
         } : {}),
-      });
-
-      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-        finishedAt: new Date(),
-        error: reason,
-      });
+      }, null, CANCELLABLE_HEARTBEAT_RUN_STATUSES);
+      const cancelled = cancelledWrite.updated ? cancelledWrite.run : null;
+      if (cancelled) {
+        cancelledCount += 1;
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: reason,
+        });
+      }
 
       const running = runningProcesses.get(run.id);
       if (running) {
