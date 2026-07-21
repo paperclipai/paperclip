@@ -3,7 +3,7 @@ name: Verify Baseline Parity
 on:
   push:
     branches:
-      - six-4584-async-image-jobs
+      - six-4584-reliability
 
 # This workflow is intentionally evidence-only. It has no deploy, publish,
 # environment, secret, database, or image-generation steps.
@@ -24,7 +24,7 @@ jobs:
       matrix:
         include:
           - label: async-image-jobs-implementation
-            sha: 40204d2bb79d7f638059a97be809001c5791e27f
+            sha: 52e5452d057b760f5f041ffe1201b8992f750d85
 
     steps:
       - name: Checkout immutable source
