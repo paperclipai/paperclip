@@ -430,7 +430,7 @@ export interface SecretProposalView {
   /**
    * Server-computed permission preflight for the current viewer, mirroring the
    * exact authz the approve path enforces. Secret-kind approval uses the same
-   * board + company-access gate as the normal company-secret create route;
+   * company-secret write boundary as the normal company-secret create route;
    * binding-kind approval additionally requires `agent_config:update` on the
    * target agent. Approve is disabled with `approveBlockReason` shown when this
    * is `false`.

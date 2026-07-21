@@ -39,6 +39,11 @@ function assertSecretDefinitionAdmin(req: Parameters<typeof assertBoard>[0], com
   throw forbidden("Company admin access required");
 }
 
+function assertCompanySecretWrite(req: Parameters<typeof assertBoard>[0], companyId: string) {
+  assertBoard(req);
+  assertCompanyAccess(req, companyId);
+}
+
 function currentUserId(req: Parameters<typeof assertBoard>[0]) {
   assertBoard(req);
   if (req.actor.userId) return req.actor.userId;
@@ -214,9 +219,8 @@ export function secretRoutes(db: Db) {
   });
 
   router.post("/companies/:companyId/secret-proposals/:id/approve", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanySecretWrite(req, companyId);
     const proposal = await proposals.getById(companyId, req.params.id as string);
     if (!proposal) throw notFound("Secret proposal not found");
     await assertCanResolveProposal(req, proposal);
@@ -807,9 +811,8 @@ export function secretRoutes(db: Db) {
   });
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanySecretWrite(req, companyId);
 
     const created = await svc.create(
       companyId,
