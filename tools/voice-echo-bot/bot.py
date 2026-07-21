@@ -1,6 +1,7 @@
 # tools/voice-echo-bot/bot.py
 """Voice-Echo Jarvis-Bot: Long-Poll-Loop, Allowlist, Bestätigungs-Flow."""
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -54,6 +55,8 @@ class BotApp:
             except transcribe.TranscriptionError:
                 self.tg.send_message(chat_id, "Transkription fehlgeschlagen, bitte erneut.")
                 return
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
             self._offer(chat_id, message_id, text)
         elif "text" in msg:
             text = msg["text"]
@@ -75,13 +78,20 @@ class BotApp:
             try:
                 issue = create_issue(self._token(), self.cfg["company_id"],
                                      self.cfg["ceo_agent_id"], derive_title(text), text)
-                label = issue.get("shortId") or issue.get("id", "?")
-                self.tg.answer_callback_query(cbq["id"], "Gesendet")
-                self.tg.send_message(chat_id, "✅ An CEO gesendet: {}".format(label))
             except Exception:  # noqa: BLE001 - Fehler dem Nutzer melden, Text nicht verlieren
                 self.candidates[key] = text
                 self.tg.answer_callback_query(cbq["id"], "Fehler")
                 self.tg.send_message(chat_id, "⚠️ Konnte Issue nicht anlegen, bitte erneut senden.")
+                return
+            # create_issue ist erfolgreich, Kandidat gilt als verbraucht -
+            # nachfolgende Telegram-Aufrufe sind best-effort und dürfen den
+            # Kandidaten nicht erneut speichern oder einen Fehler melden.
+            label = issue.get("shortId") or issue.get("id", "?")
+            try:
+                self.tg.answer_callback_query(cbq["id"], "Gesendet")
+                self.tg.send_message(chat_id, "✅ An CEO gesendet: {}".format(label))
+            except Exception:  # noqa: BLE001 - Issue existiert bereits, nicht erneut anlegen
+                traceback.print_exc()
         else:  # drop
             self.tg.answer_callback_query(cbq["id"], "Verworfen")
             self.tg.send_message(chat_id, "❌ Verworfen.")

@@ -78,6 +78,32 @@ class TestCallbackSend(unittest.TestCase):
         ci.assert_not_called()
         self.assertNotIn("8311805232:5", app.candidates)
 
+    def test_send_failure_restores_candidate_and_notifies_user(self):
+        tg = mock.MagicMock()
+        app = make_app(tg)
+        app.candidates["8311805232:5"] = "Steuer erledigen"
+        with mock.patch.object(bot, "create_issue", side_effect=Exception("boom")) as ci:
+            app.handle_update({"callback_query": {"id": "cbq3", "from": {"id": 8311805232},
+                                                  "message": {"chat": {"id": 8311805232}},
+                                                  "data": "send:8311805232:5"}})
+        ci.assert_called_once()
+        self.assertEqual(app.candidates["8311805232:5"], "Steuer erledigen")
+        self.assertTrue(tg.send_message.called)
+
+
+class TestCallbackAllowlist(unittest.TestCase):
+    def test_foreign_user_callback_is_ignored(self):
+        tg = mock.MagicMock()
+        app = make_app(tg)
+        app.candidates["8311805232:5"] = "Steuer erledigen"
+        with mock.patch.object(bot, "create_issue") as ci:
+            app.handle_update({"callback_query": {"id": "cbq4", "from": {"id": 999},
+                                                  "message": {"chat": {"id": 8311805232}},
+                                                  "data": "send:8311805232:5"}})
+        ci.assert_not_called()
+        tg.answer_callback_query.assert_not_called()
+        self.assertEqual(app.candidates["8311805232:5"], "Steuer erledigen")
+
 
 if __name__ == "__main__":
     unittest.main()
