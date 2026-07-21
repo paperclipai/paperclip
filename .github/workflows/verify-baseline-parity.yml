@@ -1,0 +1,50 @@
+name: Verify Baseline Parity
+
+on:
+  push:
+    branches:
+      - six-4584-async-image-jobs
+
+# This workflow is intentionally evidence-only. It has no deploy, publish,
+# environment, secret, database, or image-generation steps.
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-baseline-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: async-image-jobs-implementation
+            sha: 40204d2bb79d7f638059a97be809001c5791e27f
+
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies from frozen lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        run: pnpm test:run
