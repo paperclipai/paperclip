@@ -1,4 +1,4 @@
-import { and, eq, lte, or } from "drizzle-orm";
+import { and, count, desc, eq, lte, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companySecretProposals, heartbeatRuns, issues } from "@paperclipai/db";
 import { forbidden, notFound, unprocessable } from "../errors.js";
@@ -8,6 +8,8 @@ import { normalizeSecretKey } from "./secrets.js";
 
 const CONFIG_PATH_RE = /^(?:env\.[A-Za-z_][A-Za-z0-9_]*|access\.[A-Za-z_][A-Za-z0-9_]*)$/;
 const SECRET_NAME_RE = /^[^/\s]+(?:\/[^/\s]+)*$/;
+const MAX_PENDING_PROPOSALS_PER_AGENT = 20;
+const MAX_SECRET_VALUE_BYTES = 64 * 1024;
 export type SecretProposalTerminalStatus = "approved" | "rejected" | "withdrawn" | "expired";
 
 export type ProposalRunContext = {
@@ -46,6 +48,25 @@ async function ancestorIds(db: Db, companyId: string, agentId: string) {
 }
 
 export function createSecretProposalsService(db: Db) {
+  async function assertPendingCap(agentId: string) {
+    const pending = await db.select({ value: count() }).from(companySecretProposals).where(and(
+      eq(companySecretProposals.proposedByAgentId, agentId),
+      eq(companySecretProposals.status, "pending"),
+    )).then((rows) => Number(rows[0]?.value ?? 0));
+    if (pending >= MAX_PENDING_PROPOSALS_PER_AGENT) {
+      throw unprocessable(`Agents may have at most ${MAX_PENDING_PROPOSALS_PER_AGENT} pending secret proposals`);
+    }
+  }
+
+  async function recordCreated(proposal: typeof companySecretProposals.$inferSelect) {
+    await logActivity(db, {
+      companyId: proposal.companyId, actorType: "agent", actorId: proposal.proposedByAgentId,
+      action: "secret.proposal.created", entityType: "company_secret_proposal", entityId: proposal.id,
+      agentId: proposal.proposedByAgentId, runId: proposal.originRunId,
+      details: { kind: proposal.kind, issueId: proposal.originIssueId },
+    });
+  }
+
   async function createSecret(context: ProposalRunContext, input: {
     name: string;
     key?: string | null;
@@ -58,12 +79,14 @@ export function createSecretProposalsService(db: Db) {
     if (!SECRET_NAME_RE.test(name)) throw unprocessable("Secret name must be a slash-separated path without empty segments");
     if (!justification) throw unprocessable("Justification is required");
     if (!input.value) throw unprocessable("Secret value is required");
+    if (Buffer.byteLength(input.value, "utf8") > MAX_SECRET_VALUE_BYTES) throw unprocessable(`Secret value must be at most ${MAX_SECRET_VALUE_BYTES} bytes`);
     const proposedKey = normalizeSecretKey(input.key?.trim() || name.split("/").at(-1) || "");
     if (!proposedKey) throw unprocessable("Secret key is required");
     const { run, originIssueId } = await loadRunContext(db, context);
+    await assertPendingCap(run.agentId);
     const prepared = await getSecretProvider("local_encrypted").createSecret({ value: input.value });
     await context.registerForRedaction(input.value);
-    return db.insert(companySecretProposals).values({
+    const proposal = await db.insert(companySecretProposals).values({
       companyId: context.companyId,
       kind: "secret",
       proposedName: name,
@@ -78,6 +101,8 @@ export function createSecretProposalsService(db: Db) {
       originRunId: run.id,
       expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
     }).returning().then((rows) => rows[0]);
+    await recordCreated(proposal);
+    return proposal;
   }
 
   async function createBinding(context: Pick<ProposalRunContext, "companyId" | "heartbeatRunId">, input: {
@@ -92,12 +117,13 @@ export function createSecretProposalsService(db: Db) {
     if (!CONFIG_PATH_RE.test(input.configPath)) throw unprocessable("configPath must use env.<KEY> or access.<ALIAS>");
     if (!input.justification.trim()) throw unprocessable("Justification is required");
     const { run, originIssueId } = await loadRunContext(db, context);
+    await assertPendingCap(run.agentId);
     const targetAgentId = input.targetAgentId ?? run.agentId;
     const [proposerAncestors, targetAncestors] = await Promise.all([
       ancestorIds(db, context.companyId, run.agentId),
       ancestorIds(db, context.companyId, targetAgentId),
     ]);
-    return db.insert(companySecretProposals).values({
+    const proposal = await db.insert(companySecretProposals).values({
       companyId: context.companyId,
       kind: "binding",
       justification: input.justification.trim(),
@@ -114,6 +140,22 @@ export function createSecretProposalsService(db: Db) {
       originRunId: run.id,
       expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
     }).returning().then((rows) => rows[0]);
+    await recordCreated(proposal);
+    return proposal;
+  }
+
+  async function listForAgent(companyId: string, agentId: string) {
+    return db.select().from(companySecretProposals).where(and(
+      eq(companySecretProposals.companyId, companyId),
+      or(eq(companySecretProposals.proposedByAgentId, agentId), and(eq(companySecretProposals.kind, "binding"), eq(companySecretProposals.targetId, agentId))),
+    )).orderBy(desc(companySecretProposals.createdAt));
+  }
+
+  async function listForBoard(companyId: string, status?: string | null) {
+    return db.select().from(companySecretProposals).where(and(
+      eq(companySecretProposals.companyId, companyId),
+      status ? eq(companySecretProposals.status, status) : undefined,
+    )).orderBy(desc(companySecretProposals.createdAt));
   }
 
   async function transition(companyId: string, proposalId: string, status: SecretProposalTerminalStatus, input: {
@@ -164,7 +206,9 @@ export function createSecretProposalsService(db: Db) {
         action: `secret.proposal.${status}`,
         entityType: "company_secret_proposal",
         entityId: proposal.id,
-        details: { ciphertextScrubbed: true },
+        agentId: proposal.proposedByAgentId,
+        runId: proposal.originRunId,
+        details: { ciphertextScrubbed: true, issueId: proposal.originIssueId },
       });
       return updated;
     });
@@ -180,5 +224,5 @@ export function createSecretProposalsService(db: Db) {
     return expired.length;
   }
 
-  return { createSecret, createBinding, transition, sweepExpired };
+  return { createSecret, createBinding, listForAgent, listForBoard, transition, sweepExpired };
 }

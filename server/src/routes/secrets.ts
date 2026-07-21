@@ -18,8 +18,9 @@ import {
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
+import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { forbidden, unauthorized } from "../errors.js";
+import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
 function assertSecretDefinitionAdmin(req: Parameters<typeof assertBoard>[0], companyId: string) {
   assertBoard(req);
@@ -58,6 +59,7 @@ function isCompanyScopedSecret(secret: { scope?: string | null }) {
 export function secretRoutes(db: Db) {
   const router = Router();
   const svc = secretService(db);
+  const proposals = createSecretProposalsService(db);
   const defaultProvider = getConfiguredSecretProvider();
 
   function agentSecretContext(req: Parameters<typeof assertBoard>[0]) {
@@ -74,6 +76,67 @@ export function secretRoutes(db: Db) {
       responsibleUserId: req.actor.onBehalfOfUserId ?? null,
     };
   }
+
+  function proposalAgentContext(req: Parameters<typeof assertBoard>[0]) {
+    const context = agentSecretContext(req);
+    if (req.actor.source !== "agent_jwt" || req.actor.keyScope?.kind === "task_bridge" || req.actor.keyScope?.kind === "skill_test") {
+      throw forbidden("Secret proposals require a verified run-bound agent token");
+    }
+    return context;
+  }
+
+  function agentProposalView(row: Awaited<ReturnType<typeof proposals.listForAgent>>[number]) {
+    const { valueCiphertext: _ciphertext, valueFingerprintSha256: _fingerprint, valueLength: _length, ...safe } = row;
+    return safe;
+  }
+
+  router.post("/agents/me/secret-proposals", async (req, res) => {
+    const context = proposalAgentContext(req);
+    const body = req.body ?? {};
+    const proposal = body.kind === "secret"
+      ? await proposals.createSecret({
+          companyId: context.companyId, heartbeatRunId: context.heartbeatRunId, registerForRedaction: () => undefined,
+        }, { name: body.name, description: body.description, value: body.value, justification: body.justification })
+      : body.kind === "binding"
+        ? await proposals.createBinding({ companyId: context.companyId, heartbeatRunId: context.heartbeatRunId }, {
+            secretId: body.secretId, secretProposalId: body.secretProposalId, targetAgentId: body.targetAgentId,
+            configPath: body.configPath, justification: body.justification, bindingTargetPolicy: "self_and_reports",
+          })
+        : (() => { throw unprocessable("kind must be secret or binding"); })();
+    res.status(201).json(agentProposalView(proposal));
+  });
+
+  router.get("/agents/me/secret-proposals", async (req, res) => {
+    const context = proposalAgentContext(req);
+    const rows = await proposals.listForAgent(context.companyId, context.agentId);
+    res.json({ proposals: rows.map(agentProposalView) });
+  });
+
+  router.delete("/agents/me/secret-proposals/:id", async (req, res) => {
+    const context = proposalAgentContext(req);
+    const proposal = await proposals.transition(context.companyId, req.params.id as string, "withdrawn", { proposerAgentId: context.agentId });
+    res.json(agentProposalView(proposal));
+  });
+
+  router.get("/companies/:companyId/secret-proposals", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const status = typeof req.query.status === "string" ? req.query.status : null;
+    res.json({ proposals: await proposals.listForBoard(companyId, status) });
+  });
+
+  router.post("/companies/:companyId/secret-proposals/:id/reject", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    if (!reason) throw unprocessable("Rejection reason is required");
+    const proposal = await proposals.transition(companyId, req.params.id as string, "rejected", {
+      resolvedByUserId: req.actor.userId ?? "board", reason,
+    });
+    res.json(proposal);
+  });
 
   router.get("/agents/me/secrets", async (req, res) => {
     const context = agentSecretContext(req);
