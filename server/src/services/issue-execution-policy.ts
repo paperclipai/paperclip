@@ -721,7 +721,6 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
         const participant = selectStageParticipant(nextStage, {
           preferred: explicitAssignee,
-          exclude: existingState?.returnAssignee ?? null,
         });
         if (!participant) {
           throw unprocessable(`No eligible ${nextStage.type} participant is configured for this issue`);
