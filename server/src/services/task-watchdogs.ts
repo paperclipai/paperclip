@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -909,6 +909,12 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           eq(issueComments.companyId, companyId),
           inArray(issueComments.issueId, subtreeIssueIds),
           isNull(issueComments.deletedAt),
+          // Ignore watchdog/system housekeeping comments when computing stopped-subtree
+          // fingerprint signals; no-op heartbeat transcripts should not re-arm watchdogs.
+          or(
+            isNull(issueComments.authorType),
+            ne(issueComments.authorType, "system"),
+          ),
         ))
         .groupBy(issueComments.issueId),
       db
