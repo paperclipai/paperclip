@@ -1509,6 +1509,61 @@ const AgentSecretListResponseSchema = z.object({
   })),
 });
 
+const createAgentSecretProposalSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("secret"),
+    name: z.string().min(1),
+    description: z.string().optional().nullable(),
+    value: z.string().min(1),
+    justification: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("binding"),
+    secretId: z.string().uuid().optional(),
+    secretProposalId: z.string().uuid().optional(),
+    targetAgentId: z.string().uuid().optional(),
+    configPath: z.string().min(1),
+    justification: z.string().min(1),
+  }),
+]);
+
+const approveSecretProposalSchema = z.object({
+  cascade: z.boolean().optional(),
+  overrides: z.object({
+    name: z.string().min(1).optional(),
+    description: z.string().optional().nullable(),
+    providerConfigId: z.string().uuid().optional().nullable(),
+  }).optional(),
+});
+
+const rejectSecretProposalSchema = z.object({ reason: z.string().min(1) });
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/me/secret-proposals",
+  tags: ["secrets"],
+  summary: "Propose a company secret or agent secret binding",
+  request: { body: jsonBody(createAgentSecretProposalSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/me/secret-proposals",
+  tags: ["secrets"],
+  summary: "List secret proposals visible to the current agent run",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/agents/me/secret-proposals/{id}",
+  tags: ["secrets"],
+  summary: "Withdraw a pending secret proposal",
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/agents/me/secrets",
@@ -2626,6 +2681,42 @@ registry.registerPath({
     body: jsonBody(createSecretSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/secret-proposals",
+  tags: ["secrets"],
+  summary: "List company secret proposals for board review",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    query: z.object({ status: z.enum(["pending", "approved", "rejected", "withdrawn", "expired"]).optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/secret-proposals/{id}/approve",
+  tags: ["secrets"],
+  summary: "Approve and execute a secret proposal as the approving board user",
+  request: {
+    params: z.object({ companyId: z.string().uuid(), id: z.string().uuid() }),
+    body: jsonBody(approveSecretProposalSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/secret-proposals/{id}/reject",
+  tags: ["secrets"],
+  summary: "Reject a pending secret proposal and dependent bindings",
+  request: {
+    params: z.object({ companyId: z.string().uuid(), id: z.string().uuid() }),
+    body: jsonBody(rejectSecretProposalSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
 
 registry.registerPath({
