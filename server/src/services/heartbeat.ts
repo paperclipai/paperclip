@@ -283,6 +283,7 @@ import {
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { serverVersion } from "../version.js";
 import {
+  reconcileOutstandingTerminalFailureReports,
   recordTerminalFailure,
   type CreateTerminalFailureReportIssue,
 } from "./terminal-failure-ledger.js";
@@ -5394,6 +5395,12 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+  /**
+   * Factory for the top-level fail-closed report issue. Injectable so tests can
+   * deterministically fault the report create (proving the durable reconcile
+   * sweep recovers a stranded ledger row). Production uses the default below.
+   */
+  createTerminalFailureReportIssue?: CreateTerminalFailureReportIssue;
 }
 
 function isTruthyRuntimeEnvValue(value: string | undefined) {
@@ -11472,7 +11479,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
    * a durable fail-closed record, not a work assignment. Deduped a second time
    * by `idempotencyKey` for defense-in-depth on top of the ledger unique index.
    */
-  const createTerminalFailureReportIssue: CreateTerminalFailureReportIssue = async (input) => {
+  const createTerminalFailureReportIssueDefault: CreateTerminalFailureReportIssue = async (input) => {
     const scope = input.issueId ? `issue ${input.issueId}` : "a generic (issue-less) run";
     const report = await issuesSvc.create(input.companyId, {
       title: `[Fail-closed] Terminal control-plane failure (${input.failureCause}) — agent ${input.agentId}`,
@@ -11499,6 +11506,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     return { issueId: report.id };
   };
+
+  const createTerminalFailureReportIssue: CreateTerminalFailureReportIssue =
+    options.createTerminalFailureReportIssue ?? createTerminalFailureReportIssueDefault;
+
+  // Durable live recovery for terminal-failure ledger rows whose top-level report
+  // side effect never completed (report create or pointer write failed after the
+  // row committed). Re-delivers them so a single report-create failure cannot
+  // permanently strand a fail-closed failure with a null pointer. Idempotent:
+  // safe to run every maintenance tick. Driven from index.ts's periodic loop.
+  async function reconcileTerminalFailureLedger() {
+    return reconcileOutstandingTerminalFailureReports(db, createTerminalFailureReportIssue);
+  }
 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
@@ -17101,6 +17120,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     prepareHotRestartShutdown,
     reconcileHotRestartAdoption,
     reapOrphanedRuns,
+    reconcileTerminalFailureLedger,
     // Authoritative queued→running claim and scheduled-retry promotion.
     // Exposed so tests can exercise the real transition (and its timer-only
     // fail-closed gate) without spawning an adapter, which happens separately

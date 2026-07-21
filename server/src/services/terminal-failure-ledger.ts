@@ -27,7 +27,7 @@
 
 import type { Db } from "@paperclipai/db";
 import { terminalFailureLedger } from "@paperclipai/db";
-import { eq, sql } from "drizzle-orm";
+import { eq, isNull, sql } from "drizzle-orm";
 import { logger } from "../middleware/logger.js";
 
 /**
@@ -84,6 +84,64 @@ export function buildDedupeKey(
   failureCause: string,
 ): string {
   return `${agentId}|${rootRunId}|${normalizeFailureCause(failureCause)}`;
+}
+
+/** The report context reconstructable from a persisted ledger row. */
+interface TerminalFailureReconcileContext {
+  companyId: string;
+  agentId: string;
+  issueId: string | null;
+  runId: string;
+  rootRunId: string;
+  failureCause: string;
+  dedupeKey: string;
+}
+
+/**
+ * Complete the durable side effect (top-level report + persisted pointer) for a
+ * single ledger row, atomically and idempotently.
+ *
+ * Serializes on the ledger row: concurrent callers block on the FOR UPDATE lock,
+ * so at most one proceeds to create the report while the rest observe the
+ * persisted pointer and skip. The report create is itself idempotency-keyed by
+ * the caller, so even a crash between "report created" and "pointer persisted"
+ * recovers to the SAME report — never a duplicate. Re-running once the pointer is
+ * present is a no-op.
+ */
+async function reconcileReportIssue(
+  db: Db,
+  ledgerId: string,
+  ctx: TerminalFailureReconcileContext,
+  createReportIssue: CreateTerminalFailureReportIssue,
+): Promise<{ reportIssueId: string | null }> {
+  return db.transaction(async (tx) => {
+    const [locked] = await tx
+      .select({ reportIssueId: terminalFailureLedger.reportIssueId })
+      .from(terminalFailureLedger)
+      .where(eq(terminalFailureLedger.id, ledgerId))
+      .for("update");
+
+    let reportIssueId = locked?.reportIssueId ?? null;
+
+    if (!reportIssueId) {
+      const report = await createReportIssue({
+        companyId: ctx.companyId,
+        agentId: ctx.agentId,
+        issueId: ctx.issueId,
+        runId: ctx.runId,
+        rootRunId: ctx.rootRunId,
+        failureCause: ctx.failureCause,
+        dedupeKey: ctx.dedupeKey,
+      });
+      reportIssueId = report.issueId;
+      await tx
+        .update(terminalFailureLedger)
+        .set({ reportIssueId })
+        .where(eq(terminalFailureLedger.id, ledgerId));
+    }
+
+    return { reportIssueId };
+  });
 }
 
 /**
@@ -164,40 +222,23 @@ export async function recordTerminalFailure(
     };
   }
 
-  // Serialize reconciliation on the ledger row. Concurrent re-deliveries block
-  // on this FOR UPDATE lock, so at most one proceeds to create the report while
-  // the rest observe the persisted pointer and skip. The report create is
-  // additionally guarded by its own idempotencyKey (see caller), so even a crash
-  // between "report created" and "pointer persisted" recovers to the same report
-  // — never a duplicate.
-  const reconciled = await db.transaction(async (tx) => {
-    const [locked] = await tx
-      .select({ reportIssueId: terminalFailureLedger.reportIssueId })
-      .from(terminalFailureLedger)
-      .where(eq(terminalFailureLedger.id, row.id))
-      .for("update");
-
-    let reportIssueId = locked?.reportIssueId ?? null;
-
-    if (input.createReportIssue && !reportIssueId) {
-      const report = await input.createReportIssue({
-        companyId: input.companyId,
-        agentId: input.agentId,
-        issueId: input.issueId,
-        runId: input.runId,
-        rootRunId: input.rootRunId,
-        failureCause: input.failureCause,
-        dedupeKey,
-      });
-      reportIssueId = report.issueId;
-      await tx
-        .update(terminalFailureLedger)
-        .set({ reportIssueId })
-        .where(eq(terminalFailureLedger.id, row.id));
-    }
-
-    return { reportIssueId };
-  });
+  // Serialize reconciliation on the ledger row (shared with the durable sweep).
+  const reconciled = input.createReportIssue
+    ? await reconcileReportIssue(
+        db,
+        row.id,
+        {
+          companyId: input.companyId,
+          agentId: input.agentId,
+          issueId: input.issueId,
+          runId: input.runId,
+          rootRunId: input.rootRunId,
+          failureCause: input.failureCause,
+          dedupeKey,
+        },
+        input.createReportIssue,
+      )
+    : { reportIssueId: row.reportIssueId };
 
   logger.info(
     {
@@ -220,4 +261,92 @@ export async function recordTerminalFailure(
     ledgerCommentId: null,
     redeliveryCount: row.redeliveryCount,
   };
+}
+
+export interface ReconcileOutstandingReportsResult {
+  scanned: number;
+  reconciled: number;
+  failed: number;
+}
+
+/**
+ * Durable live recovery for stranded ledger rows.
+ *
+ * A ledger row's insert commits atomically, but the top-level report is a
+ * separate side effect. If that report create (or its pointer write) fails after
+ * the row commits, the row is left with a NULL `reportIssueId` — a fail-closed
+ * failure that was recorded but never surfaced. The recording caller
+ * (`reapOrphanedRuns`) swallows the error and moves on, and the original run has
+ * already left `running`, so nothing re-delivers it: without this sweep, the
+ * pointer would be permanently null and the "exactly once visible" guarantee
+ * would be broken.
+ *
+ * This sweep is that live re-delivery trigger. It re-reconciles every row with a
+ * NULL pointer, completing the report + pointer atomically per row. It is safe to
+ * run repeatedly: `createReportIssue` is idempotency-keyed on the dedupe key, so a
+ * row whose report already exists (but whose pointer was lost) recovers to the
+ * SAME report with no duplicate, and a fully-reconciled row is never revisited
+ * (the NULL filter excludes it). Meant to be driven from the periodic maintenance
+ * loop.
+ */
+export async function reconcileOutstandingTerminalFailureReports(
+  db: Db,
+  createReportIssue: CreateTerminalFailureReportIssue,
+  opts?: { limit?: number },
+): Promise<ReconcileOutstandingReportsResult> {
+  const limit = opts?.limit ?? 200;
+
+  const rows = await db
+    .select({
+      id: terminalFailureLedger.id,
+      companyId: terminalFailureLedger.companyId,
+      agentId: terminalFailureLedger.agentId,
+      issueId: terminalFailureLedger.issueId,
+      runId: terminalFailureLedger.runId,
+      rootRunId: terminalFailureLedger.rootRunId,
+      failureCause: terminalFailureLedger.failureCause,
+      dedupeKey: terminalFailureLedger.dedupeKey,
+    })
+    .from(terminalFailureLedger)
+    .where(isNull(terminalFailureLedger.reportIssueId))
+    .limit(limit);
+
+  let reconciled = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    try {
+      const { reportIssueId } = await reconcileReportIssue(
+        db,
+        row.id,
+        {
+          companyId: row.companyId,
+          agentId: row.agentId,
+          issueId: row.issueId,
+          runId: row.runId,
+          rootRunId: row.rootRunId,
+          failureCause: row.failureCause,
+          dedupeKey: row.dedupeKey,
+        },
+        createReportIssue,
+      );
+      if (reportIssueId) reconciled += 1;
+    } catch (err) {
+      // Leave the row NULL so the next sweep retries it (fail-closed, never dropped).
+      failed += 1;
+      logger.warn(
+        { err, ledgerId: row.id, dedupeKey: row.dedupeKey },
+        "terminal-failure-ledger: outstanding-report reconcile failed; will retry next sweep",
+      );
+    }
+  }
+
+  if (reconciled > 0 || failed > 0) {
+    logger.warn(
+      { scanned: rows.length, reconciled, failed },
+      "terminal-failure-ledger: reconciled outstanding fail-closed reports",
+    );
+  }
+
+  return { scanned: rows.length, reconciled, failed };
 }

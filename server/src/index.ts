@@ -1092,6 +1092,15 @@ export async function startServer(): Promise<StartedServer> {
                 logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
               }
             })
+            .then(async () => {
+              // Durable live recovery: re-deliver any fail-closed terminal-failure
+              // ledger row whose top-level report side effect never completed, so a
+              // single report-create failure cannot permanently strand it.
+              const reconciled = await heartbeat.reconcileTerminalFailureLedger();
+              if (reconciled.reconciled > 0 || reconciled.failed > 0) {
+                logger.warn({ ...reconciled }, "periodic terminal-failure ledger reconciliation surfaced fail-closed reports");
+              }
+            })
             .catch((err) => {
               logger.error({ err }, "periodic heartbeat recovery failed");
             }));

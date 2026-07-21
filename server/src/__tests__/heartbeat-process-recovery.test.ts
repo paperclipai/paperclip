@@ -104,6 +104,8 @@ import {
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
+import type { CreateTerminalFailureReportIssue } from "../services/terminal-failure-ledger.ts";
 import {
   readHotRestartIntent,
   resolveHotRestartReportPath,
@@ -1362,6 +1364,100 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(reports[0].assigneeAgentId).toBeNull();
     expect(reports[0].status).toBe("backlog");
     expect(reports[0].id).toBe(ledger[0].reportIssueId);
+  });
+
+  it("live recovery: a first report-create failure under real reapOrphanedRuns is reconciled by the durable ledger sweep", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      adapterType: "codex_local",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+
+    // Real report factory (matches production origin kind + idempotency key), but
+    // the FIRST invocation throws — modelling the report create failing after the
+    // ledger row has already durably committed. `reapOrphanedRuns` swallows that
+    // error, so nothing self-heals it: only a live sweep can recover the row.
+    const svc = issueService(db);
+    let createCalls = 0;
+    const flakyCreateReportIssue: CreateTerminalFailureReportIssue = async (input) => {
+      createCalls += 1;
+      if (createCalls === 1) throw new Error("injected report-create failure");
+      const report = await svc.create(input.companyId, {
+        title: `[Fail-closed] Terminal control-plane failure (${input.failureCause})`,
+        description: `Dedupe key: ${input.dedupeKey}`,
+        status: "backlog",
+        priority: "high",
+        originKind: "control_plane_terminal_failure",
+        originId: input.dedupeKey,
+        idempotencyKey: `terminal-failure-report:${input.companyId}:${input.dedupeKey}`,
+        allowDuplicate: false,
+      });
+      return { issueId: report.id };
+    };
+
+    const heartbeat = heartbeatService(db, {
+      createTerminalFailureReportIssue: flakyCreateReportIssue,
+    });
+
+    // Reap the orphaned run through the REAL control-plane path. The terminal
+    // failure is recorded (ledger row commits) but the report create throws.
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect(createCalls).toBe(1);
+
+    // Crash state produced by the REAL path: ledger row present, but stranded with
+    // a null pointer and no report. Nothing re-delivers this run (it has left
+    // `running`) — without the sweep it would be permanent.
+    const stranded = await db
+      .select()
+      .from(terminalFailureLedger)
+      .where(eq(terminalFailureLedger.agentId, agentId));
+    expect(stranded).toHaveLength(1);
+    expect(stranded[0].reportIssueId).toBeNull();
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "control_plane_terminal_failure")))
+        .then((rows) => rows.length),
+    ).toBe(0);
+
+    // Live recovery: the durable sweep re-delivers the stranded row exactly once.
+    const recovered = await heartbeat.reconcileTerminalFailureLedger();
+    expect(recovered).toMatchObject({ scanned: 1, reconciled: 1, failed: 0 });
+    expect(createCalls).toBe(2);
+
+    const afterRecovery = await db
+      .select()
+      .from(terminalFailureLedger)
+      .where(eq(terminalFailureLedger.agentId, agentId));
+    expect(afterRecovery).toHaveLength(1); // ledger 1, no duplicate row
+    expect(afterRecovery[0].reportIssueId).toBeTruthy(); // non-null pointer
+
+    const reports = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "control_plane_terminal_failure")));
+    expect(reports).toHaveLength(1); // top-level report 1
+    expect(reports[0].id).toBe(afterRecovery[0].reportIssueId);
+    expect(reports[0].assigneeAgentId).toBeNull();
+    expect(reports[0].status).toBe("backlog");
+
+    // Re-running the sweep is a no-op: the reconciled row is excluded by the
+    // null-pointer filter, so no additional report is created (duplicate 0).
+    const secondSweep = await heartbeat.reconcileTerminalFailureLedger();
+    expect(secondSweep).toMatchObject({ scanned: 0, reconciled: 0, failed: 0 });
+    expect(createCalls).toBe(2);
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "control_plane_terminal_failure")))
+        .then((rows) => rows.length),
+    ).toBe(1);
   });
 
   it("retry lineage under reap collapses to one ledger + one report (shared canonical root)", async () => {
