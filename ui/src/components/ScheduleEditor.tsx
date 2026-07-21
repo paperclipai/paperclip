@@ -266,7 +266,13 @@ export function ScheduleEditor({
             onChange={(e) => {
               const nextCron = e.target.value;
               setCustomCron(nextCron);
-              if (getScheduleCronValidation(nextCron).valid) {
+              // Report validity synchronously with the keystroke so consumers can gate
+              // their submit affordance in the same render. Relying solely on the
+              // effect below leaves a one-tick window where an invalid draft still
+              // reads as valid to the parent.
+              const nextValidation = getScheduleCronValidation(nextCron);
+              onValidityChange?.(nextValidation.valid);
+              if (nextValidation.valid) {
                 emitChange("custom", hour, minute, dayOfWeek, dayOfMonth, nextCron);
               }
             }}
