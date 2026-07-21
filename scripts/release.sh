@@ -11,7 +11,6 @@ release_date=""
 dry_run=false
 skip_verify=false
 print_version_only=false
-allow_canary_latest=false
 tag_name=""
 
 cleanup_on_exit=false
@@ -19,12 +18,11 @@ cleanup_on_exit=false
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/release.sh <canary|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version] [--allow-canary-latest]
+  ./scripts/release.sh <canary|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version]
 
 Examples:
   ./scripts/release.sh canary
   ./scripts/release.sh canary --date 2026-03-17 --dry-run
-  ./scripts/release.sh canary --allow-canary-latest
   ./scripts/release.sh stable
   ./scripts/release.sh stable --date 2026-03-17 --dry-run
   ./scripts/release.sh stable --date 2026-03-18 --print-version
@@ -34,12 +32,9 @@ Notes:
     zero-padded UTC day, and P is the same-day stable patch slot.
   - Canary releases publish YYYY.MDD.P-canary.N under the npm dist-tag
     "canary" and create the git tag canary/vYYYY.MDD.P-canary.N.
-  - Canary releases fail by default if npm leaves the "latest" dist-tag
-    pointing at any canary. Pass --allow-canary-latest only when that is an
-    intentional first-publish or migration state.
   - Stable releases publish YYYY.MDD.P under the npm dist-tag "latest" and
     create the git tag vYYYY.MDD.P.
-  - Stable release notes must already exist at releases/vYYYY.MDD.P.md.
+  - Non-dry-run stable release notes must already exist at releases/vYYYY.MDD.P.md.
   - The script rewrites versions temporarily and restores the working tree on
     exit. Tags always point at the original source commit, not a generated
     release commit.
@@ -104,7 +99,6 @@ while [ $# -gt 0 ]; do
     --dry-run) dry_run=true ;;
     --skip-verify) skip_verify=true ;;
     --print-version) print_version_only=true ;;
-    --allow-canary-latest) allow_canary_latest=true ;;
     -h|--help)
       usage
       exit 0
@@ -120,10 +114,6 @@ done
   usage
   exit 1
 }
-
-if [ "$allow_canary_latest" = true ] && [ "$channel" != "canary" ]; then
-  release_fail "--allow-canary-latest can only be used with the canary channel."
-fi
 
 PUBLISH_REMOTE="$(resolve_release_remote)"
 fetch_release_remote "$PUBLISH_REMOTE"
@@ -143,6 +133,13 @@ done < <(printf '%s\n' "$PUBLIC_PACKAGE_INFO" | cut -f2)
 
 [ -n "$PUBLIC_PACKAGE_INFO" ] || release_fail "no public packages were found in the workspace."
 
+# Pre-fetch published versions for every public package in parallel so the
+# version helpers below do not each issue one serial `npm view` call per
+# package (see scripts/release-registry-versions.mjs).
+RELEASE_PACKAGE_VERSIONS_FILE="$(mktemp)"
+export RELEASE_PACKAGE_VERSIONS_FILE
+node "$REPO_ROOT/scripts/release-registry-versions.mjs" fetch "${PUBLIC_PACKAGE_NAMES[@]}" > "$RELEASE_PACKAGE_VERSIONS_FILE"
+
 TARGET_STABLE_VERSION="$(next_stable_version "$RELEASE_DATE" "${PUBLIC_PACKAGE_NAMES[@]}")"
 TARGET_PUBLISH_VERSION="$TARGET_STABLE_VERSION"
 DIST_TAG="latest"
@@ -156,6 +153,9 @@ else
   tag_name="$(stable_tag_name "$TARGET_STABLE_VERSION")"
 fi
 
+rm -f "$RELEASE_PACKAGE_VERSIONS_FILE"
+unset RELEASE_PACKAGE_VERSIONS_FILE
+
 if [ "$print_version_only" = true ]; then
   printf '%s\n' "$TARGET_PUBLISH_VERSION"
   exit 0
@@ -166,7 +166,7 @@ NOTES_FILE="$(release_notes_file "$TARGET_STABLE_VERSION")"
 require_clean_worktree
 require_npm_publish_auth "$dry_run"
 
-if [ "$channel" = "stable" ] && [ ! -f "$NOTES_FILE" ]; then
+if [ "$channel" = "stable" ] && [ "$dry_run" = false ] && [ ! -f "$NOTES_FILE" ]; then
   release_fail "stable release notes file is required at $NOTES_FILE before publishing stable."
 fi
 
@@ -178,12 +178,10 @@ if git_local_tag_exists "$tag_name" || git_remote_tag_exists "$tag_name" "$PUBLI
   release_fail "git tag $tag_name already exists locally or on $PUBLISH_REMOTE."
 fi
 
-while IFS= read -r package_name; do
-  [ -z "$package_name" ] && continue
-  if npm_package_version_exists "$package_name" "$TARGET_PUBLISH_VERSION"; then
-    release_fail "npm version ${package_name}@${TARGET_PUBLISH_VERSION} already exists."
-  fi
-done <<< "$(printf '%s\n' "${PUBLIC_PACKAGE_NAMES[@]}")"
+# Fresh (non-cached) existence check, batched in parallel. Prints the
+# offending package@version pairs itself before failing.
+node "$REPO_ROOT/scripts/release-registry-versions.mjs" assert-absent "$TARGET_PUBLISH_VERSION" "${PUBLIC_PACKAGE_NAMES[@]}" \
+  || release_fail "npm version ${TARGET_PUBLISH_VERSION} already exists for one or more packages."
 
 release_info ""
 release_info "==> Release plan"
@@ -197,11 +195,6 @@ release_info "  Release date (UTC): $RELEASE_DATE"
 release_info "  Target stable version: $TARGET_STABLE_VERSION"
 if [ "$channel" = "canary" ]; then
   release_info "  Canary version: $TARGET_PUBLISH_VERSION"
-  if [ "$allow_canary_latest" = true ]; then
-    release_info "  latest dist-tag policy: allow canary"
-  else
-    release_info "  latest dist-tag policy: fail if npm leaves latest on a canary"
-  fi
 else
   release_info "  Stable version: $TARGET_PUBLISH_VERSION"
 fi
@@ -212,6 +205,10 @@ if [ "$channel" = "stable" ]; then
 fi
 
 set_cleanup_trap
+
+# The release flow already prepares ui/dist before packaging. Reuse that output
+# so server prepack does not rebuild the UI a second time during preview/publish.
+export PAPERCLIP_RELEASE_REUSE_UI_DIST=1
 
 if [ "$skip_verify" = false ]; then
   release_info ""
@@ -269,7 +266,7 @@ else
     [ -z "$pkg_dir" ] && continue
     release_info "  Publishing $pkg_name@$pkg_version"
     cd "$REPO_ROOT/$pkg_dir"
-    pnpm publish --no-git-checks --tag "$DIST_TAG" --access public
+    publish_package_to_npm "$DIST_TAG" "$pkg_name" "$pkg_version"
   done <<< "$VERSIONED_PACKAGE_INFO"
   release_info "  ✓ Published all packages under dist-tag $DIST_TAG"
 fi
@@ -281,6 +278,8 @@ else
   release_info "==> Step 6/7: Confirming npm package availability and dist-tag integrity..."
   VERIFY_ATTEMPTS="${NPM_PUBLISH_VERIFY_ATTEMPTS:-12}"
   VERIFY_DELAY_SECONDS="${NPM_PUBLISH_VERIFY_DELAY_SECONDS:-5}"
+  REGISTRY_STATE_VERIFY_ATTEMPTS="${NPM_REGISTRY_STATE_VERIFY_ATTEMPTS:-12}"
+  REGISTRY_STATE_VERIFY_DELAY_SECONDS="${NPM_REGISTRY_STATE_VERIFY_DELAY_SECONDS:-5}"
   MISSING_PUBLISHED_PACKAGES=""
 
   while IFS=$'\t' read -r _pkg_dir pkg_name pkg_version; do
@@ -306,15 +305,25 @@ else
     --dist-tag "$DIST_TAG"
     --target-version "$TARGET_PUBLISH_VERSION"
   )
-  if [ "$allow_canary_latest" = true ]; then
-    verify_args+=(--allow-canary-latest)
-  fi
   while IFS=$'\t' read -r _pkg_dir pkg_name _pkg_version; do
     [ -z "$pkg_name" ] && continue
     verify_args+=(--package "$pkg_name")
   done <<< "$VERSIONED_PACKAGE_INFO"
 
-  node "$REPO_ROOT/scripts/verify-release-registry-state.mjs" "${verify_args[@]}"
+  release_info "  Waiting for npm dist-tags and package metadata to converge..."
+  if wait_for_release_registry_state \
+    "$REGISTRY_STATE_VERIFY_ATTEMPTS" \
+    "$REGISTRY_STATE_VERIFY_DELAY_SECONDS" \
+    "${verify_args[@]}"; then
+    :
+  else
+    verify_status=$?
+    if [ "$verify_status" -eq 2 ]; then
+      release_fail "publish completed, but registry verification failed immediately for ${TARGET_PUBLISH_VERSION}; dist-tag state is wrong or requires operator intervention"
+    fi
+
+    release_fail "publish completed, but npm dist-tags or registry metadata never converged for ${TARGET_PUBLISH_VERSION}"
+  fi
 fi
 
 release_info ""

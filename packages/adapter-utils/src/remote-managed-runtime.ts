@@ -1,10 +1,13 @@
 import path from "node:path";
+import { GIT_ARCHIVE_EXCLUDES } from "./git-workspace-sync.js";
 import {
   type SshRemoteExecutionSpec,
   prepareWorkspaceForSshExecution,
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
 } from "./ssh.js";
+import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
+import type { RuntimeProgressSink } from "./runtime-progress.js";
 
 export interface RemoteManagedRuntimeAsset {
   key: string;
@@ -19,7 +22,7 @@ export interface PreparedRemoteManagedRuntime {
   workspaceRemoteDir: string;
   runtimeRootDir: string;
   assetDirs: Record<string, string>;
-  restoreWorkspace(): Promise<void>;
+  restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -63,18 +66,34 @@ export function remoteExecutionSessionMatches(saved: unknown, current: SshRemote
 
 export async function prepareRemoteManagedRuntime(input: {
   spec: SshRemoteExecutionSpec;
+  runId: string;
   adapterKey: string;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
   assets?: RemoteManagedRuntimeAsset[];
+  // Upload progress sink. Threaded for the byte-counting transport rewrite; the
+  // child task wires it into the workspace/asset transfers.
+  onProgress?: RuntimeProgressSink;
 }): Promise<PreparedRemoteManagedRuntime> {
-  const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
+  const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
+  const workspaceRemoteDir = path.posix.join(
+    baseWorkspaceRemoteDir,
+    ".paperclip-runtime",
+    "runs",
+    input.runId,
+    "workspace",
+  );
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
 
-  await prepareWorkspaceForSshExecution({
+  const preparedWorkspace = await prepareWorkspaceForSshExecution({
     spec: input.spec,
     localDir: input.workspaceLocalDir,
     remoteDir: workspaceRemoteDir,
+    onProgress: input.onProgress,
+  });
+  const restoreExclude = preparedWorkspace.gitBacked ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"] : [".paperclip-runtime"];
+  const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
+    exclude: restoreExclude,
   });
 
   const assetDirs: Record<string, string> = {};
@@ -88,6 +107,8 @@ export async function prepareRemoteManagedRuntime(input: {
         remoteDir,
         followSymlinks: asset.followSymlinks,
         exclude: asset.exclude,
+        onProgress: input.onProgress,
+        progressLabel: asset.key,
       });
     }
   } catch (error) {
@@ -95,6 +116,9 @@ export async function prepareRemoteManagedRuntime(input: {
       spec: input.spec,
       localDir: input.workspaceLocalDir,
       remoteDir: workspaceRemoteDir,
+      baselineSnapshot,
+      restoreGitHistory: preparedWorkspace.gitBacked,
+      onProgress: input.onProgress,
     });
     throw error;
   }
@@ -105,11 +129,14 @@ export async function prepareRemoteManagedRuntime(input: {
     workspaceRemoteDir,
     runtimeRootDir,
     assetDirs,
-    restoreWorkspace: async () => {
+    restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
       await restoreWorkspaceFromSshExecution({
         spec: input.spec,
         localDir: input.workspaceLocalDir,
         remoteDir: workspaceRemoteDir,
+        baselineSnapshot,
+        restoreGitHistory: preparedWorkspace.gitBacked,
+        onProgress,
       });
     },
   };

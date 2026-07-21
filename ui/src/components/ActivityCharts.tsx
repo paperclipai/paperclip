@@ -15,15 +15,40 @@ function formatDayLabel(dateStr: string): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+function emptyRunDay(date: string): DashboardRunActivityDay {
+  return { date, succeeded: 0, failed: 0, recovered: 0, other: 0, total: 0, failedByErrorCode: {} };
+}
+
+const runSegmentColors = {
+  succeeded: "var(--hex-10b981)",
+  recovered: "var(--status-task-todo)",
+  failed: "var(--hex-ef4444)",
+  other: "var(--hex-737373)",
+} as const;
+
+// Compact per-day tooltip that also attributes failures to their error class.
+function runDayTooltip(entry: DashboardRunActivityDay): string {
+  const lines = [`${entry.date}: ${entry.total} run${entry.total === 1 ? "" : "s"}`];
+  if (entry.succeeded > 0) lines.push(`  succeeded: ${entry.succeeded}`);
+  if (entry.recovered > 0) lines.push(`  recovered: ${entry.recovered} (retry succeeded)`);
+  if (entry.failed > 0) {
+    lines.push(`  failed: ${entry.failed}`);
+    const codes = Object.entries(entry.failedByErrorCode ?? {}).sort((a, b) => b[1] - a[1]);
+    for (const [code, count] of codes) lines.push(`    ${code}: ${count}`);
+  }
+  if (entry.other > 0) lines.push(`  other: ${entry.other}`);
+  return lines.join("\n");
+}
+
 /* ---- Sub-components ---- */
 
 function DateLabels({ days }: { days: string[] }) {
   return (
-    <div className="flex gap-[3px] mt-1.5">
+    <div className="flex gap-(--sz-3px) mt-1.5">
       {days.map((day, i) => (
         <div key={day} className="flex-1 text-center">
           {(i === 0 || i === 6 || i === 13) ? (
-            <span className="text-[9px] text-muted-foreground tabular-nums">{formatDayLabel(day)}</span>
+            <span className="text-(length:--text-nano) text-muted-foreground tabular-nums">{formatDayLabel(day)}</span>
           ) : null}
         </div>
       ))}
@@ -35,7 +60,7 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
   return (
     <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
       {items.map(item => (
-        <span key={item.label} className="flex items-center gap-1 text-[9px] text-muted-foreground">
+        <span key={item.label} className="flex items-center gap-1 text-(length:--text-nano) text-muted-foreground">
           <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
           {item.label}
         </span>
@@ -49,7 +74,7 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
     <div className="border border-border rounded-lg p-4 space-y-3">
       <div>
         <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
-        {subtitle && <span className="text-[10px] text-muted-foreground/60">{subtitle}</span>}
+        {subtitle && <span className="text-(length:--text-nano) text-muted-foreground/60">{subtitle}</span>}
       </div>
       {children}
     </div>
@@ -65,14 +90,23 @@ type RunChartProps =
 function aggregateRuns(runs: readonly HeartbeatRun[] = []): DashboardRunActivityDay[] {
   const days = getLast14Days();
   const grouped = new Map<string, DashboardRunActivityDay>();
-  for (const day of days) grouped.set(day, { date: day, succeeded: 0, failed: 0, other: 0, total: 0 });
+  for (const day of days) grouped.set(day, emptyRunDay(day));
   for (const run of runs) {
     const day = new Date(run.createdAt).toISOString().slice(0, 10);
     const entry = grouped.get(day);
     if (!entry) continue;
-    if (run.status === "succeeded") entry.succeeded++;
-    else if (run.status === "failed" || run.status === "timed_out") entry.failed++;
-    else entry.other++;
+    if (run.status === "succeeded") {
+      entry.succeeded++;
+    } else if (run.status === "failed" || run.status === "timed_out") {
+      // A flat run list has no retry-chain linkage, so recovery can't be derived
+      // here (the company dashboard computes it server-side). Attribute the
+      // failure to its error class so the breakdown still renders.
+      entry.failed++;
+      const code = run.errorCode && run.errorCode.length > 0 ? run.errorCode : "unknown";
+      entry.failedByErrorCode[code] = (entry.failedByErrorCode[code] ?? 0) + 1;
+    } else {
+      entry.other++;
+    }
     entry.total++;
   }
   return Array.from(grouped.values());
@@ -91,23 +125,32 @@ export function RunActivityChart(props: RunChartProps) {
 
   const maxValue = Math.max(...activity.map(v => v.total), 1);
   const hasData = activity.some(v => v.total > 0);
+  const hasRecovered = activity.some(v => v.recovered > 0);
 
   if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
 
+  const legendItems = [
+    { color: runSegmentColors.succeeded, label: "Succeeded" },
+    ...(hasRecovered ? [{ color: runSegmentColors.recovered, label: "Recovered" }] : []),
+    { color: runSegmentColors.failed, label: "Failed" },
+    { color: runSegmentColors.other, label: "Other" },
+  ];
+
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-(--sz-3px) h-20">
         {days.map(day => {
-          const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
+          const entry = grouped.get(day) ?? emptyRunDay(day);
           const total = entry.total;
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} runs`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={runDayTooltip(entry)}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {entry.succeeded > 0 && <div className="bg-emerald-500" style={{ flex: entry.succeeded }} />}
-                  {entry.failed > 0 && <div className="bg-red-500" style={{ flex: entry.failed }} />}
-                  {entry.other > 0 && <div className="bg-neutral-500" style={{ flex: entry.other }} />}
+                  {entry.succeeded > 0 && <div style={{ flex: entry.succeeded, backgroundColor: runSegmentColors.succeeded }} />}
+                  {entry.recovered > 0 && <div style={{ flex: entry.recovered, backgroundColor: runSegmentColors.recovered }} />}
+                  {entry.failed > 0 && <div style={{ flex: entry.failed, backgroundColor: runSegmentColors.failed }} />}
+                  {entry.other > 0 && <div style={{ flex: entry.other, backgroundColor: runSegmentColors.other }} />}
                 </div>
               ) : (
                 <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
@@ -117,15 +160,16 @@ export function RunActivityChart(props: RunChartProps) {
         })}
       </div>
       <DateLabels days={days} />
+      <ChartLegend items={legendItems} />
     </div>
   );
 }
 
 const priorityColors: Record<string, string> = {
-  critical: "#ef4444",
-  high: "#f97316",
-  medium: "#eab308",
-  low: "#6b7280",
+  critical: "var(--hex-ef4444)",
+  high: "var(--hex-f97316)",
+  medium: "var(--hex-eab308)",
+  low: "var(--hex-6b7280)",
 };
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
@@ -144,11 +188,11 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">No tasks</p>;
 
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-(--sz-3px) h-20">
         {days.map(day => {
           const entry = grouped.get(day)!;
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
@@ -174,14 +218,21 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   );
 }
 
+// DECISION-SHEET.md B5: chart status colors re-pointed at the canonical
+// --status-task-* system (DESIGN.md principle 5 — an operator learns one
+// status vocabulary; badge, row, chart, and log agree). Previously an
+// independent palette (todo blue, in_progress violet, etc.). `backlog`
+// deliberately keeps --project-none (pre-B5, per user ruling); the
+// priority series and success-rate tints below are not status hues and
+// are left alone.
 const statusColors: Record<string, string> = {
-  todo: "#3b82f6",
-  in_progress: "#8b5cf6",
-  in_review: "#a855f7",
-  done: "#10b981",
-  blocked: "#ef4444",
-  cancelled: "#6b7280",
-  backlog: "#64748b",
+  todo: "var(--status-task-todo)",
+  in_progress: "var(--status-task-in_progress)",
+  in_review: "var(--status-task-in_review)",
+  done: "var(--status-task-done)",
+  blocked: "var(--status-task-blocked)",
+  cancelled: "var(--status-task-cancelled)",
+  backlog: "var(--project-none)",
 };
 
 const statusLabels: Record<string, string> = {
@@ -211,11 +262,11 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">No tasks</p>;
 
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-(--sz-3px) h-20">
         {days.map(day => {
           const entry = grouped.get(day)!;
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
@@ -225,7 +276,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
-                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "#6b7280" }} />
+                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "var(--hex-6b7280)" }} />
                   ) : null)}
                 </div>
               ) : (
@@ -236,7 +287,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: statusLabels[s] ?? s }))} />
+      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "var(--hex-6b7280)", label: statusLabels[s] ?? s }))} />
     </div>
   );
 }
@@ -251,13 +302,16 @@ export function SuccessRateChart(props: RunChartProps) {
 
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-(--sz-3px) h-20">
         {days.map(day => {
-          const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
-          const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;
-          const color = entry.total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
+          const entry = grouped.get(day) ?? emptyRunDay(day);
+          // Recovered runs ultimately succeeded, so they count toward the rate
+          // rather than dragging it down as failures.
+          const effectiveSucceeded = entry.succeeded + entry.recovered;
+          const rate = entry.total > 0 ? effectiveSucceeded / entry.total : 0;
+          const color = entry.total === 0 ? undefined : rate >= 0.8 ? "var(--hex-10b981)" : rate >= 0.5 ? "var(--hex-eab308)" : "var(--hex-ef4444)";
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${effectiveSucceeded}/${entry.total})`}>
               {entry.total > 0 ? (
                 <div style={{ height: `${rate * 100}%`, minHeight: 2, backgroundColor: color }} />
               ) : (

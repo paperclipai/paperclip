@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   companies,
   costEvents,
@@ -14,6 +15,7 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -29,9 +31,10 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000
 export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
-export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 1;
+export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS = 3;
 
-const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
+const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
@@ -53,6 +56,7 @@ type ProductivityReviewThresholds = {
   maxRefreshComments: number;
   creationWindowMs: number;
   maxCreationsPerWindow: number;
+  maxConsecutiveNoActionReviews: number;
 };
 
 type ProductivityReviewEvidence = {
@@ -176,6 +180,10 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
       overrides?.maxCreationsPerWindow ?? DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW,
       DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW,
     ),
+    maxConsecutiveNoActionReviews: readPositiveInteger(
+      overrides?.maxConsecutiveNoActionReviews ?? DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS,
+      DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS,
+    ),
   };
 }
 
@@ -250,7 +258,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(issues.companyId, companyId),
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           eq(issues.originId, sourceIssueId),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
       )
@@ -259,7 +267,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .then((rows) => rows[0] ?? null);
   }
 
-  async function findRecentResolvedProductivityReview(
+  async function findRecentTerminalProductivityReview(
     companyId: string,
     sourceIssueId: string,
     thresholds: ProductivityReviewThresholds,
@@ -274,7 +282,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(issues.companyId, companyId),
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           eq(issues.originId, sourceIssueId),
-          eq(issues.status, "done"),
+          inArray(issues.status, ["done", "cancelled"]),
           gt(issues.updatedAt, cutoff),
         ),
       )
@@ -298,12 +306,61 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(issues.companyId, companyId),
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           eq(issues.originId, sourceIssueId),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           sql`${issues.status} <> 'cancelled'`,
           sql`${issues.createdAt} >= ${cutoff.toISOString()}::timestamptz`,
         ),
       )
       .then((rows) => Number(rows[0]?.count ?? 0));
+  }
+
+  async function countConsecutiveNoActionProductivityReviews(
+    companyId: string,
+    sourceIssueId: string,
+    thresholds: ProductivityReviewThresholds,
+  ) {
+    const completedReviews = await db
+      .select({
+        createdAt: issues.createdAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          eq(issues.status, "done"),
+          visibleIssueCondition(),
+        ),
+      )
+      .orderBy(desc(issues.createdAt), desc(issues.id))
+      .limit(thresholds.maxConsecutiveNoActionReviews);
+
+    const earliestReviewCreatedAt = completedReviews.at(-1)?.createdAt;
+    if (!earliestReviewCreatedAt) return 0;
+    const sourceActions = await db
+      .select({ createdAt: activityLog.createdAt })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, sourceIssueId),
+          gte(activityLog.createdAt, earliestReviewCreatedAt),
+        ),
+      );
+
+    let streak = 0;
+    for (const [index, review] of completedReviews.entries()) {
+      const nextNewerReviewCreatedAt = completedReviews[index - 1]?.createdAt ?? null;
+      const sourceAction = sourceActions.some((activity) => {
+        if (activity.createdAt < review.createdAt) return false;
+        return !nextNewerReviewCreatedAt || activity.createdAt < nextNewerReviewCreatedAt;
+      });
+      if (sourceAction) break;
+      streak += 1;
+    }
+    return streak;
   }
 
   async function getRefreshCommentState(companyId: string, reviewIssueId: string) {
@@ -678,6 +735,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       return { kind: "creation_capped" as const, reviewIssueId: null };
     }
 
+    const consecutiveNoActionReviews = await countConsecutiveNoActionProductivityReviews(
+      evidence.sourceIssue.companyId,
+      evidence.sourceIssue.id,
+      opts.thresholds,
+    );
+    if (consecutiveNoActionReviews >= opts.thresholds.maxConsecutiveNoActionReviews) {
+      return { kind: "no_action_suppressed" as const, reviewIssueId: null };
+    }
+
     const ownerAgentId = await resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent);
     let review: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
@@ -691,7 +757,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         goalId: evidence.sourceIssue.goalId,
         billingCode: evidence.sourceIssue.billingCode,
         assigneeAgentId: ownerAgentId,
-        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(),
+        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
         originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
         originId: evidence.sourceIssue.id,
         originFingerprint: productivityReviewFingerprint(evidence.sourceIssue.id),
@@ -741,7 +807,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           issueId: review.id,
           sourceIssueId: evidence.sourceIssue.id,
           trigger: evidence.trigger,
-        }),
+        }, "status_only"),
         requestedByActorType: "system",
         requestedByActorId: "productivity_review",
         contextSnapshot: withRecoveryModelProfileHint({
@@ -751,7 +817,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           source: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
           sourceIssueId: evidence.sourceIssue.id,
           productivityReviewTrigger: evidence.trigger,
-        }),
+        }, "status_only"),
       });
     }
 
@@ -762,6 +828,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     now?: Date;
     companyId?: string;
     thresholds?: Partial<ProductivityReviewThresholds>;
+    issueCreatedAtGte?: Date | null;
   }) {
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
@@ -771,11 +838,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .where(
         and(
           opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
           sql`${issues.originKind} <> ${PRODUCTIVITY_REVIEW_ORIGIN_KIND}`,
+          opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
         ),
       )
       .orderBy(asc(issues.updatedAt), asc(issues.id))
@@ -788,6 +856,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       existing: 0,
       snoozed: 0,
       creationCapped: 0,
+      noActionSuppressed: 0,
       skipped: 0,
       failed: 0,
       reviewIssueIds: [] as string[],
@@ -804,7 +873,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         result.skipped += 1;
         continue;
       }
-      if (await findRecentResolvedProductivityReview(candidate.companyId, candidate.id, thresholds, now)) {
+      if (await findRecentTerminalProductivityReview(candidate.companyId, candidate.id, thresholds, now)) {
         result.snoozed += 1;
         continue;
       }
@@ -828,6 +897,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         if (outcome.kind === "created") result.created += 1;
         else if (outcome.kind === "updated") result.updated += 1;
         else if (outcome.kind === "creation_capped") result.creationCapped += 1;
+        else if (outcome.kind === "no_action_suppressed") result.noActionSuppressed += 1;
         else result.existing += 1;
         if (outcome.reviewIssueId) result.reviewIssueIds.push(outcome.reviewIssueId);
       } catch (err) {

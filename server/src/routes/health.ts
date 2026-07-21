@@ -4,8 +4,16 @@ import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
-import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
+import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
+import { isCloudManagedInstance } from "../middleware/auth.js";
 import { logger } from "../middleware/logger.js";
+import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../server-info.js";
+import {
+  inspectDatabaseBackupHealth,
+  type DatabaseBackupHealthStatus,
+  type DatabaseBackupHealthWarning,
+  type InspectDatabaseBackupHealthOptions,
+} from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
 
@@ -28,6 +36,27 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
   return timingSafeEqual(expected, provided);
 }
 
+function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): DatabaseBackupHealthWarning {
+  const messages: Record<DatabaseBackupHealthWarning["code"], string> = {
+    database_backup_check_failed: "Database backup health check failed.",
+    database_backup_last_failure: "Database backup failure marker is present.",
+    database_backup_missing: "No recent database backup was found.",
+    database_backup_stale: "Latest database backup is stale.",
+  };
+  return {
+    code: warning.code,
+    message: messages[warning.code],
+  };
+}
+
+function redactedDatabaseBackupHealth(databaseBackup: DatabaseBackupHealthStatus) {
+  return {
+    enabled: databaseBackup.enabled,
+    status: databaseBackup.status,
+    warnings: databaseBackup.warnings.map(redactedDatabaseBackupWarning),
+  };
+}
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -35,6 +64,8 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    serverInfo?: ServerInfoSnapshot;
+    databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -44,19 +75,59 @@ export function healthRoutes(
 ) {
   const router = Router();
 
+  router.post("/dev-server/restart", async (req, res) => {
+    const actorType = "actor" in req ? req.actor?.type : null;
+    if (opts.deploymentMode === "authenticated" && actorType !== "board") {
+      res.status(403).json({ error: "board_access_required" });
+      return;
+    }
+
+    const persistedDevServerStatus = readPersistedDevServerStatus();
+    if (!persistedDevServerStatus) {
+      res.status(404).json({ error: "dev_server_supervisor_unavailable" });
+      return;
+    }
+
+    const restartRequired =
+      persistedDevServerStatus.dirty ||
+      persistedDevServerStatus.changedPathCount > 0 ||
+      persistedDevServerStatus.pendingMigrations.length > 0;
+    if (!restartRequired) {
+      res.status(409).json({ error: "restart_not_required" });
+      return;
+    }
+
+    const written = writeDevServerRestartRequest({
+      requestedAt: new Date().toISOString(),
+      reason: "manual_restart_now",
+    });
+    if (!written) {
+      res.status(404).json({ error: "dev_server_supervisor_unavailable" });
+      return;
+    }
+
+    res.status(202).json({ status: "restart_requested" });
+  });
+
   router.get("/", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
     const exposeFullDetails = shouldExposeFullHealthDetails(
       actorType,
       opts.deploymentMode,
     );
+    // serverInfo (git SHA + process start) rides on the full-details responses
+    // only, so it reaches board/agent actors in authenticated mode or any caller
+    // in local_trusted dev — never anonymous authenticated callers. The
+    // enableServerInfoDebugView experimental flag gates the UI surface, not this
+    // already access-controlled field.
+    const serverInfo = opts.serverInfo ?? getServerInfoSnapshot();
     const exposeDevServerDetails =
       exposeFullDetails || hasDevServerStatusToken(req.get("x-paperclip-dev-server-status-token"));
 
     if (!db) {
       res.json(
         exposeFullDetails
-          ? { status: "ok", version: serverVersion }
+          ? { status: "ok", version: serverVersion, serverVersion: serverVersion, serverInfo }
           : { status: "ok", deploymentMode: opts.deploymentMode },
       );
       return;
@@ -69,14 +140,22 @@ export function healthRoutes(
       res.status(503).json({
         status: "unhealthy",
         version: serverVersion,
-        error: "database_unreachable"
+        serverVersion,
+        error: "database_unreachable",
+        ...(exposeFullDetails ? { serverInfo } : {}),
       });
       return;
     }
 
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
     let bootstrapInviteActive = false;
-    if (opts.deploymentMode === "authenticated") {
+    // Cloud-managed instances have no first-admin concept: the control
+    // plane owns identity and its trusted-header users are deliberately
+    // never instance_admin, so the role-count gate below would report
+    // bootstrap_pending forever and lock every managed tenant out at the
+    // claim screen. Self-hosted deployments (no tenant server token) are
+    // unaffected.
+    if (opts.deploymentMode === "authenticated" && !isCloudManagedInstance()) {
       const roleCount = await db
         .select({ count: count() })
         .from(instanceUserRoles)
@@ -119,12 +198,22 @@ export function healthRoutes(
       });
     }
 
+    const databaseBackup = opts.databaseBackupHealth
+      ? inspectDatabaseBackupHealth(opts.databaseBackupHealth)
+      : undefined;
+    const warnings = databaseBackup?.warnings.length ? databaseBackup.warnings : undefined;
+
     if (!exposeFullDetails) {
+      const redactedDatabaseBackup = databaseBackup ? redactedDatabaseBackupHealth(databaseBackup) : undefined;
+      const redactedWarnings = redactedDatabaseBackup?.warnings.length ? redactedDatabaseBackup.warnings : undefined;
       res.json({
         status: "ok",
         deploymentMode: opts.deploymentMode,
+        deploymentExposure: opts.deploymentExposure,
         bootstrapStatus,
         bootstrapInviteActive,
+        ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
+        ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
       });
       return;
@@ -133,6 +222,7 @@ export function healthRoutes(
     res.json({
       status: "ok",
       version: serverVersion,
+      serverVersion,
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
@@ -141,6 +231,9 @@ export function healthRoutes(
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
+      serverInfo,
+      ...(databaseBackup ? { databaseBackup } : {}),
+      ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),
     });
   });

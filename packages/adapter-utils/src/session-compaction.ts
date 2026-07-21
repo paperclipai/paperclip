@@ -37,9 +37,9 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
 };
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
-  "acpx_local",
   "claude_local",
   "codex_local",
+  "cursor_cloud",
   "cursor",
   "gemini_local",
   "hermes_local",
@@ -48,11 +48,6 @@ export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
 ]);
 
 export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement> = {
-  acpx_local: {
-    supportsSessionResume: true,
-    nativeContextManagement: "confirmed",
-    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
-  },
   claude_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",
@@ -62,6 +57,11 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",
     defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+  },
+  cursor_cloud: {
+    supportsSessionResume: true,
+    nativeContextManagement: "unknown",
+    defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
   },
   cursor: {
     supportsSessionResume: true,

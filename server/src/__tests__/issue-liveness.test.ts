@@ -152,6 +152,73 @@ describe("issue graph liveness classifier", () => {
     expect(findings).toEqual([]);
   });
 
+  it("detects an assigned backlog blocker leaf with no action path", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Parked assigned unblock work",
+          status: "backlog",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent(),
+        manager,
+        agent({ id: "blocker-agent", name: "Blocker Agent", reportsTo: managerId }),
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      identifier: "PAP-1703",
+      state: "blocked_by_assigned_backlog_issue",
+      recoveryIssueId: blockerId,
+      recommendedOwnerAgentId: "blocker-agent",
+      dependencyPath: [
+        expect.objectContaining({ issueId: blockedId }),
+        expect.objectContaining({ issueId: blockerId, status: "backlog" }),
+      ],
+      incidentKey: `harness_liveness:${companyId}:${blockedId}:blocked_by_assigned_backlog_issue:${blockerId}`,
+    });
+  });
+
+  it("does not flag an assigned backlog blocker that has an explicit waiting path", () => {
+    const backlogBlocker = issue({
+      id: blockerId,
+      identifier: "PAP-1704",
+      title: "Explicitly parked unblock work",
+      status: "backlog",
+      assigneeAgentId: "blocker-agent",
+    });
+    const baseInput = {
+      issues: [issue(), backlogBlocker],
+      relations: blocks,
+      agents: [
+        agent(),
+        manager,
+        agent({ id: "blocker-agent", name: "Blocker Agent", reportsTo: managerId }),
+      ],
+    };
+
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      issues: [issue(), { ...backlogBlocker, assigneeAgentId: null, assigneeUserId: "board-user-1" }],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      activeRuns: [{ companyId, issueId: blockerId, agentId: "blocker-agent", status: "running" }],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      openRecoveryIssues: [{ companyId, issueId: blockerId, status: "todo" }],
+    })).toEqual([]);
+  });
+
   it("does not flag an unassigned blocker that already has an active execution path", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [
@@ -204,6 +271,80 @@ describe("issue graph liveness classifier", () => {
       agents: [agent(), manager, agent({ id: "blocker-agent", name: "Paused", status: "paused" })],
     });
     expect(paused[0]?.state).toBe("blocked_by_uninvokable_assignee");
+  });
+
+  it("detects a cancelled blocker on an assigned todo source", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({ status: "todo" }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Cancelled unblock work",
+          status: "cancelled",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      state: "blocked_by_cancelled_issue",
+      recoveryIssueId: blockerId,
+    });
+  });
+
+  it("prefers the blocker finding for an in-review source with a cancelled blocker", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({ status: "in_review" }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Cancelled unblock work",
+          status: "cancelled",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.state).toBe("blocked_by_cancelled_issue");
+  });
+
+  it("detects blocker assignees under terminated org ancestors as uninvokable", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Invalid tree unblock work",
+          status: "todo",
+          assigneeAgentId: "qa-2",
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent(),
+        manager,
+        agent({ id: "qa-2", name: "QA 2", status: "active", reportsTo: "cto-2" }),
+        agent({ id: "cto-2", name: "CTO 2", status: "terminated", reportsTo: "ceo-2" }),
+        agent({ id: "ceo-2", name: "CEO 2", status: "terminated", reportsTo: null }),
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      state: "blocked_by_uninvokable_assignee",
+      reason: "PAP-1703 is blocked by PAP-1704, but its assignee is in an invalid org chain.",
+      recommendedOwnerAgentId: managerId,
+    });
   });
 
   it("detects invalid in_review execution participant", () => {
@@ -393,6 +534,41 @@ describe("issue graph liveness classifier", () => {
 
       expect(findings, testCase.name).toEqual([]);
     }
+  });
+
+  it("still flags a stalled in_review issue when its blocker has an active run", () => {
+    const reviewIssueId = "review-1";
+    const activeBlockerId = "active-blocker-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        }),
+        issue({
+          id: activeBlockerId,
+          identifier: "PAP-2280",
+          title: "Active blocker",
+          status: "in_progress",
+          assigneeAgentId: coderId,
+        }),
+      ],
+      relations: [{ companyId, blockerIssueId: activeBlockerId, blockedIssueId: reviewIssueId }],
+      agents: [agent(), manager],
+      activeRuns: [{ companyId, issueId: activeBlockerId, agentId: coderId, status: "running" }],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: reviewIssueId,
+      state: "in_review_without_action_path",
+      recoveryIssueId: reviewIssueId,
+    });
   });
 
   it("ignores cross-company waiting paths for stalled in_review issues", () => {

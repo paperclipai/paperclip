@@ -10,6 +10,7 @@ import {
   usePluginToast,
   type PluginCommentAnnotationProps,
   type PluginCommentContextMenuItemProps,
+  type PluginCompanySettingsPageProps,
   type PluginDetailTabProps,
   type PluginPageProps,
   type PluginProjectSidebarItemProps,
@@ -421,7 +422,7 @@ function hostFetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   });
 }
 
-function useSettingsConfig() {
+function useSettingsConfig(companyId: string | null) {
   const [configJson, setConfigJson] = useState<Record<string, unknown>>({ ...DEFAULT_CONFIG });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -429,8 +430,15 @@ function useSettingsConfig() {
 
   useEffect(() => {
     let cancelled = false;
+    if (!companyId) {
+      setLoading(false);
+      setError("Select a company before loading plugin config.");
+      return () => {
+        cancelled = true;
+      };
+    }
     setLoading(true);
-    hostFetchJson<{ configJson?: Record<string, unknown> | null } | null>(`/api/plugins/${PLUGIN_ID}/config`)
+    hostFetchJson<{ configJson?: Record<string, unknown> | null } | null>(`/api/plugins/${PLUGIN_ID}/config?companyId=${encodeURIComponent(companyId)}`)
       .then((result) => {
         if (cancelled) return;
         setConfigJson({ ...DEFAULT_CONFIG, ...(result?.configJson ?? {}) });
@@ -446,14 +454,15 @@ function useSettingsConfig() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [companyId]);
 
   async function save(nextConfig: Record<string, unknown>) {
+    if (!companyId) throw new Error("Select a company before saving plugin config.");
     setSaving(true);
     try {
       await hostFetchJson(`/api/plugins/${PLUGIN_ID}/config`, {
         method: "POST",
-        body: JSON.stringify({ configJson: nextConfig }),
+        body: JSON.stringify({ companyId, configJson: nextConfig }),
       });
       setConfigJson(nextConfig);
       setError(null);
@@ -2102,7 +2111,7 @@ export function KitchenSinkPage({ context }: PluginPageProps) {
 }
 
 export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
-  const { configJson, setConfigJson, loading, saving, error, save } = useSettingsConfig();
+  const { configJson, setConfigJson, loading, saving, error, save } = useSettingsConfig(context.companyId);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
 
   function setField(key: string, value: unknown) {
@@ -2233,6 +2242,33 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
         {savedMessage ? <span style={{ fontSize: "12px", opacity: 0.7 }}>{savedMessage}</span> : null}
       </div>
     </form>
+  );
+}
+
+export function KitchenSinkCompanySettingsPage({ context }: PluginCompanySettingsPageProps) {
+  const hostNavigation = useHostNavigation();
+  const overview = usePluginOverview(context.companyId);
+  const href = hostNavigation.resolveHref("/company/settings/kitchen-sink");
+
+  return (
+    <div style={layoutStack}>
+      <Section title="Company Settings Slot">
+        <div style={subtleCardStyle}>
+          <div style={{ display: "grid", gap: "8px" }}>
+            <strong>Mounted inside company settings</strong>
+            <div style={mutedTextStyle}>
+              This fixture proves a ready plugin can add a settings sidebar item and render with company context.
+            </div>
+            <JsonBlock value={{
+              companyId: context.companyId,
+              companyPrefix: context.companyPrefix,
+              route: href,
+              pluginId: overview.data?.pluginId ?? PLUGIN_ID,
+            }} />
+          </div>
+        </div>
+      </Section>
+    </div>
   );
 }
 

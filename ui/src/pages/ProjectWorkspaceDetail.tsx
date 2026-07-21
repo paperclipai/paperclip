@@ -1,12 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "@/lib/router";
+import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
 import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { Tabs } from "@/components/ui/tabs";
 import { ChoosePathButton } from "../components/PathInstructionsModal";
+import { MissingPluginTabPlaceholder } from "../components/MissingPluginTabPlaceholder";
 import { projectsApi } from "../api/projects";
+import { PageTabBar } from "../components/PageTabBar";
+import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import {
   buildWorkspaceRuntimeControlSections,
   WorkspaceRuntimeControls,
@@ -35,6 +40,36 @@ type WorkspaceFormState = {
 
 type ProjectWorkspaceSourceType = ProjectWorkspace["sourceType"];
 type ProjectWorkspaceVisibility = ProjectWorkspace["visibility"];
+type ProjectWorkspaceBaseTab = "configuration";
+type ProjectWorkspacePluginTab = `plugin:${string}`;
+type ProjectWorkspaceTab = ProjectWorkspaceBaseTab | ProjectWorkspacePluginTab;
+type OrderedProjectWorkspaceTabItem = {
+  value: ProjectWorkspaceTab;
+  label: string;
+  order: number;
+};
+
+const DEFAULT_PLUGIN_DETAIL_TAB_ORDER = 100;
+const PROJECT_WORKSPACE_BASE_TAB_ITEMS: OrderedProjectWorkspaceTabItem[] = [
+  { value: "configuration", label: "Configuration", order: 30 },
+];
+
+function isProjectWorkspacePluginTab(value: string | null): value is ProjectWorkspacePluginTab {
+  return typeof value === "string" && value.startsWith("plugin:");
+}
+
+function projectWorkspaceTabFromSearch(search: string): ProjectWorkspaceTab {
+  const tab = new URLSearchParams(search).get("tab");
+  if (isProjectWorkspacePluginTab(tab)) return tab;
+  return "configuration";
+}
+
+function orderProjectWorkspaceTabItems(items: OrderedProjectWorkspaceTabItem[]) {
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => left.item.order - right.item.order || left.index - right.index)
+    .map(({ item }) => item);
+}
 
 const SOURCE_TYPE_OPTIONS: Array<{ value: ProjectWorkspaceSourceType; label: string; description: string }> = [
   { value: "local_path", label: "Local git checkout", description: "A local path Paperclip can use directly." },
@@ -192,8 +227,8 @@ function Field({
   return (
     <label className="space-y-1.5">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-        <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{label}</span>
-        {hint ? <span className="text-[11px] leading-relaxed text-muted-foreground sm:text-right">{hint}</span> : null}
+        <span className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{label}</span>
+        {hint ? <span className="text-(length:--text-micro) leading-relaxed text-muted-foreground sm:text-right">{hint}</span> : null}
       </div>
       {children}
     </label>
@@ -217,6 +252,7 @@ export function ProjectWorkspaceDetail() {
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [form, setForm] = useState<WorkspaceFormState | null>(null);
@@ -224,6 +260,7 @@ export function ProjectWorkspaceDetail() {
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
   const routeProjectRef = projectId ?? "";
   const routeWorkspaceId = workspaceId ?? "";
+  const activeTab = useMemo(() => projectWorkspaceTabFromSearch(location.search), [location.search]);
 
   const routeCompanyId = useMemo(() => {
     if (!companyPrefix) return null;
@@ -247,6 +284,29 @@ export function ProjectWorkspaceDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const initialState = useMemo(() => (workspace ? formStateFromWorkspace(workspace) : null), [workspace]);
   const isDirty = Boolean(form && initialState && JSON.stringify(form) !== JSON.stringify(initialState));
+  const {
+    slots: pluginDetailSlots,
+    isLoading: pluginDetailSlotsLoading,
+    errorMessage: pluginDetailSlotsError,
+  } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "project_workspace",
+    companyId: project?.companyId ?? null,
+    enabled: Boolean(project?.companyId),
+  });
+  const pluginTabItems = useMemo(
+    () => pluginDetailSlots.map((slot) => ({
+      value: `plugin:${slot.pluginKey}:${slot.id}` as ProjectWorkspacePluginTab,
+      label: slot.displayName,
+      order: slot.order ?? DEFAULT_PLUGIN_DETAIL_TAB_ORDER,
+      slot,
+    })),
+    [pluginDetailSlots],
+  );
+  const tabItems = useMemo(
+    () => orderProjectWorkspaceTabItems([...PROJECT_WORKSPACE_BASE_TAB_ITEMS, ...pluginTabItems]),
+    [pluginTabItems],
+  );
 
   useEffect(() => {
     if (!project?.companyId || project.companyId === selectedCompanyId) return;
@@ -272,8 +332,8 @@ export function ProjectWorkspaceDetail() {
   useEffect(() => {
     if (!project) return;
     if (routeProjectRef === canonicalProjectRef) return;
-    navigate(projectWorkspaceUrl(project, routeWorkspaceId), { replace: true });
-  }, [project, routeProjectRef, canonicalProjectRef, routeWorkspaceId, navigate]);
+    navigate(`${projectWorkspaceUrl(project, routeWorkspaceId)}${location.search}`, { replace: true });
+  }, [project, routeProjectRef, canonicalProjectRef, routeWorkspaceId, location.search, navigate]);
 
   const invalidateProject = () => {
     if (!project) return;
@@ -317,9 +377,9 @@ export function ProjectWorkspaceDetail() {
         request.action === "run"
           ? "Workspace job completed."
           : request.action === "stop"
-            ? "Workspace service stopped. Issue execution is not paused."
+            ? "Workspace service stopped. Task execution is not paused."
             : request.action === "restart"
-              ? "Workspace service restarted. Issue execution is not paused."
+              ? "Workspace service restarted. Task execution is not paused."
               : "Workspace service started.",
       );
     },
@@ -363,6 +423,15 @@ export function ProjectWorkspaceDetail() {
   };
 
   const sourceTypeDescription = SOURCE_TYPE_OPTIONS.find((option) => option.value === form.sourceType)?.description ?? null;
+  const handleTabChange = (tab: ProjectWorkspaceTab) => {
+    const workspacePath = projectWorkspaceUrl(project, routeWorkspaceId);
+    if (isProjectWorkspacePluginTab(tab)) {
+      navigate(`${workspacePath}?tab=${encodeURIComponent(tab)}`);
+      return;
+    }
+    navigate(workspacePath);
+  };
+  const activePluginTab = pluginTabItems.find((item) => item.value === activeTab) ?? null;
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -373,45 +442,53 @@ export function ProjectWorkspaceDetail() {
             Back to workspaces
           </Link>
         </Button>
-        <div className="inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
-          {workspace.isPrimary ? "Primary workspace" : "Secondary workspace"}
-        </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.9fr)]">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-2">
+          <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+            Project workspace
+          </div>
+          <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
+        </div>
+        {!workspace.isPrimary ? (
+          <Button
+            variant="outline"
+            className="w-full sm:w-auto"
+            disabled={setPrimaryWorkspace.isPending}
+            onClick={() => setPrimaryWorkspace.mutate()}
+          >
+            {setPrimaryWorkspace.isPending
+              ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              : <Check className="mr-2 h-4 w-4" />}
+            Make primary
+          </Button>
+        ) : (
+          <div className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300 sm:max-w-sm">
+            <Sparkles className="h-4 w-4" />
+            This is the project’s primary codebase workspace.
+          </div>
+        )}
+      </div>
+
+      <Tabs value={activeTab} onValueChange={(value) => handleTabChange(value as ProjectWorkspaceTab)}>
+        <PageTabBar
+          items={tabItems.map((item) => ({ value: item.value, label: item.label }))}
+          align="start"
+          value={activeTab}
+          onValueChange={(value) => handleTabChange(value as ProjectWorkspaceTab)}
+        />
+      </Tabs>
+
+      {activeTab === "configuration" ? (
+      <div className="grid gap-6 lg:grid-cols-(--gtc-53)">
         <div className="space-y-6">
-          <div className="rounded-2xl border border-border bg-card p-5">
-            <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-              <div className="space-y-2">
-                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                  Project workspace
-                </div>
-                <h1 className="text-2xl font-semibold">{workspace.name}</h1>
-                <p className="max-w-2xl text-sm text-muted-foreground">
-                  Configure the concrete workspace Paperclip attaches to this project. These values drive per-workspace
-                  checkout behavior, default runtime services for child execution workspaces, and let you override setup
-                  or cleanup commands when one workspace needs special handling.
-                </p>
-              </div>
-              {!workspace.isPrimary ? (
-                <Button
-                  variant="outline"
-                  className="w-full sm:w-auto"
-                  disabled={setPrimaryWorkspace.isPending}
-                  onClick={() => setPrimaryWorkspace.mutate()}
-                >
-                  {setPrimaryWorkspace.isPending
-                    ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    : <Check className="mr-2 h-4 w-4" />}
-                  Make primary
-                </Button>
-              ) : (
-                <div className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300 sm:max-w-sm">
-                  <Sparkles className="h-4 w-4" />
-                  This is the project’s primary codebase workspace.
-                </div>
-              )}
-            </div>
+          <Card className="block p-5">
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Configure the concrete workspace Paperclip attaches to this project. These values drive per-workspace
+              checkout behavior, default runtime services for child execution workspaces, and let you override setup
+              or cleanup commands when one workspace needs special handling.
+            </p>
 
             <Separator className="my-5" />
 
@@ -455,7 +532,7 @@ export function ProjectWorkspaceDetail() {
                 </select>
               </Field>
 
-              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="grid gap-4 md:grid-cols-(--gtc-13)">
                 <Field label="Local path">
                   <input
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
@@ -583,13 +660,13 @@ export function ProjectWorkspaceDetail() {
               {!errorMessage && runtimeActionMessage ? <p className="text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
               {!errorMessage && !isDirty ? <p className="text-sm text-muted-foreground">No unsaved changes.</p> : null}
             </div>
-          </div>
+          </Card>
         </div>
 
         <div className="space-y-6">
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <Card className="block p-5">
             <div className="space-y-1">
-              <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace facts</div>
+              <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace facts</div>
               <h2 className="text-lg font-semibold">Current state</h2>
             </div>
             <Separator className="my-4" />
@@ -614,12 +691,12 @@ export function ProjectWorkspaceDetail() {
             </DetailRow>
             <DetailRow label="Default ref">{workspace.defaultRef ?? "None"}</DetailRow>
             <DetailRow label="Updated">{new Date(workspace.updatedAt).toLocaleString()}</DetailRow>
-          </div>
+          </Card>
 
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <Card className="block p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-1">
-                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
+                <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace commands</div>
                 <h2 className="text-lg font-semibold">Services and jobs</h2>
                 <p className="text-sm text-muted-foreground">
                   Long-running services stay supervised here, while one-shot jobs run on demand against this workspace. Execution workspaces inherit this config unless they override it.
@@ -640,9 +717,35 @@ export function ProjectWorkspaceDetail() {
               disabledHint="Project workspaces need a working directory before local commands can run, and services also need runtime config."
               onAction={(request) => controlRuntimeServices.mutate(request)}
             />
-          </div>
+          </Card>
         </div>
       </div>
+      ) : null}
+
+      {isProjectWorkspacePluginTab(activeTab) ? (
+        activePluginTab ? (
+          <PluginSlotMount
+            slot={activePluginTab.slot}
+            context={{
+              companyId: project.companyId,
+              companyPrefix: companyPrefix ?? null,
+              projectId: project.id,
+              entityId: workspace.id,
+              entityType: "project_workspace",
+            }}
+            missingBehavior="placeholder"
+          />
+        ) : pluginDetailSlotsLoading || pluginDetailSlotsError ? (
+          <div className="rounded-lg border border-dashed border-border bg-background px-4 py-8 text-sm text-muted-foreground">
+            {pluginDetailSlotsError ? pluginDetailSlotsError : "Loading workspace plugin..."}
+          </div>
+        ) : (
+          <MissingPluginTabPlaceholder
+            defaultTabHref={`${projectWorkspaceUrl(project, routeWorkspaceId)}?tab=configuration`}
+            defaultTabLabel="Back to configuration"
+          />
+        )
+      ) : null}
     </div>
   );
 }

@@ -28,7 +28,7 @@ const {
   })),
   ensureCommandResolvable: vi.fn(async () => undefined),
   resolveCommandForLogs: vi.fn(async () => "ssh://fixture@127.0.0.1:2222/remote/workspace :: agent"),
-  prepareWorkspaceForSshExecution: vi.fn(async () => undefined),
+  prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   runSshCommand: vi.fn(async () => ({
     stdout: "/home/agent",
@@ -103,6 +103,7 @@ describe("cursor remote execution", () => {
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(alternateWorkspaceDir, { recursive: true });
 
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-1/workspace";
     const result = await execute({
       runId: "run-1",
       agent: {
@@ -158,19 +159,19 @@ describe("cursor remote execution", () => {
 
     expect(result.sessionParams).toMatchObject({
       sessionId: "cursor-session-1",
-      cwd: "/remote/workspace",
+      cwd: managedRemoteWorkspace,
       remoteExecution: {
         transport: "ssh",
         host: "127.0.0.1",
         port: 2222,
         username: "fixture",
-        remoteCwd: "/remote/workspace",
+        remoteCwd: managedRemoteWorkspace,
       },
     });
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
-      remoteDir: "/remote/workspace/.paperclip-runtime/cursor/skills",
+      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/cursor/skills`,
       followSymlinks: true,
     }));
     expect(runSshCommand).toHaveBeenCalledWith(
@@ -182,12 +183,12 @@ describe("cursor remote execution", () => {
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
     expect(call?.[2]).toContain("--workspace");
-    expect(call?.[2]).toContain("/remote/workspace");
-    expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe("/remote/workspace");
+    expect(call?.[2]).toContain(managedRemoteWorkspace);
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
       {
         workspaceId: "workspace-1",
-        cwd: "/remote/workspace",
+        cwd: managedRemoteWorkspace,
         repoUrl: "https://github.com/paperclipai/paperclip.git",
         repoRef: "main",
       },
@@ -199,7 +200,7 @@ describe("cursor remote execution", () => {
     ]);
     expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
     expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
-    expect(call?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
+    expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
   });
@@ -210,6 +211,7 @@ describe("cursor remote execution", () => {
     const workspaceDir = path.join(rootDir, "workspace");
     await mkdir(workspaceDir, { recursive: true });
 
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-resume/workspace";
     await execute({
       runId: "run-ssh-resume",
       agent: {
@@ -223,13 +225,13 @@ describe("cursor remote execution", () => {
         sessionId: "session-123",
         sessionParams: {
           sessionId: "session-123",
-          cwd: "/remote/workspace",
+          cwd: managedRemoteWorkspace,
           remoteExecution: {
             transport: "ssh",
             host: "127.0.0.1",
             port: 2222,
             username: "fixture",
-            remoteCwd: "/remote/workspace",
+            remoteCwd: managedRemoteWorkspace,
           },
         },
         sessionDisplayId: "session-123",

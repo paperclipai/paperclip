@@ -10,6 +10,22 @@ const CODEX_TRANSIENT_UPSTREAM_RE =
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+const CODEX_PROVIDER_QUOTA_RE =
+  /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
+const CODEX_REFRESH_TOKEN_REUSED_RE =
+  /(?:refresh[_\s-]?token[_\s-]?reused|refresh token (?:has )?already been used|token reuse detected)/i;
+const CODEX_REFRESH_TOKEN_EXPIRED_RE =
+  /(?:refresh[_\s-]?token[_\s-]?expired|refresh token (?:has )?expired|expired refresh token)/i;
+const CODEX_REFRESH_TOKEN_INVALIDATED_RE =
+  /(?:refresh[_\s-]?token[_\s-]?(?:invalidated|revoked|invalid)|refresh token (?:has been )?(?:invalidated|revoked|invalid)|invalid refresh token|missing bearer)/i;
+const CODEX_OAUTH_INVALID_GRANT_RE = /\binvalid_grant\b/i;
+const CODEX_CONTEXTUAL_REFRESH_AUTH_INVALIDATED_RE =
+  /(?:(?:oauth|refresh|access[_\s-]?token|bearer|credential).{0,80}(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b)|(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b).{0,80}(?:oauth|refresh|access[_\s-]?token|bearer|credential))/i;
+
+export type CodexAuthRefreshFailureClass =
+  | "refresh_token_reused"
+  | "refresh_token_expired"
+  | "refresh_token_invalidated";
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
@@ -68,6 +84,7 @@ export function parseCodexJsonl(stdout: string) {
     sessionId,
     summary: finalMessage?.trim() ?? "",
     usage,
+    usageBasis: "per_run" as const,
     errorMessage,
   };
 }
@@ -78,7 +95,7 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
-  return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path|no rollout found for thread id/i.test(
+  return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path|state db returned stale rollout path|no rollout found for thread id/i.test(
     haystack,
   );
 }
@@ -98,6 +115,21 @@ function buildCodexErrorHaystack(input: {
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
+}
+
+export function classifyCodexAuthRefreshFailure(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): CodexAuthRefreshFailureClass | null {
+  const haystack = buildCodexErrorHaystack(input);
+
+  if (CODEX_REFRESH_TOKEN_REUSED_RE.test(haystack)) return "refresh_token_reused";
+  if (CODEX_REFRESH_TOKEN_EXPIRED_RE.test(haystack)) return "refresh_token_expired";
+  if (CODEX_REFRESH_TOKEN_INVALIDATED_RE.test(haystack)) return "refresh_token_invalidated";
+  if (CODEX_OAUTH_INVALID_GRANT_RE.test(haystack)) return "refresh_token_invalidated";
+  if (CODEX_CONTEXTUAL_REFRESH_AUTH_INVALIDATED_RE.test(haystack)) return "refresh_token_invalidated";
+  return null;
 }
 
 function readTimeZoneParts(date: Date, timeZone: string) {
@@ -252,10 +284,18 @@ export function isCodexTransientUpstreamError(input: {
 }): boolean {
   const haystack = buildCodexErrorHaystack(input);
 
-  if (extractCodexRetryNotBefore(input) != null) return true;
+  if (isCodexProviderQuotaError(input)) return false;
   if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
   // Keep automatic retries scoped to the observed remote-compaction/high-demand
-  // failure shape, plus explicit usage-limit windows that tell us when retrying
-  // becomes safe again.
+  // failure shape.
   return CODEX_REMOTE_COMPACTION_RE.test(haystack) || /high\s+demand|temporary\s+errors/i.test(haystack);
+}
+
+export function isCodexProviderQuotaError(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildCodexErrorHaystack(input);
+  return CODEX_PROVIDER_QUOTA_RE.test(haystack) || extractCodexRetryNotBefore(input) != null;
 }

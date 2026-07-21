@@ -7,10 +7,13 @@ import {
   agents,
   companies,
   createDb,
+  documentRevisions,
+  documents,
   issues,
   pluginManagedResources,
   plugins,
   projects,
+  routineDocuments,
   routineRuns,
   routineTriggers,
   routines,
@@ -108,7 +111,10 @@ describeEmbeddedPostgres("plugin-managed routines", () => {
   afterEach(async () => {
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
+    await db.delete(routineDocuments);
     await db.delete(routines);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(issues);
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
@@ -130,6 +136,7 @@ describeEmbeddedPostgres("plugin-managed routines", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix: issuePrefix(companyId),
+      defaultResponsibleUserId: "responsible-user",
     });
     await db.insert(plugins).values({
       id: pluginId,

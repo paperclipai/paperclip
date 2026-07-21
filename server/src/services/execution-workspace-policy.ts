@@ -7,7 +7,22 @@ import type {
 } from "@paperclipai/shared";
 import { asString, parseObject } from "../adapters/utils.js";
 
-type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing">;
+export type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing">;
+
+export const WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE = "workspace_worktree_requires_project";
+export const WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION =
+  "Attach a project to the task, or bind a reusable execution workspace, then retry.";
+export const WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE =
+  `This task is set to run in an isolated git worktree, but it has no project and no reusable execution workspace to create the worktree from. ${WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION}`;
+
+type WorkspaceStrategyType = ExecutionWorkspaceStrategy["type"];
+
+export type UnrunnableWorktreeIssueRef = {
+  projectId?: string | null;
+  projectWorkspaceId?: string | null;
+  executionWorkspaceId?: string | null;
+  executionWorkspacePreference?: string | null;
+};
 
 function cloneRecord(value: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
   if (!value) return null;
@@ -30,6 +45,58 @@ function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrate
   };
 }
 
+export function resolveEffectiveWorkspaceStrategyType(
+  mode: ParsedExecutionWorkspaceMode,
+  config: Record<string, unknown> | null | undefined,
+): WorkspaceStrategyType {
+  const workspaceStrategy = parseObject(config?.workspaceStrategy);
+  const type = asString(workspaceStrategy.type, "");
+  if (type === "project_primary" || type === "git_worktree" || type === "adapter_managed" || type === "cloud_sandbox") {
+    return type;
+  }
+  // Default mirrors workspace-runtime.ts realizeExecutionWorkspace: missing type -> "project_primary".
+  // agent_default is a metadata-only mode that never creates a worktree, so it keeps "adapter_managed".
+  return mode === "agent_default" ? "adapter_managed" : "project_primary";
+}
+
+export function resolvePinnedIssueWorkspaceStrategyType(input: {
+  mode: ParsedExecutionWorkspaceMode;
+  issueSettings: IssueExecutionWorkspaceSettings | null;
+}): WorkspaceStrategyType {
+  const strategyType = input.issueSettings?.workspaceStrategy?.type;
+  if (
+    strategyType === "project_primary" ||
+    strategyType === "git_worktree" ||
+    strategyType === "adapter_managed" ||
+    strategyType === "cloud_sandbox"
+  ) {
+    return strategyType;
+  }
+  // When no explicit strategy type is set, mirror the runtime default (project_primary for most
+  // modes; adapter_managed for agent_default). Mode alone never implies git_worktree.
+  return input.mode === "agent_default" ? "adapter_managed" : "project_primary";
+}
+
+export function hasReusableExecutionWorkspaceBinding(issue: UnrunnableWorktreeIssueRef): boolean {
+  return Boolean(issue.executionWorkspaceId && issue.executionWorkspacePreference === "reuse_existing");
+}
+
+export function isUnrunnableWorktreeCombo(input: {
+  issue: UnrunnableWorktreeIssueRef;
+  resolvedMode: ParsedExecutionWorkspaceMode;
+  resolvedStrategy: string | null | undefined;
+  reusableExecutionWorkspaceAvailable?: boolean | null;
+  hasResolvablePriorSessionWorkspace?: boolean | null;
+}): boolean {
+  if (input.resolvedMode !== "isolated_workspace" && input.resolvedMode !== "operator_branch") return false;
+  if (input.resolvedStrategy !== "git_worktree") return false;
+  if (input.issue.projectId || input.issue.projectWorkspaceId) return false;
+  const hasReusableWorkspace =
+    input.reusableExecutionWorkspaceAvailable ?? hasReusableExecutionWorkspaceBinding(input.issue);
+  if (hasReusableWorkspace) return false;
+  return input.hasResolvablePriorSessionWorkspace !== true;
+}
+
 export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecutionWorkspacePolicy | null {
   const parsed = parseObject(raw);
   if (Object.keys(parsed).length === 0) return null;
@@ -38,7 +105,6 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
   const defaultMode = asString(parsed.defaultMode, "");
   const defaultProjectWorkspaceId =
     typeof parsed.defaultProjectWorkspaceId === "string" ? parsed.defaultProjectWorkspaceId : undefined;
-  const environmentId = typeof parsed.environmentId === "string" ? parsed.environmentId : undefined;
   const allowIssueOverride =
     typeof parsed.allowIssueOverride === "boolean" ? parsed.allowIssueOverride : undefined;
   const normalizedDefaultMode = (() => {
@@ -59,7 +125,6 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(normalizedDefaultMode ? { defaultMode: normalizedDefaultMode } : {}),
     ...(allowIssueOverride !== undefined ? { allowIssueOverride } : {}),
     ...(defaultProjectWorkspaceId ? { defaultProjectWorkspaceId } : {}),
-    ...(environmentId !== undefined ? { environmentId } : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
@@ -76,6 +141,9 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(parsed.cleanupPolicy && typeof parsed.cleanupPolicy === "object" && !Array.isArray(parsed.cleanupPolicy)
       ? { cleanupPolicy: { ...(parsed.cleanupPolicy as Record<string, unknown>) } }
       : {}),
+    ...(parsed.authorizationPolicy && typeof parsed.authorizationPolicy === "object" && !Array.isArray(parsed.authorizationPolicy)
+      ? { authorizationPolicy: { ...(parsed.authorizationPolicy as Record<string, unknown>) } }
+      : {}),
   };
 }
 
@@ -87,7 +155,14 @@ export function gateProjectExecutionWorkspacePolicy(
   return projectPolicy;
 }
 
-export function parseIssueExecutionWorkspaceSettings(raw: unknown): IssueExecutionWorkspaceSettings | null {
+type ParseIssueExecutionWorkspaceSettingsOptions = {
+  includeEnvironmentId?: boolean;
+};
+
+export function parseIssueExecutionWorkspaceSettings(
+  raw: unknown,
+  options: ParseIssueExecutionWorkspaceSettingsOptions = {},
+): IssueExecutionWorkspaceSettings | null {
   const parsed = parseObject(raw);
   if (Object.keys(parsed).length === 0) return null;
   const workspaceStrategy = parseExecutionWorkspaceStrategy(parsed.workspaceStrategy);
@@ -111,7 +186,9 @@ export function parseIssueExecutionWorkspaceSettings(raw: unknown): IssueExecuti
     ...(normalizedMode
       ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] }
       : {}),
-    ...(typeof parsed.environmentId === "string" ? { environmentId: parsed.environmentId } : {}),
+    ...(options.includeEnvironmentId && (typeof parsed.environmentId === "string" || parsed.environmentId === null)
+      ? { environmentId: parsed.environmentId }
+      : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
@@ -119,26 +196,37 @@ export function parseIssueExecutionWorkspaceSettings(raw: unknown): IssueExecuti
   };
 }
 
+export type ExecutionWorkspaceEnvironmentSource =
+  | "agent"
+  | "instance"
+  | "default";
+
+export type ExecutionWorkspaceEnvironmentResolution = {
+  environmentId: string;
+  source: ExecutionWorkspaceEnvironmentSource;
+};
+
 export function resolveExecutionWorkspaceEnvironmentId(input: {
-  projectPolicy: ProjectExecutionWorkspacePolicy | null;
-  issueSettings: IssueExecutionWorkspaceSettings | null;
-  workspaceConfig: { environmentId?: string | null } | null;
   agentDefaultEnvironmentId: string | null;
-  defaultEnvironmentId: string;
-}) {
-  if (input.workspaceConfig?.environmentId !== undefined) {
-    return input.workspaceConfig.environmentId ?? input.defaultEnvironmentId;
+  instanceDefaultEnvironmentId: string | null;
+  localDefaultEnvironmentId: string;
+}): ExecutionWorkspaceEnvironmentResolution {
+  if (input.agentDefaultEnvironmentId) {
+    return {
+      environmentId: input.agentDefaultEnvironmentId,
+      source: "agent",
+    };
   }
-  if (input.issueSettings?.environmentId !== undefined) {
-    return input.issueSettings.environmentId ?? input.defaultEnvironmentId;
+  if (input.instanceDefaultEnvironmentId) {
+    return {
+      environmentId: input.instanceDefaultEnvironmentId,
+      source: "instance",
+    };
   }
-  if (input.projectPolicy?.environmentId !== undefined) {
-    return input.projectPolicy.environmentId ?? input.defaultEnvironmentId;
-  }
-  if (input.agentDefaultEnvironmentId !== null) {
-    return input.agentDefaultEnvironmentId;
-  }
-  return input.defaultEnvironmentId;
+  return {
+    environmentId: input.localDefaultEnvironmentId,
+    source: "default",
+  };
 }
 
 export function defaultIssueExecutionWorkspaceSettingsForProject(

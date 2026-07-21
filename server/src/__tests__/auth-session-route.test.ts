@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { instanceUserRoles } from "@paperclipai/db";
 import { actorMiddleware } from "../middleware/auth.js";
 
 function createSelectChain(rows: unknown[]) {
@@ -92,6 +93,7 @@ describe("actorMiddleware authenticated session profile", () => {
         };
         return chain;
       }),
+      delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
       select: vi.fn(),
     } as any;
     const app = express();
@@ -122,15 +124,95 @@ describe("actorMiddleware authenticated session profile", () => {
       userName: "Stack Owner",
       userEmail: "owner@example.com",
       source: "cloud_tenant",
-      isInstanceAdmin: true,
+      isInstanceAdmin: false,
       memberships: [expect.objectContaining({ membershipRole: "owner", status: "active" })],
     });
     expect(res.body.companyIds[0]).toMatch(/^[0-9a-f-]{36}$/);
+    // authUsers, companies, companyMemberships, and the role-default
+    // principalPermissionGrants seeded in place of instance-admin elevation.
     expect(inserts).toHaveLength(4);
     expect(inserts[0]?.values).toMatchObject({
       id: "global-user-1",
       email: "owner@example.com",
       emailVerified: true,
+    });
+  });
+
+  it("purges a stale instance_admin row so the session path stops elevating the cloud-tenant user", async () => {
+    process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
+    // Simulates a deployment that previously ran the pre-hardening cloud_tenant
+    // path: instance_user_roles still holds an instance_admin row for the
+    // tenant user, who can also resolve a BetterAuth session for the same id.
+    const state = { staleInstanceAdminRow: true };
+    const insertChain = {
+      values() {
+        return insertChain;
+      },
+      onConflictDoUpdate() {
+        return insertChain;
+      },
+      onConflictDoNothing() {
+        return insertChain;
+      },
+      returning() {
+        return Promise.resolve([{ companyId: "company-1", membershipRole: "owner", status: "active" }]);
+      },
+      then(resolve: (value: unknown) => unknown) {
+        return Promise.resolve(undefined).then(resolve);
+      },
+    };
+    const db = {
+      select: vi.fn(() => ({
+        from: (table: unknown) => ({
+          where: () =>
+            Promise.resolve(
+              table === instanceUserRoles && state.staleInstanceAdminRow ? [{ id: "stale-role-row" }] : [],
+            ),
+        }),
+      })),
+      insert: vi.fn(() => insertChain),
+      delete: vi.fn((table: unknown) => ({
+        where: () => {
+          if (table === instanceUserRoles) state.staleInstanceAdminRow = false;
+          return Promise.resolve(undefined);
+        },
+      })),
+    } as any;
+    const app = express();
+    app.use(
+      actorMiddleware(db, {
+        deploymentMode: "authenticated",
+        resolveSession: async () => ({
+          session: { id: "session-1", userId: "global-user-1" },
+          user: { id: "global-user-1", name: "Stack Owner", email: "owner@example.com" },
+        }),
+      }),
+    );
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    // Control: while the stale row exists, the session path still elevates.
+    const before = await request(app).get("/actor");
+    expect(before.body).toMatchObject({ source: "session", isInstanceAdmin: true });
+
+    // One trusted-header authentication purges the stale grant.
+    const cloud = await request(app)
+      .get("/actor")
+      .set("x-paperclip-cloud-tenant-token", "tenant-token")
+      .set("x-paperclip-cloud-user-id", "global-user-1")
+      .set("x-paperclip-cloud-user-email", "owner@example.com")
+      .set("x-paperclip-cloud-stack-id", "stack-alpha")
+      .set("x-paperclip-cloud-stack-role", "owner");
+    expect(cloud.body).toMatchObject({ source: "cloud_tenant", isInstanceAdmin: false });
+    expect(state.staleInstanceAdminRow).toBe(false);
+
+    // The same user no longer gets instance admin via the session path.
+    const after = await request(app).get("/actor");
+    expect(after.body).toMatchObject({
+      source: "session",
+      userId: "global-user-1",
+      isInstanceAdmin: false,
     });
   });
 });

@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { executionWorkspaces, heartbeatRuns, issueComments, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
@@ -12,10 +13,27 @@ import type {
   ExecutionWorkspaceCloseGitReadiness,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceConfig,
+  WorkspaceOverviewResponse,
+  WorkspaceOverviewItem,
+  WorkspaceOverviewLinkedIssue,
   WorkspaceRuntimeDesiredState,
   WorkspaceRuntimeService,
+  WorkspaceOverviewPrimaryService,
+  WorkspaceOverviewQuery,
+  GitWorktreeBranchAncestryVerdict,
+  IssueRecoveryAction,
 } from "@paperclipai/shared";
+import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
+import { conflict, notFound, unprocessable } from "../errors.js";
+import {
+  applyIssueExecutionPolicyTransition,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "./issue-execution-policy.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
+import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
@@ -23,8 +41,67 @@ import {
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
+type RuntimeServiceReadDb = Pick<Db, "select">;
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
+const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
+
+export type ExecutionWorkspaceBranchReconcileMode = "forward" | "override" | "quarantine_restore";
+
+export type ExecutionWorkspaceBranchReconcileActor = {
+  actorType: "agent" | "user" | "system";
+  actorId: string;
+  agentId: string | null;
+  runId: string | null;
+};
+
+export type ExecutionWorkspaceBranchReconcileInspection = {
+  fingerprint: string;
+  worktreePath: string;
+  repoRoot: string;
+  fromBranch: string;
+  toBranch: string;
+  fromSha: string | null;
+  toSha: string | null;
+  ancestryVerdict: GitWorktreeBranchAncestryVerdict;
+  cleanliness: "clean" | "dirty" | "unknown";
+  statusEntryCount: number | null;
+  plainLanguageReason: string;
+};
+
+export type ExecutionWorkspaceBranchReconcileResult = {
+  workspace: ExecutionWorkspace;
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+  recoveryAction: IssueRecoveryAction | null;
+  auditCommentId: string | null;
+  rescueRef: {
+    branchName: string;
+    commitSha: string;
+    fileCount: number;
+    sourceAuditCommentId: string | null;
+    claimantAuditCommentId: string | null;
+  } | null;
+  restoredSourceIssue: {
+    id: string;
+    companyId: string;
+    status: string;
+    assigneeAgentId: string | null;
+  } | null;
+  sourceIssueStatusChanged: boolean;
+};
+
+export type ExecutionWorkspaceGitWorktreeContention = {
+  claimedByWorkspaceId: string;
+  claimedByIssueId: string | null;
+  claimedByIssueIdentifier: string | null;
+  activeRun: {
+    id: string;
+    status: "queued" | "running";
+    issueId: string | null;
+    issueIdentifier: string | null;
+  } | null;
+} | null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -39,6 +116,37 @@ function readNullableString(value: unknown): string | null {
 function cloneRecord(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
   return { ...value };
+}
+
+function assigneeMatchesExecutionPrincipal(input: {
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}, principal: { type: string; agentId?: string | null; userId?: string | null } | null): boolean {
+  if (!principal) return false;
+  if (principal.type === "agent") {
+    return input.assigneeAgentId === principal.agentId && input.assigneeUserId === null;
+  }
+  if (principal.type === "user") {
+    return input.assigneeAgentId === null && input.assigneeUserId === principal.userId;
+  }
+  return false;
+}
+
+function quarantineRestoreRequestedSourceStatus(input: {
+  status: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  executionState: unknown;
+}): "todo" | undefined {
+  const state = parseIssueExecutionState(input.executionState);
+  if (
+    state?.status === "pending" &&
+    input.status === "in_review" &&
+    assigneeMatchesExecutionPrincipal(input, state.currentParticipant)
+  ) {
+    return undefined;
+  }
+  return "todo";
 }
 
 function readDesiredState(value: unknown): WorkspaceRuntimeDesiredState | null {
@@ -67,6 +175,347 @@ async function pathExists(value: string | null | undefined) {
 
 async function runGit(args: string[], cwd: string) {
   return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+}
+
+async function readGitStdout(args: string[], cwd: string): Promise<string | null> {
+  const output = await runGit(args, cwd);
+  return output.stdout.trim() || null;
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(rec[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function formatBranchForMessage(branch: string | null | undefined) {
+  return branch && branch.length > 0 ? branch : "<detached>";
+}
+
+function fingerprintWorkspaceBranchIncoherence(input: {
+  sourceIssueId: string | null;
+  executionWorkspaceId: string | null;
+  worktreePath: string;
+  expectedBranch: string;
+  actualBranch: string | null;
+  cleanliness: "clean" | "dirty" | "unknown";
+  expectedHeadSha: string | null;
+  actualHeadSha: string | null;
+}) {
+  const digest = createHash("sha256")
+    .update(stableStringify({
+      version: 1,
+      reason: WORKSPACE_BRANCH_INCOHERENCE_REASON,
+      sourceIssueId: input.sourceIssueId,
+      executionWorkspaceId: input.executionWorkspaceId,
+      worktreePath: path.resolve(input.worktreePath),
+      expectedBranch: input.expectedBranch,
+      actualBranch: input.actualBranch,
+      cleanliness: input.cleanliness,
+      expectedHeadSha: input.expectedHeadSha,
+      actualHeadSha: input.actualHeadSha,
+    }))
+    .digest("hex");
+  return `workspace_incoherence:v1:sha256:${digest}`;
+}
+
+async function getGitWorktreeBranchAncestryVerdict(input: {
+  repoRoot: string;
+  expectedHeadSha: string | null;
+  actualHeadSha: string | null;
+}): Promise<GitWorktreeBranchAncestryVerdict> {
+  if (!input.expectedHeadSha || !input.actualHeadSha) return "unknown";
+
+  try {
+    await runGit(["merge-base", "--is-ancestor", input.expectedHeadSha, input.actualHeadSha], input.repoRoot);
+    return "ancestor";
+  } catch (error) {
+    const code = typeof error === "object" && error && "code" in error
+      ? (error as { code?: unknown }).code
+      : null;
+    return code === 1 ? "diverged" : "unknown";
+  }
+}
+
+function explainGitWorktreeBranchReconcileInspection(input: {
+  fromBranch: string;
+  toBranch: string;
+  fromSha: string | null;
+  toSha: string | null;
+  ancestryVerdict: GitWorktreeBranchAncestryVerdict;
+}) {
+  if (!input.fromSha || !input.toSha) {
+    return `Paperclip could not determine branch ancestry because "${input.fromBranch}" or "${input.toBranch}" is missing a resolvable HEAD commit.`;
+  }
+  if (input.fromSha === input.toSha) {
+    return `The recorded branch "${input.fromBranch}" and checked-out branch "${input.toBranch}" resolve to the same commit.`;
+  }
+  if (input.ancestryVerdict === "ancestor") {
+    return `The recorded branch "${input.fromBranch}" is an ancestor of the checked-out branch "${input.toBranch}".`;
+  }
+  if (input.ancestryVerdict === "diverged") {
+    return `The recorded branch "${input.fromBranch}" is not an ancestor of the checked-out branch "${input.toBranch}".`;
+  }
+  return `Paperclip could not determine whether "${input.toBranch}" is forward of "${input.fromBranch}".`;
+}
+
+async function inspectExecutionWorkspaceBranchForReconcile(
+  workspace: Pick<ExecutionWorkspace, "id" | "sourceIssueId" | "cwd" | "providerRef" | "branchName">,
+): Promise<ExecutionWorkspaceBranchReconcileInspection> {
+  const fromBranch = readNullableString(workspace.branchName);
+  if (!fromBranch) {
+    throw unprocessable("Execution workspace has no recorded branch to reconcile");
+  }
+
+  const worktreePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
+  if (!worktreePath) {
+    throw unprocessable("Execution workspace needs a local worktree path before Paperclip can reconcile its branch record");
+  }
+
+  const repoRoot = await readGitStdout(["rev-parse", "--show-toplevel"], worktreePath).catch(() => null);
+  if (!repoRoot) {
+    throw unprocessable("Execution workspace path is not inside a git repository");
+  }
+
+  const toBranch = await readGitStdout(["symbolic-ref", "--quiet", "--short", "HEAD"], worktreePath).catch(() => null);
+  if (!toBranch) {
+    throw unprocessable("Execution workspace is detached; Paperclip cannot reconcile it to a branch name");
+  }
+
+  const status = await runGit(["status", "--porcelain", "--untracked-files=all"], worktreePath)
+    .then((output) => output.stdout)
+    .catch(() => null);
+  const statusLines = status === null
+    ? null
+    : status.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const cleanliness: ExecutionWorkspaceBranchReconcileInspection["cleanliness"] =
+    status === null ? "unknown" : status.trim().length > 0 ? "dirty" : "clean";
+
+  const fromSha = await readGitStdout(["rev-parse", "--verify", `refs/heads/${fromBranch}^{commit}`], repoRoot)
+    .catch(() => null);
+  const toSha = await readGitStdout(["rev-parse", "HEAD"], worktreePath).catch(() => null);
+  const ancestryVerdict = await getGitWorktreeBranchAncestryVerdict({
+    repoRoot,
+    expectedHeadSha: fromSha,
+    actualHeadSha: toSha,
+  });
+
+  return {
+    fingerprint: fingerprintWorkspaceBranchIncoherence({
+      sourceIssueId: workspace.sourceIssueId ?? null,
+      executionWorkspaceId: workspace.id,
+      worktreePath,
+      expectedBranch: fromBranch,
+      actualBranch: toBranch,
+      cleanliness,
+      expectedHeadSha: fromSha,
+      actualHeadSha: toSha,
+    }),
+    worktreePath: path.resolve(worktreePath),
+    repoRoot: path.resolve(repoRoot),
+    fromBranch,
+    toBranch,
+    fromSha,
+    toSha,
+    ancestryVerdict,
+    cleanliness,
+    statusEntryCount: statusLines?.length ?? null,
+    plainLanguageReason: explainGitWorktreeBranchReconcileInspection({
+      fromBranch,
+      toBranch,
+      fromSha,
+      toSha,
+      ancestryVerdict,
+    }),
+  };
+}
+
+function formatBranchReconcileAuditComment(input: {
+  mode: ExecutionWorkspaceBranchReconcileMode;
+  reason: string | null;
+  workspaceId: string;
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+  recoveryActionId: string | null;
+  rescueRef: ExecutionWorkspaceBranchReconcileResult["rescueRef"];
+}) {
+  return [
+    "Execution workspace branch reconciled.",
+    "",
+    `- Workspace: \`${input.workspaceId}\``,
+    `- Mode: \`${input.mode}\``,
+    `- From branch: \`${formatBranchForMessage(input.inspection.fromBranch)}\``,
+    `- To branch: \`${formatBranchForMessage(input.inspection.toBranch)}\``,
+    `- From SHA: \`${input.inspection.fromSha ?? "unknown"}\``,
+    `- To SHA: \`${input.inspection.toSha ?? "unknown"}\``,
+    `- Verdict: \`${input.inspection.ancestryVerdict}\``,
+    `- Fingerprint: \`${input.inspection.fingerprint}\``,
+    `- Recovery action: ${input.recoveryActionId ? `\`${input.recoveryActionId}\`` : "none matched"}`,
+    ...(input.rescueRef
+      ? [
+          `- Rescue ref: \`${input.rescueRef.branchName}\``,
+          `- Rescue commit: \`${input.rescueRef.commitSha}\``,
+          `- Rescued file count: \`${input.rescueRef.fileCount}\``,
+        ]
+      : []),
+    ...(input.reason ? [`- Operator reason: ${input.reason}`] : []),
+  ].join("\n");
+}
+
+function isWorkspaceRuntimeValidationFailure(error: unknown): error is {
+  code: "workspace_validation_failed";
+  message: string;
+  resultJson: Record<string, unknown>;
+} {
+  if (!error || typeof error !== "object") return false;
+  const maybe = error as { code?: unknown; resultJson?: unknown; message?: unknown };
+  return maybe.code === "workspace_validation_failed" &&
+    typeof maybe.message === "string" &&
+    Boolean(maybe.resultJson) &&
+    typeof maybe.resultJson === "object" &&
+    !Array.isArray(maybe.resultJson);
+}
+
+function assertBranchReconcileWorkspaceIsSafe(input: {
+  workspaceStatus: ExecutionWorkspace["status"];
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+  runtimeServices: WorkspaceRuntimeService[];
+  allowActiveWorkspace?: boolean;
+}) {
+  const allowedStatuses = input.allowActiveWorkspace ? ["idle", "active"] : ["idle"];
+  if (!allowedStatuses.includes(input.workspaceStatus)) {
+    throw unprocessable("Execution workspace branch reconciliation requires the workspace to be idle", {
+      workspaceStatus: input.workspaceStatus,
+      inspection: input.inspection,
+    });
+  }
+
+  if (input.inspection.cleanliness !== "clean") {
+    throw unprocessable("Execution workspace branch reconciliation requires a clean worktree", {
+      inspection: input.inspection,
+    });
+  }
+
+  assertBranchReconcileRuntimeServicesStopped({
+    inspection: input.inspection,
+    runtimeServices: input.runtimeServices,
+  });
+}
+
+function assertBranchReconcileRuntimeServicesStopped(input: {
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+  runtimeServices: WorkspaceRuntimeService[];
+}) {
+  const activeRuntimeServices = input.runtimeServices.filter((service) => service.status !== "stopped");
+  if (activeRuntimeServices.length > 0) {
+    throw unprocessable("Execution workspace branch reconciliation requires all runtime services to be stopped", {
+      inspection: input.inspection,
+      runtimeServices: activeRuntimeServices.map((service) => ({
+        id: service.id,
+        serviceName: service.serviceName,
+        status: service.status,
+      })),
+    });
+  }
+}
+
+function assertLockedBranchReconcileWorkspaceStillMatchesInspection(input: {
+  lockedRow: ExecutionWorkspaceRow;
+  inspectedRow: ExecutionWorkspaceRow;
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+}) {
+  const lockedPath = readNullableString(input.lockedRow.providerRef) ?? readNullableString(input.lockedRow.cwd);
+  const lockedBranch = readNullableString(input.lockedRow.branchName);
+  const currentPath = lockedPath ? path.resolve(lockedPath) : null;
+
+  if (
+    input.lockedRow.sourceIssueId !== input.inspectedRow.sourceIssueId ||
+    input.lockedRow.projectWorkspaceId !== input.inspectedRow.projectWorkspaceId ||
+    lockedBranch !== input.inspection.fromBranch ||
+    currentPath !== input.inspection.worktreePath
+  ) {
+    throw conflict("Execution workspace changed during branch reconciliation; retry with the latest workspace state", {
+      workspaceId: input.lockedRow.id,
+      expected: {
+        status: input.inspectedRow.status,
+        sourceIssueId: input.inspectedRow.sourceIssueId,
+        projectWorkspaceId: input.inspectedRow.projectWorkspaceId,
+        branchName: input.inspection.fromBranch,
+        worktreePath: input.inspection.worktreePath,
+      },
+      current: {
+        status: input.lockedRow.status,
+        sourceIssueId: input.lockedRow.sourceIssueId,
+        projectWorkspaceId: input.lockedRow.projectWorkspaceId,
+        branchName: lockedBranch,
+        worktreePath: currentPath,
+      },
+    });
+  }
+}
+
+async function quarantineRestoreDirtyWorkspaceBranch(input: {
+  db: Db;
+  workspace: Pick<ExecutionWorkspace, "id" | "sourceIssueId">;
+  inspection: ExecutionWorkspaceBranchReconcileInspection;
+  actor: ExecutionWorkspaceBranchReconcileActor;
+}): Promise<NonNullable<ExecutionWorkspaceBranchReconcileResult["rescueRef"]>> {
+  const sourceIssue = await input.db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      workMode: issues.workMode,
+    })
+    .from(issues)
+    .where(eq(issues.id, input.workspace.sourceIssueId!))
+    .then((rows) => rows[0] ?? null);
+  if (!sourceIssue) throw notFound("Source issue not found");
+
+  const { ensureGitWorktreeBranchCoherent } = await import("./workspace-runtime.js");
+  try {
+    const result = await ensureGitWorktreeBranchCoherent({
+      db: input.db,
+      repoRoot: input.inspection.repoRoot,
+      worktreePath: input.inspection.worktreePath,
+      expectedBranchName: input.inspection.fromBranch,
+      actualBranchName: input.inspection.toBranch,
+      sourceIssue,
+      executionWorkspaceId: input.workspace.id,
+      heartbeatRunId: input.actor.runId,
+      enableWorkspaceBranchReconcileForward: false,
+      enableWorkspaceDirtyQuarantineRepair: true,
+      persistForwardReconcile: false,
+      reconcileOperationPhase: "worktree_prepare",
+      recorder: null,
+    });
+
+    if (!result.dirtyQuarantineRepair) {
+      throw unprocessable("Quarantine restore requires a dirty foreign-branch worktree to repair", {
+        inspection: input.inspection,
+      });
+    }
+
+    return {
+      branchName: result.dirtyQuarantineRepair.rescueBranch,
+      commitSha: result.dirtyQuarantineRepair.rescueCommitSha,
+      fileCount: result.dirtyQuarantineRepair.fileCount,
+      sourceAuditCommentId: result.dirtyQuarantineRepair.sourceAuditCommentId,
+      claimantAuditCommentId: result.dirtyQuarantineRepair.claimantAuditCommentId,
+    };
+  } catch (error) {
+    if (isWorkspaceRuntimeValidationFailure(error)) {
+      throw unprocessable(error.message, {
+        code: error.code,
+        ...error.resultJson,
+      });
+    }
+    throw error;
+  }
 }
 
 async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
@@ -344,13 +793,52 @@ function toExecutionWorkspace(
   };
 }
 
-function toExecutionWorkspaceSummary(row: Pick<ExecutionWorkspaceRow, "id" | "name" | "mode" | "projectWorkspaceId">): ExecutionWorkspaceSummary {
+function toExecutionWorkspaceSummary(
+  row: Pick<ExecutionWorkspaceRow, "id" | "name" | "mode" | "status" | "cwd" | "branchName" | "projectWorkspaceId" | "lastUsedAt">,
+): ExecutionWorkspaceSummary {
   return {
     id: row.id,
     name: row.name,
     mode: row.mode as ExecutionWorkspaceSummary["mode"],
+    status: row.status as ExecutionWorkspaceSummary["status"],
+    cwd: row.cwd ?? null,
+    branchName: row.branchName ?? null,
     projectWorkspaceId: row.projectWorkspaceId ?? null,
+    lastUsedAt: row.lastUsedAt,
   };
+}
+
+function maxDate(...values: Array<Date | string | null | undefined>): Date {
+  let latest = new Date(0);
+  for (const value of values) {
+    if (!value) continue;
+    const date = value instanceof Date ? value : new Date(value);
+    if (!Number.isNaN(date.getTime()) && date.getTime() > latest.getTime()) latest = date;
+  }
+  return latest;
+}
+
+function toWorkspaceOverviewPrimaryService(
+  service: WorkspaceRuntimeService | null,
+): WorkspaceOverviewPrimaryService | null {
+  if (!service) return null;
+  return {
+    id: service.id,
+    serviceName: service.serviceName,
+    status: service.status,
+    url: service.url,
+    port: service.port,
+    healthStatus: service.healthStatus,
+    updatedAt: service.updatedAt,
+  };
+}
+
+function selectPrimaryOverviewService(services: WorkspaceRuntimeService[]) {
+  return services.find((service) => service.status === "running" && service.url)
+    ?? services.find((service) => service.url)
+    ?? services.find((service) => service.status === "running")
+    ?? services[0]
+    ?? null;
 }
 
 function usesInheritedProjectRuntimeServices(row: ExecutionWorkspaceRow) {
@@ -358,8 +846,25 @@ function usesInheritedProjectRuntimeServices(row: ExecutionWorkspaceRow) {
   return !readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime;
 }
 
+function noActiveRuntimeServicesForWorkspaceCondition(row: ExecutionWorkspaceRow) {
+  const inheritedProjectWorkspaceId = usesInheritedProjectRuntimeServices(row) ? row.projectWorkspaceId : null;
+  const activeServiceConditions = inheritedProjectWorkspaceId
+    ? and(
+        eq(workspaceRuntimeServices.companyId, row.companyId),
+        eq(workspaceRuntimeServices.projectWorkspaceId, inheritedProjectWorkspaceId),
+        eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+        ne(workspaceRuntimeServices.status, "stopped"),
+      )
+    : and(
+        eq(workspaceRuntimeServices.companyId, row.companyId),
+        eq(workspaceRuntimeServices.executionWorkspaceId, row.id),
+        ne(workspaceRuntimeServices.status, "stopped"),
+      );
+  return sql`not exists (select 1 from ${workspaceRuntimeServices} where ${activeServiceConditions})`;
+}
+
 async function loadEffectiveRuntimeServicesByExecutionWorkspace(
-  db: Db,
+  db: RuntimeServiceReadDb,
   companyId: string,
   rows: ExecutionWorkspaceRow[],
 ) {
@@ -388,7 +893,18 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
   );
 }
 
+type WorkspaceOverviewPageRow = ExecutionWorkspaceRow & {
+  projectName: string;
+  projectWorkspaceMetadata: Record<string, unknown> | null;
+};
+
+type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
+  executionWorkspaceId: string;
+};
+
 export function executionWorkspaceService(db: Db) {
+  const recoveryActionsSvc = issueRecoveryActionService(db);
+
   function buildListConditions(
     companyId: string,
     filters?: {
@@ -412,11 +928,234 @@ export function executionWorkspaceService(db: Db) {
     }
     if (filters?.reuseEligible) {
       conditions.push(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]));
+      conditions.push(isNull(executionWorkspaces.closedAt));
+      conditions.push(inArray(executionWorkspaces.mode, ["isolated_workspace", "operator_branch", "adapter_managed", "cloud_sandbox"]));
+    }
+    return conditions;
+  }
+
+  function buildOverviewConditions(companyId: string, filters: WorkspaceOverviewQuery) {
+    const conditions = [eq(executionWorkspaces.companyId, companyId)];
+    if (filters.projectId) conditions.push(eq(executionWorkspaces.projectId, filters.projectId));
+    if (filters.status && filters.status.length > 0) {
+      if (filters.status.length === 1) conditions.push(eq(executionWorkspaces.status, filters.status[0]!));
+      else conditions.push(inArray(executionWorkspaces.status, filters.status));
+    } else {
+      conditions.push(ne(executionWorkspaces.status, "archived"));
     }
     return conditions;
   }
 
   return {
+    listOverview: async (
+      companyId: string,
+      filters: WorkspaceOverviewQuery,
+    ): Promise<WorkspaceOverviewResponse> => {
+      const conditions = buildOverviewConditions(companyId, filters);
+      const whereClause = and(...conditions);
+
+      const [totalRow, rows] = await Promise.all([
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(executionWorkspaces)
+          .innerJoin(
+            projects,
+            and(
+              eq(projects.id, executionWorkspaces.projectId),
+              eq(projects.companyId, companyId),
+            ),
+          )
+          .where(whereClause)
+          .then((result) => result[0] ?? { count: 0 }),
+        db
+          .select({
+            id: executionWorkspaces.id,
+            companyId: executionWorkspaces.companyId,
+            projectId: executionWorkspaces.projectId,
+            projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
+            sourceIssueId: executionWorkspaces.sourceIssueId,
+            mode: executionWorkspaces.mode,
+            strategyType: executionWorkspaces.strategyType,
+            name: executionWorkspaces.name,
+            status: executionWorkspaces.status,
+            cwd: executionWorkspaces.cwd,
+            repoUrl: executionWorkspaces.repoUrl,
+            baseRef: executionWorkspaces.baseRef,
+            branchName: executionWorkspaces.branchName,
+            providerType: executionWorkspaces.providerType,
+            providerRef: executionWorkspaces.providerRef,
+            derivedFromExecutionWorkspaceId: executionWorkspaces.derivedFromExecutionWorkspaceId,
+            lastUsedAt: executionWorkspaces.lastUsedAt,
+            openedAt: executionWorkspaces.openedAt,
+            closedAt: executionWorkspaces.closedAt,
+            cleanupEligibleAt: executionWorkspaces.cleanupEligibleAt,
+            cleanupReason: executionWorkspaces.cleanupReason,
+            metadata: executionWorkspaces.metadata,
+            createdAt: executionWorkspaces.createdAt,
+            updatedAt: executionWorkspaces.updatedAt,
+            projectName: projects.name,
+            projectWorkspaceMetadata: projectWorkspaces.metadata,
+          })
+          .from(executionWorkspaces)
+          .innerJoin(
+            projects,
+            and(
+              eq(projects.id, executionWorkspaces.projectId),
+              eq(projects.companyId, companyId),
+            ),
+          )
+          .leftJoin(
+            projectWorkspaces,
+            and(
+              eq(projectWorkspaces.id, executionWorkspaces.projectWorkspaceId),
+              eq(projectWorkspaces.companyId, companyId),
+            ),
+          )
+          .where(whereClause)
+          .orderBy(
+            desc(executionWorkspaces.lastUsedAt),
+            desc(executionWorkspaces.updatedAt),
+            asc(executionWorkspaces.id),
+          )
+          .limit(filters.limit)
+          .offset(filters.offset),
+      ]);
+
+      const pageRows = rows as WorkspaceOverviewPageRow[];
+      if (pageRows.length === 0) {
+        return {
+          items: [],
+          total: totalRow.count,
+          limit: filters.limit,
+          offset: filters.offset,
+          hasMore: false,
+          nextOffset: null,
+        };
+      }
+
+      const workspaceIds = pageRows.map((row) => row.id);
+      const [runtimeServicesByWorkspaceId, linkedIssueCountRows, linkedIssueRows] = await Promise.all([
+        loadEffectiveRuntimeServicesByExecutionWorkspace(db, companyId, pageRows),
+        db
+          .select({
+            executionWorkspaceId: issues.executionWorkspaceId,
+            count: sql<number>`count(*)::int`,
+          })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              visibleIssueCondition(),
+              inArray(issues.executionWorkspaceId, workspaceIds),
+            ),
+          )
+          .groupBy(issues.executionWorkspaceId),
+        db.execute(sql`
+          select
+            ranked.execution_workspace_id as "executionWorkspaceId",
+            ranked.id,
+            ranked.identifier,
+            ranked.title,
+            ranked.status,
+            ranked.priority,
+            ranked.updated_at as "updatedAt"
+          from (
+            select
+              ${issues.executionWorkspaceId} as execution_workspace_id,
+              ${issues.id} as id,
+              ${issues.identifier} as identifier,
+              ${issues.title} as title,
+              ${issues.status} as status,
+              ${issues.priority} as priority,
+              ${issues.updatedAt} as updated_at,
+              row_number() over (
+                partition by ${issues.executionWorkspaceId}
+                order by ${issues.updatedAt} desc, ${issues.id} asc
+              ) as row_number
+            from ${issues}
+            where ${issues.companyId} = ${companyId}
+              and ${issues.hiddenAt} is null
+              and ${issues.executionWorkspaceId} in (${sql.join(workspaceIds.map((id) => sql`${id}`), sql`, `)})
+          ) ranked
+          where ranked.row_number <= ${WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT}
+          order by ranked.execution_workspace_id asc, ranked.row_number asc
+        `),
+      ]);
+
+      const linkedIssueCountByWorkspaceId = new Map(
+        linkedIssueCountRows
+          .filter((row) => row.executionWorkspaceId)
+          .map((row) => [row.executionWorkspaceId!, row.count]),
+      );
+      const linkedIssuesByWorkspaceId = new Map<string, WorkspaceOverviewLinkedIssue[]>();
+      for (const issue of linkedIssueRows as unknown as WorkspaceOverviewIssueRow[]) {
+        const existing = linkedIssuesByWorkspaceId.get(issue.executionWorkspaceId) ?? [];
+        existing.push({
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          status: issue.status,
+          priority: issue.priority,
+          updatedAt: issue.updatedAt,
+        });
+        linkedIssuesByWorkspaceId.set(issue.executionWorkspaceId, existing);
+      }
+
+      const items: WorkspaceOverviewItem[] = pageRows.map((row) => {
+        const runtimeServices = (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService);
+        const runningServiceCount = runtimeServices.filter((service) => service.status === "running").length;
+        const primaryService = selectPrimaryOverviewService(runtimeServices);
+        const config = readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null);
+        const inheritedProjectRuntimeConfig = usesInheritedProjectRuntimeServices(row)
+          ? readProjectWorkspaceRuntimeConfig(row.projectWorkspaceMetadata)
+          : null;
+        const linkedIssues = linkedIssuesByWorkspaceId.get(row.id) ?? [];
+        const primaryServiceSummary = toWorkspaceOverviewPrimaryService(primaryService);
+
+        return {
+          key: `execution:${row.id}`,
+          kind: "execution_workspace",
+          workspaceId: row.id,
+          workspaceName: row.name,
+          projectId: row.projectId,
+          projectUrlKey: deriveProjectUrlKey(row.projectName, row.projectId),
+          projectName: row.projectName,
+          mode: row.mode as WorkspaceOverviewItem["mode"],
+          strategyType: row.strategyType as WorkspaceOverviewItem["strategyType"],
+          cwd: row.cwd ?? null,
+          branchName: row.branchName ?? row.baseRef ?? null,
+          lastUpdatedAt: maxDate(
+            row.lastUsedAt,
+            row.updatedAt,
+            linkedIssues[0]?.updatedAt,
+            primaryServiceSummary?.updatedAt,
+          ),
+          projectWorkspaceId: row.projectWorkspaceId ?? null,
+          executionWorkspaceId: row.id,
+          executionWorkspaceStatus: row.status as WorkspaceOverviewItem["executionWorkspaceStatus"],
+          serviceCount: runtimeServices.length,
+          runningServiceCount,
+          primaryServiceUrl: primaryService?.url ?? null,
+          primaryServiceUrlRunning: primaryService?.status === "running",
+          primaryService: primaryServiceSummary,
+          hasRuntimeConfig: Boolean(config?.workspaceRuntime ?? inheritedProjectRuntimeConfig?.workspaceRuntime),
+          linkedIssueCount: linkedIssueCountByWorkspaceId.get(row.id) ?? 0,
+          linkedIssues,
+        };
+      });
+
+      const nextOffset = filters.offset + items.length;
+      const total = totalRow.count;
+      return {
+        items,
+        total,
+        limit: filters.limit,
+        offset: filters.offset,
+        hasMore: nextOffset < total,
+        nextOffset: nextOffset < total ? nextOffset : null,
+      };
+    },
+
     list: async (companyId: string, filters?: {
       projectId?: string;
       projectWorkspaceId?: string;
@@ -452,12 +1191,134 @@ export function executionWorkspaceService(db: Db) {
           id: executionWorkspaces.id,
           name: executionWorkspaces.name,
           mode: executionWorkspaces.mode,
+          status: executionWorkspaces.status,
+          cwd: executionWorkspaces.cwd,
+          branchName: executionWorkspaces.branchName,
           projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
+          lastUsedAt: executionWorkspaces.lastUsedAt,
         })
         .from(executionWorkspaces)
         .where(and(...conditions))
         .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
       return rows.map((row) => toExecutionWorkspaceSummary(row));
+    },
+
+    findGitWorktreeContention: async (input: {
+      companyId: string;
+      worktreePath: string;
+      liveBranchName: string | null;
+      excludingExecutionWorkspaceId?: string | null;
+    }): Promise<ExecutionWorkspaceGitWorktreeContention> => {
+      const resolvedWorktreePath = path.resolve(input.worktreePath);
+      const pathOrBranchConditions = [
+        eq(executionWorkspaces.providerRef, input.worktreePath),
+        eq(executionWorkspaces.cwd, input.worktreePath),
+      ];
+      if (input.liveBranchName) {
+        pathOrBranchConditions.push(eq(executionWorkspaces.branchName, input.liveBranchName));
+      }
+
+      const candidates = await db
+        .select({
+          id: executionWorkspaces.id,
+          cwd: executionWorkspaces.cwd,
+          providerRef: executionWorkspaces.providerRef,
+          branchName: executionWorkspaces.branchName,
+          sourceIssueId: executionWorkspaces.sourceIssueId,
+          sourceIssueIdentifier: issues.identifier,
+        })
+        .from(executionWorkspaces)
+        .leftJoin(
+          issues,
+          and(
+            eq(issues.companyId, executionWorkspaces.companyId),
+            eq(issues.id, executionWorkspaces.sourceIssueId),
+          ),
+        )
+        .where(and(
+          eq(executionWorkspaces.companyId, input.companyId),
+          isNull(executionWorkspaces.closedAt),
+          ne(executionWorkspaces.status, "archived"),
+          input.excludingExecutionWorkspaceId
+            ? ne(executionWorkspaces.id, input.excludingExecutionWorkspaceId)
+            : sql`true`,
+          or(...pathOrBranchConditions),
+        ))
+        .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.updatedAt))
+        .limit(20);
+
+      for (const candidate of candidates) {
+        const candidatePath = readNullableString(candidate.providerRef) ?? readNullableString(candidate.cwd);
+        const matchesPath = candidatePath ? path.resolve(candidatePath) === resolvedWorktreePath : false;
+        const matchesBranch = Boolean(input.liveBranchName && candidate.branchName === input.liveBranchName);
+        if (!matchesPath && !matchesBranch) continue;
+
+        const linkedIssueConditions = [eq(issues.executionWorkspaceId, candidate.id)];
+        if (candidate.sourceIssueId) linkedIssueConditions.push(eq(issues.id, candidate.sourceIssueId));
+        const linkedIssueRows = await db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, input.companyId),
+            isNull(issues.hiddenAt),
+            linkedIssueConditions.length === 1 ? linkedIssueConditions[0]! : or(...linkedIssueConditions),
+          ))
+          .orderBy(desc(issues.updatedAt))
+          .limit(20);
+
+        const runToIssue = new Map<string, { id: string; identifier: string | null }>();
+        for (const issue of linkedIssueRows) {
+          if (issue.executionRunId) runToIssue.set(issue.executionRunId, { id: issue.id, identifier: issue.identifier ?? null });
+          if (issue.checkoutRunId) runToIssue.set(issue.checkoutRunId, { id: issue.id, identifier: issue.identifier ?? null });
+        }
+
+        let activeRun: NonNullable<ExecutionWorkspaceGitWorktreeContention>["activeRun"] = null;
+        const runIds = [...runToIssue.keys()];
+        if (runIds.length > 0) {
+          const [row] = await db
+            .select({
+              id: heartbeatRuns.id,
+              status: heartbeatRuns.status,
+            })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, input.companyId),
+              inArray(heartbeatRuns.id, runIds),
+              inArray(heartbeatRuns.status, ["queued", "running"]),
+            ))
+            .orderBy(desc(heartbeatRuns.startedAt), desc(heartbeatRuns.createdAt))
+            .limit(1);
+          if (row && (row.status === "queued" || row.status === "running")) {
+            const issue = runToIssue.get(row.id) ?? null;
+            activeRun = {
+              id: row.id,
+              status: row.status,
+              issueId: issue?.id ?? null,
+              issueIdentifier: issue?.identifier ?? null,
+            };
+          }
+        }
+
+        const claimedIssue =
+          linkedIssueRows.find((issue) => issue.id === candidate.sourceIssueId)
+          ?? linkedIssueRows[0]
+          ?? null;
+
+        return {
+          claimedByWorkspaceId: candidate.id,
+          claimedByIssueId: claimedIssue?.id ?? candidate.sourceIssueId ?? null,
+          claimedByIssueIdentifier:
+            claimedIssue?.identifier ?? candidate.sourceIssueIdentifier ?? null,
+          activeRun,
+        };
+      }
+
+      return null;
     },
 
     getById: async (id: string) => {
@@ -742,6 +1603,314 @@ export function executionWorkspaceService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
+    },
+
+    reconcileExecutionWorkspaceBranch: async (
+      id: string,
+      input: {
+        mode: ExecutionWorkspaceBranchReconcileMode;
+        reason?: string | null;
+        actor: ExecutionWorkspaceBranchReconcileActor;
+        alternateRecoveryFingerprints?: string[] | null;
+      },
+    ): Promise<ExecutionWorkspaceBranchReconcileResult> => {
+      const existingRow = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existingRow) throw notFound("Execution workspace not found");
+
+      const existing = toExecutionWorkspace(existingRow);
+      if (!existing.sourceIssueId) {
+        throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
+      }
+
+      const inspection = await inspectExecutionWorkspaceBranchForReconcile(existing);
+      if (input.mode === "forward" && inspection.ancestryVerdict !== "ancestor") {
+        throw unprocessable(
+          "Forward branch reconciliation requires the recorded branch to be an ancestor of the checked-out branch",
+          { inspection },
+        );
+      }
+
+      const reason = readNullableString(input.reason);
+      const rescueRef = input.mode === "quarantine_restore"
+        ? await (async () => {
+            const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(
+              db,
+              existing.companyId,
+              [existingRow],
+            );
+            assertBranchReconcileRuntimeServicesStopped({
+              inspection,
+              runtimeServices: (runtimeServicesByWorkspaceId.get(existing.id) ?? []).map(toRuntimeService),
+            });
+            // The git rescue has to happen before the DB transaction because the
+            // transaction may be retried/rolled back, while git side effects cannot.
+            // The preflight runtime-service guard above keeps known local services
+            // from holding files open during the non-transactional git sequence.
+            return quarantineRestoreDirtyWorkspaceBranch({
+              db,
+              workspace: existing,
+              inspection,
+              actor: input.actor,
+            });
+          })()
+        : null;
+      const now = new Date();
+      const allowActiveWorkspace =
+        input.mode === "forward" &&
+        input.actor.actorType === "system" &&
+        input.actor.actorId === "workspace_runtime" &&
+        Boolean(input.actor.runId);
+      return db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        // Runtime-service activation takes this same row lock before spawning
+        // local services and persists a `starting` row before releasing it.
+        const lockedRow = await tx
+          .select()
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, existing.id))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedRow) throw notFound("Execution workspace not found");
+
+        assertLockedBranchReconcileWorkspaceStillMatchesInspection({
+          lockedRow,
+          inspectedRow: existingRow,
+          inspection,
+        });
+
+        if (usesInheritedProjectRuntimeServices(lockedRow)) {
+          await tx
+            .select({ id: projectWorkspaces.id })
+            .from(projectWorkspaces)
+            .where(
+              and(
+                eq(projectWorkspaces.companyId, lockedRow.companyId),
+                eq(projectWorkspaces.id, lockedRow.projectWorkspaceId!),
+              ),
+            )
+            .for("update");
+        }
+
+        await tx
+          .select({ id: workspaceRuntimeServices.id })
+          .from(workspaceRuntimeServices)
+          .where(
+            usesInheritedProjectRuntimeServices(lockedRow)
+              ? and(
+                  eq(workspaceRuntimeServices.companyId, lockedRow.companyId),
+                  eq(workspaceRuntimeServices.projectWorkspaceId, lockedRow.projectWorkspaceId!),
+                  eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+                )
+              : and(
+                  eq(workspaceRuntimeServices.companyId, lockedRow.companyId),
+                  eq(workspaceRuntimeServices.executionWorkspaceId, lockedRow.id),
+                ),
+          )
+          .for("update");
+
+        const lockedRuntimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(
+          txDb,
+          lockedRow.companyId,
+          [lockedRow],
+        );
+        const lockedRuntimeServices = (lockedRuntimeServicesByWorkspaceId.get(lockedRow.id) ?? []).map(toRuntimeService);
+        const lockedWorkspace = toExecutionWorkspace(lockedRow, lockedRuntimeServices);
+        if (!lockedWorkspace.sourceIssueId) {
+          throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
+        }
+
+        let updatedRow: ExecutionWorkspaceRow = lockedRow;
+        if (input.mode !== "quarantine_restore") {
+          assertBranchReconcileWorkspaceIsSafe({
+            workspaceStatus: lockedWorkspace.status,
+            inspection,
+            runtimeServices: lockedRuntimeServices,
+            allowActiveWorkspace,
+          });
+          if (lockedWorkspace.branchName !== inspection.fromBranch) {
+            throw unprocessable("Execution workspace branch changed during reconciliation; retry with a fresh inspection", {
+              workspaceBranch: lockedWorkspace.branchName,
+              inspection,
+            });
+          }
+
+          const updatePatch: Partial<typeof executionWorkspaces.$inferInsert> = {
+            branchName: inspection.toBranch,
+            updatedAt: now,
+          };
+          if (lockedWorkspace.name === inspection.fromBranch) {
+            updatePatch.name = inspection.toBranch;
+          }
+
+          const [branchUpdatedRow] = await tx
+            .update(executionWorkspaces)
+            .set(updatePatch)
+            .where(
+              and(
+                eq(executionWorkspaces.id, lockedWorkspace.id),
+                allowActiveWorkspace
+                  ? inArray(executionWorkspaces.status, ["idle", "active"])
+                  : eq(executionWorkspaces.status, "idle"),
+                eq(executionWorkspaces.branchName, inspection.fromBranch),
+                noActiveRuntimeServicesForWorkspaceCondition(lockedRow),
+              ),
+            )
+            .returning();
+          if (!branchUpdatedRow) {
+            const latestRuntimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(
+              txDb,
+              lockedRow.companyId,
+              [lockedRow],
+            );
+            const latestRuntimeServices = (latestRuntimeServicesByWorkspaceId.get(lockedRow.id) ?? []).map(toRuntimeService);
+            assertBranchReconcileWorkspaceIsSafe({
+              workspaceStatus: lockedWorkspace.status,
+              inspection,
+              runtimeServices: latestRuntimeServices,
+              allowActiveWorkspace,
+            });
+            throw unprocessable("Execution workspace branch reconciliation requires the workspace to stay idle with stopped runtime services during the update", {
+              inspection,
+            });
+          }
+          updatedRow = branchUpdatedRow;
+        }
+
+        let recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
+          {
+            companyId: lockedWorkspace.companyId,
+            sourceIssueId: lockedWorkspace.sourceIssueId,
+            kind: "workspace_validation",
+            cause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
+            fingerprint: inspection.fingerprint,
+            status: "resolved",
+            outcome: "restored",
+            resolutionNote: input.mode === "quarantine_restore" && rescueRef
+              ? `Execution workspace dirty worktree quarantined on "${rescueRef.branchName}" and restored recorded branch "${inspection.fromBranch}".`
+              : `Execution workspace branch record reconciled from "${inspection.fromBranch}" to "${inspection.toBranch}".`,
+          },
+          tx,
+        );
+        if (!recoveryAction) {
+          for (const alternateFingerprint of input.alternateRecoveryFingerprints ?? []) {
+            if (!alternateFingerprint || alternateFingerprint === inspection.fingerprint) continue;
+            recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
+              {
+                companyId: existing.companyId,
+                sourceIssueId: existing.sourceIssueId!,
+                kind: "workspace_validation",
+                cause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
+                fingerprint: alternateFingerprint,
+                status: "resolved",
+                outcome: "restored",
+                resolutionNote: input.mode === "quarantine_restore" && rescueRef
+                  ? `Execution workspace dirty worktree quarantined on "${rescueRef.branchName}" and restored recorded branch "${inspection.fromBranch}".`
+                  : `Execution workspace branch record reconciled from "${inspection.fromBranch}" to "${inspection.toBranch}".`,
+              },
+              tx,
+            );
+            if (recoveryAction) break;
+          }
+        }
+
+        let restoredSourceIssue: ExecutionWorkspaceBranchReconcileResult["restoredSourceIssue"] = null;
+        let sourceIssueStatusChanged = false;
+        if (input.mode === "quarantine_restore") {
+          const [sourceBefore] = await tx
+            .select({
+              id: issues.id,
+              companyId: issues.companyId,
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              assigneeUserId: issues.assigneeUserId,
+              executionPolicy: issues.executionPolicy,
+              executionState: issues.executionState,
+              monitorNextCheckAt: issues.monitorNextCheckAt,
+              monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
+              monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
+              monitorAttemptCount: issues.monitorAttemptCount,
+              monitorNotes: issues.monitorNotes,
+              monitorScheduledBy: issues.monitorScheduledBy,
+            })
+            .from(issues)
+            .where(eq(issues.id, lockedWorkspace.sourceIssueId))
+            .for("update");
+          if (!sourceBefore) throw notFound("Source issue not found");
+
+          const requestedStatus = quarantineRestoreRequestedSourceStatus(sourceBefore);
+          const policy = normalizeIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
+          const transition = applyIssueExecutionPolicyTransition({
+            issue: sourceBefore,
+            policy,
+            previousPolicy: policy,
+            requestedStatus,
+            requestedAssigneePatch: {},
+            actor: {
+              agentId: input.actor.agentId ?? null,
+              userId: input.actor.actorType === "user" ? input.actor.actorId : null,
+            },
+            commentBody: null,
+          });
+          const { issueService } = await import("./issues.js");
+          const updatedIssue = await issueService(db).update(
+            lockedWorkspace.sourceIssueId,
+            {
+              ...(requestedStatus ? { status: requestedStatus } : {}),
+              ...transition.patch,
+              actorAgentId: input.actor.agentId ?? null,
+              actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+            },
+            tx,
+          );
+          if (!updatedIssue) throw notFound("Source issue not found");
+          restoredSourceIssue = {
+            id: updatedIssue.id,
+            companyId: updatedIssue.companyId,
+            status: updatedIssue.status,
+            assigneeAgentId: updatedIssue.assigneeAgentId,
+          };
+          sourceIssueStatusChanged = sourceBefore.status !== updatedIssue.status;
+        }
+
+        const [auditComment] = await tx
+          .insert(issueComments)
+          .values({
+            companyId: lockedWorkspace.companyId,
+            issueId: lockedWorkspace.sourceIssueId,
+            authorAgentId: input.actor.actorType === "agent" ? input.actor.agentId : null,
+            authorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+            authorType: input.actor.actorType,
+            createdByRunId: input.actor.runId,
+            body: formatBranchReconcileAuditComment({
+              mode: input.mode,
+              reason,
+              workspaceId: existing.id,
+              inspection,
+              recoveryActionId: recoveryAction?.id ?? null,
+              rescueRef,
+            }),
+          })
+          .returning({ id: issueComments.id });
+
+        await tx
+          .update(issues)
+          .set({ updatedAt: now })
+          .where(eq(issues.id, lockedWorkspace.sourceIssueId));
+
+        return {
+          workspace: toExecutionWorkspace(updatedRow, lockedRuntimeServices),
+          inspection,
+          recoveryAction,
+          auditCommentId: auditComment?.id ?? null,
+          rescueRef,
+          restoredSourceIssue,
+          sourceIssueStatusChanged,
+        };
+      });
     },
 
     clearEnvironmentSelection: async (companyId: string, environmentId: string) => {

@@ -28,9 +28,9 @@ Reusable companies matter. Import/export is the foundation for moving org struct
 
 Agent setup should feel repo-native and legible. Simple `AGENTS.md`-style configuration lowers the barrier to getting an agent team running and makes it easier for contributors to understand how a company is wired together.
 
-### ✅ Skills Manager
+### ✅ Skills Manager, Skill Studio & Skills Store
 
-Agents need a practical way to discover, install, and use skills without every setup becoming bespoke. The skills layer is part of making Paperclip companies more reusable and easier to operate.
+Agents need a practical way to discover, install, create, test, and share skills without every setup becoming bespoke. Skills Manager, Skill Studio, and the Skills Store make the skills layer reusable across an organization and easier to operate.
 
 ### ✅ Scheduled Routines
 
@@ -48,29 +48,49 @@ Paperclip should support explicit review and approval stages as first-class work
 
 Paperclip needs a clearer path from solo operator to real human teams. That means shared board access, safer collaboration, and a better model for several humans supervising the same autonomous company.
 
-### ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+### ✅ Cloud / Sandbox agents (e2b, Cloudflare, Daytona, Modal, Novita, self-hosted Kubernetes)
 
 We want agents to run in more remote and sandboxed environments while preserving the same Paperclip control-plane model. This makes the system safer, more flexible, and more useful outside a single trusted local machine.
 
-### ⚪ Artifacts & Work Products
+### ✅ Artifacts & Work Products
 
 Paperclip should make outputs first-class. That means generated artifacts, previews, deployable outputs, and the handoff from "agent did work" to "here is the result" should become more visible and easier to operate.
+
+### ✅ Deep Planning (planning mode, revisioned plans, plan approvals)
+
+Some work needs more than a task description before execution starts. Deeper planning means a dedicated planning mode, revisioned plans, and explicit plan approvals for strategy-heavy work before agents begin execution.
+
+### ✅ Enforced Outcomes (watchdogs, recovery actions, review gates)
+
+Paperclip should get stricter about what counts as finished work. Watchdogs, recovery actions, and review gates keep execution moving toward clear outcomes like merged code, published artifacts, shipped docs, or explicit decisions instead of vague status updates.
+
+### ✅ MCP Tool Gateway & Apps (governed tool access)
+
+MCP tools and apps should be available through a governed gateway instead of unmanaged direct access. Paperclip can apply company boundaries, approval gates, and activity attribution while giving agents the tools they need.
+
+### ✅ Secrets Manager with per-agent access
+
+Secrets need to be centrally managed without giving every agent every credential. Per-agent access, scoped bindings, and audited resolution keep sensitive integrations usable while preserving least privilege.
+
+### ✅ Activity log & action attribution
+
+Operators need a durable record of what changed and who initiated it. Activity history and clear action attribution make human, agent, and system actions inspectable across the control plane.
+
+### ✅ Self-healing runs & automatic recovery
+
+Agent work should recover from routine failures without waiting for a human to notice every stalled run. Recovery policies can retry safe work, route failures, and keep the issue lifecycle aligned with what actually happened.
+
+### ✅ Agent evals & feedback
+
+Agent performance should be measurable over time, not judged only from anecdotes. Evals, saved results, and structured feedback create a loop for improving skills, prompts, models, and employee quality.
 
 ### ⚪ Memory / Knowledge
 
 We want a stronger memory and knowledge surface for companies, agents, and projects. That includes durable memory, better recall of prior decisions and context, and a clearer path for knowledge-style capabilities without turning Paperclip into a generic chat app.
 
-### ⚪ Enforced Outcomes
-
-Paperclip should get stricter about what counts as finished work. Tasks, approvals, and execution flows should resolve to clear outcomes like merged code, published artifacts, shipped docs, or explicit decisions instead of stopping at vague status updates.
-
 ### ⚪ MAXIMIZER MODE
 
 This is the direction for higher-autonomy execution: more aggressive delegation, deeper follow-through, and stronger operating loops with clear budgets, visibility, and governance. The point is not hidden autonomy; the point is more output per human supervisor.
-
-### ⚪ Deep Planning
-
-Some work needs more than a task description before execution starts. Deeper planning means stronger issue documents, revisionable plans, and clearer review loops for strategy-heavy work before agents begin execution.
 
 ### ⚪ Work Queues
 
@@ -88,10 +108,20 @@ Paperclip should get better at turning completed work into reusable organization
 
 We want a lighter-weight way to talk to leadership agents, but those conversations should still resolve to real work objects like plans, issues, approvals, or decisions. This should improve interaction without changing the core task-and-comments model.
 
-### ⚪ Cloud deployments
+### 🟡 Cloud deployments (multi-tenant isolation & local→cloud sync shipped)
 
 Local-first remains important, but Paperclip also needs a cleaner shared deployment story. Teams should be able to run the same product in hosted or semi-hosted environments without changing the mental model.
+
+Shipped so far: multi-tenant isolation with per-company JWT keys and company-scoped cloud tenants, local→cloud upstream sync, and cloud-managed instance bootstrap.
 
 ### ⚪ Desktop App
 
 A desktop app can make Paperclip feel more accessible and persistent for day-to-day operators. The goal is easier access, better local ergonomics, and a smoother default experience for users who want the control plane always close at hand.
+
+### ⚪ Bring-your-own-ticket-system (Asana / Linear / Jira as on-ramps)
+
+Existing ticket systems should be able to feed work into Paperclip without becoming the agent control plane themselves. Asana, Linear, and Jira can act as familiar on-ramps while Paperclip owns execution, governance, and outcomes.
+
+### ⚪ Connected Apps (one-click integrations, e.g. Vercel)
+
+Common services should connect without bespoke setup for every company. One-click integrations can package credentials, permissions, and useful workflows for apps such as Vercel while keeping access governed and auditable.

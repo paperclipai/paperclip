@@ -36,7 +36,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { queryKeys } from "@/lib/queryKeys";
-import { cn } from "@/lib/utils";
+import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 
@@ -51,7 +51,7 @@ function WorkspaceIcon({ company }: { company: Company }) {
       companyName={company.name}
       logoUrl={company.logoUrl}
       brandColor={company.brandColor}
-      className="size-5 shrink-0 rounded-md text-[11px]"
+      className="size-5 shrink-0 rounded-md text-(length:--text-micro)"
     />
   );
 }
@@ -106,7 +106,7 @@ function SortableCompanyItem({
           type="button"
           ref={setActivatorNodeRef}
           aria-label={`Reorder ${company.name}`}
-          className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring"
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-(length:--rad-2) focus-visible:ring-ring"
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -118,7 +118,7 @@ function SortableCompanyItem({
         </button>
       ) : (
         <>
-          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-nano) text-muted-foreground">
             {company.issuePrefix}
           </span>
           {isSelected ? <Check className="size-4 text-muted-foreground" /> : null}
@@ -134,7 +134,8 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
   const queryClient = useQueryClient();
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialogActions();
-  const { isMobile, setSidebarOpen } = useSidebar();
+  const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
+  const rail = collapsed && !peeking;
   const location = useLocation();
   const navigate = useNavigate();
   const open = controlledOpen ?? internalOpen;
@@ -168,6 +169,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       setOpen(false);
       if (isMobile) setSidebarOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
     },
   });
 
@@ -224,22 +226,27 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          className="h-9 flex-1 justify-start gap-2 px-2 text-left"
-          aria-label={selectedCompany ? `Open ${selectedCompany.name} workspace switcher` : "Open workspace switcher"}
+          // `px-3` (not px-2) so the logo's left edge lines up with the nav icon
+          // column (nav px-3 + item px-3) and, crucially, stays put between states:
+          // the Button's default size adds `has-[>svg]:px-3`, so with the chevron
+          // svg present (expanded) it was already 12px but without it (rail) it fell
+          // back to 8px — a 4px horizontal jump on collapse (PAP-10676).
+          className="h-9 flex-1 justify-start gap-2 px-3 text-left"
+          aria-label={selectedCompany ? `Open ${selectedCompany.name} company switcher` : "Open company switcher"}
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
-            <span className="truncate text-sm font-bold text-foreground">
-              {selectedCompany?.name ?? "Select workspace"}
+            <span className={cn("truncate text-sm font-bold text-foreground", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>
+              {selectedCompany?.name ?? "Select company"}
             </span>
           </span>
-          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
+          {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
         <div className="flex items-center justify-between gap-2 px-2 py-1.5">
-          <DropdownMenuLabel className="p-0 text-[11px] font-semibold uppercase text-muted-foreground">
-            Switch workspace
+          <DropdownMenuLabel className="p-0 text-(length:--text-micro) font-semibold uppercase text-muted-foreground">
+            Switch company
           </DropdownMenuLabel>
           <button
             type="button"
@@ -248,7 +255,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               event.stopPropagation();
               setIsEditingOrder((current) => !current);
             }}
-            className="rounded px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="rounded px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             {isEditingOrder ? "Done" : "Edit"}
           </button>
@@ -275,7 +282,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             </SortableContext>
           </DndContext>
           {orderedCompanies.length === 0 ? (
-            <DropdownMenuItem disabled>No workspaces</DropdownMenuItem>
+            <DropdownMenuItem disabled>No companies</DropdownMenuItem>
           ) : null}
         </div>
         <DropdownMenuSeparator />
@@ -285,7 +292,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           disabled={isEditingOrder}
         >
           <Plus className="size-4" />
-          <span>Add company...</span>
+          <span>Create new company...</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild disabled={isEditingOrder}>

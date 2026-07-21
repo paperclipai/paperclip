@@ -1,6 +1,6 @@
 import type { AgentEnvConfig } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
-import type { IssueCommentAuthorType } from "../constants.js";
+import type { IssueCommentAuthorType, PermissionKey } from "../constants.js";
 import type { IssueCommentMetadata, IssueCommentPresentation } from "./issue.js";
 
 export interface CompanyPortabilityInclude {
@@ -58,6 +58,7 @@ export interface CompanyPortabilityProjectManifestEntry {
   leadAgentSlug: string | null;
   targetDate: string | null;
   color: string | null;
+  icon: string | null;
   status: string | null;
   env: AgentEnvConfig | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
@@ -138,10 +139,16 @@ export interface CompanyPortabilityAgentManifestEntry {
   icon: string | null;
   capabilities: string | null;
   reportsToSlug: string | null;
+  reportsToExistingAgentId: string | null;
+  reportsToExistingAgentSlug: string | null;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
   runtimeConfig: Record<string, unknown>;
   permissions: Record<string, unknown>;
+  permissionGrants: Array<{
+    permissionKey: PermissionKey;
+    scope: Record<string, unknown> | null;
+  }>;
   budgetMonthlyCents: number;
   metadata: Record<string, unknown> | null;
 }
@@ -294,6 +301,7 @@ export interface CompanyPortabilityAdapterOverride {
 
 export interface CompanyPortabilityImportRequest extends CompanyPortabilityPreviewRequest {
   adapterOverrides?: Record<string, CompanyPortabilityAdapterOverride>;
+  secretValues?: Record<string, string>;
 }
 
 export interface CompanyPortabilityImportResult {

@@ -22,6 +22,7 @@ import {
   type IssueTreePreviewWarning,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 
 type IssueRow = typeof issues.$inferSelect;
 type HoldRow = typeof issueTreeHolds.$inferSelect;
@@ -869,30 +870,43 @@ export function issueTreeControlService(db: Db) {
     if (issueIds.length === 0) return { updatedIssueIds: [], updatedIssues: [] };
 
     const now = new Date();
-    const updated = await db
-      .update(issues)
-      .set({
-        status: "cancelled",
-        cancelledAt: now,
-        completedAt: null,
-        checkoutRunId: null,
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          inArray(issues.id, issueIds),
-          notInArray(issues.status, ["done", "cancelled"]),
-        ),
-      )
-      .returning({
-        id: issues.id,
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-      });
+    const updated = await db.transaction(async (tx) => {
+      const rows = await tx
+        .update(issues)
+        .set({
+          status: "cancelled",
+          cancelledAt: now,
+          completedAt: null,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.id, issueIds),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ),
+        )
+        .returning({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        });
+
+      for (const issue of rows) {
+        await finalizeSummarySlotsForTerminalIssue(tx, {
+          ...issue,
+          status: coerceIssueStatus(issue.status),
+        });
+      }
+      return rows;
+    });
 
     return {
       updatedIssueIds: updated.map((issue) => issue.id),

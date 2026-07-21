@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS,
   buildContinuationSummaryMarkdown,
+  continuationSummaryParksExecutor,
+  extractContinuationSummaryNextAction,
 } from "../services/issue-continuation-summary.js";
 
 describe("issue continuation summaries", () => {
@@ -82,5 +84,32 @@ describe("issue continuation summaries", () => {
 
     expect(body).toContain("Latest run error (adapter_failed): adapter failed");
     expect(body).toContain("Inspect the failed run, fix the cause");
+  });
+
+  it("detects continuation summaries that explicitly park executor work for review", () => {
+    const body = [
+      "# Continuation Summary",
+      "",
+      "## Next Action",
+      "",
+      "- Wait for reviewer feedback or approval before continuing executor work.",
+    ].join("\n");
+
+    expect(extractContinuationSummaryNextAction(body)).toBe(
+      "Wait for reviewer feedback or approval before continuing executor work.",
+    );
+    expect(continuationSummaryParksExecutor(body)).toBe(true);
+  });
+
+  it("does not park executor work when the next action is still runnable", () => {
+    const body = [
+      "# Continuation Summary",
+      "",
+      "## Next Action",
+      "",
+      "- Re-check run `25145432006`, then move the issue to `in_review` if the final step is green.",
+    ].join("\n");
+
+    expect(continuationSummaryParksExecutor(body)).toBe(false);
   });
 });
