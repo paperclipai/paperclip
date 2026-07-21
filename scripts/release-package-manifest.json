@@ -1,5 +1,10 @@
 [
   {
+    "dir": "packages/connect-protocol",
+    "name": "@paperclip/connect-protocol",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/adapter-utils",
     "name": "@paperclipai/adapter-utils",
     "publishFromCi": true
