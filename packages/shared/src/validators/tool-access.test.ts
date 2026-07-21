@@ -1,12 +1,30 @@
 import { describe, expect, it } from "vitest";
 import {
+  connectionTokenRequestSchema,
   createToolConnectionSchema,
+  startConnectionAuthorizationSchema,
   toolCredentialSecretRefSchema,
   toolRedactedValueSummarySchema,
   toolTransportConfigSchema,
 } from "./tool-access.js";
 
 describe("tool access validators", () => {
+  it("defaults connection token subjects to app", () => {
+    expect(connectionTokenRequestSchema.parse({})).toEqual({ subject: { type: "app" } });
+  });
+
+  it("accepts user subjects, grant selection, and authorization input", () => {
+    const request = connectionTokenRequestSchema.parse({
+      subject: { type: "user", userId: "user-123" },
+      grantId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(request.subject).toEqual({ type: "user", userId: "user-123" });
+    expect(startConnectionAuthorizationSchema.parse({ subjectUserId: "user-123", scopes: ["read"] })).toEqual({
+      subjectUserId: "user-123",
+      scopes: ["read"],
+    });
+  });
+
   it("accepts multi-key credential annotations", () => {
     const parsed = toolCredentialSecretRefSchema.parse({
       secretId: "11111111-1111-4111-8111-111111111111",

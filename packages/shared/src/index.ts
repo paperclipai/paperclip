@@ -1773,6 +1773,8 @@ export {
   toolTrustRuleBatchApprovalSchema,
   toolTrustRuleScopeSchema,
   connectionTokenRequestSchema,
+  connectionTokenSubjectSchema,
+  startConnectionAuthorizationSchema,
   toolConnectionTestCallSchema,
   toolPolicyTestRequestSchema,
   importMcpJsonSchema,

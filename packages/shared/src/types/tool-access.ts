@@ -191,10 +191,31 @@ export interface ToolConnectionInstallSnapshot {
 }
 
 export type ConnectionTokenScope = string | string[];
+export type ConnectionTokenSubject = { type: "app" } | { type: "user"; userId: string };
+
+export const CONNECTION_RECOVERABLE_ERROR_CODES = [
+  "user_authorization_required",
+  "grant_revoked",
+  "needs_reauthorization",
+  "installation_required",
+  "connection_not_installed",
+  "subject_not_permitted",
+] as const;
+
+export type ConnectionRecoverableErrorCode = typeof CONNECTION_RECOVERABLE_ERROR_CODES[number];
+
+export interface ConnectionRecoverableErrorPayload {
+  code: ConnectionRecoverableErrorCode;
+  connection: { uid: string };
+  subject?: ConnectionTokenSubject;
+  remediation?: Record<string, unknown>;
+}
 
 export interface ConnectionTokenRequest {
+  subject?: ConnectionTokenSubject;
   scope?: ConnectionTokenScope;
   requestedTtlSeconds?: number;
+  grantId?: string;
 }
 
 export interface ConnectionTokenAttribution {
@@ -208,6 +229,11 @@ export interface ConnectionTokenAttribution {
 export interface ConnectionTokenMintedResponse {
   status: "minted";
   connectionId: string;
+  connection: { id: string; uid: string };
+  grantId: string;
+  providerTenantId?: string;
+  externalSubject?: string;
+  metadata?: Record<string, unknown>;
   path: "exchange";
   token: string;
   tokenType: "Bearer" | string;
@@ -221,6 +247,8 @@ export interface ConnectionTokenUseEnvLeaseResponse {
   status: "use_env_lease";
   code: "use_env_lease";
   connectionId: string;
+  connection: { id: string; uid: string };
+  grantId: string;
   path: "static";
   message: string;
   scope: string[];
@@ -228,6 +256,29 @@ export interface ConnectionTokenUseEnvLeaseResponse {
 }
 
 export type ConnectionTokenResponse = ConnectionTokenMintedResponse | ConnectionTokenUseEnvLeaseResponse;
+
+export interface StartConnectionAuthorizationRequest {
+  subjectUserId: string;
+  scopes?: string[];
+  returnTo?: string;
+}
+
+export interface StartConnectionAuthorizationResponse {
+  url: string;
+}
+
+export interface ConnectionUsageDailyBucket {
+  date: string;
+  issuances: { total: number; byOutcome: Record<string, number>; byPath: Record<string, number> };
+  invocations: { total: number; byRiskLevel: Record<string, number> };
+  deliveries: { received: number; forwarded: number };
+}
+
+export interface ConnectionUsageResponse {
+  connection: { id: string; uid: string };
+  range: "7d" | "30d";
+  buckets: ConnectionUsageDailyBucket[];
+}
 
 export interface ConnectionTokenIssuance {
   id: string;

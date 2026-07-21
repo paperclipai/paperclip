@@ -9,6 +9,7 @@ import {
   companies,
   companyMemberships,
   companySecretBindings,
+  connectionGrants,
   connectionTokenIssuances,
   companySecrets,
   companySecretVersions,
@@ -495,7 +496,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
 
     const res = await request(app)
-      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
       .set("X-Paperclip-Run-Id", run.id)
       .send({ scope: "pages:publish:ns/dotta", requestedTtlSeconds: 5000 });
 
@@ -503,6 +504,8 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(res.body).toMatchObject({
       status: "minted",
       connectionId: connection.id,
+      connection: { id: connection.id, uid: connection.uid },
+      grantId: expect.any(String),
       path: "exchange",
       token: "child-pages-token",
       tokenType: "Bearer",
@@ -537,6 +540,68 @@ describeEmbeddedPostgres("tool access service", () => {
         outcome: "success",
       }),
     ]));
+  });
+
+  it("returns typed subject errors and rejects revoked grants immediately", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id);
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+
+    const denied = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .send({ subject: { type: "user", userId: "someone-else" } });
+    expect(denied.status).toBe(403);
+    expect(denied.body).toMatchObject({
+      code: "subject_not_permitted",
+      connection: { uid: connection.uid },
+      subject: { type: "user", userId: "someone-else" },
+    });
+
+    const missing = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .send({ subject: { type: "user", userId: "user-for-run" } });
+    expect(missing.status).toBe(409);
+    expect(missing.body).toMatchObject({ code: "user_authorization_required", remediation: { action: "start_authorization" } });
+
+    const service = toolAccessService(db);
+    const grant = await service.addConnectionInstallation(connection.id, { isDefault: false });
+    await service.revokeConnectionGrant(connection.id, grant.id);
+    const revoked = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ grantId: grant.id });
+    expect(revoked.status).toBe(409);
+    expect(revoked.body).toMatchObject({ code: "grant_revoked", grantId: grant.id });
+  });
+
+  it("returns daily connection usage buckets", async () => {
+    const company = await createCompany(db);
+    const { connection } = await createBrokerConnection(db, company.id);
+    const service = toolAccessService(db);
+    await db.insert(connectionTokenIssuances).values({
+      companyId: company.id,
+      applicationId: connection.applicationId,
+      connectionId: connection.id,
+      agentId: (await createAgent(db, company.id)).id,
+      path: "exchange",
+      requestedScope: [],
+      issuedScope: [],
+      outcome: "success",
+    });
+    await db.insert(toolInvocations).values({
+      companyId: company.id,
+      connectionId: connection.id,
+      toolName: "fixture",
+      riskLevel: "write",
+    });
+    const usage = await service.getConnectionUsage(connection.uid, "7d", company.id);
+    expect(usage.connection).toEqual({ id: connection.id, uid: connection.uid });
+    expect(usage.buckets.at(-1)).toMatchObject({
+      issuances: { total: 1, byOutcome: { success: 1 }, byPath: { exchange: 1 } },
+      invocations: { total: 1, byRiskLevel: { write: 1 } },
+    });
   });
 
   it("rejects connection token minting after the heartbeat run completes", async () => {
@@ -2707,6 +2772,60 @@ describeEmbeddedPostgres("tool access service", () => {
       GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "same-company-sheet,new-company-sheet",
     });
     expect(updated.transportConfig).toEqual(updated.config);
+  });
+
+  it("creates and resolves an agent-initiated user authorization grant card", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack user auth" });
+
+    const started = await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    const authorizationUrl = new URL(started.authorizationUrl);
+    expect(authorizationUrl.searchParams.get("scope")).toBe("users:read");
+
+    const [state] = await db.select().from(toolOauthStates);
+    expect(state).toMatchObject({ subjectUserId: "user-for-run", issueId: issue.id, requestedScopes: ["users:read"] });
+    const [interaction] = await db.select().from(issueThreadInteractions);
+    expect(interaction).toMatchObject({
+      issueId: issue.id,
+      kind: "request_confirmation",
+      status: "pending",
+      title: "Connect your account",
+    });
+    expect(interaction.payload).toMatchObject({ target: { href: started.authorizationUrl } });
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: "user-access-token", refresh_token: "user-refresh-token", expires_in: 3600 }),
+    } as Response);
+    await service.completeOAuthCallback({
+      state: state.state,
+      code: "authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    });
+
+    const [grant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, connected.connectionId),
+      eq(connectionGrants.subjectUserId, "user-for-run"),
+    ));
+    expect(grant).toMatchObject({ kind: "user", status: "active" });
+    expect(grant.credentialSecretRefs.map((ref) => ref.configPath).sort()).toEqual(["oauth.access_token", "oauth.refresh_token"]);
+    const [resolved] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
+    expect(resolved).toMatchObject({ status: "accepted", result: { version: 1, outcome: "accepted" } });
   });
 
   it("starts and completes OAuth app sign-in with PKCE state and secret-backed tokens", async () => {
