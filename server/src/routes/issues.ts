@@ -7662,7 +7662,7 @@ export function issueRoutes(
     const requestedReferenceImageAttachmentIds = uniqueIds(body.referenceImageAttachmentIds ?? []);
     const requestedReferenceImageAssetIds = uniqueIds(body.referenceImageAssetIds ?? []);
     const hasExplicitReferenceSelection =
-      body.referenceImageAttachmentIds !== undefined || body.referenceImageAssetIds !== undefined;
+      requestedReferenceImageAttachmentIds.length > 0 || requestedReferenceImageAssetIds.length > 0;
     const autoBoundReferenceImageAttachmentIds = referenceGuardrail.required && !hasExplicitReferenceSelection
       ? referenceGuardrail.candidateAttachmentIds
       : [];

@@ -167,7 +167,7 @@ function createStorageService(): TestStorageService {
   };
 }
 
-async function createApp(storage: StorageService) {
+async function createApp(storage: StorageService, db: any = {}) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -184,7 +184,7 @@ async function createApp(storage: StorageService) {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, storage));
+  app.use("/api", issueRoutes(db, storage));
   app.use(errorHandler);
   return app;
 }
@@ -207,6 +207,22 @@ function makeAttachment(contentType: string, originalFilename: string) {
     createdByUserId: "local-board",
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+function createAssetQueryDb(...assets: Array<Record<string, unknown>>) {
+  let index = 0;
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          then: async <T>(resolve: (rows: Array<Record<string, unknown>>) => T) => {
+            const asset = assets[index++];
+            return resolve(asset ? [asset] : []);
+          },
+        }),
+      }),
+    }),
   };
 }
 
@@ -833,6 +849,8 @@ describe("issue attachment routes", () => {
           prompt: "Correct the portrait while preserving the composition.",
           size: "1024x1024",
           quality: "high",
+          referenceImageAttachmentIds: [],
+          referenceImageAssetIds: [],
         });
 
       expect(res.status).toBe(201);
@@ -861,7 +879,7 @@ describe("issue attachment routes", () => {
     }
   });
 
-  it("treats explicit reference selection as authoritative over board-linked candidates", async () => {
+  it("treats explicit attachment and asset selection as authoritative, dedupes inputs, and suppresses board-linked candidates", async () => {
     const previousImageProvider = process.env.PAPERCLIP_IMAGE_PROVIDER;
     delete process.env.PAPERCLIP_IMAGE_PROVIDER;
     mockGenerateCodexIssueImage.mockReset();
@@ -871,6 +889,7 @@ describe("issue attachment routes", () => {
 
     const issueId = "11111111-1111-4111-8111-111111111111";
     const selectedAttachmentId = "2d8a654e-2ece-43cf-9000-ab0fe254e1a6";
+    const selectedAssetId = "5d8a654e-2ece-43cf-9000-ab0fe254e1a6";
     const autoAttachmentId = "3d8a654e-2ece-43cf-9000-ab0fe254e1a6";
     const autoAssetId = "4d8a654e-2ece-43cf-9000-ab0fe254e1a6";
     const storage = createStorageService();
@@ -925,27 +944,84 @@ describe("issue attachment routes", () => {
     }));
 
     try {
-      const app = await createApp(storage);
+      const app = await createApp(storage, createAssetQueryDb({
+        id: selectedAssetId,
+        companyId: "company-1",
+        objectKey: "assets/selected-reference.png",
+        contentType: "image/png",
+        byteSize: 7,
+        sha256: "selected-asset-sha",
+        originalFilename: "selected-asset-reference.png",
+      }));
       const res = await request(app)
         .post(`/api/issues/${issueId}/image-generations`)
         .send({
           prompt: "Use only the specifically selected image reference.",
           size: "1024x1024",
           quality: "high",
-          referenceImageAttachmentIds: [selectedAttachmentId],
+          referenceImageAttachmentIds: [selectedAttachmentId, selectedAttachmentId],
+          referenceImageAssetIds: [selectedAssetId],
         });
 
       expect(res.status).toBe(201);
       expect(res.body.generationMode).toBe("reference_backed");
-      expect(res.body.actualImageInputsBound).toEqual([selectedAttachmentId]);
+      expect(res.body.actualImageInputsBound).toEqual([selectedAttachmentId, selectedAssetId]);
       expect(res.body.autoBoundReferenceImageAttachmentIds).toEqual([]);
       expect(res.body.autoBoundReferenceImageAssetIds).toEqual([]);
       expect(mockGenerateCodexIssueImage).toHaveBeenCalledWith(expect.objectContaining({
-        references: [expect.objectContaining({ sourceId: selectedAttachmentId })],
+        references: [
+          expect.objectContaining({ sourceId: selectedAttachmentId }),
+          expect.objectContaining({ sourceId: selectedAssetId }),
+        ],
       }));
     } finally {
       if (previousImageProvider === undefined) delete process.env.PAPERCLIP_IMAGE_PROVIDER;
       else process.env.PAPERCLIP_IMAGE_PROVIDER = previousImageProvider;
     }
+  });
+
+  it("rejects more than sixteen combined explicit references with 422", async () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const attachmentIds = Array.from(
+      { length: 16 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    const assetId = "99999999-9999-4999-8999-999999999999";
+    const storage = createStorageService();
+    storage.getObject = vi.fn(async () => ({
+      stream: Readable.from(Buffer.from("PNGDATA")),
+      contentType: "image/png",
+      contentLength: 7,
+    }));
+    mockIssueService.getById.mockResolvedValue({
+      id: issueId,
+      companyId: "company-1",
+      identifier: "SIX-4514",
+    });
+    mockIssueService.getAttachmentById.mockImplementation(async (id: string) => ({
+      ...makeAttachment("image/png", `${id}.png`),
+      id,
+      issueId,
+    }));
+    const app = await createApp(storage, createAssetQueryDb({
+      id: assetId,
+      companyId: "company-1",
+      objectKey: "assets/seventeenth-reference.png",
+      contentType: "image/png",
+      byteSize: 7,
+      sha256: "seventeenth-reference-sha",
+      originalFilename: "seventeenth-reference.png",
+    }));
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/image-generations`)
+      .send({
+        prompt: "Use each selected image reference according to its role.",
+        referenceImageAttachmentIds: attachmentIds,
+        referenceImageAssetIds: [assetId],
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("At most 16 unique image reference inputs");
   });
 });
