@@ -397,6 +397,12 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     expect(second.status).toBe(200);
     expect(second.body.artifacts.map((artifact: { title: string }) => artifact.title)).toEqual(["User Upload Notes"]);
     expect(second.body.artifacts.every((artifact: { source: string }) => artifact.source === "document")).toBe(true);
+
+    const incompatibleKind = await request(app).get(
+      `/api/companies/${companyId}/artifacts?starred=true&kind=image`,
+    );
+    expect(incompatibleKind.status).toBe(200);
+    expect(incompatibleKind.body).toEqual({ artifacts: [], nextCursor: null });
   });
 
   it("returns an empty starred view for agent callers", async () => {

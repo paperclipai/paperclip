@@ -429,12 +429,14 @@ describeEmbeddedPostgres("resource membership routes", () => {
     const { companyId, documentId } = await seed();
     const app = createApp(db, boardActor(companyId));
 
-    const first = await request(app)
-      .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
-      .send({ starred: true });
-    const second = await request(app)
-      .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
-      .send({ starred: true });
+    const [first, second] = await Promise.all([
+      request(app)
+        .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
+        .send({ starred: true }),
+      request(app)
+        .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
+        .send({ starred: true }),
+    ]);
     const list = await request(app).get(`/api/companies/${companyId}/resource-memberships/me`);
 
     expect(first.status).toBe(200);
