@@ -41,6 +41,9 @@
  const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
  	"agent_capabilities",
  	"messages.Agent.content.ToolUse.input",
+@@ -2562,1 +2562,1 @@
+-	if (state.ch === "\\" && state.quote !== "'") return {
++	if (process.platform !== "win32" && state.ch === "\\" && state.quote !== "'") return {
 @@ -3960,6 +3960,10 @@
  		const startupStderr = [];
  		child.stderr.on("data", (chunk) => {
@@ -52,6 +55,3 @@
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -2562,1 +2562,1 @@
--	if (state.ch === "\\" && state.quote !== "'") return {
-+	if (process.platform !== "win32" && state.ch === "\\" && state.quote !== "'") return {
