@@ -49,6 +49,19 @@ class TestReconcileDecisionKeys(unittest.TestCase):
         stale = notifier.reconcile_decision_keys(issues, "L", {"y:decision"})
         self.assertEqual(stale, set())
 
+    def test_noop_when_label_id_unresolved(self):
+        # resolve_label_id lieferte in diesem Poll None (transient/nicht
+        # gefunden) -> reconcile darf NICHTS als stale erkennen, sonst
+        # verlieren noch gelabelte Issues ihren Decision-Key aus `seen` und
+        # werden beim naechsten erfolgreichen Poll faelschlich erneut als
+        # neues Event gepusht.
+        issues = [self._issue("x", labels=[])]
+        stale = notifier.reconcile_decision_keys(issues, None, {"x:decision"})
+        self.assertEqual(stale, set())
+
+        stale_empty_string = notifier.reconcile_decision_keys(issues, "", {"x:decision"})
+        self.assertEqual(stale_empty_string, set())
+
     def test_re_raise_then_reappears_as_new_event(self):
         # War gelabelt+gesehen, Label entfernt (Mensch hat entschieden) ->
         # Key droppen; später erneut gelabelt -> collect_events liefert ein

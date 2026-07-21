@@ -10,7 +10,16 @@ def reconcile_decision_keys(issues, label_id, seen):
     die zurückgegebenen Keys aus `seen` (und persistiert aus app.seen)
     entfernen, BEVOR `collect_events` läuft, damit ein Wieder-Labeln als neu
     erkannt wird. Nur Issues aus `issues` werden betrachtet — andere
-    Mandanten/Keys bleiben unangetastet."""
+    Mandanten/Keys bleiben unangetastet.
+
+    Ist `label_id` falsy (z.B. `None`, weil `resolve_label_id` das Label in
+    diesem Poll transient/gar nicht auflösen konnte), ist die Funktion ein
+    No-op: es wird nichts als 'entfernt' erkannt, sonst würden bei einem
+    fehlgeschlagenen Label-Resolve alle noch gelabelten Issues fälschlich
+    als 'nicht mehr gelabelt' gelten und ihre Keys aus `seen` fliegen —
+    was beim nächsten erfolgreichen Poll zu einem Spurious-Re-Push führt."""
+    if not label_id:
+        return set()
     stale = set()
     for issue in issues:
         key = "{}:decision".format(issue.get("id"))
