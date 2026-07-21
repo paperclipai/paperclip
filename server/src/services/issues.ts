@@ -6640,6 +6640,18 @@ export function issueService(db: Db) {
         });
       }
 
+      // A checkout run can disappear between wake dispatch and this checkout.
+      // Do not persist an unavailable id: issues has a foreign key to
+      // heartbeat_runs, and a missing run cannot hold the checkout lock.
+      if (checkoutRunId) {
+        const run = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, issueCompany.companyId), eq(heartbeatRuns.id, checkoutRunId)))
+          .then((rows) => rows[0] ?? null);
+        if (!run) checkoutRunId = null;
+      }
+
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
       if (await isCheckoutSuppressedByPendingInteraction({ issueId: id, agentId, expectedStatuses, checkoutRunId })) {

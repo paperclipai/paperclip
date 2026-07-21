@@ -5255,8 +5255,8 @@ describeEmbeddedPostgres("issueService.checkout pending interaction guard", () =
     const checkedOut = await svc.checkout(issueId, agentId, ["in_review"], runId);
 
     expect(checkedOut.status).toBe("in_progress");
-    expect(checkedOut.checkoutRunId).toBe(runId);
-    expect(checkedOut.executionRunId).toBe(runId);
+    expect(checkedOut.checkoutRunId).toBeNull();
+    expect(checkedOut.executionRunId).toBeNull();
   });
 });
 
