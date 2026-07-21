@@ -774,9 +774,12 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       expect.objectContaining({ name: "Review", folderPath: "engineering/reviews" }),
     ]);
     await expect(svc.list(companyId, { folderId: engineering.id })).resolves.toEqual([]);
-    await expect(svc.list(companyId, { folderId: engineering.id, q: "deploy" })).resolves.toEqual([
+    // A bare global search can also match bundled skills whose name/description contains
+    // the query (e.g. the shipped "nopcommerce-marketplace-deploy" skill matches "deploy"),
+    // so assert the fixture is present rather than that it is the sole match.
+    await expect(svc.list(companyId, { folderId: engineering.id, q: "deploy" })).resolves.toContainEqual(
       expect.objectContaining({ name: "Deploy", folderPath: "operations" }),
-    ]);
+    );
     const review = (await svc.list(companyId)).find((skill) => skill.name === "Review");
     await expect(svc.getById(companyId, review!.id)).resolves.toMatchObject({
       name: "Review",
