@@ -123,7 +123,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
     delete (authConfig as { baseURL?: string }).baseURL;
   }
 
-  return betterAuth(authConfig);
+  return betterAuth(authConfig) as BetterAuthInstance;
 }
 
 export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandler {
