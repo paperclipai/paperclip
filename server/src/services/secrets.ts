@@ -434,6 +434,11 @@ export type RuntimeSecretManifestEntry = {
   version: number;
   provider: SecretProvider;
   providerVersionRef?: string | null;
+  // Non-reversible hash of the resolved secret VALUE for the version. Lets the
+  // effective-run-config fingerprint detect an in-place re-encryption that keeps
+  // the same version number but changes the underlying value, forcing a session/
+  // sandbox refresh. Never the plaintext or ciphertext material.
+  valueFingerprint?: string | null;
   outcome: "success" | "failure";
   errorCode?: string | null;
 };
@@ -1086,6 +1091,7 @@ export function secretService(db: Db) {
           version: resolvedVersion,
           provider: providerId,
           providerVersionRef: versionRow.providerVersionRef,
+          valueFingerprint: versionRow.fingerprintSha256 ?? versionRow.valueSha256,
           outcome: "success",
         },
       };

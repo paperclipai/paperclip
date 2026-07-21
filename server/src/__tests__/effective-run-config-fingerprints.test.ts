@@ -199,6 +199,47 @@ describe("effective run config fingerprints", () => {
     expect(versionChanged.sessionFingerprint.fingerprint).not.toBe(v7.sessionFingerprint.fingerprint);
   });
 
+  it("changes the fingerprint when a secret value fingerprint changes under the same version", () => {
+    const manifestEntry = (valueFingerprint: string) => ({
+      configPath: "env.OPENAI_API_KEY",
+      envKey: "OPENAI_API_KEY",
+      secretId: "secret-1",
+      bindingId: "binding-1",
+      version: 7,
+      provider: "local_encrypted",
+      providerVersionRef: "provider-version-7",
+      outcome: "success" as const,
+      valueFingerprint,
+    });
+    const session = {
+      adapterConfig: { env: { OPENAI_API_KEY: "resolved-secret-value" } },
+    };
+
+    const original = createEffectiveRunConfigFingerprints({
+      session,
+      secretManifest: [manifestEntry("sha256:aaaa")],
+    });
+    // In-place re-encryption keeps the SAME version number but changes the value.
+    const reencrypted = createEffectiveRunConfigFingerprints({
+      session,
+      secretManifest: [manifestEntry("sha256:bbbb")],
+    });
+    // Identical value fingerprint must NOT cause a spurious reset.
+    const unchanged = createEffectiveRunConfigFingerprints({
+      session,
+      secretManifest: [manifestEntry("sha256:aaaa")],
+    });
+
+    expect(reencrypted.sessionFingerprint.fingerprint).not.toBe(
+      original.sessionFingerprint.fingerprint,
+    );
+    expect(unchanged.sessionFingerprint.fingerprint).toBe(
+      original.sessionFingerprint.fingerprint,
+    );
+    // The non-reversible fingerprint may be included, but never the raw value.
+    expect(original.sessionFingerprint.canonicalJson).not.toContain("resolved-secret-value");
+  });
+
   it("detects plain env value drift without storing raw values", () => {
     const base = createEffectiveRunConfigFingerprints({
       session: {

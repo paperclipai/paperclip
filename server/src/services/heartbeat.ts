@@ -3580,6 +3580,7 @@ function sanitizeSecretManifestForConfigFingerprint(
         : readNonEmptyString(record.version),
       provider: readNonEmptyString(record.provider),
       providerVersionRef: readNonEmptyString(record.providerVersionRef),
+      valueFingerprint: readNonEmptyString(record.valueFingerprint),
       outcome: record.outcome === "success" || record.outcome === "failure" ? record.outcome : null,
     };
   });
