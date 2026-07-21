@@ -176,6 +176,66 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
   });
 
+  it("marks the sandbox target pre-baked only when the lease declares runtimeImagePrebaked", async () => {
+    // A lease from a provider plugin that explicitly declares its runtime images
+    // are pre-baked (the k8s sandbox plugin) disables the network-install shim
+    // and fails fast on a missing CLI.
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: { provider: "kubernetes", reuseLease: false, timeoutMs: 30_000 },
+    });
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "gemini_local",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "kubernetes" } },
+      leaseId: "lease-1",
+      leaseMetadata: {
+        sandboxProviderPlugin: true,
+        runtimeImagePrebaked: true,
+      },
+      lease: null,
+      environmentRuntime: null,
+    });
+
+    expect(target).toMatchObject({
+      kind: "remote",
+      transport: "sandbox",
+      prebakedRuntime: true,
+    });
+  });
+
+  it("keeps a plugin-backed lease provisionable (install path) when it does NOT declare runtimeImagePrebaked", async () => {
+    // A provider plugin that ships a GENERIC sandbox and relies on runtime
+    // installation is plugin-backed but must NOT be treated as pre-baked, or its
+    // install (Layer 3) is wrongly dropped and a provisionable run turns into a
+    // spurious adapter_runtime_image_mismatch.
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: { provider: "generic-plugin", reuseLease: false, timeoutMs: 30_000 },
+    });
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "gemini_local",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "generic-plugin" } },
+      leaseId: "lease-1",
+      leaseMetadata: {
+        sandboxProviderPlugin: true,
+      },
+      lease: null,
+      environmentRuntime: null,
+    });
+
+    expect(target).toMatchObject({
+      kind: "remote",
+      transport: "sandbox",
+      prebakedRuntime: false,
+    });
+  });
+
   it("resolves SSH execution targets in bridge mode", async () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "ssh",

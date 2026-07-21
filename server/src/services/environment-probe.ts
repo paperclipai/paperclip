@@ -75,6 +75,17 @@ export async function probeEnvironment(
           archiveOnRelease: true,
         },
       };
+      // A connectivity probe carries no per-run harness. A mixed-harness pool now
+      // rejects an absent per-run adapter (a real run must never fall back to a
+      // different harness's image); pin the probe to the environment's configured
+      // default adapter so it deterministically boots one valid image instead of
+      // being rejected. Providers without a default adapter fall through to null
+      // (single-adapter / non-adapter providers keep the prior behavior).
+      const defaultAdapterType =
+        typeof (parsed.config as Record<string, unknown>).adapterType === "string" &&
+        ((parsed.config as Record<string, unknown>).adapterType as string).trim().length > 0
+          ? ((parsed.config as Record<string, unknown>).adapterType as string).trim()
+          : null;
       let leaseRecord: Awaited<ReturnType<typeof runtime.acquireRunLease>> | null = null;
       let releaseStatus: "released" | "failed" = "released";
       try {
@@ -85,7 +96,7 @@ export async function probeEnvironment(
           agentId: null,
           heartbeatRunId: null,
           persistedExecutionWorkspace: null,
-          adapterType: null,
+          adapterType: defaultAdapterType,
           applyCustomImageTemplate: options.applyCustomImageTemplate === true,
         });
         const metadata = leaseRecord.lease.metadata ?? {};

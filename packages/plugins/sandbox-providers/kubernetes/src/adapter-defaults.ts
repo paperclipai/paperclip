@@ -114,14 +114,24 @@ export class RunAdapterRequiredError extends Error {
 
 export interface ResolveRunAdapterTypeOptions {
   /**
-   * Require an explicit per-run adapter. When true and the run does not supply
-   * one, throw {@link RunAdapterRequiredError} instead of silently falling back
-   * to the environment default — the correct posture for a mixed-harness
-   * managed pool where the default is unlikely to match the agent's harness.
-   * Defaults to false to preserve single-adapter environments and connectivity
-   * probes that legitimately carry no per-run adapter.
+   * Force rejection of a lease that carries no per-run adapter, for ANY pool
+   * (throw {@link RunAdapterRequiredError} instead of falling back to the
+   * environment default). This is an explicit operator override on top of the
+   * automatic mixed-pool safety below — use it to require the per-run adapter
+   * even in a single-adapter environment. Defaults to false.
    */
   requireRunAdapter?: boolean;
+  /**
+   * The set of adapter types the environment is configured to serve (the
+   * enabled entries of the plugin's `adapters` registry). When this declares
+   * MORE THAN ONE distinct adapter the environment is a mixed-harness pool, and
+   * a lease with no per-run adapter is rejected automatically — falling back to
+   * the single env-default image would route e.g. a gemini run onto the
+   * opencode image. Absent, empty, or a single distinct entry means an
+   * effectively single-adapter environment, where the env-default fallback is
+   * safe (and connectivity probes that carry no per-run adapter keep working).
+   */
+  configuredAdapterTypes?: readonly string[];
 }
 
 /**
@@ -130,9 +140,14 @@ export interface ResolveRunAdapterTypeOptions {
  * the environment's configured default adapter when the run does not specify one.
  *
  * The image the plugin picks MUST match the harness the server exec's. Never
- * substitute a different harness: when `options.requireRunAdapter` is set, a run
- * without a per-run adapter is rejected rather than silently mapped to the
- * environment default (which may be a different harness's runtime image).
+ * substitute a different harness for an absent per-run adapter:
+ *   - A MIXED-harness pool (`configuredAdapterTypes` declares more than one
+ *     distinct adapter) rejects the lease automatically — no operator flag
+ *     needed — because the single env-default image could belong to a different
+ *     harness than the agent will run.
+ *   - `options.requireRunAdapter` forces the same rejection for any pool.
+ * A single-adapter environment (or one with no declared registry) still falls
+ * back to the env default, preserving single-adapter setups and probes.
  */
 export function resolveRunAdapterType(
   runAdapterType: string | null | undefined,
@@ -143,7 +158,16 @@ export function resolveRunAdapterType(
   if (trimmed.length > 0) {
     return trimmed;
   }
-  if (options.requireRunAdapter) {
+  // Per-run adapter absent. Determine whether the environment is a mixed-harness
+  // pool from its configured adapter set: more than one distinct enabled adapter
+  // means the single env-default fallback could pick a DIFFERENT harness's image.
+  const distinctConfiguredAdapters = new Set(
+    (options.configuredAdapterTypes ?? [])
+      .map((type) => (typeof type === "string" ? type.trim() : ""))
+      .filter((type) => type.length > 0),
+  );
+  const isMixedHarnessPool = distinctConfiguredAdapters.size > 1;
+  if (options.requireRunAdapter || isMixedHarnessPool) {
     throw new RunAdapterRequiredError(configAdapterType);
   }
   return configAdapterType;

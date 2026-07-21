@@ -186,4 +186,63 @@ describe("resolveRunAdapterType", () => {
       );
     });
   });
+
+  describe("mixed-harness pool (automatic safe default, no operator flag)", () => {
+    it("rejects an absent per-run adapter when the config declares MORE THAN ONE adapter", () => {
+      // A mixed pool must never silently fall back to the single env default:
+      // that would route a gemini run onto the opencode image. This holds with
+      // NO requireRunAdapter flag set — the safe behavior is the default.
+      for (const absent of [undefined, null, "   "]) {
+        expect(() =>
+          resolveRunAdapterType(absent, "opencode_local", {
+            configuredAdapterTypes: ["opencode_local", "gemini_local", "claude_local"],
+          }),
+        ).toThrow(RunAdapterRequiredError);
+      }
+    });
+
+    it("does NOT mis-route: honors the run's own adapter in a mixed pool when present", () => {
+      expect(
+        resolveRunAdapterType("gemini_local", "opencode_local", {
+          configuredAdapterTypes: ["opencode_local", "gemini_local"],
+        }),
+      ).toBe("gemini_local");
+    });
+
+    it("still falls back for a single-adapter config with an absent per-run adapter", () => {
+      expect(
+        resolveRunAdapterType(undefined, "opencode_local", {
+          configuredAdapterTypes: ["opencode_local"],
+        }),
+      ).toBe("opencode_local");
+    });
+
+    it("treats duplicate/blank entries as effectively single-adapter (fallback stays safe)", () => {
+      expect(
+        resolveRunAdapterType(undefined, "opencode_local", {
+          configuredAdapterTypes: ["opencode_local", " opencode_local ", "", "   "],
+        }),
+      ).toBe("opencode_local");
+    });
+
+    it("falls back when no configured adapter set is supplied (probe/single-adapter compatibility)", () => {
+      expect(
+        resolveRunAdapterType(undefined, "opencode_local", { configuredAdapterTypes: [] }),
+      ).toBe("opencode_local");
+      expect(resolveRunAdapterType(undefined, "opencode_local", {})).toBe("opencode_local");
+    });
+
+    it("names the environment default and carries the stable code when a mixed pool rejects", () => {
+      try {
+        resolveRunAdapterType(null, "opencode_local", {
+          configuredAdapterTypes: ["opencode_local", "gemini_local"],
+        });
+        throw new Error("expected resolveRunAdapterType to throw");
+      } catch (err) {
+        expect(err).toBeInstanceOf(RunAdapterRequiredError);
+        expect((err as RunAdapterRequiredError).code).toBe(RUN_ADAPTER_REQUIRED_CODE);
+        expect((err as Error).message).toContain("opencode_local");
+      }
+    });
+  });
 });

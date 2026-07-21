@@ -63,12 +63,17 @@ export async function resolveEnvironmentExecutionTarget(input: {
         ? input.leaseMetadata.shellCommand
         : null;
 
-    // Plugin-backed sandbox providers own their runtime images (built per
-    // adapter, contractually complete) and run behind a locked egress, so the
-    // in-sandbox network-install shim must never fire for them. Built-in
-    // sandbox providers (e.g. e2b) keep the install path. The lease metadata's
-    // `sandboxProviderPlugin` flag is the existing discriminator.
-    const prebakedRuntime = input.leaseMetadata?.sandboxProviderPlugin === true;
+    // Disable the in-sandbox network-install shim ONLY for providers that
+    // explicitly declare their runtime images are pre-baked / contractually
+    // complete (adapter CLI already on PATH, run behind a locked egress) — the
+    // per-lease `runtimeImagePrebaked` capability signal. We must NOT key off the
+    // generic "plugin-backed" marker (`sandboxProviderPlugin`): a provider plugin
+    // that ships a GENERIC sandbox and legitimately relies on runtime
+    // installation would otherwise be wrongly marked pre-baked, dropping its
+    // install (Layer 3) and turning a provisionable run into a spurious
+    // `adapter_runtime_image_mismatch`. Such a plugin omits the flag and keeps
+    // the install path; built-in sandbox providers (e.g. e2b) never set it.
+    const prebakedRuntime = input.leaseMetadata?.runtimeImagePrebaked === true;
 
     return {
       kind: "remote",

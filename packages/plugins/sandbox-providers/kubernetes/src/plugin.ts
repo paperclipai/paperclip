@@ -212,8 +212,19 @@ const plugin = definePlugin({
     // to the environment's configured default adapter. getAdapterDefaults validates
     // it is a registered adapter (throws otherwise), so a curated-out adapter fails
     // the lease as before.
+    //
+    // Drive the mixed-pool safety off the configured adapter set: when the
+    // declarative `adapters` registry enables more than one adapter this is a
+    // mixed-harness pool, so an absent per-run adapter is rejected automatically
+    // (a gemini run must never fall back to the opencode image) — no operator
+    // flag required. `requireRunAdapterType` remains an explicit override that
+    // also requires the per-run adapter in a single-adapter environment.
+    const configuredAdapterTypes = config.adapters
+      ?.filter((entry) => entry.enabled !== false)
+      .map((entry) => entry.adapterType);
     const effectiveAdapterType = resolveRunAdapterType(params.adapterType, config.adapterType, {
       requireRunAdapter: config.requireRunAdapterType,
+      configuredAdapterTypes,
     });
 
     // Emit a runtime warning if FQDNs are configured but egressMode=standard
@@ -337,6 +348,10 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
+      // This plugin's per-adapter runtime images ship the adapter CLI and run
+      // behind a locked egress: declare them pre-baked so the server disables
+      // the network-install shim and fails fast on a wrong-image mismatch.
+      runtimeImagePrebaked: true,
     };
 
     return {
@@ -406,6 +421,9 @@ const plugin = definePlugin({
       secretName,
       phase: check.phase,
       backend: leaseBackend,
+      // Pre-baked runtime images (see acquire path); the resumed lease carries
+      // the same capability so the server keeps the network-install shim off.
+      runtimeImagePrebaked: true,
     };
 
     return {
