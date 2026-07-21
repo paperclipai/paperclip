@@ -100,14 +100,33 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   });
 
   async function cleanupRetryFixture() {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await cleanupRetryFixtureOnce();
+        return;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+  }
+
+  async function cleanupHeartbeatRunDependents() {
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+  }
+
+  async function cleanupRetryFixtureOnce() {
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projects);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(activityLog);
+    await cleanupHeartbeatRunDependents();
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
