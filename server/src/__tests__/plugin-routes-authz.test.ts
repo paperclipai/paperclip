@@ -236,6 +236,7 @@ describe.sequential("company-scoped current plugin state authz", () => {
       apiVersion: null,
       updatedAt: null,
     });
+    expect(res.headers["cache-control"]).toBe("no-store");
   }, 20_000);
 
   it("denies cross-company agent reads before looking up the plugin key", async () => {
