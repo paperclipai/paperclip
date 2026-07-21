@@ -2469,7 +2469,9 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const outsideSkillFile = path.join(outsideDir, "outside-skill.md");
     await fs.mkdir(linkedSkillDir, { recursive: true });
     await fs.writeFile(outsideSkillFile, "---\nname: Outside Skill\n---\n", "utf8");
+    await fs.writeFile(path.join(outsideDir, "SKILL.md"), "---\nname: Outside Directory Skill\n---\n", "utf8");
     await fs.symlink(outsideSkillFile, path.join(linkedSkillDir, "SKILL.md"));
+    await fs.symlink(outsideDir, path.join(workspaceDir, "linked-directory"));
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -2489,7 +2491,10 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const result = await svc.scanProjectWorkspaces(companyId, {
       mode: "import",
       workspaceIds: [workspaceId],
-      selection: [{ workspaceId, path: ".codex/skills/linked-skill" }],
+      selection: [
+        { workspaceId, path: ".codex/skills/linked-skill" },
+        { workspaceId, path: "linked-directory" },
+      ],
     });
 
     expect(result.imported).toEqual([]);
@@ -2500,13 +2505,18 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         reason: expect.stringContaining("symbolic link"),
       }),
     ]);
-    expect(result.skipped).toEqual([
+    expect(result.skipped).toEqual(expect.arrayContaining([
       expect.objectContaining({
         workspaceId,
         path: linkedSkillDir,
         reason: expect.stringContaining("symbolic link"),
       }),
-    ]);
+      expect.objectContaining({
+        workspaceId,
+        path: "linked-directory",
+        reason: expect.stringContaining("was not rediscovered"),
+      }),
+    ]));
     expect(result.candidates[0]?.reason).not.toContain(workspaceDir);
     expect(result.candidates[0]?.reason).not.toContain(outsideDir);
     expect(result.skipped[0]?.reason).not.toContain(workspaceDir);

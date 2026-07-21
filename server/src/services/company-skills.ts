@@ -1369,9 +1369,11 @@ export async function discoverProjectWorkspaceSkillDirectories(
     relativePath: string;
     inventoryMode: LocalSkillInventoryMode;
   }>();
-  const rootSkillPath = path.join(target.workspaceCwd, "SKILL.md");
+  const workspaceRoot = await fs.realpath(path.resolve(target.workspaceCwd)).catch(() => null);
+  if (!workspaceRoot) return [];
+  const rootSkillPath = path.join(workspaceRoot, "SKILL.md");
   if ((await statPath(rootSkillPath))?.isFile()) {
-    discovered.set(path.resolve(target.workspaceCwd), {
+    discovered.set(workspaceRoot, {
       directoryRoot: ".",
       relativePath: ".",
       inventoryMode: "project_root",
@@ -1384,7 +1386,14 @@ export async function discoverProjectWorkspaceSkillDirectories(
       : explicitPath.toLowerCase() === "skill.md"
         ? "."
         : explicitPath;
-    const absoluteSkillDir = path.resolve(target.workspaceCwd, relativeSkillDir);
+    const absoluteSkillDir = await fs.realpath(path.resolve(workspaceRoot, relativeSkillDir)).catch(() => null);
+    if (!absoluteSkillDir) continue;
+    const relativeToWorkspace = path.relative(workspaceRoot, absoluteSkillDir);
+    if (
+      relativeToWorkspace === ".."
+      || relativeToWorkspace.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relativeToWorkspace)
+    ) continue;
     if (!(await statPath(path.join(absoluteSkillDir, "SKILL.md")))?.isFile()) continue;
     discovered.set(absoluteSkillDir, {
       directoryRoot: relativeSkillDir === "." ? "." : path.posix.dirname(relativeSkillDir),
@@ -1394,7 +1403,7 @@ export async function discoverProjectWorkspaceSkillDirectories(
   }
 
   for (const relativeRoot of PROJECT_SCAN_DIRECTORY_ROOTS) {
-    const absoluteRoot = path.join(target.workspaceCwd, relativeRoot);
+    const absoluteRoot = path.join(workspaceRoot, relativeRoot);
     const rootStat = await statPath(absoluteRoot);
     if (!rootStat?.isDirectory()) continue;
 
@@ -1406,7 +1415,7 @@ export async function discoverProjectWorkspaceSkillDirectories(
       if (!(await statPath(path.join(absoluteSkillDir, "SKILL.md")))?.isFile()) continue;
       discovered.set(absoluteSkillDir, {
         directoryRoot: relativeRoot,
-        relativePath: normalizePortablePath(path.relative(target.workspaceCwd, absoluteSkillDir)),
+        relativePath: normalizePortablePath(path.relative(workspaceRoot, absoluteSkillDir)),
         inventoryMode: "full",
       });
     }
