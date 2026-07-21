@@ -34,6 +34,24 @@ export function resolvePaperclipInstanceRoot(input: {
   return path.resolve(resolvePaperclipHomeDir(input.homeDir), "instances", resolvePaperclipInstanceId(input.instanceId));
 }
 
+export function resolvePaperclipHomePath(
+  input: { homeDir?: string } = {},
+  ...segments: string[]
+): string {
+  return path.resolve(resolvePaperclipHomeDir(input.homeDir), ...segments);
+}
+
+export function resolvePaperclipInstancePath(
+  input: { homeDir?: string; instanceId?: string } = {},
+  ...segments: string[]
+): string {
+  return path.resolve(resolvePaperclipInstanceRoot(input), ...segments);
+}
+
+export function resolveUserHomePath(...segments: string[]): string {
+  return path.resolve(os.homedir(), ...segments);
+}
+
 export function resolvePaperclipInstanceConfigPath(input: {
   homeDir?: string;
   instanceId?: string;

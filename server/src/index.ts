@@ -59,6 +59,8 @@ import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-sh
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
+import { createAesStateSnapshotEncryptionProvider, createInstanceStateSnapshotService } from "./services/instance-state-snapshot.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -69,6 +71,7 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { resolvePaperclipInstanceId, resolvePaperclipInstancePath } from "@paperclipai/shared";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -588,6 +591,28 @@ export async function startServer(): Promise<StartedServer> {
   });
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
+  const storageProvider = createStorageProviderFromConfig(config);
+  const stateSnapshotInstanceId = resolvePaperclipInstanceId();
+  const stateSnapshotKeyRaw = process.env.PAPERCLIP_STATE_SNAPSHOT_KEY?.trim();
+  const stateSnapshotKey = stateSnapshotKeyRaw
+    ? Buffer.from(stateSnapshotKeyRaw, /^[0-9a-f]{64}$/i.test(stateSnapshotKeyRaw) ? "hex" : "base64")
+    : null;
+  const stateSnapshotMarkerDir = resolvePaperclipInstancePath({ instanceId: stateSnapshotInstanceId }, "data", "instance-backups");
+  const stateSnapshotService = stateSnapshotKey
+    ? createInstanceStateSnapshotService({
+        storageProvider,
+        encryptionProvider: createAesStateSnapshotEncryptionProvider(stateSnapshotKey),
+        context: { instanceId: stateSnapshotInstanceId },
+        markerDir: stateSnapshotMarkerDir,
+      })
+    : null;
+  let stateSnapshotInFlight = false;
+  const runStateSnapshot = async () => {
+    if (!stateSnapshotService || stateSnapshotInFlight) return null;
+    stateSnapshotInFlight = true;
+    try { return await stateSnapshotService.runSnapshot(); }
+    finally { stateSnapshotInFlight = false; }
+  };
   const feedback = feedbackService(db as any, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
@@ -679,6 +704,16 @@ export async function startServer(): Promise<StartedServer> {
         return result;
       },
     },
+    stateSnapshotService: stateSnapshotService
+      ? {
+          runSnapshot: async () => {
+            const result = await runStateSnapshot();
+            if (!result) throw conflict("Instance-state snapshot already in progress");
+            return result;
+          },
+          restoreSnapshot: stateSnapshotService.restoreSnapshot,
+        }
+      : undefined,
     databaseBackupHealth: config.databaseBackupEnabled
       ? {
           enabled: config.databaseBackupEnabled,
@@ -688,6 +723,11 @@ export async function startServer(): Promise<StartedServer> {
           alertFiles: databaseBackupAlertFiles,
         }
       : undefined,
+    stateSnapshotHealth: {
+      enabled: Boolean(stateSnapshotService),
+      markerDir: stateSnapshotMarkerDir,
+      maxAgeHours: Math.max(1, Number(process.env.PAPERCLIP_STATE_SNAPSHOT_MAX_AGE_HOURS) || 48),
+    },
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
@@ -1116,6 +1156,14 @@ export async function startServer(): Promise<StartedServer> {
         // runServerDatabaseBackup already logs the failure with context.
       });
     }, backupIntervalMs);
+  }
+
+  if (stateSnapshotService) {
+    const intervalMinutes = Math.max(15, Number(process.env.PAPERCLIP_STATE_SNAPSHOT_INTERVAL_MINUTES) || 1440);
+    logger.info({ intervalMinutes, provider: storageProvider.id }, "Automatic encrypted instance-state snapshots enabled");
+    setInterval(() => { void runStateSnapshot().catch((err) => logger.error({ err }, "Automatic instance-state snapshot failed")); }, intervalMinutes * 60 * 1000);
+  } else {
+    logger.warn("Instance-state snapshots disabled: PAPERCLIP_STATE_SNAPSHOT_KEY is not configured");
   }
   
   // Wait for external adapters to finish loading before accepting requests.

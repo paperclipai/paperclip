@@ -15,6 +15,7 @@ import {
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { inspectInstanceStateSnapshotHealth } from "../services/instance-state-snapshot-health.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -66,6 +67,7 @@ export function healthRoutes(
     companyDeletionEnabled: boolean;
     serverInfo?: ServerInfoSnapshot;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
+    stateSnapshotHealth?: { markerDir: string; enabled: boolean; maxAgeHours: number };
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -201,7 +203,11 @@ export function healthRoutes(
     const databaseBackup = opts.databaseBackupHealth
       ? inspectDatabaseBackupHealth(opts.databaseBackupHealth)
       : undefined;
-    const warnings = databaseBackup?.warnings.length ? databaseBackup.warnings : undefined;
+    const stateSnapshot = opts.stateSnapshotHealth
+      ? inspectInstanceStateSnapshotHealth(opts.stateSnapshotHealth)
+      : undefined;
+    const combinedWarnings = [...(databaseBackup?.warnings ?? []), ...(stateSnapshot?.warnings ?? [])];
+    const warnings = combinedWarnings.length ? combinedWarnings : undefined;
 
     if (!exposeFullDetails) {
       const redactedDatabaseBackup = databaseBackup ? redactedDatabaseBackupHealth(databaseBackup) : undefined;
@@ -213,6 +219,7 @@ export function healthRoutes(
         bootstrapStatus,
         bootstrapInviteActive,
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
+        ...(stateSnapshot ? { stateSnapshot: { enabled: stateSnapshot.enabled, status: stateSnapshot.status, warnings: stateSnapshot.warnings } } : {}),
         ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
       });
@@ -233,6 +240,7 @@ export function healthRoutes(
       },
       serverInfo,
       ...(databaseBackup ? { databaseBackup } : {}),
+      ...(stateSnapshot ? { stateSnapshot } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),
     });

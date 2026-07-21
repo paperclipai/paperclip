@@ -688,6 +688,22 @@ DB backups are not full instance filesystem backups. For full local disaster
 recovery, also back up local storage files and the local encrypted secrets key if
 those providers are enabled.
 
+## Instance-State Snapshots
+
+Set `PAPERCLIP_STATE_SNAPSHOT_KEY` to a 32-byte key encoded as 64 hex characters
+or base64 to enable encrypted instance-state snapshots. The server writes them
+through the configured storage provider, runs them daily by default, and reports
+success/failure markers in `/api/health`.
+
+```sh
+pnpm paperclipai state snapshot
+pnpm paperclipai state restore 'instance-state/default/<snapshot>.tar.gz.enc'
+```
+
+Use `PAPERCLIP_STATE_SNAPSHOT_INTERVAL_MINUTES` to change the schedule and
+`PAPERCLIP_STATE_SNAPSHOT_MAX_AGE_HOURS` to change the health warning threshold.
+The encryption key must be held separately from the instance being protected.
+
 ## Secrets in Dev
 
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.
