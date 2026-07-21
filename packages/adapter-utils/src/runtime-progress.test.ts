@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRuntimeProgressReporter } from "./runtime-progress.js";
+import { createRuntimeProgressReporter, createSyncStageTimer } from "./runtime-progress.js";
 
 const MB = 1024 * 1024;
 
@@ -277,5 +277,112 @@ describe("createRuntimeProgressReporter", () => {
     await failed.complete(); // suppressed — already failed
     expect(failLines).toHaveLength(2);
     expect(failLines.at(-1)).toContain("failed at 20%");
+  });
+});
+
+describe("createSyncStageTimer", () => {
+  it("emits a per-stage + total duration line with the phase, artifact and transport tag", async () => {
+    const clock = makeClock();
+    const lines: string[] = [];
+    const timer = createSyncStageTimer({
+      sink: (line) => {
+        lines.push(line);
+      },
+      phase: "git_sync",
+      artifact: "git history",
+      now: clock.now,
+    });
+
+    await timer.time("tar", async () => {
+      clock.advance(12);
+    });
+    await timer.time("upload", async () => {
+      clock.advance(340);
+    });
+    await timer.time("extract", async () => {
+      clock.advance(88);
+    });
+    await timer.finish();
+
+    expect(lines).toEqual([
+      "[paperclip] sync git_sync git history: tar 12ms, upload 340ms, extract 88ms (total 440ms) [transport=fallback]\n",
+    ]);
+  });
+
+  it("defaults the transport tag to fallback and honors an explicit native tag", async () => {
+    const clock = makeClock();
+    const native: string[] = [];
+    const timer = createSyncStageTimer({
+      sink: (line) => {
+        native.push(line);
+      },
+      phase: "config_sync",
+      artifact: "workspace",
+      transport: "native",
+      now: clock.now,
+    });
+    await timer.time("upload", async () => {
+      clock.advance(5);
+    });
+    await timer.finish();
+    expect(native).toEqual([
+      "[paperclip] sync config_sync workspace: upload 5ms (total 5ms) [transport=native]\n",
+    ]);
+  });
+
+  it("returns the timed function's result and records duration even when it throws", async () => {
+    const clock = makeClock();
+    const lines: string[] = [];
+    const timer = createSyncStageTimer({
+      sink: (line) => {
+        lines.push(line);
+      },
+      phase: "config_sync",
+      artifact: "skills",
+      now: clock.now,
+    });
+
+    const value = await timer.time("tar", async () => {
+      clock.advance(7);
+      return 42;
+    });
+    expect(value).toBe(42);
+
+    await expect(
+      timer.time("upload", async () => {
+        clock.advance(3);
+        throw new Error("upload boom");
+      }),
+    ).rejects.toThrow("upload boom");
+
+    await timer.finish();
+    expect(lines).toEqual([
+      "[paperclip] sync config_sync skills: tar 7ms, upload 3ms (total 10ms) [transport=fallback]\n",
+    ]);
+  });
+
+  it("is idempotent on finish and a no-op with no sink or no timed stage", async () => {
+    const lines: string[] = [];
+    const timer = createSyncStageTimer({
+      sink: (line) => {
+        lines.push(line);
+      },
+      phase: "git_sync",
+      artifact: "git history",
+      now: makeClock().now,
+    });
+    // No stage timed → nothing to report.
+    await timer.finish();
+    await timer.finish();
+    expect(lines).toEqual([]);
+
+    // Disabled sink → never throws, emits nothing.
+    const disabled = createSyncStageTimer({
+      sink: undefined,
+      phase: "git_sync",
+      artifact: "git history",
+    });
+    await disabled.time("tar", async () => {});
+    await expect(disabled.finish()).resolves.toBeUndefined();
   });
 });

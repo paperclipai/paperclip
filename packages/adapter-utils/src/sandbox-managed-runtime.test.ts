@@ -225,6 +225,7 @@ describe("sandbox managed runtime", () => {
       },
     };
     const runtimeStatuses: Array<{ phase: string; message: string }> = [];
+    const progressLines: string[] = [];
 
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
@@ -238,6 +239,9 @@ describe("sandbox managed runtime", () => {
       adapterKey: "test-adapter",
       client,
       workspaceLocalDir: localWorkspaceDir,
+      onProgress: (line) => {
+        progressLines.push(line);
+      },
       onRuntimeProgress: async (status) => {
         runtimeStatuses.push({ phase: status.phase, message: status.message });
       },
@@ -300,6 +304,15 @@ describe("sandbox managed runtime", () => {
       status.phase === "export" &&
       /^Exporting git history from sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
     ))).toBe(true);
+
+    // Sync-duration timers cover the git and workspace-overlay phases too
+    // (PAP-2952 Phase 0): one tar → upload → extract breakdown per artifact.
+    expect(progressLines.some((line) =>
+      /^\[paperclip\] sync git_sync git history: tar \d+ms, upload \d+ms, extract \d+ms \(total \d+ms\) \[transport=fallback\]\n$/.test(line),
+    )).toBe(true);
+    expect(progressLines.some((line) =>
+      /^\[paperclip\] sync config_sync workspace: tar \d+ms, upload \d+ms, extract \d+ms \(total \d+ms\) \[transport=fallback\]\n$/.test(line),
+    )).toBe(true);
   });
 
   it("repairs stale host index deletions when the sandbox restores a clean git worktree", async () => {
@@ -757,6 +770,18 @@ describe("sandbox managed runtime", () => {
     const uploadAssetLines = lines.filter((line) => line.includes("Syncing skills to sandbox"));
     expect(uploadWorkspaceLines.length).toBeGreaterThan(0);
     expect(uploadAssetLines.length).toBeGreaterThan(0);
+
+    // Per-artifact sync-duration timer lines (PAP-2952 Phase 0): tar → upload →
+    // extract breakdown + total, tagged with the placeholder transport, one per
+    // synced artifact (workspace + the skills asset here).
+    const workspaceTimer = lines.find((line) =>
+      /^\[paperclip\] sync config_sync workspace: tar \d+ms, upload \d+ms, extract \d+ms \(total \d+ms\) \[transport=fallback\]\n$/.test(line),
+    );
+    const assetTimer = lines.find((line) =>
+      /^\[paperclip\] sync config_sync skills: tar \d+ms, upload \d+ms, extract \d+ms \(total \d+ms\) \[transport=fallback\]\n$/.test(line),
+    );
+    expect(workspaceTimer).toBeDefined();
+    expect(assetTimer).toBeDefined();
     // 100 reported increments must be throttled to at most ~one line per 10% step.
     expect(uploadWorkspaceLines.length).toBeLessThanOrEqual(11);
     // Reaches 100% and shows the MB breakdown.

@@ -39,6 +39,75 @@ export interface RuntimeStatusUpdate {
 
 export type RuntimeStatusSink = (update: RuntimeStatusUpdate) => void | Promise<void>;
 
+/**
+ * Which transport carried a sync artifact's bytes. Phase 0 (PAP-2952) always
+ * records the base64-shell `"fallback"`; later phases populate `"native"` once
+ * the sandbox seam gains a direct upload verb. Placeholder tag on the timer line
+ * so Phase 6 can compare fallback-vs-native durations from the same log shape.
+ */
+export type SandboxSyncTransport = "native" | "fallback";
+
+export interface SyncStageTimerOptions {
+  /** Where the aggregated duration line is written (the run log). Undefined = disabled. */
+  sink: RuntimeProgressSink | undefined;
+  /** Reused status-phase label, e.g. "git_sync" / "config_sync". */
+  phase: RuntimeStatusPhase;
+  /** Per-artifact label, e.g. "git history", "workspace", or an asset key. */
+  artifact: string;
+  /** Transport tag placeholder; defaults to "fallback" (see {@link SandboxSyncTransport}). */
+  transport?: SandboxSyncTransport;
+  /** Injectable clock for deterministic tests. Default `Date.now`. */
+  now?: () => number;
+}
+
+export interface SyncStageTimer {
+  /**
+   * Run `fn`, recording its wall-clock duration under `stage`. Returns `fn`'s
+   * result and re-throws its error; the duration is recorded either way so a
+   * failing stage still contributes to the breakdown.
+   */
+  time<T>(stage: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Emit the aggregated per-stage + total duration line for this artifact.
+   * Idempotent; a no-op when no sink was provided or no stage was timed.
+   */
+  finish(): Promise<void>;
+}
+
+/**
+ * Duration instrumentation for a single sync artifact's tar → upload → extract
+ * seams. Each stage is wrapped with `time()`; `finish()` emits one legible line
+ * carrying the per-stage durations, the total, and the transport tag — the
+ * measurement baseline Phase 6 compares before/after.
+ */
+export function createSyncStageTimer(options: SyncStageTimerOptions): SyncStageTimer {
+  const now = options.now ?? Date.now;
+  const transport: SandboxSyncTransport = options.transport ?? "fallback";
+  const stages: { stage: string; durationMs: number }[] = [];
+  let finished = false;
+
+  return {
+    async time(stage, fn) {
+      const startedAt = now();
+      try {
+        return await fn();
+      } finally {
+        stages.push({ stage, durationMs: Math.max(0, Math.round(now() - startedAt)) });
+      }
+    },
+    async finish() {
+      if (finished) return;
+      finished = true;
+      if (!options.sink || stages.length === 0) return;
+      const totalMs = stages.reduce((sum, entry) => sum + entry.durationMs, 0);
+      const breakdown = stages.map((entry) => `${entry.stage} ${entry.durationMs}ms`).join(", ");
+      await options.sink(
+        `[paperclip] sync ${options.phase} ${options.artifact}: ${breakdown} (total ${totalMs}ms) [transport=${transport}]\n`,
+      );
+    },
+  };
+}
+
 export interface RuntimeProgressReporterOptions {
   sink: RuntimeProgressSink;
   phase: RuntimeProgressPhase;

@@ -65,7 +65,7 @@ export {
   redactCommandText,
 } from "./command-redaction.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
-export { createRuntimeProgressReporter } from "./runtime-progress.js";
+export { createRuntimeProgressReporter, createSyncStageTimer } from "./runtime-progress.js";
 export type {
   RuntimeProgressSink,
   RuntimeProgressPhase,
@@ -76,6 +76,9 @@ export type {
   RuntimeStatusPhase,
   RuntimeStatusSink,
   RuntimeStatusUpdate,
+  SandboxSyncTransport,
+  SyncStageTimer,
+  SyncStageTimerOptions,
 } from "./runtime-progress.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
