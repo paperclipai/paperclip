@@ -87,6 +87,11 @@ async function expandPattern(pattern: string): Promise<string[]> {
 async function copyEntry(entry: StateClassEntry, source: string, destination: string): Promise<void> {
   const stat = await fs.stat(source);
   await fs.mkdir(path.dirname(destination), { recursive: true });
+  if (entry.consistency === "sqlite_backup" && stat.isDirectory()) {
+    await fs.mkdir(destination, { recursive: true });
+    for (const child of await fs.readdir(source)) await copyEntry(entry, path.join(source, child), path.join(destination, child));
+    return;
+  }
   if (entry.consistency === "sqlite_backup" && stat.isFile() && /\.(sqlite|sqlite3|db)$/i.test(source)) {
     await execFileAsync("sqlite3", [source, `.backup '${destination.replace(/'/g, "''")}'`]);
     return;
@@ -138,10 +143,12 @@ export function createInstanceStateSnapshotService(opts: {
       await execFileAsync("tar", ["-czf", archivePath, "-C", stageDir, "."]);
       const encryptedPath = `${archivePath}.enc`;
       await opts.encryptionProvider.encrypt(archivePath, encryptedPath);
-      const body = await fs.readFile(encryptedPath);
+      const encryptedStat = await fs.stat(encryptedPath);
       const objectKey = `instance-state/${context.instanceId ?? "default"}/${startedAt.toISOString().replace(/[:.]/g, "-")}.tar.gz.enc`;
-      await opts.storageProvider.putObject({ objectKey, body, contentType: "application/vnd.paperclip.state-snapshot", contentLength: body.length });
-      const result = { objectKey, sizeBytes: body.length, sha256: createHash("sha256").update(body).digest("hex"), entryCount, startedAt: startedAt.toISOString(), finishedAt: new Date().toISOString() };
+      const sha256 = createHash("sha256");
+      for await (const chunk of createReadStream(encryptedPath)) sha256.update(chunk);
+      await opts.storageProvider.putObject({ objectKey, body: createReadStream(encryptedPath), contentType: "application/vnd.paperclip.state-snapshot", contentLength: encryptedStat.size });
+      const result = { objectKey, sizeBytes: encryptedStat.size, sha256: sha256.digest("hex"), entryCount, startedAt: startedAt.toISOString(), finishedAt: new Date().toISOString() };
       await fs.mkdir(markerDir, { recursive: true });
       await fs.writeFile(path.join(markerDir, "state-snapshot.success.json"), JSON.stringify(result));
       await fs.rm(path.join(markerDir, "state-snapshot.failure"), { force: true });
