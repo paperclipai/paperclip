@@ -38,3 +38,49 @@ def create_issue(token, company_id, assignee_agent_id, title, description):
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _get_json(token, path):
+    req = urllib.request.Request(API_BASE + path, headers={"Authorization": "Bearer {}".format(token)})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _unwrap(data):
+    if isinstance(data, list):
+        return data
+    return data.get("issues", data.get("data", data.get("labels", [])))
+
+
+def list_issues(token, company_id, label_id=None):
+    path = "/companies/{}/issues".format(company_id)
+    if label_id:
+        path += "?labelId={}".format(label_id)
+    return _unwrap(_get_json(token, path))
+
+
+def resolve_label_id(token, company_id, name):
+    for label in _unwrap(_get_json(token, "/companies/{}/labels".format(company_id))):
+        if label.get("name") == name:
+            return label.get("id")
+    return None
+
+
+def find_issue_by_identifier(token, company_id, identifier):
+    for issue in list_issues(token, company_id):
+        if issue.get("identifier") == identifier:
+            return issue
+    return None
+
+
+def add_comment(token, issue_id, body, resume=True):
+    payload = {"body": body}
+    if resume:
+        payload["resume"] = True
+    req = urllib.request.Request(
+        "{}/issues/{}/comments".format(API_BASE, issue_id),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer {}".format(token)},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
