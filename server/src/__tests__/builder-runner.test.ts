@@ -89,6 +89,7 @@ const config = {
 };
 
 afterEach(() => {
+  mockExecuteBuilderTurn.mockReset();
   _resetBuilderToolExtensions();
   setBuilderPluginBridge(null);
   vi.restoreAllMocks();
