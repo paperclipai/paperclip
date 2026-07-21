@@ -5377,6 +5377,21 @@ function isTruthyRuntimeEnvValue(value: string | undefined) {
 export const SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS = 3 * 60 * 1000;
 export const SHUTDOWN_DRAIN_POLL_INTERVAL_MS = 500;
 
+// Shared across ALL heartbeatService instances (routes and the scheduler each
+// construct their own) so that once graceful shutdown begins EVERY instance's
+// dispatch-suppression check observes the quiesce. If this lived in a single
+// service closure, a dispatch path on a different instance would keep starting
+// new runs mid-drain (only to be interrupted immediately or outlive cleanup).
+// Mirrors activeRunExecutions above, which is module-scoped for the same
+// cross-instance reason. It never resets in production (the process is exiting);
+// resetShutdownDrainingForTests() clears it between test cases.
+let shutdownDraining = false;
+
+/** Test-only: clears the shared graceful-shutdown quiesce flag between cases. */
+export function resetShutdownDrainingForTests(): void {
+  shutdownDraining = false;
+}
+
 export function resolveShutdownDrainTimeoutMs(
   env: Record<string, string | undefined> = process.env,
 ): number {
@@ -5445,9 +5460,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     return cachedWorktreeRunExecutionOverride;
   };
-  // Set once graceful shutdown begins so the run engine stops dispatching NEW
-  // runs while in-flight runs drain. It never resets (the process is exiting).
-  let shutdownDraining = false;
+  // shutdownDraining is module-scoped (declared above) so that once graceful
+  // shutdown begins, every heartbeatService instance's suppression check below
+  // observes the quiesce, not just the instance that ran the drain.
   const getSchedulingSuppression = async () => {
     if (shutdownDraining) {
       return { suppressed: true, reason: "server_shutdown" as const };
@@ -9087,7 +9102,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         "soft-draining in-flight heartbeat runs before shutdown",
       );
       while (hasInflightRuns() && clock() < deadline) {
-        await sleep(pollIntervalMs);
+        // Cap each wait to the remaining budget so a sub-interval remainder can
+        // never sleep a full poll interval past the deadline. Overrunning would
+        // push the drain (plus the interrupt+retry cleanup that follows) beyond
+        // the timeout and risk a SIGKILL mid-cleanup.
+        const remainingMs = deadline - clock();
+        if (remainingMs <= 0) break;
+        await sleep(Math.min(pollIntervalMs, remainingMs));
       }
       if (hasInflightRuns()) {
         logger.warn(
