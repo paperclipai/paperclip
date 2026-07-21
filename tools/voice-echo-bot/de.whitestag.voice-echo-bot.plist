@@ -11,6 +11,10 @@
         <string>__HOME__/.paperclip/scripts/voice-echo-bot/bot.py</string>
     </array>
     <key>WorkingDirectory</key><string>__HOME__/.paperclip/scripts/voice-echo-bot</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
     <key>StandardOutPath</key><string>__HOME__/.paperclip/logs/voice-echo-bot.log</string>
