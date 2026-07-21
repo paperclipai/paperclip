@@ -3,16 +3,44 @@ import { describe, expect, it } from "vitest";
 import { getWorkerBootstrapSource } from "./sandboxed-parser-worker";
 
 describe("sandboxed parser worker bootstrap", () => {
-  it("disables child worker and object URL escape hatches", () => {
-    const source = getWorkerBootstrapSource();
+  it("disables worker network and escape globals", () => {
+    const workerScope = {
+      Worker: () => undefined,
+      SharedWorker: () => undefined,
+      Blob: () => undefined,
+      RTCPeerConnection: () => undefined,
+      RTCDataChannel: () => undefined,
+      URL: {
+        createObjectURL: () => "blob:test",
+        revokeObjectURL: () => undefined,
+      },
+    };
 
-    expect(source).toContain("self.Worker = _undefined");
-    expect(source).toContain("self.SharedWorker = _undefined");
-    expect(source).toContain("self.Blob = _undefined");
-    expect(source).toContain("self.RTCPeerConnection = _undefined");
-    expect(source).toContain("self.RTCDataChannel = _undefined");
-    expect(source).toContain('"createObjectURL"');
-    expect(source).toContain('"revokeObjectURL"');
+    new Function("self", getWorkerBootstrapSource())(workerScope);
+
+    expect(workerScope.Worker).toBeUndefined();
+    expect(workerScope.SharedWorker).toBeUndefined();
+    expect(workerScope.Blob).toBeUndefined();
+    expect(workerScope.RTCPeerConnection).toBeUndefined();
+    expect(workerScope.RTCDataChannel).toBeUndefined();
+    expect(workerScope.URL.createObjectURL).toBeUndefined();
+    expect(workerScope.URL.revokeObjectURL).toBeUndefined();
+  });
+
+  it("disables getter-only worker globals without aborting bootstrap", () => {
+    const workerScope: Record<string, unknown> = {};
+    Object.defineProperty(workerScope, "caches", {
+      configurable: true,
+      get: () => ({ sentinel: "cache-storage" }),
+    });
+    Object.defineProperty(workerScope, "indexedDB", {
+      configurable: true,
+      get: () => ({ sentinel: "indexed-db" }),
+    });
+
+    expect(() => new Function("self", getWorkerBootstrapSource())(workerScope)).not.toThrow();
+    expect(workerScope.caches).toBeUndefined();
+    expect(workerScope.indexedDB).toBeUndefined();
   });
 
   it("evaluates parser source in strict mode", () => {

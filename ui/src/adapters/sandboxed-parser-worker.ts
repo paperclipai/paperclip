@@ -43,25 +43,32 @@ const WORKER_BOOTSTRAP = `
 
 const _undefined = void 0;
 
+function disableGlobal(name) {
+  Object.defineProperty(self, name, {
+    value: _undefined,
+    writable: false,
+    configurable: false,
+  });
+}
+
 // Network
-self.fetch = _undefined;
-self.XMLHttpRequest = _undefined;
-self.WebSocket = _undefined;
-self.EventSource = _undefined;
-self.RTCPeerConnection = _undefined;
-self.RTCDataChannel = _undefined;
-self.Request = _undefined;
-self.Response = _undefined;
-self.Headers = _undefined;
-self.Cache = _undefined;
-self.CacheStorage = _undefined;
-self.caches = _undefined;
+for (const name of [
+  "fetch",
+  "XMLHttpRequest",
+  "WebSocket",
+  "EventSource",
+  "RTCPeerConnection",
+  "RTCDataChannel",
+  "Request",
+  "Response",
+  "Headers",
+  "Cache",
+  "CacheStorage",
+  "caches",
+]) disableGlobal(name);
 
 // Import / eval escape hatches
-self.importScripts = _undefined;
-self.Worker = _undefined;
-self.SharedWorker = _undefined;
-self.Blob = _undefined;
+for (const name of ["importScripts", "Worker", "SharedWorker", "Blob"]) disableGlobal(name);
 if (self.URL) {
   try { Object.defineProperty(self.URL, "createObjectURL", { value: _undefined, writable: false, configurable: false }); } catch {}
   try { Object.defineProperty(self.URL, "revokeObjectURL", { value: _undefined, writable: false, configurable: false }); } catch {}
@@ -71,13 +78,10 @@ if (self.URL) {
 if (self.navigator) {
   try { Object.defineProperty(self.navigator, "sendBeacon", { value: _undefined, writable: false, configurable: false }); } catch {}
 }
-
-// Service worker / broadcast channel
-self.BroadcastChannel = _undefined;
+for (const name of ["BroadcastChannel"]) disableGlobal(name);
 
 // IndexedDB (prevents persistent state exfiltration)
-self.indexedDB = _undefined;
-self.IDBFactory = _undefined;
+for (const name of ["indexedDB", "IDBFactory"]) disableGlobal(name);
 
 // ── 2. Parser state ─────────────────────────────────────────────────────────
 
