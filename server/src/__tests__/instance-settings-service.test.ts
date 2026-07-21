@@ -6,6 +6,9 @@ import {
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
 
+const INSTANCE_NONCE = "9ed115ac-9e93-4fe9-a4f1-eb4ea2b0fb24";
+const SEED_EPOCH = "7fa5921e-241f-4ec1-9f63-fd11266ac7b1";
+
 describe("instance settings service", () => {
   it("ignores retired experimental flags without resetting current settings", () => {
     expect(normalizeExperimentalSettings({
@@ -38,7 +41,6 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
-      enableSmokeLab: false,
       enableBuiltInAgents: true,
       enableSummaries: false,
       enableDecisions: false,
@@ -49,6 +51,8 @@ describe("instance settings service", () => {
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,
       enableWorktreeRunExecution: false,
+      worktreeRunExecutionInstanceNonce: null,
+      worktreeRunExecutionSeedEpoch: null,
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
@@ -154,7 +158,10 @@ describe("instance settings service", () => {
     const activatedAt = new Date("2026-07-10T12:00:00.000Z");
 
     const next = applyExperimentalSettingsPatch(
-      { enableWorktreeRunExecution: false },
+      {
+        enableWorktreeRunExecution: false,
+        worktreeRunExecutionInstanceNonce: INSTANCE_NONCE,
+      },
       { enableWorktreeRunExecution: true },
       {
         now: () => activatedAt,
@@ -167,15 +174,16 @@ describe("instance settings service", () => {
 
     expect(next.enableWorktreeRunExecution).toBe(true);
     expect(next.worktreeRunExecutionActivatedAt).toBe("2026-07-10T12:00:00.000Z");
-    expect(next.worktreeRunExecutionActivationInstanceId).toBe("worktree-instance");
+    expect(next.worktreeRunExecutionActivationInstanceId).toBe(INSTANCE_NONCE);
   });
 
   it("clears worktree run execution activation fields on a true to false transition", () => {
     const next = applyExperimentalSettingsPatch(
       {
         enableWorktreeRunExecution: true,
+        worktreeRunExecutionInstanceNonce: INSTANCE_NONCE,
         worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
-        worktreeRunExecutionActivationInstanceId: "worktree-instance",
+        worktreeRunExecutionActivationInstanceId: INSTANCE_NONCE,
       },
       { enableWorktreeRunExecution: false },
       {
@@ -193,7 +201,10 @@ describe("instance settings service", () => {
 
   it("refreshes the activation cutoff when worktree run execution is re-toggled", () => {
     const firstActivation = applyExperimentalSettingsPatch(
-      { enableWorktreeRunExecution: false },
+      {
+        enableWorktreeRunExecution: false,
+        worktreeRunExecutionInstanceNonce: INSTANCE_NONCE,
+      },
       { enableWorktreeRunExecution: true },
       {
         now: () => new Date("2026-07-10T12:00:00.000Z"),
@@ -237,6 +248,7 @@ describe("instance settings service", () => {
       { enableWorktreeRunExecution: false },
       {
         enableWorktreeRunExecution: false,
+        worktreeRunExecutionInstanceNonce: "e7904e84-5d6a-44af-bd5f-1c93d9636bc3",
         worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
         worktreeRunExecutionActivationInstanceId: "copied-instance",
       },
@@ -250,13 +262,16 @@ describe("instance settings service", () => {
 
     expect(next.worktreeRunExecutionActivatedAt).toBeNull();
     expect(next.worktreeRunExecutionActivationInstanceId).toBeNull();
+    expect(next.worktreeRunExecutionInstanceNonce).toBeNull();
   });
 
   it("resolves worktree run execution as armed only when the cutoff matches the current instance", async () => {
     const experimental = normalizeExperimentalSettings({
       enableWorktreeRunExecution: true,
+      worktreeRunExecutionInstanceNonce: INSTANCE_NONCE,
+      worktreeRunExecutionSeedEpoch: SEED_EPOCH,
       worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
-      worktreeRunExecutionActivationInstanceId: "worktree-instance",
+      worktreeRunExecutionActivationInstanceId: INSTANCE_NONCE,
     });
 
     await expect(
@@ -264,13 +279,15 @@ describe("instance settings service", () => {
         getExperimental: async () => experimental,
         runtimeEnv: {
           PAPERCLIP_IN_WORKTREE: "true",
-          PAPERCLIP_INSTANCE_ID: "worktree-instance",
+          PAPERCLIP_INSTANCE_ID: "injected-shared-instance-id",
         },
       }),
     ).resolves.toEqual({
       armed: true,
       cutoff: "2026-07-10T12:00:00.000Z",
-      activationInstanceId: "worktree-instance",
+      activationInstanceId: INSTANCE_NONCE,
+      instanceNonce: INSTANCE_NONCE,
+      seedEpoch: SEED_EPOCH,
       reason: null,
     });
   });
@@ -278,7 +295,8 @@ describe("instance settings service", () => {
   it("fails closed when worktree run execution is missing a cutoff", async () => {
     const experimental = normalizeExperimentalSettings({
       enableWorktreeRunExecution: true,
-      worktreeRunExecutionActivationInstanceId: "worktree-instance",
+      worktreeRunExecutionInstanceNonce: INSTANCE_NONCE,
+      worktreeRunExecutionActivationInstanceId: INSTANCE_NONCE,
     });
 
     await expect(
@@ -299,8 +317,10 @@ describe("instance settings service", () => {
   it("fails closed when worktree run execution was activated by another instance", async () => {
     const experimental = normalizeExperimentalSettings({
       enableWorktreeRunExecution: true,
+      worktreeRunExecutionInstanceNonce: INSTANCE_NONCE,
+      worktreeRunExecutionSeedEpoch: SEED_EPOCH,
       worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
-      worktreeRunExecutionActivationInstanceId: "source-instance",
+      worktreeRunExecutionActivationInstanceId: "f6690751-2ed0-4113-9403-241c2cc3ace9",
     });
 
     await expect(
@@ -314,7 +334,7 @@ describe("instance settings service", () => {
     ).resolves.toMatchObject({
       armed: false,
       cutoff: null,
-      activationInstanceId: "source-instance",
+      activationInstanceId: "f6690751-2ed0-4113-9403-241c2cc3ace9",
       reason: "instance_id_mismatch",
     });
   });

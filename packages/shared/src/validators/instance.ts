@@ -62,6 +62,8 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
   enableWorktreeRunExecution: z.boolean().default(false),
+  worktreeRunExecutionInstanceNonce: z.string().uuid().nullable().default(null),
+  worktreeRunExecutionSeedEpoch: z.string().uuid().nullable().default(null),
   worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),
   issueGraphLivenessAutoRecoveryLookbackHours: z
@@ -74,6 +76,8 @@ export const instanceExperimentalSettingsSchema = z.object({
 
 export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema
   .omit({
+    worktreeRunExecutionInstanceNonce: true,
+    worktreeRunExecutionSeedEpoch: true,
     worktreeRunExecutionActivatedAt: true,
     worktreeRunExecutionActivationInstanceId: true,
   })

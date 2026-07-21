@@ -13,6 +13,7 @@ import { InstanceExperimentalSettings } from "./InstanceExperimentalSettings";
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
   updateExperimental: vi.fn(),
+  getWorktreeRunEngine: vi.fn(),
   previewIssueGraphLivenessAutoRecovery: vi.fn(),
   runIssueGraphLivenessAutoRecovery: vi.fn(),
 }));
@@ -87,6 +88,8 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableWorktreeRunExecution: false,
+    worktreeRunExecutionInstanceNonce: null,
+    worktreeRunExecutionSeedEpoch: null,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
   };
@@ -167,6 +170,20 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     mockInstanceSettingsApi.updateExperimental.mockImplementation(async (patch) => {
       currentExperimentalSettings = { ...currentExperimentalSettings, ...patch };
       return { ...currentExperimentalSettings };
+    });
+    // The boot-truth banner has its own coverage in
+    // WorktreeRunEngineBanner.test.tsx; here it defaults to not-in-worktree so
+    // the page tests focus on the toggle and delegation.
+    mockInstanceSettingsApi.getWorktreeRunEngine.mockResolvedValue({
+      inWorktree: false,
+      activation: {
+        armed: false,
+        cutoff: null,
+        activationInstanceId: null,
+        reason: "not_worktree_runtime",
+      },
+      instanceNonce: null,
+      quarantinedRunCount: 0,
     });
   });
 
@@ -366,59 +383,30 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       "Only tasks created after enabling will run automatically",
     );
     expect(container.textContent).toContain("Toggling off and on resets the cutoff.");
-    // Off => no armed banner and no fail-closed hint.
-    expect(container.textContent).not.toContain("Running tasks created after");
-    expect(container.textContent).not.toContain("Execution is suppressed");
   });
 
-  it("shows the armed timestamp when the flag matches the current instance", async () => {
+  // The armed/suppressed/identity boot-truth states now live in the
+  // The settings card delegates boot-truth states to WorktreeRunEngineBanner.
+  // Full state coverage lives in WorktreeRunEngineBanner.test.tsx.
+  it("renders the run-engine boot-truth banner inside the worktree card", async () => {
     setWorktreeRuntimeMeta(true);
-    setWorktreeInstanceIdMeta("inst-current");
-    currentExperimentalSettings = {
-      ...currentExperimentalSettings,
-      enableWorktreeRunExecution: true,
-      worktreeRunExecutionActivatedAt: "2026-07-10T18:34:00.000Z",
-      worktreeRunExecutionActivationInstanceId: "inst-current",
-    };
+    mockInstanceSettingsApi.getWorktreeRunEngine.mockResolvedValue({
+      inWorktree: true,
+      activation: {
+        armed: true,
+        cutoff: "2026-07-10T18:34:00.000Z",
+        activationInstanceId: "nonce-current",
+        reason: null,
+      },
+      instanceNonce: "nonce-current",
+      quarantinedRunCount: 2,
+    });
     await renderPage();
 
-    expect(container.textContent).toContain("Running tasks created after");
-    expect(container.textContent).not.toContain("Execution is suppressed");
-    const toggle = container.querySelector<HTMLButtonElement>(WORKTREE_RUN_EXECUTION_TOGGLE_SELECTOR);
-    expect(toggle?.getAttribute("aria-checked")).toBe("true");
-  });
-
-  it("fails closed with a re-enable hint when the flag was armed in another instance", async () => {
-    setWorktreeRuntimeMeta(true);
-    setWorktreeInstanceIdMeta("inst-current");
-    currentExperimentalSettings = {
-      ...currentExperimentalSettings,
-      enableWorktreeRunExecution: true,
-      worktreeRunExecutionActivatedAt: "2026-07-10T18:34:00.000Z",
-      worktreeRunExecutionActivationInstanceId: "inst-other",
-    };
-    await renderPage();
-
-    expect(container.textContent).toContain("Execution is suppressed");
-    expect(container.textContent).toContain("armed in a different instance");
-    expect(container.textContent).toContain("Toggle it off and back on");
-    expect(container.textContent).not.toContain("Running tasks created after");
-  });
-
-  it("fails closed with a re-enable hint when the activation cutoff is missing", async () => {
-    setWorktreeRuntimeMeta(true);
-    setWorktreeInstanceIdMeta("inst-current");
-    currentExperimentalSettings = {
-      ...currentExperimentalSettings,
-      enableWorktreeRunExecution: true,
-      worktreeRunExecutionActivatedAt: null,
-      worktreeRunExecutionActivationInstanceId: null,
-    };
-    await renderPage();
-
-    expect(container.textContent).toContain("Execution is suppressed");
-    expect(container.textContent).toContain("missing its activation cutoff");
-    expect(container.textContent).not.toContain("Running tasks created after");
+    const banner = container.querySelector('[data-testid="worktree-run-engine-banner"]');
+    expect(banner).not.toBeNull();
+    expect(banner?.textContent).toContain("Run engine armed since");
+    expect(banner?.textContent).toContain("2 inherited runs were quarantined");
   });
 
   it("renders and patches the Built-in Agents experimental toggle", async () => {

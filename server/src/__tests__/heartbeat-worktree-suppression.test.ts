@@ -143,6 +143,68 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     }).updateExperimental({ enableWorktreeRunExecution: true });
   }
 
+  it("stamps and reuses a server-managed nonce on first worktree settings read", async () => {
+    const generatedNonce = "9ed115ac-9e93-4fe9-a4f1-eb4ea2b0fb24";
+    const settings = instanceSettingsService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "injected-shared-instance-id",
+      },
+      generateInstanceNonce: () => generatedNonce,
+    });
+
+    await expect(settings.getExperimental()).resolves.toMatchObject({
+      worktreeRunExecutionInstanceNonce: generatedNonce,
+    });
+    await expect(settings.getExperimental()).resolves.toMatchObject({
+      worktreeRunExecutionInstanceNonce: generatedNonce,
+    });
+  });
+
+  it("counts quarantined runs only for the active seed epoch", async () => {
+    const { companyId, agentId, issueId } = await insertAgentAndIssue();
+    const settings = instanceSettingsService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+    });
+    const experimental = await settings.getExperimental();
+    const activeSeedEpoch = experimental.worktreeRunExecutionSeedEpoch;
+    expect(activeSeedEpoch).not.toBeNull();
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        seedEpoch: activeSeedEpoch,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "cancelled",
+        errorCode: "worktree_seed_quarantine",
+        responsibleUserId: "responsible-user",
+        contextSnapshot: { issueId },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        seedEpoch: randomUUID(),
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "cancelled",
+        errorCode: "worktree_seed_quarantine",
+        responsibleUserId: "responsible-user",
+        contextSnapshot: { issueId },
+      },
+    ]);
+
+    await expect(settings.getWorktreeRunEngineStatus()).resolves.toMatchObject({
+      quarantinedRunCount: 1,
+    });
+  });
+
   async function waitForCompletedRun(runId: string, agentId: string) {
     let latestStatus: string | null = null;
     let latestLastRunId: string | null = null;
@@ -253,13 +315,48 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     expect(runningCount).toBe(0);
   });
 
+  it("terminalizes a foreign-epoch running row without adopting its live pid", async () => {
+    const { companyId, agentId, issueId } = await insertAgentAndIssue();
+    await armWorktreeRunExecution(new Date(Date.now() - 1_000));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      instanceNonce: randomUUID(),
+      seedEpoch: randomUUID(),
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      processPid: process.pid,
+      responsibleUserId: "responsible-user",
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      startedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: { PAPERCLIP_IN_WORKTREE: "true" },
+    });
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: runId,
+      status: "failed",
+      errorCode: "foreign_execution_provenance",
+      processLossRetryCount: 0,
+    });
+  });
+
   it("skips pre-cutoff system wakes but allows user wakes in an armed worktree", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();
     await armWorktreeRunExecution(new Date(Date.now() + 1_000));
     const heartbeat = heartbeatService(db, {
       runtimeEnv: {
         PAPERCLIP_IN_WORKTREE: "true",
-        PAPERCLIP_INSTANCE_ID: "test-worktree",
+        PAPERCLIP_INSTANCE_ID: "different-injected-instance-id",
       },
     });
 

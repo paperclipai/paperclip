@@ -591,7 +591,8 @@ export async function startServer(): Promise<StartedServer> {
   const feedback = feedbackService(db as any, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
-  const backupSettingsSvc = instanceSettingsService(db);
+  const serverInstanceSettings = instanceSettingsService(db);
+  await serverInstanceSettings.getExperimental();
   const databaseBackupMaxAgeHours = Math.max(
     1,
     Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
@@ -625,7 +626,7 @@ export async function startServer(): Promise<StartedServer> {
     try {
       logger.info({ backupDir: config.databaseBackupDir, trigger }, `${label} database backup starting`);
       // Read retention from Instance Settings (DB) so changes take effect without restart.
-      const generalSettings = await backupSettingsSvc.getGeneral();
+      const generalSettings = await serverInstanceSettings.getGeneral();
       const retention = generalSettings.backupRetention;
 
       const result = await runDatabaseBackup({
@@ -862,6 +863,8 @@ export async function startServer(): Promise<StartedServer> {
       {
         state: worktreeRunExecutionActivation.armed ? "armed" : "disarmed",
         cutoff: worktreeRunExecutionActivation.cutoff,
+        reason: worktreeRunExecutionActivation.reason,
+        activationInstanceId: worktreeRunExecutionActivation.activationInstanceId,
       },
       "worktree run-execution cutoff state",
     );
