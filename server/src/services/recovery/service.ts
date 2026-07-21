@@ -39,6 +39,7 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
+import { enforceSameRootRetryCap, type SameRootRetryGateResult } from "../same-root-retry-gate.js";
 import {
   applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -1018,6 +1019,46 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
   }) {
+    // Consult the shared same-root cap before minting another recovery run so
+    // this path cannot bypass the limit by allocating a fresh run id. Only a
+    // lineage with a known source run is capped; a fresh dispatch (no
+    // retryOfRunId) starts its own root and is always allowed.
+    let gate: SameRootRetryGateResult | null = null;
+    if (input.retryOfRunId) {
+      const sourceRun = await db
+        .select({
+          id: heartbeatRuns.id,
+          companyId: heartbeatRuns.companyId,
+          retryRootRunId: heartbeatRuns.retryRootRunId,
+          retryEpoch: heartbeatRuns.retryEpoch,
+          errorCode: heartbeatRuns.errorCode,
+          error: heartbeatRuns.error,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.retryOfRunId))
+        .then((rows) => rows[0] ?? null);
+      if (sourceRun) {
+        gate = await enforceSameRootRetryCap(db, { source: sourceRun, wakeReason: input.reason });
+        if (!gate.allowed) {
+          // Exhausted: do not create another recovery run/issue/comment. Leave
+          // the last failure and next owner/action operator-visible instead.
+          await logActivity(db, {
+            companyId: sourceRun.companyId,
+            actorType: "system",
+            actorId: input.reason,
+            agentId: input.agentId,
+            runId: input.retryOfRunId,
+            action: "issue.same_root_retry_parked",
+            entityType: "issue",
+            entityId: input.issueId,
+            details: gate.park,
+          });
+          return null;
+        }
+      }
+    }
+
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -1045,6 +1086,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .update(heartbeatRuns)
         .set({
           retryOfRunId: input.retryOfRunId,
+          // Propagate the invariant root/epoch so the next recovery on this
+          // chain counts against the same budget regardless of which path mints it.
+          ...(gate?.allowed ? { retryRootRunId: gate.retryRootRunId, retryEpoch: gate.retryEpoch } : {}),
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, queued.id))
@@ -2849,7 +2893,48 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (input.recoveryCause === "provider_quota" && !input.action.ownerAgentId) return;
     if (input.recoveryCause === "configuration_incomplete") return;
     if (!input.action.ownerAgentId) return;
-    await deps.enqueueWakeup(input.action.ownerAgentId, {
+
+    // Same-root cap: this recovery path mints a fresh run id too, so consult the
+    // shared gate before enqueuing so a stranded root cannot loop past the limit.
+    let gate: SameRootRetryGateResult | null = null;
+    const strandedRunId = input.latestRun?.id ?? null;
+    if (strandedRunId) {
+      const sourceRun = await db
+        .select({
+          id: heartbeatRuns.id,
+          companyId: heartbeatRuns.companyId,
+          retryRootRunId: heartbeatRuns.retryRootRunId,
+          retryEpoch: heartbeatRuns.retryEpoch,
+          errorCode: heartbeatRuns.errorCode,
+          error: heartbeatRuns.error,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, strandedRunId))
+        .then((rows) => rows[0] ?? null);
+      if (sourceRun) {
+        gate = await enforceSameRootRetryCap(db, {
+          source: sourceRun,
+          wakeReason: "source_scoped_recovery_action",
+        });
+        if (!gate.allowed) {
+          await logActivity(db, {
+            companyId: sourceRun.companyId,
+            actorType: "system",
+            actorId: "source_scoped_recovery_action",
+            agentId: input.action.ownerAgentId,
+            runId: strandedRunId,
+            action: "issue.same_root_retry_parked",
+            entityType: "issue",
+            entityId: input.issue.id,
+            details: gate.park,
+          });
+          return;
+        }
+      }
+    }
+
+    const wake = await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",
       reason: "source_scoped_recovery_action",
@@ -2858,7 +2943,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issueId: input.issue.id,
         sourceIssueId: input.issue.id,
         recoveryActionId: input.action.id,
-        strandedRunId: input.latestRun?.id ?? null,
+        strandedRunId,
         recoveryCause: input.recoveryCause,
       }, "status_only"),
       requestedByActorType: "system",
@@ -2871,10 +2956,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         source: "issue_recovery_action",
         recoveryActionId: input.action.id,
         sourceIssueId: input.issue.id,
-        strandedRunId: input.latestRun?.id ?? null,
+        strandedRunId,
         recoveryCause: input.recoveryCause,
       }, "status_only"),
     });
+
+    if (wake && strandedRunId) {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          retryOfRunId: strandedRunId,
+          ...(gate?.allowed ? { retryRootRunId: gate.retryRootRunId, retryEpoch: gate.retryEpoch } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, wake.id));
+    }
   }
 
   function readProviderQuotaRetryAt(latestRun: LatestIssueRun, now: Date) {

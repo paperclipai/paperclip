@@ -203,13 +203,8 @@ import {
   readContinuationAttempt,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
-import {
-  buildSameRootRetryPark,
-  computeSameRootRetryDelayMs,
-  evaluateSameRootRetry,
-  resolveRetryEpochForNewRun,
-  resolveRetryRootRunId,
-} from "./same-root-retry-cap.js";
+import { computeSameRootRetryDelayMs } from "./same-root-retry-cap.js";
+import { enforceSameRootRetryCap } from "./same-root-retry-gate.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -8660,47 +8655,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
-    const retryRootRunId = resolveRetryRootRunId(run);
-    const retryEpoch = resolveRetryEpochForNewRun({ source: run, wakeReason: "process_lost_retry" });
-
-    const priorAutomaticRunCount = await db
-      .select({ value: count() })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, run.companyId),
-          eq(heartbeatRuns.retryRootRunId, retryRootRunId),
-          eq(heartbeatRuns.retryEpoch, retryEpoch),
-        ),
-      )
-      .then((rows) => rows[0]?.value ?? 0);
-
-    const capDecision = evaluateSameRootRetry({ priorAutomaticRunCount: priorAutomaticRunCount + 1 });
-    if (!capDecision.allowed) {
-      const park = buildSameRootRetryPark({
-        rootRunId: retryRootRunId,
-        epoch: retryEpoch,
-        attempt: capDecision.attempt,
-        maxRetries: capDecision.maxRetries,
-        lastErrorCode: run.errorCode ?? null,
-        lastErrorMessage: run.error ?? null,
+    // Enforce the same-root retry cap atomically with the insert: the gate takes
+    // an advisory lock on (root, epoch) and counts inside this transaction, so a
+    // racing recovery path cannot also slip a run past the limit.
+    const outcome = await db.transaction(async (tx) => {
+      const gate = await enforceSameRootRetryCap(tx, {
+        source: run,
+        wakeReason: "process_lost_retry",
         nextOwner: run.responsibleUserId ?? null,
       });
-      await appendRunEvent(run, await nextRunEventSeq(run.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "error",
-        message: park.summary,
-        payload: park,
-      });
-      await releaseIssueExecutionAndPromote(run);
-      return null;
-    }
+      if (!gate.allowed) {
+        return { kind: "parked" as const, park: gate.park };
+      }
 
-    const retryDelayMs = computeSameRootRetryDelayMs(capDecision.attempt);
-    const scheduledAt = new Date(now.getTime() + retryDelayMs);
+      const retryDelayMs = computeSameRootRetryDelayMs(gate.attempt);
+      const scheduledAt = new Date(now.getTime() + retryDelayMs);
 
-    const scheduled = await db.transaction(async (tx) => {
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -8734,11 +8704,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
-          retryRootRunId,
-          retryEpoch,
+          retryRootRunId: gate.retryRootRunId,
+          retryEpoch: gate.retryEpoch,
           processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
           scheduledRetryAt: scheduledAt,
-          scheduledRetryAttempt: capDecision.attempt,
+          scheduledRetryAttempt: gate.attempt,
           scheduledRetryReason: "process_lost_retry",
           updatedAt: now,
         })
@@ -8766,25 +8736,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
       }
 
-      return retryRun;
+      return {
+        kind: "scheduled" as const,
+        scheduled: retryRun,
+        attempt: gate.attempt,
+        retryRootRunId: gate.retryRootRunId,
+        retryEpoch: gate.retryEpoch,
+        scheduledAt,
+        retryDelayMs,
+      };
     });
 
-    await appendRunEvent(scheduled, 1, {
+    if (outcome.kind === "parked") {
+      const park = outcome.park;
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message: park.summary,
+        payload: park,
+      });
+      await releaseIssueExecutionAndPromote(run);
+      return null;
+    }
+
+    await appendRunEvent(outcome.scheduled, 1, {
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
       message: "Scheduled automatic retry after orphaned child process was confirmed dead",
       payload: {
         retryOfRunId: run.id,
-        retryRootRunId,
-        retryEpoch,
-        attempt: capDecision.attempt,
-        scheduledAt: scheduledAt.toISOString(),
-        delayMs: retryDelayMs,
+        retryRootRunId: outcome.retryRootRunId,
+        retryEpoch: outcome.retryEpoch,
+        attempt: outcome.attempt,
+        scheduledAt: outcome.scheduledAt.toISOString(),
+        delayMs: outcome.retryDelayMs,
       },
     });
 
-    return scheduled;
+    return outcome.scheduled;
   }
 
   function toHotRestartIntentRun(input: {

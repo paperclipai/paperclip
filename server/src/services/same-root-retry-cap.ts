@@ -183,7 +183,10 @@ export interface SameRootRetryParkInput {
   nextOwner: string | null;
 }
 
-export interface SameRootRetryPark {
+// A type alias (not an interface) so it stays assignable to the
+// `Record<string, unknown>` payload/details shapes the run-event and
+// activity-log sinks accept.
+export type SameRootRetryPark = {
   status: "parked";
   reason: "root_retry_cap_exhausted";
   rootRunId: string;
