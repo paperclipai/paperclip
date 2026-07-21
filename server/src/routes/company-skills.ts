@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
+import type { StateRepoService } from "../services/state-repo.js";
 import {
   catalogSkillListQuerySchema,
   companySkillCommentCreateSchema,
@@ -81,7 +82,7 @@ type SkillPolicyResourceInput =
   | Promise<SkillPolicyEvaluationResource>
   | (() => SkillPolicyEvaluationResource | Promise<SkillPolicyEvaluationResource>);
 
-export function companySkillRoutes(db: Db) {
+export function companySkillRoutes(db: Db, options: { stateRepo?: StateRepoService } = {}) {
   const router = Router();
   const access = accessService(db);
   const svc = companySkillService(db);
@@ -986,6 +987,11 @@ export function companySkillRoutes(db: Db) {
           name: result.name,
         },
       });
+      await options.stateRepo?.commit({
+        companyId,
+        actor: { name: actor.actorType === "agent" ? `Agent ${actor.actorId}` : "Board User", email: `${actor.actorType}+${actor.actorId}@paperclip.invalid` },
+        message: `skill: create ${result.slug}`,
+      });
 
       res.status(201).json(result);
     },
@@ -1016,6 +1022,11 @@ export function companySkillRoutes(db: Db) {
           categories: result.categories,
           sharingScope: result.sharingScope,
         },
+      });
+      await options.stateRepo?.commit({
+        companyId,
+        actor: { name: actor.actorType === "agent" ? `Agent ${actor.actorId}` : "Board User", email: `${actor.actorType}+${actor.actorId}@paperclip.invalid` },
+        message: `skill: update ${result.slug}`,
       });
 
       res.json(result);
@@ -1053,6 +1064,11 @@ export function companySkillRoutes(db: Db) {
           markdown: result.markdown,
         },
       });
+      await options.stateRepo?.commit({
+        companyId,
+        actor: { name: actor.actorType === "agent" ? `Agent ${actor.actorId}` : "Board User", email: `${actor.actorType}+${actor.actorId}@paperclip.invalid` },
+        message: `skill: update ${result.path}`,
+      });
 
       res.json(result);
     },
@@ -1083,6 +1099,11 @@ export function companySkillRoutes(db: Db) {
           target: result.target,
           deletedPaths: result.deletedPaths,
         },
+      });
+      await options.stateRepo?.commit({
+        companyId,
+        actor: { name: actor.actorType === "agent" ? `Agent ${actor.actorId}` : "Board User", email: `${actor.actorType}+${actor.actorId}@paperclip.invalid` },
+        message: `skill: delete ${result.path}`,
       });
 
       res.json(result);
@@ -1227,6 +1248,11 @@ export function companySkillRoutes(db: Db) {
         slug: result.slug,
         name: result.name,
       },
+    });
+    await options.stateRepo?.commit({
+      companyId,
+      actor: { name: actor.actorType === "agent" ? `Agent ${actor.actorId}` : "Board User", email: `${actor.actorType}+${actor.actorId}@paperclip.invalid` },
+      message: `skill: delete ${result.slug}`,
     });
 
     res.json(result);

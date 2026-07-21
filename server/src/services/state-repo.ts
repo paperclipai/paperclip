@@ -28,6 +28,7 @@ const SECRET_PATTERNS = [
 ] as const;
 
 export type StateRepoActor = { name: string; email: string };
+export type StateRepoMemorySource = { agentId: string; root: string };
 type Entry = { oid: string; mode: string };
 
 async function git(repo: string, args: string[], input?: string | Buffer) {
@@ -102,6 +103,7 @@ export function createStateRepoService(options: {
   repoPerCompany?: boolean;
   markerDir: string;
   resolveMirror?: (companyId: string) => Promise<{ url: string; token?: string } | null>;
+  resolveMemorySources?: (companyId: string) => Promise<StateRepoMemorySource[]>;
   knownSecrets?: () => Promise<string[]>;
 }) {
   let queue = Promise.resolve();
@@ -130,6 +132,13 @@ export function createStateRepoService(options: {
     }
     for (const [relative, content] of await walk(path.join(instance, "skills", companyId))) {
       files.set(`companies/${companyId}/skills/${relative}`, content);
+    }
+    for (const source of await options.resolveMemorySources?.(companyId) ?? []) {
+      for (const [relative, content] of await walk(source.root)) {
+        if (relative.endsWith(".md")) {
+          files.set(`companies/${companyId}/agents/${source.agentId}/memory/${relative}`, content);
+        }
+      }
     }
     return files;
   }
@@ -166,12 +175,12 @@ export function createStateRepoService(options: {
     });
     const commit = stdout.trim();
     await git(repo, ["update-ref", "refs/heads/main", commit, ...(parent ? [parent] : [])]);
-    mirrorQueue = mirrorQueue.then(() => pushMirror(input.companyId)).catch(() => undefined);
+    mirrorQueue = mirrorQueue.then(async () => { await pushMirror(input.companyId); }).catch(() => undefined);
     return commit;
   }
   async function pushMirror(companyId: string) {
     const mirror = await options.resolveMirror?.(companyId);
-    if (!mirror) return;
+    if (!mirror) return false;
     const repo = repoPathFor(companyId);
     try {
       const args = ["--git-dir", repo];
@@ -181,6 +190,7 @@ export function createStateRepoService(options: {
       await fs.mkdir(options.markerDir, { recursive: true });
       await fs.writeFile(path.join(options.markerDir, `state-repo-${companyId}.success.json`), JSON.stringify({ pushedAt: new Date().toISOString() }));
       await fs.rm(path.join(options.markerDir, `state-repo-${companyId}.failure`), { force: true });
+      return true;
     } catch (error) {
       await fs.mkdir(options.markerDir, { recursive: true });
       await fs.writeFile(path.join(options.markerDir, `state-repo-${companyId}.failure`), error instanceof Error ? error.message : String(error));
@@ -194,7 +204,17 @@ export function createStateRepoService(options: {
       queue = result.then(() => undefined, () => undefined);
       return result;
     },
-    async testMirror(companyId: string) { await mirrorQueue; await pushMirror(companyId); },
+    async testMirror(companyId: string) {
+      await mirrorQueue;
+      if (!await pushMirror(companyId)) throw new Error("State repo mirror is not configured");
+    },
+    async health(companyId: string) {
+      const successPath = path.join(options.markerDir, `state-repo-${companyId}.success.json`);
+      const failurePath = path.join(options.markerDir, `state-repo-${companyId}.failure`);
+      const success = await fs.readFile(successPath, "utf8").then(JSON.parse).catch(() => null);
+      const failure = await fs.readFile(failurePath, "utf8").catch(() => null);
+      return { configured: Boolean(await options.resolveMirror?.(companyId)), healthy: !failure, success, failure };
+    },
     async exportBundle(companyId: string, outputPath: string) {
       const repo = repoPathFor(companyId);
       await ensureRepo(repo);
@@ -203,22 +223,94 @@ export function createStateRepoService(options: {
     async restore(companyId: string, source: string, ref = "main", dryRun = false) {
       const instance = resolvePaperclipInstancePath({ homeDir: options.homeDir, instanceId: options.instanceId });
       const companyRoot = path.join(instance, "companies", companyId);
-      const { stdout } = await run("git", ["--git-dir", source, "ls-tree", "-r", ref, `companies/${companyId}`]);
-      const restored: string[] = [];
-      for (const line of stdout.trim().split("\n").filter(Boolean)) {
-        const match = line.match(/^\d+ blob ([0-9a-f]+)\tcompanies\/[^/]+\/(agents\/([^/]+)\/(.+)|skills\/(.+))$/);
-        if (!match) continue;
-        const relative = match[2]!;
-        restored.push(relative);
-        if (dryRun) continue;
-        const destination = match[3]
-          ? path.join(companyRoot, "agents", match[3], "instructions", match[4]!)
-          : path.join(instance, "skills", companyId, match[5]!);
-        const content = (await run("git", ["--git-dir", source, "cat-file", "blob", match[1]!])).stdout;
-        await fs.mkdir(path.dirname(destination), { recursive: true });
-        await fs.writeFile(destination, content);
+      let gitDir = source;
+      let temporaryRepo: string | null = null;
+      try {
+        await fs.access(path.join(source, "HEAD"));
+      } catch {
+        await fs.mkdir(options.markerDir, { recursive: true });
+        temporaryRepo = await fs.mkdtemp(path.join(options.markerDir, "state-restore-"));
+        await run("git", ["init", "--bare", temporaryRepo]);
+        await run("git", ["--git-dir", temporaryRepo, "fetch", source, `${ref}:${ref}`]);
+        gitDir = temporaryRepo;
       }
-      return { restored, dryRun };
+      try {
+        const { stdout } = await run("git", ["--git-dir", gitDir, "ls-tree", "-r", ref, `companies/${companyId}`]);
+        const restored: string[] = [];
+        const memorySources = new Map((await options.resolveMemorySources?.(companyId) ?? []).map((source) => [source.agentId, source.root]));
+        for (const line of stdout.trim().split("\n").filter(Boolean)) {
+          const match = line.match(/^\d+ blob ([0-9a-f]+)\tcompanies\/[^/]+\/(agents\/([^/]+)\/(.+)|skills\/(.+))$/);
+          if (!match) continue;
+          const relative = match[2]!;
+          restored.push(relative);
+          if (dryRun) continue;
+          const agentId = match[3];
+          const agentRelative = match[4];
+          const memoryRelative = agentRelative?.startsWith("memory/") ? agentRelative.slice("memory/".length) : null;
+          const memoryRoot = agentId && memoryRelative ? memorySources.get(agentId) : null;
+          const destination = agentId && agentRelative
+            ? memoryRoot
+              ? path.join(memoryRoot, memoryRelative!)
+              : path.join(companyRoot, "agents", agentId, "instructions", agentRelative)
+            : path.join(instance, "skills", companyId, match[5]!);
+          const content = (await run("git", ["--git-dir", gitDir, "cat-file", "blob", match[1]!])).stdout;
+          await fs.mkdir(path.dirname(destination), { recursive: true });
+          await fs.writeFile(destination, content);
+        }
+        return { restored, dryRun };
+      } finally {
+        if (temporaryRepo) await fs.rm(temporaryRepo, { recursive: true, force: true });
+      }
+    },
+    startWatcher(input: { listCompanyIds: () => Promise<string[]>; debounceMs?: number; sweepMs?: number }) {
+      const debounceMs = input.debounceMs ?? 30_000;
+      const sweepMs = input.sweepMs ?? 24 * 60 * 60 * 1_000;
+      const pending = new Map<string, NodeJS.Timeout>();
+      const fingerprints = new Map<string, string>();
+      let stopped = false;
+      const sweep = async (message: string) => {
+        for (const companyId of await input.listCompanyIds()) {
+          await this.commit({
+            companyId,
+            actor: { name: "paperclip-state-bot", email: "state-bot@paperclip.invalid" },
+            message,
+          }).catch(() => undefined);
+        }
+      };
+      const poll = async () => {
+        if (stopped) return;
+        for (const companyId of await input.listCompanyIds()) {
+          const files = await collect(companyId);
+          const memory = [...files].filter(([filePath]) => filePath.includes("/memory/"));
+          const fingerprint = createHash("sha256")
+            .update(memory.map(([filePath, content]) => `${filePath}\0${createHash("sha256").update(content).digest("hex")}`).join("\n"))
+            .digest("hex");
+          const previous = fingerprints.get(companyId);
+          fingerprints.set(companyId, fingerprint);
+          if (previous && previous !== fingerprint) {
+            clearTimeout(pending.get(companyId));
+            pending.set(companyId, setTimeout(() => {
+              pending.delete(companyId);
+              void this.commit({
+                companyId,
+                actor: { name: "paperclip-state-bot", email: "state-bot@paperclip.invalid" },
+                message: "claude-memory: capture external changes",
+              });
+            }, debounceMs));
+          }
+        }
+      };
+      const pollTimer = setInterval(() => void poll(), Math.min(5_000, debounceMs));
+      const sweepTimer = setInterval(() => void sweep("state: daily drift sweep"), sweepMs);
+      void poll();
+      return () => {
+        stopped = true;
+        clearInterval(pollTimer);
+        clearInterval(sweepTimer);
+        for (const timer of pending.values()) clearTimeout(timer);
+      };
     },
   };
 }
+
+export type StateRepoService = ReturnType<typeof createStateRepoService>;

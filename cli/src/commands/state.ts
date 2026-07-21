@@ -25,10 +25,19 @@ export async function stateSnapshotCommand(opts: StateApiOptions) {
   else p.outro(pc.green(`Snapshot stored: ${result.objectKey}`));
 }
 
-export async function stateRestoreCommand(objectKey: string, opts: StateApiOptions) {
+export async function stateRestoreCommand(objectKey: string | undefined, opts: StateApiOptions & { fromGit?: string; companyId?: string; ref?: string; dryRun?: boolean }) {
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclip state restore ")));
-  const result = await callStateApi("/instance/state-snapshots/restore", opts, { objectKey });
+  const companyId = opts.companyId || process.env.PAPERCLIP_COMPANY_ID;
+  if (opts.fromGit && !companyId) throw new Error("--company-id or PAPERCLIP_COMPANY_ID is required with --from-git");
+  if (!opts.fromGit && !objectKey) throw new Error("object-key is required unless --from-git is used");
+  const result = opts.fromGit
+    ? await callStateApi(`/companies/${companyId}/state-repo/restore`, opts, {
+        source: opts.fromGit,
+        ref: opts.ref,
+        dryRun: opts.dryRun,
+      })
+    : await callStateApi("/instance/state-snapshots/restore", opts, { objectKey });
   if (opts.json) console.log(JSON.stringify(result, null, 2));
-  else p.outro(pc.green(`Snapshot restored: ${objectKey}`));
+  else p.outro(pc.green(opts.fromGit ? `Git state restored: ${opts.fromGit}` : `Snapshot restored: ${objectKey}`));
 }

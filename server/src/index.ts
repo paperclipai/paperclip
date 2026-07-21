@@ -26,6 +26,7 @@ import {
   runDatabaseBackup,
   authUsers,
   companies,
+  agents,
   companyMemberships,
   instanceUserRoles,
 } from "@paperclipai/db";
@@ -49,7 +50,9 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
   toolAccessService,
+  secretService,
 } from "./services/index.js";
+import { createStateRepoService } from "./services/state-repo.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -72,7 +75,7 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
-import { resolvePaperclipInstanceId, resolvePaperclipInstancePath } from "@paperclipai/shared";
+import { resolvePaperclipInstanceId, resolvePaperclipInstancePath, resolveUserHomePath } from "@paperclipai/shared";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -699,6 +702,45 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  const stateRepoMarkerDir = resolvePaperclipInstancePath({ instanceId: stateSnapshotInstanceId }, "health");
+  const stateRepoMirrors = (() => {
+    try {
+      return JSON.parse(process.env.PAPERCLIP_STATE_REPO_MIRRORS_JSON || "{}") as Record<string, { url?: string; secretRef?: { secretId?: string; version?: number | "latest" } }>;
+    } catch {
+      logger.warn("Ignoring invalid PAPERCLIP_STATE_REPO_MIRRORS_JSON");
+      return {};
+    }
+  })();
+  const stateRepoService = createStateRepoService({
+    instanceId: stateSnapshotInstanceId,
+    repoPerCompany: true,
+    markerDir: stateRepoMarkerDir,
+    resolveMirror: async (companyId) => {
+      const configured = stateRepoMirrors[companyId];
+      if (!configured?.url) return null;
+      const ref = configured.secretRef;
+      const token = ref?.secretId
+        ? await secretService(db as any).resolveSecretValue(companyId, ref.secretId, ref.version ?? "latest", {
+            consumerType: "system",
+            consumerId: "state-repo-mirror",
+            configPath: "stateRepo.remote.secretRef",
+          })
+        : undefined;
+      return { url: configured.url, token };
+    },
+    resolveMemorySources: async (companyId) => {
+      const rows = await db.select({ id: agents.id, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+        .from(agents)
+        .where(eq(agents.companyId, companyId));
+      const claudeRoot = process.env.CLAUDE_CONFIG_DIR?.trim() || resolveUserHomePath(".claude");
+      return rows.flatMap((agent) => {
+        if (agent.adapterType !== "claude_local") return [];
+        const cwd = typeof agent.adapterConfig?.cwd === "string" ? agent.adapterConfig.cwd : null;
+        if (!cwd) return [];
+        return [{ agentId: agent.id, root: resolve(claudeRoot, "projects", cwd.replace(/[^a-zA-Z0-9-]/g, "-"), "memory") }];
+      });
+    },
+  });
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -737,6 +779,8 @@ export async function startServer(): Promise<StartedServer> {
       markerDir: stateSnapshotMarkerDir,
       maxAgeHours: Math.max(1, Number(process.env.PAPERCLIP_STATE_SNAPSHOT_MAX_AGE_HOURS) || 48),
     },
+    stateRepoService,
+    stateRepoMarkerDir,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
@@ -749,6 +793,9 @@ export async function startServer(): Promise<StartedServer> {
     pluginWorkerManager,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+  const stopStateRepoWatcher = stateRepoService.startWatcher({
+    listCompanyIds: async () => (await db.select({ id: companies.id }).from(companies)).map((company) => company.id),
+  });
 
   // Increase keep-alive timeouts to safely outlive default idle timeouts
   // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
@@ -1256,6 +1303,7 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      stopStateRepoWatcher();
       heartbeatSchedulerStopped = true;
       if (heartbeatSchedulerInterval) {
         clearInterval(heartbeatSchedulerInterval);

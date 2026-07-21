@@ -37,16 +37,43 @@ describe("state repo service", () => {
     expect((await exec("git", ["--git-dir", remote, "rev-parse", "main"])).stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
     const bundle = path.join(homeDir, "state.bundle");
     await service.exportBundle("company-1", bundle);
-    const restoredRepo = path.join(homeDir, "restored.git");
-    await exec("git", ["init", "--bare", restoredRepo]);
-    await exec("git", ["--git-dir", restoredRepo, "fetch", bundle, "main:main"]);
     await fs.rm(path.join(instance, "companies", "company-1"), { recursive: true, force: true });
     await fs.rm(path.join(instance, "skills", "company-1"), { recursive: true, force: true });
-    const restored = await service.restore("company-1", restoredRepo);
+    const restored = await service.restore("company-1", bundle);
     expect(restored.restored).toContain("agents/agent-1/AGENTS.md");
     expect(await fs.readFile(path.join(instructions, "AGENTS.md"), "utf8")).toBe("# Initial\n");
     expect(await fs.readFile(path.join(skill, "SKILL.md"), "utf8")).toBe("# Updated skill\n");
     await fs.writeFile(path.join(instructions, "AGENTS.md"), "ghp_abcdefghijklmnopqrstuvwxyz123456\n");
     await expect(service.commit({ companyId: "company-1", actor: { name: "Fable", email: "agent+fable@paperclip.invalid" }, message: "bad" })).rejects.toThrow("secret scan blocked");
+  });
+
+  it("debounces Claude memory changes into an automatic commit", async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-state-memory-"));
+    const instance = path.join(homeDir, "instances", "test");
+    const memory = path.join(homeDir, ".claude", "projects", "workspace", "memory");
+    await fs.mkdir(memory, { recursive: true });
+    await fs.writeFile(path.join(memory, "MEMORY.md"), "# Initial\n");
+    const service = createStateRepoService({
+      homeDir,
+      instanceId: "test",
+      markerDir: path.join(instance, "health"),
+      resolveMemorySources: async () => [{ agentId: "agent-1", root: memory }],
+    });
+    await service.commit({ companyId: "company-1", actor: { name: "Setup", email: "setup@paperclip.invalid" }, message: "initial" });
+    const stop = service.startWatcher({ listCompanyIds: async () => ["company-1"], debounceMs: 20, sweepMs: 60_000 });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await fs.writeFile(path.join(memory, "MEMORY.md"), "# Updated\n");
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    stop();
+    const repo = service.repoPathFor("company-1");
+    const log = (await exec("git", ["--git-dir", repo, "log", "--format=%s"])).stdout;
+    expect(log).toContain("claude-memory: capture external changes");
+    const content = (await exec("git", ["--git-dir", repo, "show", "main:companies/company-1/agents/agent-1/memory/MEMORY.md"])).stdout;
+    expect(content).toBe("# Updated\n");
+    const bundle = path.join(homeDir, "memory.bundle");
+    await service.exportBundle("company-1", bundle);
+    await fs.rm(path.join(memory, "MEMORY.md"));
+    await service.restore("company-1", bundle);
+    expect(await fs.readFile(path.join(memory, "MEMORY.md"), "utf8")).toBe("# Updated\n");
   });
 });

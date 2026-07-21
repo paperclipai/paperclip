@@ -704,6 +704,31 @@ Use `PAPERCLIP_STATE_SNAPSHOT_INTERVAL_MINUTES` to change the schedule and
 `PAPERCLIP_STATE_SNAPSHOT_MAX_AGE_HOURS` to change the health warning threshold.
 The encryption key must be held separately from the instance being protected.
 
+## Managed State Repositories
+
+Paperclip keeps a bare git repository per company under the instance
+`state-repos/` directory. Agent-instruction and company-skill edits commit
+immediately with actor attribution; Claude memory markdown is detected with a
+30-second debounce and a daily sweep captures any remaining drift.
+
+Company mirror remotes are optional and configured with
+`PAPERCLIP_STATE_REPO_MIRRORS_JSON`. Tokens are resolved from company secrets,
+not stored inline:
+
+```json
+{
+  "<company-id>": {
+    "url": "https://github.com/example/company-state.git",
+    "secretRef": { "secretId": "<company-secret-id>", "version": "latest" }
+  }
+}
+```
+
+Use `GET /api/companies/:companyId/state-repo/bundle` for a company-scoped git
+bundle, `POST .../mirror/test` and `GET .../health` for mirror diagnostics, and
+`paperclipai state restore --from-git <bare-repo> --company-id <company-id>` to
+restore tracked files. Add `--dry-run` to inspect the restore first.
+
 ## Secrets in Dev
 
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.

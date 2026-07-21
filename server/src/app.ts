@@ -14,6 +14,8 @@ import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
+import { stateRepoRoutes } from "./routes/state-repo.js";
+import type { StateRepoService } from "./services/state-repo.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
 import { inboxAgentPolicyRoutes } from "./routes/inbox-agent-policy.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
@@ -160,6 +162,8 @@ export async function createApp(
     stateSnapshotService?: InstanceStateSnapshotService;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     stateSnapshotHealth?: { markerDir: string; enabled: boolean; maxAgeHours: number };
+    stateRepoService?: StateRepoService;
+    stateRepoMarkerDir?: string;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -244,13 +248,16 @@ export async function createApp(
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
-  api.use(companySkillRoutes(db));
+  api.use(companySkillRoutes(db, { stateRepo: opts.stateRepoService }));
   api.use(companySkillPolicyRoutes(db));
   api.use(inboxAgentPolicyRoutes(db));
   api.use(builtInAgentRoutes(db));
   api.use(summarySlotRoutes(db));
   api.use(teamsCatalogRoutes(db));
-  api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(agentRoutes(db, { pluginWorkerManager: workerManager, stateRepo: opts.stateRepoService }));
+  if (opts.stateRepoService && opts.stateRepoMarkerDir) {
+    api.use(stateRepoRoutes(db, opts.stateRepoService, opts.stateRepoMarkerDir));
+  }
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
