@@ -29,6 +29,7 @@ Before making changes, read in this order:
 - `packages/adapters/`: agent adapter implementations (Claude, Codex, Cursor, etc.)
 - `packages/adapter-utils/`: shared adapter utilities
 - `packages/plugins/`: plugin system packages
+- `cli/`: `paperclipai` CLI package (published bin, agent-facing commands)
 - `doc/`: operational and product docs
 
 ## 4. Dev Setup (Auto DB)
