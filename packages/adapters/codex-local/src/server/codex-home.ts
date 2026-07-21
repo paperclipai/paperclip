@@ -10,6 +10,28 @@ const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const MANAGED_MCP_BLOCK_START = "# BEGIN PAPERCLIP MANAGED MCP";
 const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
 
+/**
+ * The allowlist of managed `CODEX_HOME` entries that the codex-local adapter
+ * stages into the sandbox `home` asset (see {@link stageCodexHomeForSync}).
+ * Derived from the seeding constants so it can never drift from what the adapter
+ * actually writes into the home: the copied static config files, the symlinked
+ * credential file, and the injected `skills/` directory. Everything else the
+ * stock upstream `codex` binary writes at runtime (`*.sqlite`, `*-wal`,
+ * `plugins/`, `cache/`, `sessions/`, `shell_snapshots/`, …) is intentionally
+ * excluded — it is large host-local runtime state the sandbox run never needs.
+ */
+export const CODEX_SYNC_ALLOWLIST = [
+  ...COPIED_SHARED_FILES,
+  ...SYMLINKED_SHARED_FILES,
+  "skills",
+] as const;
+
+/**
+ * Allowlist entries that hold credentials and must be staged with mode `0600`
+ * (never the world-readable file default). Currently just `auth.json`.
+ */
+const CODEX_SYNC_CREDENTIAL_FILES: ReadonlySet<string> = new Set(SYMLINKED_SHARED_FILES);
+
 export type ManagedCodexMcpGateway = {
   name: string;
   endpointPath: string;
@@ -319,6 +341,92 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   const target = path.join(home, "auth.json");
   await fs.rm(target, { force: true });
   await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+}
+
+export interface StageCodexHomeForSyncOptions {
+  /** Run id, used only to make the staged temp-dir name traceable in logs. */
+  runId?: string;
+}
+
+/**
+ * Copies a single allowlist entry from the managed home into the staged dir,
+ * dereferencing symlinks to bytes. Missing entries are skipped (keyring mode has
+ * no `auth.json`; some homes have no `config.json`). Credential files are
+ * written `0600`. Any non-`ENOENT` error propagates to the caller.
+ */
+async function stageCodexHomeEntry(
+  sourceHome: string,
+  stagedHome: string,
+  entry: string,
+): Promise<void> {
+  const source = path.join(sourceHome, entry);
+  // `fs.stat` follows symlinks, so a dangling link (e.g. a removed auth source)
+  // reports ENOENT and is skipped exactly like a genuinely absent file.
+  const stat = await fs.stat(source).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat) return;
+
+  const target = path.join(stagedHome, entry);
+  if (stat.isDirectory()) {
+    // `skills/` is a directory of symlinks; dereference so the sandbox receives
+    // real files, not links pointing back into the host home.
+    await fs.cp(source, target, { recursive: true, dereference: true });
+    return;
+  }
+
+  // `fs.readFile` follows the symlink into the shared source and returns the
+  // resolved bytes (the live single-use auth token), which we write as a plain
+  // regular file so copy-back and in-sandbox auth read real bytes.
+  const bytes = await fs.readFile(source);
+  const isCredential = CODEX_SYNC_CREDENTIAL_FILES.has(entry);
+  await fs.writeFile(target, bytes, { mode: isCredential ? 0o600 : 0o644 });
+  if (isCredential) {
+    // Explicit chmod so the credential mode is 0600 regardless of umask.
+    await fs.chmod(target, 0o600);
+  }
+}
+
+/**
+ * Stages exactly {@link CODEX_SYNC_ALLOWLIST} from `effectiveCodexHome` into a
+ * fresh private temp dir and returns its path, for registration as the sandbox
+ * `home` asset. This replaces syncing the whole managed home + a name denylist:
+ * only the files Codex actually needs are uploaded, so oversized runtime state
+ * (`sessions/`, `*.sqlite`, `plugins/`, …) never reaches the sandbox.
+ *
+ * - **Symlinks are dereferenced to bytes** — the single-use `auth.json`
+ *   credential (a symlink into the shared source home) and each `skills/` entry
+ *   land as real files, never dangling links.
+ * - **Missing-but-optional entries are skipped** — no `auth.json` in
+ *   keyring-credential mode, or no `config.json`, is not an error.
+ * - **`mkdtemp` guarantees the staged dir is `0700`** on POSIX, and the staged
+ *   `auth.json` is written `0600`, so staged credentials are never
+ *   group/other-readable.
+ * - **Fail-closed** — any *unexpected* I/O error removes the partial temp dir
+ *   and re-throws, so a run never proceeds with a partial or empty home.
+ *
+ * The caller owns removing the returned dir on run teardown.
+ */
+export async function stageCodexHomeForSync(
+  effectiveCodexHome: string,
+  options: StageCodexHomeForSyncOptions = {},
+): Promise<string> {
+  const runIdPart = nonEmpty(options.runId ?? undefined);
+  const stagedHome = await fs.mkdtemp(
+    path.join(os.tmpdir(), `paperclip-codex-home-sync-${runIdPart ? `${runIdPart}-` : ""}`),
+  );
+  try {
+    for (const entry of CODEX_SYNC_ALLOWLIST) {
+      await stageCodexHomeEntry(effectiveCodexHome, stagedHome, entry);
+    }
+    return stagedHome;
+  } catch (error) {
+    // Fail-closed: never hand back a partial home. Remove the temp dir we
+    // created before propagating the failure.
+    await fs.rm(stagedHome, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 /**

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CODEX_SYNC_ALLOWLIST,
   codexHomeHasUsableAuth,
   ensureSymlink,
   evaluateCodexCredentialReadiness,
@@ -11,6 +12,7 @@ import {
   prepareManagedCodexHome,
   reconcileManagedCodexHome,
   seedManagedCodexHome,
+  stageCodexHomeForSync,
   writeManagedCodexMcpConfig,
 } from "./codex-home.js";
 
@@ -761,6 +763,175 @@ describe("evaluateCodexCredentialReadiness", () => {
       });
 
       expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("stageCodexHomeForSync", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Builds a fake managed CODEX_HOME containing the full allowlist (with
+  // `auth.json` as a symlink into a separate source-bytes file and a populated
+  // `skills/` symlink, mirroring the real managed home) plus decoy runtime
+  // state the allowlist must NOT copy.
+  async function buildFakeHome(root: string): Promise<{ home: string; authBytes: string; skillBytes: string }> {
+    const home = path.join(root, "codex-home");
+    const authSource = path.join(root, "shared", "auth.json");
+    const skillSource = path.join(root, "shared", "skill-src.md");
+    const authBytes = '{"tokens":{"account_id":"acct","refresh_token":"r"}}\n';
+    const skillBytes = "# injected skill\n";
+
+    await fs.mkdir(path.join(root, "shared"), { recursive: true });
+    await fs.writeFile(authSource, authBytes, "utf8");
+    await fs.writeFile(skillSource, skillBytes, "utf8");
+
+    await fs.mkdir(home, { recursive: true });
+    // auth.json is a symlink into the shared source (single-use rotating tokens).
+    await fs.symlink(authSource, path.join(home, "auth.json"));
+    await fs.writeFile(path.join(home, "config.toml"), "model_provider = \"paperclip\"\n", "utf8");
+    await fs.writeFile(path.join(home, "config.json"), "{}\n", "utf8");
+    await fs.writeFile(path.join(home, "instructions.md"), "hi\n", "utf8");
+    // skills/ is a directory of symlinks.
+    await fs.mkdir(path.join(home, "skills"), { recursive: true });
+    await fs.symlink(skillSource, path.join(home, "skills", "demo.md"));
+
+    // Decoys: large runtime state the 4-name denylist missed.
+    await fs.writeFile(path.join(home, "logs_2.sqlite"), "x", "utf8");
+    await fs.writeFile(path.join(home, "state_5.sqlite"), "x", "utf8");
+    await fs.mkdir(path.join(home, "plugins", "cache"), { recursive: true });
+    await fs.writeFile(path.join(home, "plugins", "cache", "x"), "x", "utf8");
+    await fs.mkdir(path.join(home, "sessions"), { recursive: true });
+    await fs.writeFile(path.join(home, "sessions", "y"), "x", "utf8");
+    await fs.mkdir(path.join(home, "tmp"), { recursive: true });
+    await fs.symlink("/usr/bin/env", path.join(home, "tmp", "arg0"));
+
+    return { home, authBytes, skillBytes };
+  }
+
+  it("stages exactly the allowlist, derefs auth.json to bytes, and excludes decoys", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-"));
+    let staged: string | null = null;
+    try {
+      const { home, authBytes, skillBytes } = await buildFakeHome(root);
+      staged = await stageCodexHomeForSync(home, { runId: "run-1" });
+
+      const entries = (await fs.readdir(staged)).sort();
+      expect(entries).toEqual([...CODEX_SYNC_ALLOWLIST].sort());
+
+      // Decoys must be absent.
+      for (const decoy of ["logs_2.sqlite", "state_5.sqlite", "plugins", "sessions", "tmp"]) {
+        expect(entries).not.toContain(decoy);
+      }
+
+      // auth.json is a regular file (symlink dereferenced) whose bytes equal the target.
+      const stagedAuth = path.join(staged, "auth.json");
+      expect((await fs.lstat(stagedAuth)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(stagedAuth, "utf8")).toBe(authBytes);
+
+      // skills/ copied recursively with the symlink dereferenced to bytes.
+      const stagedSkill = path.join(staged, "skills", "demo.md");
+      expect((await fs.lstat(stagedSkill)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(stagedSkill, "utf8")).toBe(skillBytes);
+
+      // config.toml (post-rewrite state) carried through.
+      expect(await fs.readFile(path.join(staged, "config.toml"), "utf8")).toContain("model_provider");
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // C1 — staged credential file must be mode 0600 (not the world-readable default).
+  it("writes the staged auth.json with mode 0600", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-mode-"));
+    let staged: string | null = null;
+    try {
+      const { home } = await buildFakeHome(root);
+      staged = await stageCodexHomeForSync(home, { runId: "run-mode" });
+      const mode = (await fs.stat(path.join(staged, "auth.json"))).mode & 0o777;
+      expect(mode).toBe(0o600);
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // C2 — staged dir must be 0700 (mkdtemp guarantees this on POSIX).
+  it("creates the staged dir with mode 0700", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-dir-"));
+    let staged: string | null = null;
+    try {
+      const { home } = await buildFakeHome(root);
+      staged = await stageCodexHomeForSync(home, { runId: "run-dir" });
+      const mode = (await fs.stat(staged)).mode & 0o777;
+      expect(mode).toBe(0o700);
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("skips absent optional entries without throwing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-absent-"));
+    let staged: string | null = null;
+    try {
+      // Keyring-credential mode: no auth.json, no config.json.
+      const home = path.join(root, "codex-home");
+      await fs.mkdir(home, { recursive: true });
+      await fs.writeFile(path.join(home, "config.toml"), "x\n", "utf8");
+
+      staged = await stageCodexHomeForSync(home, { runId: "run-absent" });
+      const entries = await fs.readdir(staged);
+      expect(entries).toEqual(["config.toml"]);
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a dangling auth.json symlink as absent (skips it, no throw)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-dangling-"));
+    let staged: string | null = null;
+    try {
+      const home = path.join(root, "codex-home");
+      await fs.mkdir(home, { recursive: true });
+      await fs.symlink(path.join(root, "gone", "auth.json"), path.join(home, "auth.json"));
+      await fs.writeFile(path.join(home, "config.toml"), "x\n", "utf8");
+
+      staged = await stageCodexHomeForSync(home, { runId: "run-dangling" });
+      expect(await fs.readdir(staged)).toEqual(["config.toml"]);
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // C3 + C4 — an unexpected I/O error must reject (fail-closed, not partial)
+  // AND remove the temp dir it created (cleanup on the error path).
+  it("fails closed and removes the temp dir on an unexpected I/O error", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-fail-"));
+    try {
+      const { home } = await buildFakeHome(root);
+
+      let createdDir: string | null = null;
+      const realMkdtemp = fs.mkdtemp.bind(fs);
+      vi.spyOn(fs, "mkdtemp").mockImplementation(async (prefix: string, ...rest: unknown[]) => {
+        const dir = await (realMkdtemp as typeof fs.mkdtemp)(prefix, ...(rest as []));
+        createdDir = dir as string;
+        return dir;
+      });
+      vi.spyOn(fs, "readFile").mockRejectedValue(
+        Object.assign(new Error("boom"), { code: "EACCES" }),
+      );
+
+      await expect(stageCodexHomeForSync(home, { runId: "run-fail" })).rejects.toThrow("boom");
+      expect(createdDir).not.toBeNull();
+      // The staged temp dir was cleaned up despite the failure.
+      await expect(fs.access(createdDir as unknown as string)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
