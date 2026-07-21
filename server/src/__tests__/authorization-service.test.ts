@@ -2155,4 +2155,32 @@ describeEmbeddedPostgres("authorization service", () => {
       resource: { type: "company", companyId: company.id },
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
+
+  it("denies secrets proposals for scoped tokens regardless of request source", async () => {
+    const company = await createCompany(db, "SecretProposalScopes");
+    const actorAgent = await createAgent(db, company.id);
+    const resource = { type: "company" as const, companyId: company.id };
+    const authz = authorizationService(db);
+
+    for (const actor of [
+      {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt" as const,
+        keyId: randomUUID(),
+        keyScope: { kind: "task_bridge" as const, parentIssueId: randomUUID() },
+      },
+      {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt" as const,
+        keyScope: { kind: "skill_test" as const, issueId: randomUUID() },
+      },
+    ]) {
+      await expect(authz.decide({ actor, action: "secrets:propose", resource }))
+        .resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+    }
+  });
 });

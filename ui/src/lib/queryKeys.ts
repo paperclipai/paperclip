@@ -339,6 +339,8 @@ export const queryKeys = {
     userDefinitionCoverage: (companyId: string, definitionId: string) =>
       ["user-secret-definitions", companyId, definitionId, "coverage"] as const,
     myUserSecrets: (companyId: string) => ["my-user-secrets", companyId] as const,
+    proposals: (companyId: string, status: string = "pending") =>
+      ["secret-proposals", companyId, status] as const,
   },
   companySearch: {
     search: (companyId: string, q: string, scope: string, limit: number, offset: number) =>

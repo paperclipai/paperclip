@@ -1835,6 +1835,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-62: 1fr minmax(0,18rem);
   --gtc-63: 280px 1fr;
   --gtc-64: minmax(0,20rem) 1fr;
+  --gtc-65: minmax(8rem,0.38fr) minmax(0,0.62fr) auto;
   --gtr-1: auto auto; /* Extracted from ui/src/components/ui/card.tsx (grid-rows-[auto_auto]). */
   --gtr-2: 1fr; /* Extracted from ui/src/pages/CompanySkills.tsx (grid-rows-[1fr]). */
   --gtr-3: 0fr; /* Extracted from ui/src/pages/CompanySkills.tsx (grid-rows-[0fr]). */
