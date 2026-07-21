@@ -105,6 +105,16 @@ export function resolveDefaultBackupDir(input: {
   return path.resolve(resolvePaperclipInstanceRoot(input), "data", "backups");
 }
 
+export function resolveStateRepoPath(input: {
+  homeDir?: string;
+  instanceId?: string;
+  companyId?: string;
+} = {}): string {
+  return input.companyId
+    ? path.resolve(resolvePaperclipInstanceRoot(input), "state-repos", `${input.companyId}.git`)
+    : path.resolve(resolvePaperclipInstanceRoot(input), "state-repo.git");
+}
+
 export function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }
