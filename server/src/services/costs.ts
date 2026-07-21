@@ -1,14 +1,27 @@
-import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import type { BillingType } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import {
+  decodeCostEventCursor,
+  encodeCostEventCursor,
+  normalizeCostEventCursorFilters,
+} from "./cost-event-cursor.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
 export interface CostDateRange {
   from?: Date;
   to?: Date;
+}
+
+export interface CostEventListOptions {
+  range?: CostDateRange;
+  limit: number;
+  cursor?: string;
+  billingTypes?: BillingType[];
 }
 
 const METERED_BILLING_TYPE = "metered_api";
@@ -100,6 +113,50 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       await budgets.evaluateCostEvent(event);
 
       return event;
+    },
+
+    listEvents: async (
+      companyId: string,
+      options: CostEventListOptions,
+    ) => {
+      const filters = normalizeCostEventCursorFilters({
+        from: options.range?.from,
+        to: options.range?.to,
+        billingTypes: options.billingTypes,
+      });
+      const position = decodeCostEventCursor(options.cursor, filters);
+      const conditions: SQL[] = [eq(costEvents.companyId, companyId)];
+
+      if (options.range?.from) conditions.push(gte(costEvents.occurredAt, options.range.from));
+      if (options.range?.to) conditions.push(lte(costEvents.occurredAt, options.range.to));
+      if (filters.billingTypes.length > 0) {
+        conditions.push(inArray(costEvents.billingType, filters.billingTypes));
+      }
+      if (position) {
+        const cursorDate = new Date(position.occurredAt);
+        conditions.push(or(
+          lt(costEvents.occurredAt, cursorDate),
+          and(eq(costEvents.occurredAt, cursorDate), lt(costEvents.id, position.id)),
+        )!);
+      }
+
+      const rows = await db
+        .select()
+        .from(costEvents)
+        .where(and(...conditions))
+        .orderBy(desc(costEvents.occurredAt), desc(costEvents.id))
+        .limit(options.limit + 1);
+
+      const items = rows.slice(0, options.limit);
+      const last = items.at(-1);
+      const nextCursor = rows.length > options.limit && last
+        ? encodeCostEventCursor(filters, {
+            occurredAt: last.occurredAt.toISOString(),
+            id: last.id,
+          })
+        : null;
+
+      return { items, nextCursor };
     },
 
     summary: async (companyId: string, range?: CostDateRange) => {

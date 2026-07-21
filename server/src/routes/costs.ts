@@ -1,12 +1,14 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  BILLING_TYPES,
   createCostEventSchema,
   createFinanceEventSchema,
   normalizeIssueIdentifier,
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
+  type BillingType,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
@@ -43,6 +45,51 @@ export function parseCostLimit(query: Record<string, unknown>) {
     throw badRequest("invalid 'limit' value");
   }
   return limit;
+}
+
+function parseCostEventLimit(query: Record<string, unknown>) {
+  const raw = Array.isArray(query.limit) ? query.limit[0] : query.limit;
+  if (raw == null || raw === "") return 100;
+  const limit = typeof raw === "number" ? raw : Number(String(raw));
+  if (!Number.isInteger(limit) || limit <= 0 || limit > 500) {
+    throw badRequest("invalid 'limit' value");
+  }
+  return limit;
+}
+
+function parseSingleQueryValue(value: unknown, name: string): string | undefined {
+  if (value == null || value === "") return undefined;
+  if (Array.isArray(value) || typeof value !== "string") {
+    throw badRequest(`invalid '${name}' value`);
+  }
+  return value;
+}
+
+export function parseCostEventListQuery(query: Record<string, unknown>) {
+  const range = parseCostDateRange(query);
+  if (range?.from && range?.to && range.from > range.to) {
+    throw badRequest("'from' must not be later than 'to'");
+  }
+
+  const limit = parseCostEventLimit(query);
+  const cursor = parseSingleQueryValue(query.cursor, "cursor");
+  const rawBillingTypes = query.billingType == null
+    ? []
+    : Array.isArray(query.billingType)
+      ? query.billingType
+      : [query.billingType];
+  const billingTypes = rawBillingTypes.map(String);
+  const allowed = new Set<string>(BILLING_TYPES);
+  if (billingTypes.some((value) => !allowed.has(value))) {
+    throw badRequest("invalid 'billingType' value");
+  }
+
+  return {
+    range,
+    limit,
+    cursor,
+    billingTypes: [...new Set(billingTypes)] as BillingType[],
+  };
 }
 
 export function costRoutes(
@@ -110,6 +157,16 @@ export function costRoutes(
     res.status(403).json({ error: "Issue costs are outside this actor's authorization boundary" });
     return false;
   }
+
+  router.get("/companies/:companyId/cost-events", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+
+    const query = parseCostEventListQuery(req.query);
+    const page = await costs.listEvents(companyId, query);
+    res.json(page);
+  });
 
   router.post("/companies/:companyId/cost-events", validate(createCostEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;

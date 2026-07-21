@@ -751,6 +751,9 @@ export type BillingType = (typeof BILLING_TYPES)[number];
 export const COST_STATUSES = ["reported", "unpriced"] as const;
 export type CostStatus = (typeof COST_STATUSES)[number];
 
+export const COST_USAGE_BASES = ["per_request", "per_run", "unknown"] as const;
+export type CostUsageBasis = (typeof COST_USAGE_BASES)[number];
+
 export const FINANCE_EVENT_KINDS = [
   "inference_charge",
   "platform_fee",

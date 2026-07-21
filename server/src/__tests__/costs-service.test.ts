@@ -67,6 +67,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
+  listEvents: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
   summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
@@ -160,8 +161,8 @@ async function createAppWithActor(actor: any) {
 }
 
 async function loadCostParsers() {
-  const { parseCostDateRange, parseCostLimit } = await import("../routes/costs.js");
-  return { parseCostDateRange, parseCostLimit };
+  const { parseCostDateRange, parseCostEventListQuery, parseCostLimit } = await import("../routes/costs.js");
+  return { parseCostDateRange, parseCostEventListQuery, parseCostLimit };
 }
 
 beforeEach(() => {
@@ -279,6 +280,136 @@ describe("cost routes", () => {
   it("accepts valid finance event list limits", async () => {
     const { parseCostLimit } = await loadCostParsers();
     expect(parseCostLimit({ limit: "25" })).toBe(25);
+    expect(parseCostLimit({ limit: "1.5" })).toBe(1);
+    expect(parseCostLimit({ limit: "10x" })).toBe(10);
+  });
+
+  it("lists cost events with default pagination options", async () => {
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ items: [], nextCursor: null });
+    expect(mockCostService.listEvents).toHaveBeenCalledWith("company-1", {
+      range: undefined,
+      limit: 100,
+      cursor: undefined,
+      billingTypes: [],
+    });
+  });
+
+  it("passes repeated billing types to the cost event service", async () => {
+    const app = await createApp();
+    const res = await request(app).get(
+      "/api/companies/company-1/cost-events?billingType=subscription_included&billingType=subscription_overage",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.listEvents).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        billingTypes: ["subscription_included", "subscription_overage"],
+      }),
+    );
+  });
+
+  it("normalizes cost event range, limit, and cursor options", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/cost-events")
+      .query({
+        from: "2026-07-01T00:00:00.000Z",
+        to: "2026-07-15T23:59:59.999Z",
+        limit: "25",
+        cursor: "opaque-cursor",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.listEvents).toHaveBeenCalledWith("company-1", {
+      range: {
+        from: new Date("2026-07-01T00:00:00.000Z"),
+        to: new Date("2026-07-15T23:59:59.999Z"),
+      },
+      limit: 25,
+      cursor: "opaque-cursor",
+      billingTypes: [],
+    });
+  });
+
+  it.each([
+    ["reversed range", "from=2026-07-16T00:00:00.000Z&to=2026-07-15T00:00:00.000Z"],
+    ["invalid date", "from=not-a-date"],
+    ["zero limit", "limit=0"],
+    ["oversized limit", "limit=501"],
+    ["fractional limit", "limit=1.5"],
+    ["partially numeric limit", "limit=10x"],
+    ["repeated cursor", "cursor=one&cursor=two"],
+    ["unknown billing type", "billingType=per_token"],
+  ])("rejects %s for cost event lists", async (_label, query) => {
+    const app = await createApp();
+    const res = await request(app).get(`/api/companies/company-1/cost-events?${query}`);
+
+    expect(res.status).toBe(400);
+    expect(mockCostService.listEvents).not.toHaveBeenCalled();
+  });
+
+  it("rejects cost event reads for board users outside the company", async () => {
+    const app = await createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-2"],
+    });
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+
+    expect(res.status).toBe(403);
+    expect(mockAccessService.decide).not.toHaveBeenCalled();
+    expect(mockCostService.listEvents).not.toHaveBeenCalled();
+  });
+
+  it("rejects cost event reads denied by the Costs authorization decision", async () => {
+    mockAccessService.decide.mockResolvedValueOnce({
+      allowed: false,
+      action: "company_scope:read",
+      reason: "deny_test",
+      explanation: "Denied by test mock.",
+    });
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({
+      error: "Costs are outside this actor's authorization boundary",
+    });
+    expect(mockCostService.listEvents).not.toHaveBeenCalled();
+  });
+
+  it("allows an authorized agent to read same-company cost events", async () => {
+    const app = await createAppWithActor({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+      source: "agent_key",
+    });
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.listEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not write activity or mutate services for a cost event read", async () => {
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockCostService.createEvent).not.toHaveBeenCalled();
+    expect(mockFinanceService.createEvent).not.toHaveBeenCalled();
+    expect(mockCompanyService.update).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
   });
 
   it("rejects company budget updates for board users outside the company", async () => {
@@ -434,6 +565,179 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     await tempDb?.cleanup();
   });
 
+  async function seedCostCompany(label: string) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: `${label} Company`,
+      issuePrefix: label,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: `${label} Agent`,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  it("lists inclusive filtered cost events without crossing company boundaries", async () => {
+    const companyA = await seedCostCompany("LSTA");
+    const companyB = await seedCostCompany("LSTB");
+    const from = new Date("2026-07-01T00:00:00.000Z");
+    const to = new Date("2026-07-02T00:00:00.000Z");
+    const includedIds = [
+      "00000000-0000-4000-8000-000000000102",
+      "00000000-0000-4000-8000-000000000101",
+    ];
+
+    await db.insert(costEvents).values([
+      {
+        id: includedIds[1],
+        companyId: companyA.companyId,
+        agentId: companyA.agentId,
+        provider: "openai",
+        billingType: "metered_api",
+        model: "gpt-test",
+        costCents: 1,
+        occurredAt: from,
+      },
+      {
+        id: includedIds[0],
+        companyId: companyA.companyId,
+        agentId: companyA.agentId,
+        provider: "openai",
+        billingType: "credits",
+        model: "gpt-test",
+        costCents: 2,
+        occurredAt: to,
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000103",
+        companyId: companyA.companyId,
+        agentId: companyA.agentId,
+        provider: "openai",
+        billingType: "subscription_included",
+        model: "gpt-test",
+        costCents: 3,
+        occurredAt: new Date("2026-07-01T12:00:00.000Z"),
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000104",
+        companyId: companyA.companyId,
+        agentId: companyA.agentId,
+        provider: "openai",
+        billingType: "metered_api",
+        model: "gpt-test",
+        costCents: 4,
+        occurredAt: new Date("2026-06-30T23:59:59.999Z"),
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000105",
+        companyId: companyB.companyId,
+        agentId: companyB.agentId,
+        provider: "openai",
+        billingType: "metered_api",
+        model: "gpt-test",
+        costCents: 5,
+        occurredAt: new Date("2026-07-01T12:00:00.000Z"),
+      },
+    ]);
+
+    const page = await costs.listEvents(companyA.companyId, {
+      range: { from, to },
+      limit: 20,
+      billingTypes: ["metered_api", "credits"],
+    });
+    expect(page.items.map((event) => event.id)).toEqual(includedIds);
+    expect(page.nextCursor).toBeNull();
+
+    await expect(costs.listEvents(companyA.companyId, {
+      limit: 20,
+      billingTypes: ["fixed"],
+    })).resolves.toEqual({ items: [], nextCursor: null });
+  });
+
+  it("paginates equal timestamps by descending UUID without gaps", async () => {
+    const company = await seedCostCompany("LSTP");
+    const occurredAt = new Date("2026-07-03T00:00:00.000Z");
+    const sameTimeIds = [
+      "00000000-0000-4000-8000-000000000003",
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000001",
+    ];
+
+    await db.insert(costEvents).values(sameTimeIds.map((id) => ({
+      id,
+      companyId: company.companyId,
+      agentId: company.agentId,
+      provider: "openai",
+      billingType: "metered_api",
+      model: "gpt-test",
+      costCents: 1,
+      occurredAt,
+    })));
+
+    const firstPage = await costs.listEvents(company.companyId, {
+      limit: 2,
+      billingTypes: ["metered_api"],
+    });
+    expect(firstPage.nextCursor).not.toBeNull();
+    const secondPage = await costs.listEvents(company.companyId, {
+      limit: 2,
+      cursor: firstPage.nextCursor!,
+      billingTypes: ["metered_api"],
+    });
+
+    expect([...firstPage.items, ...secondPage.items].map((event) => event.id))
+      .toEqual(sameTimeIds);
+    expect(secondPage.nextCursor).toBeNull();
+  });
+
+  it("rejects a pagination cursor when its filters change", async () => {
+    const company = await seedCostCompany("LSTC");
+    await db.insert(costEvents).values([
+      {
+        companyId: company.companyId,
+        agentId: company.agentId,
+        provider: "openai",
+        billingType: "metered_api",
+        model: "gpt-test",
+        costCents: 1,
+        occurredAt: new Date("2026-07-04T00:00:00.000Z"),
+      },
+      {
+        companyId: company.companyId,
+        agentId: company.agentId,
+        provider: "openai",
+        billingType: "metered_api",
+        model: "gpt-test",
+        costCents: 2,
+        occurredAt: new Date("2026-07-03T00:00:00.000Z"),
+      },
+    ]);
+
+    const firstPage = await costs.listEvents(company.companyId, {
+      limit: 1,
+      billingTypes: ["metered_api"],
+    });
+    await expect(costs.listEvents(company.companyId, {
+      limit: 1,
+      cursor: firstPage.nextCursor!,
+      billingTypes: ["credits"],
+    })).rejects.toMatchObject({
+      status: 400,
+      message: "Cost-events cursor does not match request filters",
+    });
+  });
+
   it("persists unpriced token usage without inflating monthly spend", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -471,9 +775,29 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     });
 
     expect(event.costStatus).toBe("unpriced");
+    expect(event.usageBasis).toBe("unknown");
     expect(event.inputTokens).toBe(2_732_577);
+
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent?.spentMonthlyCents).toBe(0);
+  });
+
+  it("persists an explicitly reported cost usage basis", async () => {
+    const company = await seedCostCompany("BASI");
+
+    const event = await costs.createEvent(company.companyId, {
+      agentId: company.agentId,
+      provider: "openai",
+      biller: "openai",
+      billingType: "metered_api",
+      costStatus: "reported",
+      usageBasis: "per_request",
+      model: "gpt-5",
+      costCents: 12,
+      occurredAt: new Date("2026-07-13T14:23:54.000Z"),
+    });
+
+    expect(event.usageBasis).toBe("per_request");
   });
 
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
