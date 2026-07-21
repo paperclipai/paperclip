@@ -46,5 +46,11 @@ jobs:
       - name: Install dependencies from frozen lockfile
         run: pnpm install --frozen-lockfile
 
-      - name: Run tests
+      - name: Run focused async image-job tests
+        run: |
+          pnpm run preflight:workspace-links
+          pnpm exec vitest run --project @paperclipai/server server/src/__tests__/issue-attachment-routes.test.ts --pool=forks --poolOptions.forks.isolate=true
+          pnpm --filter @paperclipai/mcp-server exec vitest run src/tools.test.ts
+
+      - name: Run full suite
         run: pnpm test:run
