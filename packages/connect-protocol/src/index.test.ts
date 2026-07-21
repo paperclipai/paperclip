@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHmac, generateKeyPairSync, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   ConnectProtocolError,
@@ -7,6 +7,7 @@ import {
   relayEnvelopeSchema,
   signRequestEnvelope,
   verifyRelaySignature,
+  verifyProviderWebhook,
   verifyRequestEnvelope,
   type ReplayStore,
 } from "./index.js";
@@ -74,6 +75,27 @@ describe("connect protocol", () => {
       timestamp: "1784656200",
       now: new Date("2026-07-21T18:00:00.000Z"),
     })).toBe(false);
+  });
+
+  it("verifies the pinned webhook profile", () => {
+    const rawBody = Buffer.from('{"type":"deployment.created"}');
+    const secret = "vercel-webhook-secret";
+    const signature = createRelaySignature({ body: rawBody, relaySecret: Buffer.from(secret) }).slice(3);
+    expect(verifyProviderWebhook({
+      profile: { profile: "vercel@1", scheme: "hmac-sha256", signatureHeader: "x-vercel-signature", encoding: "hex", prefix: "" },
+      rawBody,
+      headers: { "X-Vercel-Signature": signature },
+      secret,
+    })).toBe("verified");
+  });
+
+  it("rejects webhook signature downgrade attempts", () => {
+    const rawBody = Buffer.from("payload");
+    const secret = "secret";
+    const sha1 = createHmac("sha1", secret).update(rawBody).digest("hex");
+    const profile = { profile: "provider@1", scheme: "hmac-sha256" as const, signatureHeader: "x-signature", encoding: "hex" as const, prefix: "" };
+    expect(verifyProviderWebhook({ profile, rawBody, headers: {}, secret })).toBe("rejected");
+    expect(verifyProviderWebhook({ profile, rawBody, headers: { "x-signature": sha1, "x-paperclip-verifier-profile": "none" }, secret })).toBe("rejected");
   });
 
   it("verifies an EdDSA request once and rejects its replay", async () => {

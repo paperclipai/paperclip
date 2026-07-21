@@ -84,6 +84,47 @@ export const relayEnvelopeSchema = z.object({
 
 export type RelayEnvelope = z.infer<typeof relayEnvelopeSchema>;
 
+export const webhookVerifierProfileSchema = z.object({
+  profile: z.string().min(1),
+  scheme: z.enum(["hmac-sha256", "hmac-sha1", "static-token", "none"]),
+  signatureHeader: z.string().min(1).transform((value) => value.toLowerCase()),
+  encoding: z.enum(["hex", "base64"]).default("hex"),
+  prefix: z.string().default(""),
+});
+
+export type WebhookVerifierProfile = z.infer<typeof webhookVerifierProfileSchema>;
+
+function constantTimeEqual(expected: string, actual: string): boolean {
+  const expectedBytes = Buffer.from(expected, "utf8");
+  const actualBytes = Buffer.from(actual, "utf8");
+  return expectedBytes.length === actualBytes.length && timingSafeEqual(expectedBytes, actualBytes);
+}
+
+export function verifyProviderWebhook(input: {
+  profile: WebhookVerifierProfile;
+  rawBody: Uint8Array;
+  headers: Record<string, string | string[] | undefined>;
+  secret?: Uint8Array | string;
+}): "verified" | "unsigned" | "rejected" {
+  const profile = webhookVerifierProfileSchema.parse(input.profile);
+  if (profile.scheme === "none") return "unsigned";
+  if (input.secret === undefined) return "rejected";
+
+  const headers = new Map(Object.entries(input.headers).map(([key, value]) => [key.toLowerCase(), value]));
+  const headerValue = headers.get(profile.signatureHeader);
+  const actual = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  if (!actual) return "rejected";
+
+  if (profile.scheme === "static-token") {
+    const expected = typeof input.secret === "string" ? input.secret : Buffer.from(input.secret).toString("utf8");
+    return constantTimeEqual(`${profile.prefix}${expected}`, actual) ? "verified" : "rejected";
+  }
+
+  const algorithm = profile.scheme === "hmac-sha256" ? "sha256" : "sha1";
+  const digest = createHmac(algorithm, input.secret).update(input.rawBody).digest(profile.encoding);
+  return constantTimeEqual(`${profile.prefix}${digest}`, actual) ? "verified" : "rejected";
+}
+
 export const requestEnvelopePayloadSchema = z.object({
   iss: opaqueId("in"),
   aud: z.literal(CONNECT_SERVICE_AUDIENCE),
