@@ -5244,7 +5244,24 @@ describeEmbeddedPostgres("issueService.checkout pending interaction guard", () =
     expect(checkedOut.executionRunId).toBe(runId);
   });
 
-  it("allows checkout when the claimed heartbeat run is no longer available", async () => {
+  it("rejects deleted timer-run checkout when it cannot prove an interaction/comment wake", async () => {
+    const { agentId, issueId, runId } = await seedPendingInteractionCheckoutFixture({
+      source: "scheduler",
+      wakeReason: "heartbeat_timer",
+    });
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+
+    await expect(svc.checkout(issueId, agentId, ["in_review"], runId)).rejects.toMatchObject({
+      status: 409,
+    });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.status).toBe("in_review");
+    expect(issue.checkoutRunId).toBeNull();
+    expect(issue.executionRunId).toBeNull();
+  });
+
+  it("rejects deleted interaction/comment-run checkout when its provenance is unavailable", async () => {
     const { agentId, issueId, runId } = await seedPendingInteractionCheckoutFixture({
       source: "issue.interaction",
       wakeReason: "issue_commented",
@@ -5252,11 +5269,14 @@ describeEmbeddedPostgres("issueService.checkout pending interaction guard", () =
     });
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
 
-    const checkedOut = await svc.checkout(issueId, agentId, ["in_review"], runId);
+    await expect(svc.checkout(issueId, agentId, ["in_review"], runId)).rejects.toMatchObject({
+      status: 409,
+    });
 
-    expect(checkedOut.status).toBe("in_progress");
-    expect(checkedOut.checkoutRunId).toBeNull();
-    expect(checkedOut.executionRunId).toBeNull();
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.status).toBe("in_review");
+    expect(issue.checkoutRunId).toBeNull();
+    expect(issue.executionRunId).toBeNull();
   });
 });
 

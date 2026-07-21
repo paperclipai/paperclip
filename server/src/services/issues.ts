@@ -4667,8 +4667,10 @@ export function issueService(db: Db) {
       .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, input.checkoutRunId)))
       .then((rows) => rows[0] ?? null);
 
-    if (!run) return false;
-    return !isInteractionOrCommentWakeContext(run.contextSnapshot);
+    // A missing run cannot prove this was an interaction/comment wake. Keep
+    // the pending-interaction guard closed in that race; the caller still
+    // clears the unavailable id before it can be persisted as a checkout lock.
+    return !isInteractionOrCommentWakeContext(run?.contextSnapshot ?? null);
   }
 
   return {
@@ -6640,6 +6642,11 @@ export function issueService(db: Db) {
         });
       }
 
+      // Preserve the requested run for pending-interaction provenance even if
+      // it disappears before this checkout. The missing id is normalized away
+      // below so it cannot violate the issues -> heartbeat_runs foreign key.
+      const pendingInteractionCheckoutRunId = checkoutRunId;
+
       // A checkout run can disappear between wake dispatch and this checkout.
       // Do not persist an unavailable id: issues has a foreign key to
       // heartbeat_runs, and a missing run cannot hold the checkout lock.
@@ -6654,7 +6661,12 @@ export function issueService(db: Db) {
 
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
-      if (await isCheckoutSuppressedByPendingInteraction({ issueId: id, agentId, expectedStatuses, checkoutRunId })) {
+      if (await isCheckoutSuppressedByPendingInteraction({
+        issueId: id,
+        agentId,
+        expectedStatuses,
+        checkoutRunId: pendingInteractionCheckoutRunId,
+      })) {
         throw conflict("Issue is waiting on a pending issue-thread interaction", {
           issueId: id,
           status: "in_review",
