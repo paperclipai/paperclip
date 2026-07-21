@@ -644,7 +644,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("promotes deferred comment wakes after the active run closes the issue", async () => {
+  it("promotes deferred comment wakes after the active run closes the issue without reopening it", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -685,7 +685,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values({
         id: issueId,
         companyId,
-        title: "Reopen after deferred comment",
+        title: "Terminal deferred comment",
         status: "todo",
         priority: "medium",
         responsibleUserId: "responsible-user",
@@ -730,6 +730,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return run?.status === "running";
       });
 
+      // Human comment while run is still open: deferred as plain issue_commented
+      // with no reopen markers. After the run marks the issue done, promotion
+      // must deliver the comment without undoing terminal status.
       const comment2 = await db
         .insert(issueComments)
         .values({
@@ -802,7 +805,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         );
       }, 90_000);
 
-      const reopenedIssue = await db
+      const terminalIssue = await db
         .select({
           status: issues.status,
           completedAt: issues.completedAt,
@@ -811,10 +814,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
-      expect(reopenedIssue).toMatchObject({
-        status: "in_progress",
-        completedAt: null,
+      expect(terminalIssue).toMatchObject({
+        status: "done",
       });
+      expect(terminalIssue?.completedAt).not.toBeNull();
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toBeUndefined();
@@ -826,8 +829,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issue: {
           id: issueId,
           identifier: `${issuePrefix}-1`,
-          title: "Reopen after deferred comment",
-          status: "in_progress",
+          title: "Terminal deferred comment",
+          status: "done",
           priority: "medium",
         },
       });
@@ -1208,7 +1211,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("still reopens a finished issue when a deferred batch mixes self-authored and human comments", async () => {
+  it("does not reopen a finished issue for a mixed deferred batch of mid-run comments without reopen intent", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1249,7 +1252,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values({
         id: issueId,
         companyId,
-        title: "Human follow-up must survive mixed deferred batches",
+        title: "Mid-run comments stay terminal after close",
         status: "todo",
         priority: "medium",
         responsibleUserId: "responsible-user",
@@ -1312,13 +1315,15 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       expect(firstDeferredRun).toBeNull();
 
+      // Board/user comment while the issue is still open — same deferred shape
+      // that previously reopened terminal issues after approve→done.
       const humanComment = await db
         .insert(issueComments)
         .values({
           companyId,
           issueId,
           authorUserId: "user-1",
-          body: "Real follow-up from a human after the run closes",
+          body: "Review note while the run is still open",
         })
         .returning()
         .then((rows) => rows[0]);
@@ -1395,9 +1400,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0] ?? null);
 
       expect(issueAfterPromotion).toMatchObject({
-        status: "in_progress",
-        completedAt: null,
+        status: "done",
       });
+      expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toBeUndefined();
@@ -1409,12 +1414,450 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issue: {
           id: issueId,
           identifier: `${issuePrefix}-1`,
-          title: "Human follow-up must survive mixed deferred batches",
+          title: "Mid-run comments stay terminal after close",
+          status: "done",
+          priority: "medium",
+        },
+      });
+      expect(String(secondPayload.message ?? "")).toContain("Review note while the run is still open");
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("still reopens a finished issue when a deferred human comment carries explicit reopen intent", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Local CLI Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Post-close human reopen must still work",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+
+      // Open-while-running human comment (no lifecycle intent) is deferred first.
+      const midRunComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          body: "Note while work is in flight",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const midRunDeferred = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: midRunComment.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: midRunComment.id,
+          wakeCommentId: midRunComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(midRunDeferred).toBeNull();
+
+      await waitFor(async () => {
+        const deferred = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return Boolean(deferred);
+      });
+
+      // Simulate an explicit post-close reopen arriving into the deferred batch
+      // (routes stamp reopenedFrom + issue_reopened_via_comment).
+      const reopenComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          body: "Please reopen and continue after close",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const reopenDeferred = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_reopened_via_comment",
+        payload: {
+          issueId,
+          commentId: reopenComment.id,
+          reopenedFrom: "done",
+        },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: reopenComment.id,
+          wakeCommentId: reopenComment.id,
+          wakeReason: "issue_reopened_via_comment",
+          reopenedFrom: "done",
+          source: "issue.comment.reopen",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(reopenDeferred).toBeNull();
+
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      gateway.releaseFirstWait();
+
+      await waitFor(() => gateway.getAgentPayloads().length >= 2, 90_000);
+      await waitFor(async () => {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        const [initialRun, promotedRun] = runs;
+        return (
+          initialRun?.id === firstRun?.id &&
+          initialRun.status === "succeeded" &&
+          promotedRun?.status === "succeeded"
+        );
+      }, 90_000);
+
+      const issueAfterPromotion = await db
+        .select({
+          status: issues.status,
+          completedAt: issues.completedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(issueAfterPromotion).toMatchObject({
+        status: "in_progress",
+        completedAt: null,
+      });
+
+      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
+      expect(secondPayload.paperclip).toBeUndefined();
+      const secondWake = parseWakePayloadFromMessage(secondPayload.message);
+      expect(secondWake).toMatchObject({
+        commentIds: [midRunComment.id, reopenComment.id],
+        latestCommentId: reopenComment.id,
+        issue: {
+          id: issueId,
+          identifier: `${issuePrefix}-1`,
+          title: "Post-close human reopen must still work",
           status: "in_progress",
           priority: "medium",
         },
       });
-      expect(String(secondPayload.message ?? "")).toContain("Real follow-up from a human after the run closes");
+      expect(String(secondPayload.message ?? "")).toContain("Please reopen and continue after close");
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("still reopens a finished issue when a deferred comment carries resumeIntent or followUpRequested", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Local CLI Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Resume intent must still reopen after close",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+
+      // Mid-run human comment deferred first; without lifecycle intent this would
+      // stay terminal after close. Resume markers arrive as a second deferred wake.
+      const midRunComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          body: "Note while work is in flight",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const midRunDeferred = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: midRunComment.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: midRunComment.id,
+          wakeCommentId: midRunComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(midRunDeferred).toBeNull();
+
+      await waitFor(async () => {
+        const deferred = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return Boolean(deferred);
+      });
+
+      // Explicit agent resume (resumeIntent + followUpRequested) batched into the
+      // deferred wake — same markers routes stamp for `resume: true`.
+      const resumeComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "local-cli-user",
+          body: "Resume this issue and continue after close",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const resumeDeferred = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId,
+          commentId: resumeComment.id,
+        },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: resumeComment.id,
+          wakeCommentId: resumeComment.id,
+          wakeReason: "issue_commented",
+          resumeIntent: true,
+          followUpRequested: true,
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "local-cli-user",
+      });
+      expect(resumeDeferred).toBeNull();
+
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      gateway.releaseFirstWait();
+
+      await waitFor(() => gateway.getAgentPayloads().length >= 2, 90_000);
+      await waitFor(async () => {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        const [initialRun, promotedRun] = runs;
+        return (
+          initialRun?.id === firstRun?.id &&
+          initialRun.status === "succeeded" &&
+          promotedRun?.status === "succeeded"
+        );
+      }, 90_000);
+
+      const issueAfterPromotion = await db
+        .select({
+          status: issues.status,
+          completedAt: issues.completedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(issueAfterPromotion).toMatchObject({
+        status: "in_progress",
+        completedAt: null,
+      });
+
+      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
+      expect(secondPayload.paperclip).toBeUndefined();
+      const secondWake = parseWakePayloadFromMessage(secondPayload.message);
+      expect(secondWake).toMatchObject({
+        commentIds: [midRunComment.id, resumeComment.id],
+        latestCommentId: resumeComment.id,
+        issue: {
+          id: issueId,
+          identifier: `${issuePrefix}-1`,
+          title: "Resume intent must still reopen after close",
+          status: "in_progress",
+          priority: "medium",
+        },
+      });
+      expect(String(secondPayload.message ?? "")).toContain(
+        "Resume this issue and continue after close",
+      );
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
