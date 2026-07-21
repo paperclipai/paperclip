@@ -1,7 +1,7 @@
 import sharp from "sharp";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { assets as assetRows, issueImageGenerationJobs } from "@paperclipai/db";
+import { assets as assetRows, issueAttachments, issueImageGenerationJobs } from "@paperclipai/db";
 import type { StorageService } from "../storage/types.js";
 import { issueService, logActivity, resolveAllCredentialEnv } from "./index.js";
 import { normalizeContentType } from "../attachment-types.js";
@@ -87,6 +87,18 @@ type JobSelect = {
   actor: ActorInfo;
   terminalAudit: Record<string, unknown> | null;
   claimToken: string | null;
+};
+
+type PersistedAttachment = {
+  id: string;
+  companyId: string;
+  issueId: string;
+  assetId: string;
+  objectKey: string;
+  contentType: string;
+  byteSize: number;
+  sha256: string;
+  originalFilename: string | null;
 };
 
 function resolveIssueImageProvider(): IssueImageProvider {
@@ -309,12 +321,15 @@ async function createIssueGeneratedAttachment(input: {
   issueId: string;
   companyId: string;
   actor: ActorInfo;
+  jobId: string;
+  claimToken: string;
+  leaseMs: number;
+  kind: "output" | "audit";
   namespace: string;
   originalFilename: string;
   contentType: string;
   body: Buffer;
 }) {
-  const svc = issueService(input.db);
   const stored = await input.storage.putFile({
     companyId: input.companyId,
     namespace: input.namespace,
@@ -324,21 +339,82 @@ async function createIssueGeneratedAttachment(input: {
   });
 
   try {
-    return await svc.createAttachment({
-      issueId: input.issueId,
-      issueCommentId: null,
-      provider: stored.provider,
-      objectKey: stored.objectKey,
-      contentType: stored.contentType,
-      byteSize: stored.byteSize,
-      sha256: stored.sha256,
-      originalFilename: stored.originalFilename,
-      createdByAgentId: input.actor.agentId,
-      createdByUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+    return await input.db.transaction(async (tx) => {
+      const claimed = await tx
+        .update(issueImageGenerationJobs)
+        .set({
+          leaseExpiresAt: new Date(Date.now() + input.leaseMs),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issueImageGenerationJobs.id, input.jobId),
+            eq(issueImageGenerationJobs.status, "running"),
+            eq(issueImageGenerationJobs.claimToken, input.claimToken),
+          ),
+        )
+        .returning({ id: issueImageGenerationJobs.id });
+      if (claimed.length !== 1) {
+        throw new Error("Image generation job lease was lost before attachment persistence");
+      }
+
+      const [asset] = await tx
+        .insert(assetRows)
+        .values({
+          companyId: input.companyId,
+          provider: stored.provider,
+          objectKey: stored.objectKey,
+          contentType: stored.contentType,
+          byteSize: stored.byteSize,
+          sha256: stored.sha256,
+          originalFilename: stored.originalFilename,
+          createdByAgentId: input.actor.agentId,
+          createdByUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+        })
+        .returning();
+
+      const [attachment] = await tx
+        .insert(issueAttachments)
+        .values({
+          companyId: input.companyId,
+          issueId: input.issueId,
+          assetId: asset.id,
+          issueCommentId: null,
+        })
+        .returning();
+
+      const linked = await tx
+        .update(issueImageGenerationJobs)
+        .set(
+          input.kind === "output"
+            ? { outputAttachmentId: attachment.id, updatedAt: new Date() }
+            : { auditAttachmentId: attachment.id, updatedAt: new Date() },
+        )
+        .where(
+          and(
+            eq(issueImageGenerationJobs.id, input.jobId),
+            eq(issueImageGenerationJobs.status, "running"),
+            eq(issueImageGenerationJobs.claimToken, input.claimToken),
+          ),
+        )
+        .returning({ id: issueImageGenerationJobs.id });
+      if (linked.length !== 1) {
+        throw new Error("Image generation job lease was lost before attachment linkage");
+      }
+
+      return {
+        id: attachment.id,
+        companyId: input.companyId,
+        issueId: input.issueId,
+        assetId: asset.id,
+        objectKey: stored.objectKey,
+        contentType: stored.contentType,
+        byteSize: stored.byteSize,
+        sha256: stored.sha256,
+        originalFilename: stored.originalFilename,
+      } satisfies PersistedAttachment;
     });
   } catch (error) {
-    // Storage is outside the DB transaction used by createAttachment. Do not
-    // leave an unreferenced object if that transaction rejects or rolls back.
     await input.storage.deleteObject(input.companyId, stored.objectKey).catch(() => undefined);
     throw error;
   }
@@ -470,14 +546,74 @@ export function createIssueImageGenerationJobService(
     }
   }
 
-  async function compensateAttachment(attachment: Awaited<ReturnType<ReturnType<typeof issueService>["createAttachment"]>> | null) {
-    if (!attachment) return;
+  async function clearAttachment(job: JobSelect, kind: "output" | "audit") {
+    const attachmentId = kind === "output" ? job.outputAttachmentId : job.auditAttachmentId;
+    if (!attachmentId || !job.claimToken) return null;
     try {
-      const removed = await issueService(db).removeAttachment(attachment.id);
+      const removed = await db.transaction(async (tx) => {
+        const claimed = await tx
+          .update(issueImageGenerationJobs)
+          .set({
+            leaseExpiresAt: new Date(Date.now() + leaseMs),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(issueImageGenerationJobs.id, job.id),
+              eq(issueImageGenerationJobs.status, "running"),
+              eq(issueImageGenerationJobs.claimToken, job.claimToken),
+            ),
+          )
+          .returning({ id: issueImageGenerationJobs.id });
+        if (claimed.length !== 1) {
+          throw new Error("Image generation job lease was lost during attachment cleanup");
+        }
+
+        const rows = await tx
+          .select({
+            issueAttachmentId: issueAttachments.id,
+            companyId: assetRows.companyId,
+            objectKey: assetRows.objectKey,
+            assetId: assetRows.id,
+          })
+          .from(issueAttachments)
+          .innerJoin(assetRows, eq(assetRows.id, issueAttachments.assetId))
+          .where(eq(issueAttachments.id, attachmentId));
+        const attachment = rows[0] ?? null;
+        if (!attachment) {
+          await tx
+            .update(issueImageGenerationJobs)
+            .set(
+              kind === "output"
+                ? { outputAttachmentId: null, updatedAt: new Date() }
+                : { auditAttachmentId: null, updatedAt: new Date() },
+            )
+            .where(eq(issueImageGenerationJobs.id, job.id));
+          return null;
+        }
+
+        await tx.delete(issueAttachments).where(eq(issueAttachments.id, attachment.issueAttachmentId));
+        await tx.delete(assetRows).where(eq(assetRows.id, attachment.assetId));
+        await tx
+          .update(issueImageGenerationJobs)
+          .set(
+            kind === "output"
+              ? { outputAttachmentId: null, updatedAt: new Date() }
+              : { auditAttachmentId: null, updatedAt: new Date() },
+          )
+          .where(eq(issueImageGenerationJobs.id, job.id));
+        return attachment;
+      });
       if (removed) await storage.deleteObject(removed.companyId, removed.objectKey);
     } catch (error) {
-      log.error({ err: error, attachmentId: attachment.id }, "failed to compensate image generation attachment");
+      log.error({ err: error, attachmentId, jobId: job.id, kind }, "failed to compensate image generation attachment");
     }
+    return null;
+  }
+
+  async function clearPartialDelivery(job: JobSelect) {
+    if (job.auditAttachmentId) await clearAttachment(job, "audit");
+    if (job.outputAttachmentId) await clearAttachment(job, "output");
   }
 
   async function execute(job: JobSelect): Promise<void> {
@@ -486,6 +622,9 @@ export function createIssueImageGenerationJobService(
     const issue = await issueService(db).getById(job.issueId);
     if (!issue) {
       throw notFound(`Issue not found for image generation job: ${job.issueId}`);
+    }
+    if (job.outputAttachmentId || job.auditAttachmentId) {
+      await clearPartialDelivery(job);
     }
 
     const references = await loadImageReferences({
@@ -550,8 +689,8 @@ export function createIssueImageGenerationJobService(
       requestedSize,
     });
 
-    let outputAttachment: Awaited<ReturnType<typeof createIssueGeneratedAttachment>> | null = null;
-    let auditAttachment: Awaited<ReturnType<typeof createIssueGeneratedAttachment>> | null = null;
+    let outputAttachment: PersistedAttachment | null = null;
+    let auditAttachment: PersistedAttachment | null = null;
     try {
       outputAttachment = await createIssueGeneratedAttachment({
         db,
@@ -559,6 +698,10 @@ export function createIssueImageGenerationJobService(
         issueId: job.issueId,
         companyId: job.companyId,
         actor: job.actor,
+        jobId: job.id,
+        claimToken: job.claimToken,
+        leaseMs,
+        kind: "output",
         namespace: `issues/${job.issueId}/generated-images`,
         originalFilename: generatedImageFilename(job.request.outputFilename),
         contentType: normalizedOutput.contentType,
@@ -615,6 +758,10 @@ export function createIssueImageGenerationJobService(
       issueId: job.issueId,
       companyId: job.companyId,
       actor: job.actor,
+      jobId: job.id,
+      claimToken: job.claimToken,
+      leaseMs,
+      kind: "audit",
       namespace: `issues/${job.issueId}/generated-images/audits`,
       originalFilename: `paperclip-image-audit-${Date.now()}.json`,
       contentType: "application/json",
@@ -628,6 +775,7 @@ export function createIssueImageGenerationJobService(
         finishedAt: new Date(),
         updatedAt: new Date(),
         leaseExpiresAt: null,
+        claimToken: null,
         outputAttachmentId: outputAttachment.id,
         auditAttachmentId: auditAttachment.id,
         terminalAudit: audit,
@@ -665,16 +813,14 @@ export function createIssueImageGenerationJobService(
         jobId: job.id,
       },
     }).catch((error) => {
-      // The terminal result is already durable and correctly linked. Activity
-      // logging is observability, not a reason to remove a delivered result.
       log.error({ err: error, jobId: job.id }, "failed to write image generation activity");
     });
     } catch (error) {
-      // Attachments are persisted independently from object storage. If the
-      // fenced terminal link cannot be written, remove both durable artifacts
-      // so a later attempt cannot silently publish a second delivery.
-      await compensateAttachment(auditAttachment);
-      await compensateAttachment(outputAttachment);
+      await clearPartialDelivery({
+        ...job,
+        outputAttachmentId: outputAttachment?.id ?? job.outputAttachmentId,
+        auditAttachmentId: auditAttachment?.id ?? job.auditAttachmentId,
+      });
       throw error;
     }
   }
@@ -689,6 +835,7 @@ export function createIssueImageGenerationJobService(
         finishedAt: new Date(),
         updatedAt: new Date(),
         leaseExpiresAt: null,
+        claimToken: null,
       })
       .where(and(
         eq(issueImageGenerationJobs.id, job.id),
