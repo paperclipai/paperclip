@@ -135,10 +135,11 @@ export function filterLocalInboxArchivedIssues(
 }
 
 function inboxIssueCompanyIdFromQueryKey(queryKey: QueryKey): string | null {
+  const inboxQueryKind = String(queryKey[2]);
   if (
     queryKey[0] !== "issues"
     || typeof queryKey[1] !== "string"
-    || !["mine-by-me", "touched-by-me", "unread-touched-by-me"].includes(String(queryKey[2]))
+    || !["compact", "mine-by-me", "touched-by-me", "unread-touched-by-me"].includes(inboxQueryKind)
   ) {
     return null;
   }

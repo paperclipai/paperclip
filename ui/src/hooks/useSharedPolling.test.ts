@@ -66,4 +66,29 @@ describe("applySharedPollingResult", () => {
     expect(applied).toBe(true);
     expect(queryClient.getQueryData(queryKey)).toEqual([{ id: "issue-visible" }]);
   });
+
+  it("filters locally archived issues from the generic compact inbox broadcast", () => {
+    const queryClient = new QueryClient();
+    const queryKey = [
+      "issues",
+      "company-1",
+      "compact",
+      "with-routine-executions",
+      "live-descendant-summary",
+      250,
+    ];
+    beginLocalInboxArchive("company-1", "issue-archived");
+
+    const applied = applySharedPollingResult(queryClient, queryKey, {
+      type: "result",
+      key: "company:inbox:issues",
+      from: "leader",
+      at: 4_000,
+      dataUpdatedAt: 3_000,
+      data: [{ id: "issue-archived" }, { id: "issue-visible" }],
+    });
+
+    expect(applied).toBe(true);
+    expect(queryClient.getQueryData(queryKey)).toEqual([{ id: "issue-visible" }]);
+  });
 });
