@@ -655,6 +655,20 @@ export function toolAccessRoutes(
     res.json({ connectionId: connection.id, triggers: await triggerSvc.list(connection.companyId, connection.id) });
   });
 
+  // Delivery observability for the detail-page Triggers panel: cumulative
+  // received/forwarded counts, the most recent error, and the dead-letter queue.
+  // Read-only, board-scoped — same visibility gate as the triggers list.
+  router.get("/tool-connections/:connectionId/deliveries", async (req, res) => {
+    assertBoard(req);
+    const connection = await svc.getConnection(req.params.connectionId as string);
+    if (!hasCompanyAccess(req, connection.companyId)) throw notFound("Tool connection not found");
+    assertCompanyAccess(req, connection.companyId);
+    res.json({
+      connectionId: connection.id,
+      summary: await triggerSvc.deliverySummary(connection.companyId, connection.id),
+    });
+  });
+
   router.post(
     "/tool-connections/:connectionId/triggers",
     validate(createConnectionTriggerSchema),

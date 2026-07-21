@@ -1,4 +1,4 @@
-import { Activity, Beaker, BarChart3, Inbox, KeyRound, Settings2, ShieldCheck, Wrench } from "lucide-react";
+import { Activity, Beaker, BarChart3, Inbox, KeyRound, Settings2, ShieldCheck, Webhook, Wrench } from "lucide-react";
 
 export const APP_TABS = [
   { key: "setup", label: "Setup", icon: Settings2 },
@@ -6,6 +6,7 @@ export const APP_TABS = [
   { key: "permissions", label: "Permissions", icon: ShieldCheck },
   { key: "grants", label: "Grants", icon: KeyRound },
   { key: "usage", label: "Usage", icon: BarChart3 },
+  { key: "triggers", label: "Triggers", icon: Webhook },
   { key: "activity", label: "Activity", icon: Activity },
   { key: "test", label: "Test", icon: Beaker },
   { key: "advanced", label: "Advanced", icon: Wrench },
@@ -16,9 +17,10 @@ export type AppTabKey = (typeof APP_TABS)[number]["key"];
 /**
  * Tabs hidden for an application that has no live connection (the
  * `AppNotConnected` shell). The Test tab runs real calls against a connected
- * app, so it only appears once the app is connected.
+ * app, and the Triggers tab routes that connection's inbound webhooks — both
+ * only make sense once the app is connected.
  */
-export const CONNECTED_ONLY_APP_TABS: ReadonlySet<AppTabKey> = new Set<AppTabKey>(["test"]);
+export const CONNECTED_ONLY_APP_TABS: ReadonlySet<AppTabKey> = new Set<AppTabKey>(["test", "triggers"]);
 
 export function appTabHref(connectionId: string, tab: AppTabKey): string {
   return `/apps/${connectionId}/${tab}`;

@@ -1,4 +1,6 @@
 import type {
+  CreateConnectionTrigger,
+  UpdateConnectionTrigger,
   ToolApplication,
   ToolConnection,
   ToolConnectionInstall,
@@ -90,6 +92,49 @@ export type ReviewNewToolsInput = {
 
 export type StdioTemplateSummary = ToolStdioCommandTemplate;
 export type StdioTemplatesResponse = { templates: StdioTemplateSummary[] };
+
+// --- Connection triggers + delivery relay (Connections v3, PAP-14832 P6c) ---
+
+export type ConnectionTriggerDestinationType = "routine" | "issue_wake" | "plugin_worker";
+
+/** A persisted inbound-webhook route from a connection to a destination. */
+export interface ConnectionTriggerRecord {
+  id: string;
+  companyId: string;
+  connectionId: string;
+  destinationType: ConnectionTriggerDestinationType;
+  destinationId: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ConnectionTriggersResponse = {
+  connectionId: string;
+  triggers: ConnectionTriggerRecord[];
+};
+
+/** A delivery that exhausted its retries and landed in the dead-letter queue. */
+export interface ConnectionTriggerDeadLetter {
+  id: string;
+  deliveryId: string;
+  providerSlug: string;
+  attempt: number;
+  lastError: string | null;
+  receivedAt: string;
+}
+
+export interface ConnectionTriggerDeliverySummary {
+  counts: { received: number; forwarded: number; delivered: number; failed: number; deadLetter: number };
+  lastError: { message: string; at: string; deliveryId: string } | null;
+  deadLetters: ConnectionTriggerDeadLetter[];
+}
+
+export type ConnectionTriggerDeliveriesResponse = {
+  connectionId: string;
+  summary: ConnectionTriggerDeliverySummary;
+};
 
 /** Admin "run your own" command-template create input (M8b, PAP-10862). */
 export interface CreateStdioTemplateInput {
@@ -416,6 +461,17 @@ export const toolsApi = {
     api.get<ToolConnectionActivityResponse>(
       `/tool-connections/${connectionId}/activity?limit=${limit}`,
     ),
+  // --- Triggers (Connections v3, PAP-14832 P6c): inbound webhook routes ---
+  listConnectionTriggers: (connectionId: string) =>
+    api.get<ConnectionTriggersResponse>(`/tool-connections/${connectionId}/triggers`),
+  createConnectionTrigger: (connectionId: string, input: CreateConnectionTrigger) =>
+    api.post<ConnectionTriggerRecord>(`/tool-connections/${connectionId}/triggers`, input),
+  updateConnectionTrigger: (connectionId: string, triggerId: string, input: UpdateConnectionTrigger) =>
+    api.patch<ConnectionTriggerRecord>(`/tool-connections/${connectionId}/triggers/${triggerId}`, input),
+  deleteConnectionTrigger: (connectionId: string, triggerId: string) =>
+    api.delete<void>(`/tool-connections/${connectionId}/triggers/${triggerId}`),
+  getConnectionTriggerDeliveries: (connectionId: string) =>
+    api.get<ConnectionTriggerDeliveriesResponse>(`/tool-connections/${connectionId}/deliveries`),
   listTestAgents: (connectionId: string) =>
     api.get<ToolConnectionTestAgentsResponse>(
       `/tool-connections/${connectionId}/test-agents`,

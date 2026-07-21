@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, connectionTriggerDeliveries, connectionTriggers, issues, pluginCompanySettings, plugins, routines as routinesTable, toolConnections } from "@paperclipai/db";
 import {
@@ -353,5 +353,87 @@ export function connectionTriggerService(db: Db) {
     async remove(companyId: string, connectionId: string, id: string) {
       return db.delete(connectionTriggers).where(and(eq(connectionTriggers.companyId, companyId), eq(connectionTriggers.connectionId, connectionId), eq(connectionTriggers.id, id))).returning({ id: connectionTriggers.id }).then((rows) => rows.length === 1);
     },
+    /**
+     * Observability rollup for a connection's inbound webhook relay. Powers the
+     * detail-page Triggers panel: cumulative received/forwarded counts (a
+     * delivery walks received → forwarded → delivered|failed|dead_letter, so we
+     * count by "reached this stage" rather than by current status), the most
+     * recent error, and the dead-letter queue.
+     */
+    async deliverySummary(companyId: string, connectionId: string): Promise<ConnectionTriggerDeliverySummary> {
+      const scope = and(
+        eq(connectionTriggerDeliveries.companyId, companyId),
+        eq(connectionTriggerDeliveries.connectionId, connectionId),
+      );
+      const [agg] = await db
+        .select({
+          received: sql<number>`count(*)::int`,
+          forwarded: sql<number>`count(*) filter (where ${connectionTriggerDeliveries.forwardedAt} is not null)::int`,
+          delivered: sql<number>`count(*) filter (where ${connectionTriggerDeliveries.status} = 'delivered')::int`,
+          failed: sql<number>`count(*) filter (where ${connectionTriggerDeliveries.status} = 'failed')::int`,
+          deadLetter: sql<number>`count(*) filter (where ${connectionTriggerDeliveries.status} = 'dead_letter')::int`,
+        })
+        .from(connectionTriggerDeliveries)
+        .where(scope);
+      const deadLetters = await db
+        .select({
+          id: connectionTriggerDeliveries.id,
+          deliveryId: connectionTriggerDeliveries.deliveryId,
+          providerSlug: connectionTriggerDeliveries.providerSlug,
+          attempt: connectionTriggerDeliveries.attempt,
+          lastError: connectionTriggerDeliveries.lastError,
+          receivedAt: connectionTriggerDeliveries.receivedAt,
+        })
+        .from(connectionTriggerDeliveries)
+        .where(and(scope, eq(connectionTriggerDeliveries.status, "dead_letter")))
+        .orderBy(desc(connectionTriggerDeliveries.receivedAt))
+        .limit(25);
+      const [lastErrorRow] = await db
+        .select({
+          deliveryId: connectionTriggerDeliveries.deliveryId,
+          lastError: connectionTriggerDeliveries.lastError,
+          updatedAt: connectionTriggerDeliveries.updatedAt,
+        })
+        .from(connectionTriggerDeliveries)
+        .where(and(scope, isNotNull(connectionTriggerDeliveries.lastError)))
+        .orderBy(desc(connectionTriggerDeliveries.updatedAt))
+        .limit(1);
+      return {
+        counts: {
+          received: agg?.received ?? 0,
+          forwarded: agg?.forwarded ?? 0,
+          delivered: agg?.delivered ?? 0,
+          failed: agg?.failed ?? 0,
+          deadLetter: agg?.deadLetter ?? 0,
+        },
+        lastError:
+          lastErrorRow && lastErrorRow.lastError
+            ? { message: lastErrorRow.lastError, at: lastErrorRow.updatedAt.toISOString(), deliveryId: lastErrorRow.deliveryId }
+            : null,
+        deadLetters: deadLetters.map((row) => ({
+          id: row.id,
+          deliveryId: row.deliveryId,
+          providerSlug: row.providerSlug,
+          attempt: row.attempt,
+          lastError: row.lastError,
+          receivedAt: row.receivedAt.toISOString(),
+        })),
+      };
+    },
   };
 }
+
+export type ConnectionTriggerDeadLetter = {
+  id: string;
+  deliveryId: string;
+  providerSlug: string;
+  attempt: number;
+  lastError: string | null;
+  receivedAt: string;
+};
+
+export type ConnectionTriggerDeliverySummary = {
+  counts: { received: number; forwarded: number; delivered: number; failed: number; deadLetter: number };
+  lastError: { message: string; at: string; deliveryId: string } | null;
+  deadLetters: ConnectionTriggerDeadLetter[];
+};

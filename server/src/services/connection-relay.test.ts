@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRelaySignature, type RelayEnvelope } from "@paperclipai/connect-protocol";
 import { agentWakeupRequests, agents, companies, connectionTriggerDeliveries, connectionTriggers, createDb, issues, toolApplications, toolConnections } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { connectionRelayDispatcher, connectionRelayStore, pollRelayChannel, processAndDispatchConnectionRelay, processConnectionRelay, RELAY_DELIVERY_LEASE_MS, type ConnectionRelayStore, type RelayTrigger } from "./connection-relay.js";
+import { connectionRelayDispatcher, connectionRelayStore, connectionTriggerService, pollRelayChannel, processAndDispatchConnectionRelay, processConnectionRelay, RELAY_DELIVERY_LEASE_MS, type ConnectionRelayStore, type RelayTrigger } from "./connection-relay.js";
 
 function fixture(overrides: Partial<RelayEnvelope> = {}) {
   const envelope: RelayEnvelope = {
@@ -488,5 +488,39 @@ describeEmbeddedPostgres("connection relay persistence", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("delivered");
     expect((rows[0]!.triggerSnapshot ?? []).map((trigger) => trigger.destinationId)).toEqual([destination]);
+  });
+
+  it("rolls up delivery counts, the last error, and the dead-letter queue", async () => {
+    const company = await db.insert(companies).values({ name: "Summary Test", issuePrefix: "SUM" }).returning().then((rows) => rows[0]!);
+    const application = await db.insert(toolApplications).values({ companyId: company.id, name: "Vercel", type: "mcp_http" }).returning().then((rows) => rows[0]!);
+    const connection = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Summary Relay",
+      uid: "summary-relay",
+      transport: "rest_api",
+      enabled: true,
+      config: {},
+    }).returning().then((rows) => rows[0]!);
+
+    const base = { companyId: company.id, connectionId: connection.id, providerSlug: "vercel", envelope: {} as Record<string, unknown> };
+    await db.insert(connectionTriggerDeliveries).values([
+      // delivered — reached forwarded then delivered
+      { ...base, deliveryId: "d-1", status: "delivered", attempt: 1, receivedAt: new Date("2026-07-21T00:00:00Z"), forwardedAt: new Date("2026-07-21T00:00:01Z"), deliveredAt: new Date("2026-07-21T00:00:02Z") },
+      // forwarded but not yet delivered
+      { ...base, deliveryId: "d-2", status: "forwarded", attempt: 1, receivedAt: new Date("2026-07-21T00:01:00Z"), forwardedAt: new Date("2026-07-21T00:01:01Z") },
+      // received only (stuck) — counts toward received, not forwarded
+      { ...base, deliveryId: "d-3", status: "received", attempt: 1, receivedAt: new Date("2026-07-21T00:02:00Z") },
+      // failed with an error
+      { ...base, deliveryId: "d-4", status: "failed", attempt: 3, receivedAt: new Date("2026-07-21T00:03:00Z"), forwardedAt: new Date("2026-07-21T00:03:01Z"), lastError: "transient upstream 500", updatedAt: new Date("2026-07-21T00:03:05Z") },
+      // dead-letter (exhausted retries) — most recent error
+      { ...base, deliveryId: "d-5", status: "dead_letter", attempt: 10, receivedAt: new Date("2026-07-21T00:04:00Z"), forwardedAt: new Date("2026-07-21T00:04:01Z"), lastError: "Relay destination dispatch failed", updatedAt: new Date("2026-07-21T00:04:05Z") },
+    ]);
+
+    const summary = await connectionTriggerService(db).deliverySummary(company.id, connection.id);
+    expect(summary.counts).toEqual({ received: 5, forwarded: 4, delivered: 1, failed: 1, deadLetter: 1 });
+    expect(summary.lastError).toMatchObject({ message: "Relay destination dispatch failed", deliveryId: "d-5" });
+    expect(summary.deadLetters).toHaveLength(1);
+    expect(summary.deadLetters[0]).toMatchObject({ deliveryId: "d-5", attempt: 10, providerSlug: "vercel" });
   });
 });

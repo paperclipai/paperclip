@@ -37,6 +37,7 @@ import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs
 import { SetupPanel } from "./app-detail/SetupPanel";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
 import { TestPanel } from "./app-detail/TestPanel";
+import { TriggersPanel } from "./app-detail/TriggersPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import { ActivityPanel } from "./app-detail/ActivityPanel";
 import {
@@ -438,6 +439,9 @@ export function AppDetail() {
       )}
       {activeTab === "grants" && <GrantsPanel connectionId={connectionId} />}
       {activeTab === "usage" && <UsagePanel connectionId={connectionId} />}
+      {activeTab === "triggers" && (
+        <TriggersPanel connectionId={connectionId} appName={appName} />
+      )}
       {activeTab === "test" && (
         <TestPanel connectionId={connectionId} appName={appName} active={active} quarantined={quarantined} />
       )}

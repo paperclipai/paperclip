@@ -1863,6 +1863,8 @@ export {
   type FinishToolApp,
   type UpdateToolApplication,
   type CreateToolConnection,
+  type CreateConnectionTrigger,
+  type UpdateConnectionTrigger,
   type CreateToolMcpGateway,
   type CreateToolMcpGatewayToken,
   type CreateToolStdioCommandTemplate,
