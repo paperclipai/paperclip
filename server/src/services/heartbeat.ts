@@ -281,6 +281,7 @@ import {
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { serverVersion } from "../version.js";
+import { recordTerminalFailure } from "./terminal-failure-ledger.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -326,6 +327,32 @@ export {
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
 } from "./recovery/service.js";
+/**
+ * Parse a raw `runtimeConfig` object into the heartbeat policy shape.
+ * Exported as `parseHeartbeatPolicyForTest` so unit tests can verify policy
+ * flag derivation without spinning up the full heartbeat service.
+ * The internal `parseHeartbeatPolicy` wraps this with the agent row.
+ */
+export function parseHeartbeatPolicyForTest(runtimeConfig: unknown) {
+  const rc = parseObject(runtimeConfig);
+  const heartbeat = parseObject(rc?.heartbeat);
+  const timerOnly = asBoolean(heartbeat?.timerOnly, false);
+  return {
+    enabled: asBoolean(heartbeat?.enabled, false),
+    intervalSec: Math.max(0, asNumber(heartbeat?.intervalSec, 0)),
+    timerOnly,
+    wakeOnDemand: timerOnly
+      ? false
+      : asBoolean(
+          heartbeat?.wakeOnDemand ??
+            heartbeat?.wakeOnAssignment ??
+            heartbeat?.wakeOnOnDemand ??
+            heartbeat?.wakeOnAutomation,
+          true,
+        ),
+  };
+}
+
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
 export const ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS = 5 * 1000;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
@@ -10397,10 +10424,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
+    const timerOnly = asBoolean(heartbeat.timerOnly, false);
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
-      wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
+      // timerOnly=true restricts execution to timer-sourced wakes only.
+      // It supersedes wakeOnDemand: when timerOnly is set, wakeOnDemand is
+      // forced false regardless of the stored value.
+      timerOnly,
+      wakeOnDemand: timerOnly ? false : asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
       skipTimerWhenNoActionableWork: asBoolean(
         heartbeat.skipTimerWhenNoActionableWork ??
@@ -11479,6 +11511,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: finalizedRun.status,
         failureReason: finalizedRun.error ?? undefined,
       });
+
+      // Fail-closed ledger: record process_lost as a visible issue-comment with
+      // dedupe so the same failure is never double-counted. Only fires when the
+      // run has issue context — generic heartbeat runs have no issue to attach to.
+      const finalizedRunContext = parseObject(finalizedRun.contextSnapshot);
+      const finalizedRunIssueId = readNonEmptyString(finalizedRunContext.issueId);
+      if (finalizedRunIssueId) {
+        const rootRunId = readNonEmptyString(finalizedRunContext.rootRunId) ?? finalizedRun.id;
+        await recordTerminalFailure(db, {
+          companyId: finalizedRun.companyId,
+          agentId: finalizedRun.agentId,
+          issueId: finalizedRunIssueId,
+          runId: finalizedRun.id,
+          rootRunId,
+          failureCause: "process_lost",
+        }).catch((err) => {
+          logger.warn({ err, runId: finalizedRun!.id }, "terminal-failure-ledger: failed to record process_lost");
+        });
+      }
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       const retryAgent = await getAgent(run.agentId);
@@ -15319,6 +15370,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (source === "timer" && !policy.enabled) {
       await writeSkippedRequest("heartbeat.disabled");
+      return null;
+    }
+    if (source !== "timer" && policy.timerOnly) {
+      await writeSkippedHeartbeatRequest("heartbeat.timerOnly.blocked", {
+        reason: `Agent is configured for timer-only execution; source "${source}" is not permitted.`,
+        blockedSource: source,
+      });
       return null;
     }
     if (source !== "timer" && !policy.wakeOnDemand) {

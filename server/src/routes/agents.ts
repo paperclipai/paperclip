@@ -3054,6 +3054,37 @@ export function agentRoutes(
       await assertCanUpdateAgent(req, existing);
     }
 
+    // Race guard: refuse to enable timerOnly while a non-timer run is active.
+    // This prevents a race where setting timerOnly races an in-flight assignment
+    // run, violating the timer-and-non-timer mutual-exclusion invariant.
+    if (requestedRuntimeConfig) {
+      const requestedHeartbeat = asRecord(requestedRuntimeConfig.heartbeat);
+      const timerOnlyRequested = requestedHeartbeat && requestedHeartbeat.timerOnly === true;
+      if (timerOnlyRequested) {
+        const activeNonTimerRuns = await db
+          .select({ id: heartbeatRuns.id, invocationSource: heartbeatRuns.invocationSource })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.agentId, id),
+              eq(heartbeatRuns.status, "running"),
+              not(eq(heartbeatRuns.invocationSource, "timer")),
+            ),
+          )
+          .limit(1);
+        if (activeNonTimerRuns.length > 0) {
+          res.status(409).json({
+            error:
+              "Cannot enable timerOnly while a non-timer run is active. " +
+              "Wait for the active run to complete before applying this policy.",
+            activeRunId: activeNonTimerRuns[0].id,
+            activeRunSource: activeNonTimerRuns[0].invocationSource,
+          });
+          return;
+        }
+      }
+    }
+
     const actor = getActorInfo(req);
     const agent = await svc.update(id, patchData, {
       recordRevision: {
