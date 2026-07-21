@@ -2276,9 +2276,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       executionRunId: retryRun?.id ?? null,
     });
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    // The resume-failure comment is posted after the scheduling transaction
+    // commits, so it can land a beat after the retry run row is observable.
+    // Wait for it instead of racing the post-commit insert under parallel load.
+    const comments = await waitForValue(async () => {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      return rows.length >= 1 ? rows : null;
+    });
     expect(comments).toHaveLength(1);
-    expect(comments[0]).toMatchObject({
+    expect(comments?.[0]).toMatchObject({
       authorType: "system",
       createdByRunId: runId,
       body: "Agent failed to resume after approval: `adapter_failed` — retrying (attempt 1/3)",
@@ -2514,9 +2520,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(retryWakeup?.reason).toBe(INTERACTION_CONTINUATION_INFRA_WAKE_REASON);
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    // The resume-failure comment is posted after the scheduling transaction
+    // commits, so wait for it rather than racing the post-commit insert.
+    const comments = await waitForValue(async () => {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      return rows.length >= 1 ? rows : null;
+    });
     expect(comments).toHaveLength(1);
-    expect(comments[0]).toMatchObject({
+    expect(comments?.[0]).toMatchObject({
       authorType: "system",
       body: "Agent failed to resume after approval: `process_lost` — retrying (attempt 1/3)",
     });
