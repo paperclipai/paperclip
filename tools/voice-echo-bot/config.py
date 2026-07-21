@@ -38,3 +38,13 @@ STATE_PATH = os.path.expanduser("~/.paperclip/voice-echo-state.json")
 DECISION_LABEL = "entscheidung-noetig"
 POLL_INTERVAL_SEC = 60
 LONGPOLL_TIMEOUT_SEC = 25
+
+# --- Antwort-Modus (Text/Voice) + ElevenLabs-TTS ---
+REPLY_MODE_PATH = os.path.expanduser("~/.paperclip/voice-echo-reply-mode.json")
+ELEVEN_VOICE_ID = "MiVAi0PlB7YlXfCDRCkq"
+ELEVEN_MODEL = "eleven_multilingual_v2"
+ELEVEN_TTS_URL = (
+    "https://api.elevenlabs.io/v1/text-to-speech/"
+    + ELEVEN_VOICE_ID
+    + "?output_format=opus_48000_64"
+)

@@ -12,6 +12,8 @@ import config
 import state
 import tenants as tenants_mod
 import transcribe
+import tts
+import reply_mode
 import notifier
 from telegram_api import Telegram
 from paperclip_client import (create_issue, derive_title, add_comment,
@@ -32,6 +34,32 @@ class BotApp:
     def _token(self):
         tok = self.cfg["paperclip_token"]
         return tok() if callable(tok) else tok
+
+    # ---- Antwort-Kanal (Text/Voice je Chat) ----
+    def _reply(self, chat_id, text, reply_to_message_id=None):
+        """Direkte Antwort an den Nutzer gemäß Chat-Antwortmodus.
+
+        voice -> ElevenLabs-TTS + sendVoice; bei TtsError sauberer Fallback
+        auf Text + kurzer Hinweis. text (Default) -> send_message wie bisher.
+        Gilt nur für direkte Antworten auf Nutzer-Nachrichten/-Aktionen; die
+        Rückkanal-Pushes (poll_tenants) bleiben bewusst Text.
+        """
+        path = self.cfg.get("reply_mode_path")
+        if path and reply_mode.get_mode(path, chat_id) == "voice":
+            workdir = tempfile.mkdtemp()
+            ogg = os.path.join(workdir, "reply.ogg")
+            try:
+                tts.synthesize(text, self.cfg.get("eleven_api_key"), ogg)
+                self.tg.send_voice(chat_id, ogg, reply_to_message_id=reply_to_message_id)
+                return
+            except tts.TtsError:
+                traceback.print_exc()
+                self.tg.send_message(chat_id, text)
+                self.tg.send_message(chat_id, "⚠️ Sprachausgabe fehlgeschlagen — Antwort als Text.")
+                return
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
+        self.tg.send_message(chat_id, text)
 
     # ---- Eingang / Dispatcher ----
     def handle_update(self, update):
@@ -64,6 +92,19 @@ class BotApp:
         return msg.get("text")
 
     def _handle_message(self, tenant, msg):
+        # Modus-Befehle (/text, /voice, ggf. mit @botname-Suffix) setzen nur
+        # den Antwortmodus des Chats — kein Issue, keine Transkription.
+        raw = msg.get("text")
+        if isinstance(raw, str) and raw.strip().startswith("/"):
+            cmd = raw.strip().split()[0].split("@")[0].lower()
+            if cmd == "/voice":
+                reply_mode.set_mode(self.cfg["reply_mode_path"], msg["chat"]["id"], "voice")
+                self.tg.send_message(msg["chat"]["id"], "🔊 Antworten jetzt als Sprache.")
+                return
+            if cmd == "/text":
+                reply_mode.set_mode(self.cfg["reply_mode_path"], msg["chat"]["id"], "text")
+                self.tg.send_message(msg["chat"]["id"], "🔤 Antworten jetzt als Text.")
+                return
         reply_to = msg.get("reply_to_message")
         if reply_to:
             m = IDENT_RE.search(reply_to.get("text") or "")
@@ -93,7 +134,8 @@ class BotApp:
             return
         try:
             add_comment(token, issue["id"], text, resume=True)
-            self.tg.send_message(chat_id, "✅ Antwort an CEO ({}) gesendet.".format(identifier))
+            self._reply(chat_id, "✅ Antwort an CEO ({}) gesendet.".format(identifier),
+                        reply_to_message_id=msg["message_id"])
         except Exception:  # noqa: BLE001
             traceback.print_exc()
             self.tg.send_message(chat_id, "⚠️ Konnte die Antwort nicht senden, bitte erneut.")
@@ -136,7 +178,7 @@ class BotApp:
             label = issue.get("identifier") or issue.get("id", "?")
             try:
                 self.tg.answer_callback_query(cbq["id"], "Gesendet")
-                self.tg.send_message(chat_id, "✅ An CEO gesendet: {}".format(label))
+                self._reply(chat_id, "✅ An CEO gesendet: {}".format(label))
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
         else:
@@ -221,6 +263,8 @@ def build_app():
         "decision_label": config.DECISION_LABEL,
         "poll_interval": config.POLL_INTERVAL_SEC,
         "state_path": config.STATE_PATH,
+        "reply_mode_path": config.REPLY_MODE_PATH,
+        "eleven_api_key": env.get("ELEVENLABS_API_KEY"),
     }
     app = BotApp(Telegram(env["TELEGRAM_BOT_TOKEN"]), cfg)
     loaded = state.load_state(config.STATE_PATH)

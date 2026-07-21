@@ -1,7 +1,9 @@
 """Dünner Telegram-Bot-API-Client (stdlib only)."""
 import json
+import os
 import shutil
 import urllib.request
+import uuid
 
 
 class Telegram:
@@ -32,6 +34,49 @@ class Telegram:
         if reply_markup is not None:
             params["reply_markup"] = reply_markup
         return self._call("sendMessage", params)
+
+    def send_voice(self, chat_id, ogg_path, reply_to_message_id=None):
+        """Sendet eine Opus/OGG-Datei als Sprachnachricht (multipart/form-data)."""
+        fields = {"chat_id": str(chat_id)}
+        if reply_to_message_id is not None:
+            fields["reply_to_message_id"] = str(reply_to_message_id)
+        with open(ogg_path, "rb") as fh:
+            audio = fh.read()
+        boundary = uuid.uuid4().hex
+        body = self._encode_multipart(
+            fields, "voice", os.path.basename(ogg_path) or "voice.ogg", audio, boundary
+        )
+        req = urllib.request.Request(
+            "{}/{}".format(self.api, "sendVoice"),
+            data=body,
+            headers={"Content-Type": "multipart/form-data; boundary={}".format(boundary)},
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        return payload.get("result")
+
+    @staticmethod
+    def _encode_multipart(fields, file_field, filename, file_bytes, boundary):
+        dash = "--" + boundary
+        parts = []
+        for name, value in fields.items():
+            parts.append(dash.encode("utf-8"))
+            parts.append(
+                'Content-Disposition: form-data; name="{}"'.format(name).encode("utf-8")
+            )
+            parts.append(b"")
+            parts.append(str(value).encode("utf-8"))
+        parts.append(dash.encode("utf-8"))
+        parts.append(
+            'Content-Disposition: form-data; name="{}"; filename="{}"'.format(
+                file_field, filename
+            ).encode("utf-8")
+        )
+        parts.append(b"Content-Type: audio/ogg")
+        parts.append(b"")
+        parts.append(file_bytes)
+        parts.append((dash + "--").encode("utf-8"))
+        return b"\r\n".join(parts)
 
     def answer_callback_query(self, callback_query_id, text=None):
         params = {"callback_query_id": callback_query_id}

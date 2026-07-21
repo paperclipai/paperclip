@@ -1,4 +1,6 @@
 # tools/voice-echo-bot/test_bot.py
+import os
+import tempfile
 import unittest
 from unittest import mock
 import bot
@@ -6,9 +8,10 @@ import bot
 TENANTS = {"8311805232": {"name": "W", "company_id": "comp-1", "ceo_agent_id": "ceo-1"},
            "1220010628": {"name": "C", "company_id": "comp-2", "ceo_agent_id": "ceo-2"}}
 
-def make_app(tg):
+def make_app(tg, reply_mode_path="/tmp/nope-reply-mode.json"):
     cfg = {"tenants": TENANTS, "paperclip_token": "tok", "whisper_model": "m.bin",
-           "decision_label": "entscheidung-noetig", "poll_interval": 60, "state_path": "/tmp/nope.json"}
+           "decision_label": "entscheidung-noetig", "poll_interval": 60, "state_path": "/tmp/nope.json",
+           "reply_mode_path": reply_mode_path, "eleven_api_key": "xi-test-key"}
     app = bot.BotApp(tg, cfg); app.seen = set(); app._seeded = True; return app
 
 def msg(uid, mid=1, text=None, voice=False, reply_text=None):
@@ -37,6 +40,80 @@ class TestTenantRouting(unittest.TestCase):
             app.handle_update({"callback_query": {"id": "q", "from": {"id": 1220010628},
                                                   "message": {"chat": {"id": 1220010628}}, "data": "send:1220010628:5"}})
         ci.assert_called_once_with("tok", "comp-2", "ceo-2", "Mische den Song", "Mische den Song")
+
+class TestReplyModeCommands(unittest.TestCase):
+    def _app(self):
+        fd, p = tempfile.mkstemp(suffix=".json"); os.close(fd); os.unlink(p)
+        self.addCleanup(lambda: os.path.exists(p) and os.unlink(p))
+        tg = mock.MagicMock()
+        return tg, make_app(tg, reply_mode_path=p), p
+
+    def test_voice_command_sets_mode_and_confirms_no_issue(self):
+        tg, app, p = self._app()
+        with mock.patch.object(bot, "create_issue") as ci:
+            app.handle_update(msg(8311805232, text="/voice"))
+        ci.assert_not_called()
+        self.assertEqual(app.candidates, {})
+        self.assertEqual(bot.reply_mode.get_mode(p, 8311805232), "voice")
+        tg.send_message.assert_called_once_with(8311805232, "🔊 Antworten jetzt als Sprache.")
+
+    def test_text_command_sets_mode_and_confirms(self):
+        tg, app, p = self._app()
+        bot.reply_mode.set_mode(p, 8311805232, "voice")
+        app.handle_update(msg(8311805232, text="/text"))
+        self.assertEqual(bot.reply_mode.get_mode(p, 8311805232), "text")
+        tg.send_message.assert_called_once_with(8311805232, "🔤 Antworten jetzt als Text.")
+
+    def test_command_with_botname_suffix_recognized(self):
+        tg, app, p = self._app()
+        app.handle_update(msg(8311805232, text="/voice@JarvisBot"))
+        self.assertEqual(bot.reply_mode.get_mode(p, 8311805232), "voice")
+
+    def test_command_does_not_transcribe_or_offer(self):
+        tg, app, p = self._app()
+        with mock.patch.object(app, "_extract_text") as ex, mock.patch.object(app, "_offer") as of:
+            app.handle_update(msg(8311805232, text="/text"))
+        ex.assert_not_called()
+        of.assert_not_called()
+
+    def test_voice_mode_routes_ack_via_send_voice(self):
+        tg, app, p = self._app()
+        bot.reply_mode.set_mode(p, 1220010628, "voice")
+        app.candidates["1220010628:5"] = {"text": "Mische den Song", "company_id": "comp-2", "ceo_agent_id": "ceo-2"}
+        with mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}), \
+             mock.patch.object(bot.tts, "synthesize", return_value="/tmp/reply.ogg") as syn:
+            app.handle_update({"callback_query": {"id": "q", "from": {"id": 1220010628},
+                                                  "message": {"chat": {"id": 1220010628}}, "data": "send:1220010628:5"}})
+        syn.assert_called_once()
+        # Der Text-Ack ging als Sprachnachricht raus, nicht als send_message
+        tg.send_voice.assert_called_once()
+        self.assertEqual(tg.send_voice.call_args.args[0], 1220010628)
+        acked = [c for c in tg.send_message.call_args_list if "An CEO gesendet" in (c.args[1] if len(c.args) > 1 else "")]
+        self.assertEqual(acked, [])
+
+    def test_text_mode_ack_uses_send_message(self):
+        tg, app, p = self._app()  # Default text
+        app.candidates["1220010628:5"] = {"text": "x", "company_id": "comp-2", "ceo_agent_id": "ceo-2"}
+        with mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}):
+            app.handle_update({"callback_query": {"id": "q", "from": {"id": 1220010628},
+                                                  "message": {"chat": {"id": 1220010628}}, "data": "send:1220010628:5"}})
+        tg.send_voice.assert_not_called()
+        acked = [c for c in tg.send_message.call_args_list if "An CEO gesendet" in c.args[1]]
+        self.assertEqual(len(acked), 1)
+
+    def test_tts_error_falls_back_to_text(self):
+        tg, app, p = self._app()
+        bot.reply_mode.set_mode(p, 1220010628, "voice")
+        app.candidates["1220010628:5"] = {"text": "x", "company_id": "comp-2", "ceo_agent_id": "ceo-2"}
+        with mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}), \
+             mock.patch.object(bot.tts, "synthesize", side_effect=bot.tts.TtsError("boom")):
+            app.handle_update({"callback_query": {"id": "q", "from": {"id": 1220010628},
+                                                  "message": {"chat": {"id": 1220010628}}, "data": "send:1220010628:5"}})
+        tg.send_voice.assert_not_called()
+        texts = [c.args[1] for c in tg.send_message.call_args_list]
+        self.assertTrue(any("An CEO gesendet" in t for t in texts))
+        self.assertTrue(any("Sprachausgabe fehlgeschlagen" in t for t in texts))
+
 
 class TestReply(unittest.TestCase):
     def test_reply_posts_comment_to_referenced_issue(self):
