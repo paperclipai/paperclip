@@ -542,7 +542,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ]));
   });
 
-  it("does not select a differently scoped credential for an unknown scope", async () => {
+  it("selects scoped credentials for array scopes and fails closed for unknown selectors", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
@@ -607,6 +607,28 @@ describeEmbeddedPostgres("tool access service", () => {
       eq(secretAccessEvents.configPath, "credentials.production_token"),
     ));
     expect(productionSecretEvents).toHaveLength(0);
+
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async (_url, init) => {
+      expect(init?.headers).toEqual(expect.objectContaining({ authorization: "Bearer production-deploy-token" }));
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({
+          token: "production-child-token",
+          expiresAt: new Date(Date.now() + 900_000).toISOString(),
+          scope: "production",
+        }),
+      } as Response;
+    });
+
+    const productionRes = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: ["production"] });
+
+    expect(productionRes.status).toBe(200);
+    expect(productionRes.body).toMatchObject({ token: "production-child-token", scope: ["production"] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("returns typed subject errors and rejects revoked grants immediately", async () => {
