@@ -978,4 +978,56 @@ describe("stageCodexHomeForSync", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  // Circular symlinks inside skills/ must be silently skipped (not throw ELOOP).
+  // Skill symlinks that point OUTSIDE skills/ are intentional design (Paperclip
+  // stores skill packages in a shared location) and are dereferenced normally;
+  // all resulting files land 0600 inside the 0700 staged dir.
+  it("skips circular skill symlinks (ELOOP) without throwing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-circular-"));
+    let staged: string | null = null;
+    try {
+      const home = path.join(root, "codex-home");
+      await fs.mkdir(path.join(home, "skills"), { recursive: true });
+      // Self-referential symlink: would loop forever — must be skipped.
+      const circularLink = path.join(home, "skills", "loop.md");
+      await fs.symlink(circularLink, circularLink);
+      // A normal skill file — must still be staged.
+      await fs.writeFile(path.join(home, "skills", "legit.md"), "# ok\n", "utf8");
+
+      staged = await stageCodexHomeForSync(home, { runId: "run-circular" });
+      const stagedSkillEntries = await fs.readdir(path.join(staged, "skills"));
+      // Circular link must be absent.
+      expect(stagedSkillEntries).not.toContain("loop.md");
+      // Normal skill file must be present.
+      expect(stagedSkillEntries).toContain("legit.md");
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // Mode normalization: nested skill files must be staged 0600 regardless of
+  // their source mode (0644 documents, 0755 scripts, etc.).
+  it("writes nested skill files with mode 0600 regardless of source mode", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-skill-mode-"));
+    let staged: string | null = null;
+    try {
+      const home = path.join(root, "codex-home");
+      await fs.mkdir(path.join(home, "skills", "my-skill"), { recursive: true });
+      // Typical source modes: readable doc (0644) and executable script (0755);
+      // both must land 0600 in the staged dir.
+      await fs.writeFile(path.join(home, "skills", "my-skill", "SKILL.md"), "# skill\n", { mode: 0o644 });
+      await fs.writeFile(path.join(home, "skills", "my-skill", "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
+
+      staged = await stageCodexHomeForSync(home, { runId: "run-skill-mode" });
+      for (const rel of ["my-skill/SKILL.md", "my-skill/run.sh"]) {
+        const mode = (await fs.stat(path.join(staged, "skills", rel))).mode & 0o777;
+        expect(mode, `skills/${rel} should be staged 0600`).toBe(0o600);
+      }
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

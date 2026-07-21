@@ -343,6 +343,53 @@ export interface StageCodexHomeForSyncOptions {
 }
 
 /**
+ * Recursively copies `sourceDir` into `targetDir`, dereferencing all symlinks to
+ * bytes (so the sandbox receives real file content, not host-relative links) and
+ * normalizing every copied regular file to mode `0600`. Dangling or circular
+ * symlinks are silently skipped. Created directories get mode `0700`.
+ *
+ * This replaces `fs.cp({ dereference: true })` which preserves source file modes,
+ * leaving `0644` documents and `0755` scripts group/other-readable in the staged
+ * asset; here all regular files are normalized to `0600` regardless of source mode.
+ *
+ * Note: Paperclip `skills/` entries are intentionally symlinks into a shared skill
+ * store outside `CODEX_HOME/skills/`, so we do not restrict symlink targets to
+ * a fixed root. The `0700` staged directory and per-file `0600` mode together
+ * ensure that even externally-sourced skill content is not group/world-readable.
+ */
+async function stageDirectorySecure(
+  sourceDir: string,
+  targetDir: string,
+): Promise<void> {
+  await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const entrySource = path.join(sourceDir, entry.name);
+    const entryTarget = path.join(targetDir, entry.name);
+    // Resolve the real path; dangling or circular symlinks are silently skipped.
+    const resolved = await fs.realpath(entrySource).catch((error) => {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ELOOP") return null;
+      throw error;
+    });
+    if (!resolved) continue;
+    const entryStat = await fs.stat(resolved).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!entryStat) continue;
+    if (entryStat.isDirectory()) {
+      await stageDirectorySecure(resolved, entryTarget);
+    } else if (entryStat.isFile()) {
+      const bytes = await fs.readFile(resolved);
+      await fs.writeFile(entryTarget, bytes, { mode: 0o600 });
+      await fs.chmod(entryTarget, 0o600);
+    }
+    // Other types (sockets, devices) are silently skipped.
+  }
+}
+
+/**
  * Copies a single allowlist entry from the managed home into the staged dir,
  * dereferencing symlinks to bytes. Missing entries are skipped (keyring mode has
  * no `auth.json`; some homes have no `config.json`). Every staged regular file is
@@ -364,9 +411,9 @@ async function stageCodexHomeEntry(
 
   const target = path.join(stagedHome, entry);
   if (stat.isDirectory()) {
-    // `skills/` is a directory of symlinks; dereference so the sandbox receives
-    // real files, not links pointing back into the host home.
-    await fs.cp(source, target, { recursive: true, dereference: true });
+    // Recursively copy with mode normalization — nested regular files land
+    // `0600` and dangling/circular symlinks are skipped.
+    await stageDirectorySecure(source, target);
     return;
   }
 
