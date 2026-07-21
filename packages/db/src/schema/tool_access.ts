@@ -11,6 +11,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -142,7 +143,7 @@ export const toolConnections = pgTable(
     index("tool_connections_company_enabled_idx").on(table.companyId, table.enabled),
     uniqueIndex("tool_connections_company_name_uq").on(table.companyId, table.name),
     uniqueIndex("tool_connections_company_uid_uq").on(table.companyId, table.uid),
-    uniqueIndex("tool_connections_company_id_uq").on(table.companyId, table.id),
+    unique("tool_connections_company_id_uq").on(table.companyId, table.id),
   ],
 );
 

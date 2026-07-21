@@ -27,7 +27,7 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
     await sql`DROP TABLE IF EXISTS "connection_grants"`;
     await sql`DROP INDEX IF EXISTS "tool_connections_company_uid_uq"`;
-    await sql`DROP INDEX IF EXISTS "tool_connections_company_id_uq"`;
+    await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_company_id_uq"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_ownership_check"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_transport_check"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_auth_kind_check"`;
@@ -73,7 +73,7 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
 
     await sql`DROP TABLE "connection_grants"`;
     await sql`DROP INDEX "tool_connections_company_uid_uq"`;
-    await sql`DROP INDEX "tool_connections_company_id_uq"`;
+    await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT "tool_connections_company_id_uq"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT "tool_connections_ownership_check"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT "tool_connections_transport_check"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT "tool_connections_auth_kind_check"`;

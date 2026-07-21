@@ -27,7 +27,7 @@ END;
 
 ALTER TABLE "tool_connections" ALTER COLUMN "uid" SET NOT NULL;
 CREATE UNIQUE INDEX "tool_connections_company_uid_uq" ON "tool_connections" USING btree ("company_id", "uid");
-CREATE UNIQUE INDEX "tool_connections_company_id_uq" ON "tool_connections" USING btree ("company_id", "id");
+ALTER TABLE "tool_connections" ADD CONSTRAINT "tool_connections_company_id_uq" UNIQUE ("company_id", "id");
 ALTER TABLE "tool_connections" ADD CONSTRAINT "tool_connections_ownership_check" CHECK ("ownership" in ('platform_shared', 'platform_provisioned', 'customer', 'dcr'));
 ALTER TABLE "tool_connections" ADD CONSTRAINT "tool_connections_transport_check" CHECK ("transport" in ('mcp_remote', 'rest_api', 'local_stdio'));
 ALTER TABLE "tool_connections" ADD CONSTRAINT "tool_connections_auth_kind_check" CHECK ("auth_kind" in ('oauth', 'api_key', 'none'));
