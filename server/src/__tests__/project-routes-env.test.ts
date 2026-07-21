@@ -206,6 +206,33 @@ describe("project env routes", () => {
     );
   });
 
+  it("allows create env null without normalizing project env bindings", async () => {
+    mockProjectService.create.mockResolvedValue(buildProject({ env: null }));
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/projects")
+      .send({
+        name: "Project",
+        env: null,
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockSecretService.normalizeEnvBindingsForPersistence).not.toHaveBeenCalled();
+    expect(mockProjectService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ env: null }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          envKeys: [],
+        }),
+      }),
+    );
+  });
+
   it("normalizes env bindings on update and avoids logging raw values", async () => {
     const normalizedEnv = {
       PLAIN_KEY: { type: "plain", value: "top-secret" },
