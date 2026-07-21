@@ -1,116 +1,124 @@
-# Voice-Echo → WHITESTAG-CEO — Design
+# Voice-Echo → WHITESTAG-CEO (Telegram-Bot) — Design
 
 **Datum:** 2026-07-21
 **Status:** Design abgestimmt, wartet auf Review vor Plan
-**Ziel:** Eine geschützte Web-URL, auf der Walter unterwegs (Handy) eine Aufgabe
-einspricht, das Transkript kurz kontrolliert und per Knopfdruck als neues
-Paperclip-Issue an den WHITESTAG-CEO schickt.
+**Ziel:** Ein dedizierter Telegram-Bot, den nur Walter bedienen darf. Walter
+spricht (oder tippt) unterwegs eine Aufgabe ein; der Bot transkribiert sie
+lokal, zeigt sie zur Bestätigung und legt sie als neues Paperclip-Issue beim
+WHITESTAG-CEO an.
 
 ## Abgestimmte Entscheidungen
 
 | Frage | Entscheidung |
 |---|---|
+| Kanal | **Dedizierter Telegram-Bot** (eigener CEO-Bot, NICHT der bestehende Luna-Bot) |
+| Web-Seite / Cloudflare | **Entfällt komplett** — durch Telegram ersetzt |
 | Zielformat | **Neues Issue**, dem CEO-Agenten zugewiesen |
-| Ziel-CEO | **WHITESTAG-CEO** (fest verdrahtet, keine Auswahl im UI) |
+| Ziel-CEO | **WHITESTAG-CEO** (fest verdrahtet) |
 | Speech-to-Text | **Lokales Whisper** (whisper.cpp, bereits via Homebrew installiert) |
-| Whisper-Betrieb | **On-demand `whisper-cli`** pro Aufnahme — NICHT dauerwarmer `whisper-server` (RAM-Contention mit LM Studio) |
-| Zugangsschutz | **Cloudflare Access** (E-Mail-Einmalcode) vor der Seite |
-| Exposition | **cloudflared named tunnel** auf einer whitestag-Subdomain (z. B. `echo.whitestag.ai`) |
-| Aufnahme-Flow | **Mit Kontroll-Schritt**: Aufnehmen → Transkript anzeigen → korrigieren → Senden |
+| Whisper-Betrieb | **On-demand `whisper-cli`** pro Aufnahme — kein dauerwarmer Server (RAM-Contention mit LM Studio) |
+| Telegram-Anbindung | **Long-Polling (`getUpdates`)** — KEIN Webhook, KEINE offene URL/kein Tunnel |
+| Zugangsschutz | **Allowlist auf Walters Telegram-User-ID** — jede andere ID wird ignoriert |
+| Bestätigung | **Inline-Buttons** [✅ An CEO senden] / [❌ Verwerfen] vor dem Anlegen |
+| Eingabearten | **Sprachnachricht** (→ Whisper) und **Textnachricht** (→ direkt) |
 
 ## Architektur
 
 ```
-Handy-Browser (https://echo.whitestag.ai)
-  │  1. Mic-Button → MediaRecorder nimmt Audio auf (webm/opus)
-  │  2. Stop → POST /transcribe  (multipart audio)
-  ▼
-Cloudflare Access (E-Mail-OTP)  ──►  cloudflared named tunnel
-  ▼
-Lokaler Mini-Server (Python, launchd, z. B. Port 8790)
-  │  3. Audio → ffmpeg → 16 kHz mono WAV → whisper-cli (Sprache: de)
-  │  4. Transkript JSON zurück ans Handy
-  │  5. Nutzer kontrolliert/korrigiert Text, klickt „Senden"
-  │  6. POST /send  → Paperclip: POST /companies/<WHITESTAG>/issues
-  │                    (title = erste Zeile/gekürzt, description = Transkript,
-  │                     assigneeAgentId = WHITESTAG-CEO)
+Telegram-App (Handy) ── nur Walters User-ID erlaubt ──►  Telegram-Server
+                                                              ▲
+                                                              │ Long-Polling getUpdates
+                                                              │ (Mac holt aktiv ab, nichts exponiert)
+                                                              ▼
+Lokaler Bot-Dienst (Python, launchd, ~/.paperclip/scripts/voice-echo-bot)
+  │  1. Update empfangen → Absender-ID gegen Allowlist prüfen (sonst ignorieren)
+  │  2a. Voice → getFile → OGG/Opus laden → ffmpeg → 16 kHz mono WAV → whisper-cli -l de
+  │  2b. Text → direkt übernehmen
+  │  3. Bot antwortet: „📝 <Transkript>"  + Inline-Buttons [✅ Senden] [❌ Verwerfen]
+  │  4. Callback ✅ → POST /companies/<WHITESTAG>/issues (assignee = CEO)
+  │  5. Bot bestätigt: „✅ Issue #<id> an CEO gesendet" (+ Link)
   ▼
 Paperclip-CEO erhält neues Issue
 ```
 
 ## Komponenten
 
-### 1. Frontend — `index.html` (eine self-contained Seite)
-- Ein großer **Mic-Button** (Aufnahme starten/stoppen, Statusanzeige „höre zu…").
-- Nutzt `navigator.mediaDevices.getUserMedia` + `MediaRecorder`.
-- Nach Stop: Audio-Blob per `fetch` an `/transcribe`, Spinner.
-- Zeigt Transkript in einem **editierbaren Textfeld** (Kontroll-Schritt).
-- **„Senden an CEO"-Button** → `POST /send` mit (ggf. korrigiertem) Text.
-- Erfolgs-/Fehlermeldung mit Link/ID des erzeugten Issues.
-- Kein externer Asset-Load (CSP-freundlich, funktioniert hinter Access).
+### 1. Bot-Dienst — Python (Muster wie `~/.paperclip/scripts/bild-service`)
+Ein Long-Polling-Loop (kein Web-Framework nötig):
+- `getUpdates` mit `offset`/`timeout` (Long-Poll), verarbeitet Updates sequenziell.
+- **Allowlist-Gate:** `update.message.from.id` bzw. `callback_query.from.id` muss
+  Walters `TELEGRAM_ALLOWED_USER_ID` entsprechen; sonst still verwerfen (kein Reply).
+- **Voice-Handler:** `getFile` → Datei-Download → `ffmpeg -i in.oga -ar 16000 -ac 1 out.wav`
+  → `whisper-cli -m <model> -l de -f out.wav -nt` (stdout Text) → Transkript.
+- **Text-Handler:** Nachrichtentext direkt als Kandidat.
+- **Bestätigung:** `sendMessage` mit Transkript + `reply_markup` Inline-Keyboard
+  (`callback_data` referenziert den zwischengespeicherten Text, s. u.).
+- **Callback-Handler:** ✅ → Issue anlegen; ❌ → verwerfen, kurze Bestätigung.
+- **Titel-Ableitung:** erster Satz / erste ~80 Zeichen des Textes; Volltext = description.
 
-### 2. Backend — Python-Mini-Server (Muster wie `~/.paperclip/scripts/bild-service`)
-Endpunkte:
-- `GET /` → liefert `index.html`.
-- `POST /transcribe` → nimmt Audio, transkodiert via `ffmpeg`, ruft
-  `whisper-cli -m <model> -l de -f <wav> -otxt`/stdout, gibt `{ "text": ... }` zurück.
-  Fehler (kein Audio, whisper-Fehler) → 4xx/5xx mit Klartext.
-- `POST /send` → nimmt `{ "text": ... }`, baut Titel (erste ~80 Zeichen / erster Satz),
-  ruft Paperclip-API, gibt `{ "issueId": ..., "url": ... }` zurück.
-- Health: `GET /healthz`.
+**Kandidaten-Zwischenspeicher:** Da `callback_data` auf 64 Byte begrenzt ist, wird
+der Transkript-Text NICHT in `callback_data` gepackt, sondern serverseitig unter
+einem kurzen Key (z. B. `msg:<chat_id>:<message_id>`) im Prozess-Speicher gehalten;
+`callback_data` trägt nur `send:<key>` / `drop:<key>`. Ein einfacher In-Memory-Dict
+mit TTL/Größenlimit reicht (Einzelnutzer, geringe Frequenz).
 
-Konfiguration über Env/`.env` (Muster wie `eeg-companion.env`):
-`PAPERCLIP_BASE_URL` (http://127.0.0.1:3100), `PAPERCLIP_TOKEN` (Service-/Board-Token,
-Muster wie Deliverable-Watcher-Token), `WHITESTAG_COMPANY_ID`, `CEO_AGENT_ID`,
-`WHISPER_MODEL` (Pfad zum ggml-Modell), `PORT`.
-
-### 3. Whisper-Modell
+### 2. Whisper-Modell
 - Aktuell nur `for-tests-ggml-tiny.bin` vorhanden (unbrauchbar für echtes Deutsch).
-- **Bereitstellen:** `ggml-large-v3-turbo.bin` (~1,6 GB, schnell, gutes Deutsch) via
-  `whisper.cpp`-Download-Skript nach `~/.paperclip/models/whisper/`.
-- On-demand geladen; nach Transkription gibt der Prozess RAM wieder frei.
+- **Bereitstellen:** `ggml-large-v3-turbo.bin` (~1,6 GB, schnell, gutes Deutsch) nach
+  `~/.paperclip/models/whisper/`.
+- On-demand geladen; Prozess endet nach Transkription → RAM wieder frei.
 
-### 4. Exposition — cloudflared named tunnel
-- Named Tunnel (`cloudflared tunnel create voice-echo`), DNS-Route auf
-  `echo.whitestag.ai` → `http://127.0.0.1:<PORT>`.
-- Läuft als launchd-Dienst (KeepAlive), analog zu bestehenden Diensten.
-- **Cloudflare Access**-Policy vor dem Hostname: erlaubte E-Mail(s)
-  (whitestagvr@gmail.com / ws@whitestag.ai), Einmalcode.
-
-### 5. Persistenz / Betrieb
-- Backend als launchd-Dienst (KeepAlive), Logs nach `~/.paperclip/logs/voice-echo.log`.
-- launchd kann `CloudStorage/SynologyDrive` nicht lesen (bekannt) → Skript + Model
-  liegen unter `~/.paperclip/…`, nicht im SynologyDrive-Repo.
-
-## Datenfluss / Issue-Erzeugung
-- Endpoint: `POST /companies/:companyId/issues` (existiert, `createIssueSchema`).
-- Felder: `title`, `description` (= volles Transkript), `assigneeAgentId` = CEO,
-  Status-Default greift automatisch (`applyCreateIssueStatusDefault`).
+### 3. Paperclip-Anbindung
+- Endpoint: `POST /companies/:companyId/issues` (existiert, `createIssueSchema`,
+  `applyCreateIssueStatusDefault` setzt Status-Default).
+- Felder: `title`, `description` (= Volltext), `assigneeAgentId` = WHITESTAG-CEO.
 - WHITESTAG-`companyId` und CEO-`agentId` werden beim Setup einmal über die API
-  aufgelöst und in die `.env` geschrieben (nicht hartkodiert im Code).
+  aufgelöst und in die `.env` geschrieben (nicht hartkodiert).
+
+### 4. Konfiguration (`.env`, Muster wie `eeg-companion.env`)
+`TELEGRAM_BOT_TOKEN` (neuer Bot vom BotFather), `TELEGRAM_ALLOWED_USER_ID`,
+`PAPERCLIP_BASE_URL` (http://127.0.0.1:3100), `PAPERCLIP_TOKEN` (Service-/Board-Token,
+Muster wie Deliverable-Watcher), `WHITESTAG_COMPANY_ID`, `CEO_AGENT_ID`,
+`WHISPER_MODEL` (Pfad zum ggml-Modell).
+
+### 5. Betrieb
+- launchd-Dienst (KeepAlive), z. B. `de.whitestag.voice-echo-bot`.
+- Logs nach `~/.paperclip/logs/voice-echo-bot.log`.
+- launchd kann `CloudStorage/SynologyDrive` nicht lesen (bekannt) → Skript + Modell
+  liegen unter `~/.paperclip/…`, nicht im SynologyDrive-Repo.
+- **Kein Konflikt mit Luna-Bot:** eigener Token, eigener Long-Poll-Consumer. (Ein
+  Bot-Token darf nur EINEN aktiven getUpdates/Webhook-Consumer haben — daher
+  zwingend ein NEUER Bot, nicht Luna.)
 
 ## Fehlerbehandlung
-- Mikro-Zugriff verweigert → klare UI-Meldung.
-- Leeres/zu kurzes Audio → „Nichts erkannt, bitte erneut."
-- whisper-Fehler / ffmpeg fehlt → 500 + Log, UI zeigt „Transkription fehlgeschlagen".
-- Paperclip-Fehler (401 Token abgelaufen / 5xx) → UI zeigt Fehler, Text bleibt im Feld
-  erhalten (kein Datenverlust), erneut senden möglich.
-- Token-Ablauf: dokumentierter Renew-Weg (analog Board-Token-Autorenew).
+- Fremde User-ID → Update still ignorieren (kein Reply, Log-Eintrag).
+- Leeres/zu kurzes Audio → Bot antwortet „Nichts erkannt, bitte erneut."
+- whisper-/ffmpeg-Fehler → Bot antwortet „Transkription fehlgeschlagen" + Log.
+- Paperclip-Fehler (401 Token abgelaufen / 5xx) → Bot meldet Fehler; Transkript
+  bleibt im Kandidaten-Speicher, Nutzer kann erneut ✅ drücken (kein Datenverlust).
+- Token-Ablauf (Paperclip): dokumentierter Renew-Weg (analog Board-Token-Autorenew).
+- getUpdates-Netzfehler → Backoff-Retry-Schleife, Dienst bricht nicht ab.
 
 ## Testing
-- Backend-Unit-Tests (pytest): Titel-Ableitung aus Transkript, `/send` baut korrekten
-  Paperclip-Payload (Paperclip-Call gemockt), `/transcribe` mit Fixture-WAV
-  (whisper gemockt oder Tiny-Modell auf `jfk.wav`).
-- Manueller E2E-Smoke: Aufnahme am Handy → Transkript → Issue erscheint beim CEO.
+- Unit-Tests (pytest), Telegram- und Paperclip-Calls gemockt:
+  - Allowlist-Gate lässt nur die erlaubte User-ID durch.
+  - Titel-Ableitung aus Transkript.
+  - `/send`-Pfad baut korrekten Paperclip-Payload.
+  - Callback ✅/❌ steuert Anlegen/Verwerfen korrekt.
+  - `/transcribe`-Pfad mit Fixture-WAV (whisper gemockt oder Tiny-Modell auf `jfk.wav`).
+- Manueller E2E-Smoke: Sprachnachricht an den Bot → Transkript + Buttons → ✅ →
+  Issue erscheint beim WHITESTAG-CEO.
 
 ## Bewusst NICHT im Scope (YAGNI)
+- Keine Web-Seite, kein Cloudflare-Tunnel/Access.
 - Keine CEO-Auswahl / Multi-Company (nur WHITESTAG).
-- Kein KI-Titel/LLM-Nachbearbeitung (reiner Kontroll-Schritt).
+- Kein KI-Titel/LLM-Nachbearbeitung (reiner Bestätigungs-Schritt).
 - Keine Audio-Archivierung am Issue (nur Text).
-- Keine Offline-PWA / native App.
+- Kein Rückkanal CEO → Telegram (später denkbar, jetzt nicht).
 
-## Offene Punkte für den Plan
-- Genauer Modell-Download-Weg + Pfad.
-- Service-Token-Beschaffung (bestehenden wiederverwenden vs. neuen anlegen).
-- launchd-Plist-Namen (`de.whitestag.voice-echo`, `de.whitestag.voice-echo-tunnel`).
-- Ist `echo.whitestag.ai` in Cloudflare als Zone verfügbar? (Domain-Check beim Setup.)
+## Setup-Voraussetzungen / offene Punkte für den Plan
+- **Neuen Bot beim BotFather anlegen** → Token (manueller Einmal-Schritt Walters).
+- **Walters Telegram-User-ID ermitteln** (z. B. via @userinfobot) für die Allowlist.
+- Modell-Download-Weg + Pfad festlegen.
+- Service-Token beschaffen (bestehenden wiederverwenden vs. neuen anlegen).
+- launchd-Plist-Name (`de.whitestag.voice-echo-bot`).
