@@ -1,8 +1,6 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
 import type { AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
@@ -17,7 +15,6 @@ import {
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
 
-const execFileAsync = promisify(execFile);
 
 const tempRoots: string[] = [];
 
@@ -93,13 +90,17 @@ function createLocalSandboxRunner(
 
 function buildRuntime(
   onSetConfigOption?: (input: { key: string; value: string }) => void,
+  onEnsureSession?: (input: Record<string, unknown>) => void,
 ) {
   return {
-    ensureSession: async () => ({
+    ensureSession: async (input: Record<string, unknown>) => {
+      onEnsureSession?.(input);
+      return ({
       backendSessionId: "backend-session",
       agentSessionId: "agent-session",
       runtimeSessionName: "runtime-session",
-    }),
+      });
+    },
     startTurn: () => ({
       events: (async function* () {
         yield { type: "done", stopReason: "end_turn" };
@@ -126,12 +127,16 @@ async function runExecutor(
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
   const configOptions: Array<{ key: string; value: string }> = [];
+  const sessionInputs: Record<string, unknown>[] = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
   const execute = createAcpxEngineExecutor({
     createRuntime: (options) => {
       runtimeOptions.push(options as unknown as Record<string, unknown>);
-      return buildRuntime(({ key, value }) => configOptions.push({ key, value })) as never;
+      return buildRuntime(
+        ({ key, value }) => configOptions.push({ key, value }),
+        (input) => sessionInputs.push(input),
+      ) as never;
     },
   });
 
@@ -157,7 +162,7 @@ async function runExecutor(
   } as never);
 
   expect(result.exitCode).toBe(0);
-  return { logs, meta, runtimeOptions, configOptions, result };
+  return { logs, meta, runtimeOptions, configOptions, sessionInputs, result };
 }
 
 describe("shared ACPX engine runtime behavior", () => {
@@ -625,75 +630,28 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
   });
 
-  it("keeps fresh credential wrapper scripts across ACPX agent changes", async () => {
+  it("uses direct registry commands and per-session env across ACPX agent changes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-    const baseConfig = {
-      agentCommand: "node ./fake-acp.js",
-      stateDir,
-    };
-
-    await runExecutor({
-      ...baseConfig,
-      agent: "custom-a",
-      env: { PAPERCLIP_API_KEY: "old-key" },
-    });
-    await runExecutor({
-      ...baseConfig,
-      agent: "custom-b",
-      env: { PAPERCLIP_API_KEY: "new-key" },
-    });
-
-    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
-    expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(2);
-    expect(wrappers.filter((name) => name.endsWith(".env"))).toHaveLength(2);
-    expect(wrappers.some((name) => name.startsWith("custom-a-"))).toBe(true);
-    expect(wrappers.some((name) => name.startsWith("custom-b-"))).toBe(true);
-    const wrapperPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.startsWith("custom-b-") && name.endsWith(".sh"))!);
-    const envPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.startsWith("custom-b-") && name.endsWith(".env"))!);
-    const wrapper = await fs.readFile(wrapperPath, "utf8");
-    const env = await fs.readFile(envPath, "utf8");
-    expect((await fs.stat(envPath)).mode & 0o777).toBe(0o600);
-    expect((await fs.stat(wrapperPath)).mode & 0o777).toBe(0o700);
-    expect(wrapper).toContain("node ./fake-acp.js");
-    expect(wrapper).not.toContain("PAPERCLIP_API_KEY");
-    expect(wrapper).not.toContain("new-key");
-    expect(wrapper).not.toContain("old-key");
-    expect(env).toContain("PAPERCLIP_API_KEY='new-key'");
-    expect(env).not.toContain("old-key");
+    const first = await runExecutor({ agent: "custom-a", agentCommand: "node ./fake-acp.js", stateDir, env: { PAPERCLIP_API_KEY: "old-key" } });
+    const second = await runExecutor({ agent: "custom-b", agentCommand: "node ./fake-acp.js", stateDir, env: { PAPERCLIP_API_KEY: "new-key" } });
+    expect((first.runtimeOptions[0]!.agentRegistry as { resolve(name: string): string }).resolve("custom-a")).toBe("node ./fake-acp.js");
+    expect((second.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env.PAPERCLIP_API_KEY).toBe("new-key");
+    await expect(fs.access(path.join(stateDir, "wrappers"))).rejects.toThrow();
   });
 
-  it("forwards resolved adapter env (plain + secret) to the wrapper without overriding runtime vars", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-
-    await runExecutor(
+  it("forwards resolved adapter env through session options without overriding runtime vars", async () => {
+    const { sessionInputs } = await runExecutor(
       {
         agentCommand: "node ./fake-acp.js",
-        stateDir,
-        env: {
-          OOGA_BOOGA_123: "plain-value",
-          // Server-resolved secret_ref values arrive here as plain strings.
-          OPENROUTER_API_KEY: "resolved-secret-value",
-          // Reserved-namespace config keys must not clobber runtime identity/wake.
-          PAPERCLIP_TASK_ID: "attacker-issue",
-        },
+        env: { OOGA_BOOGA_123: "plain-value", OPENROUTER_API_KEY: "resolved-secret-value", PAPERCLIP_TASK_ID: "attacker-issue" },
       },
-      {
-        authToken: "runtime-secret-token",
-        context: { taskId: "issue-real", wakeReason: "issue_assigned" },
-      },
+      { authToken: "runtime-secret-token", context: { taskId: "issue-real", wakeReason: "issue_assigned" } },
     );
-
-    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
-    const envPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.endsWith(".env"))!);
-    const env = await fs.readFile(envPath, "utf8");
-
-    expect(env).toContain("OOGA_BOOGA_123='plain-value'");
-    expect(env).toContain("OPENROUTER_API_KEY='resolved-secret-value'");
-    // Runtime PAPERCLIP_TASK_ID (from the wake context) wins over config.
-    expect(env).toContain("PAPERCLIP_TASK_ID='issue-real'");
-    expect(env).not.toContain("attacker-issue");
+    const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+    expect(env.OOGA_BOOGA_123).toBe("plain-value");
+    expect(env.OPENROUTER_API_KEY).toBe("resolved-secret-value");
+    expect(env.PAPERCLIP_TASK_ID).toBe("issue-real");
   });
 
   it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
@@ -752,116 +710,32 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(rotatedKey)).not.toBe(fp(withKey));
   });
 
-  it("shapes ACPX wrapper workspace env for remote execution identities", async () => {
+  it("shapes ACPX session env for remote execution identities", async () => {
     const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const workspaceDir = path.join(root, "workspace");
-    await fs.mkdir(workspaceDir, { recursive: true });
-
-    await runExecutor(
-      {
-        agentCommand: "node ./fake-acp.js",
-        stateDir,
-      },
-      {
-        context: {
-          paperclipWorkspace: {
-            cwd: workspaceDir,
-            source: "project_primary",
-            strategy: "git_worktree",
-            workspaceId: "workspace-1",
-            repoUrl: "https://github.com/paperclipai/paperclip.git",
-            repoRef: "main",
-            branchName: "feature/remote-acpx",
-            worktreePath: workspaceDir,
-          },
-        },
-        executionTransport: {
-          remoteExecution: {
-            host: "127.0.0.1",
-            port: 2222,
-            username: "fixture",
-            remoteWorkspacePath: "/remote/workspace",
-            remoteCwd: "/remote/workspace",
-            privateKey: "PRIVATE KEY",
-            knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
-            strictHostKeyChecking: true,
-          },
-        },
-      },
+    const localCwd = path.join(root, "local");
+    const remoteCwd = "/workspace/remote";
+    const { sessionInputs } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", cwd: localCwd, stateDir: path.join(root, "state") },
+      { context: { paperclipWorkspace: { cwd: localCwd, workspaceWorktreePath: localCwd } }, executionTarget: { kind: "remote", transport: "ssh", remoteCwd } },
     );
-
-    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
-    const envPath = path.join(
-      stateDir,
-      "wrappers",
-      wrappers.find((name) => name.endsWith(".env"))!,
-    );
-    const env = await fs.readFile(envPath, "utf8");
-
-    expect(env).toContain("PAPERCLIP_WORKSPACE_CWD='/remote/workspace'");
-    expect(env).not.toContain("PAPERCLIP_WORKSPACE_WORKTREE_PATH=");
+    const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+    expect(env.PAPERCLIP_WORKSPACE_CWD).toBe(localCwd);
   });
 
-  it("cleans aged credential wrapper scripts across ACPX agent changes", async () => {
+  it("does not materialize credential wrapper scripts", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-    const wrappersDir = path.join(stateDir, "wrappers");
-    const baseConfig = {
-      agentCommand: "node ./fake-acp.js",
-      stateDir,
-    };
-
-    await runExecutor({
-      ...baseConfig,
-      agent: "custom-a",
-      env: { PAPERCLIP_API_KEY: "old-key" },
-    });
-    const oldDate = new Date(Date.now() - 16 * 60 * 1000);
-    await Promise.all(
-      (await fs.readdir(wrappersDir))
-        .filter((name) => name.startsWith("custom-a-"))
-        .map((name) => fs.utimes(path.join(wrappersDir, name), oldDate, oldDate)),
-    );
-
-    await runExecutor({
-      ...baseConfig,
-      agent: "custom-b",
-      env: { PAPERCLIP_API_KEY: "new-key" },
-    });
-
-    const wrappers = await fs.readdir(wrappersDir);
-    expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(1);
-    expect(wrappers.filter((name) => name.endsWith(".env"))).toHaveLength(1);
-    expect(wrappers.some((name) => name.startsWith("custom-a-"))).toBe(false);
-    expect(wrappers.some((name) => name.startsWith("custom-b-"))).toBe(true);
+    await runExecutor({ agent: "custom", agentCommand: "node ./fake-acp.js", stateDir });
+    await expect(fs.access(path.join(stateDir, "wrappers"))).rejects.toThrow();
   });
 
-  it("keeps distinct wrapper env files for concurrent runs with different credentials", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const baseConfig = {
-      agent: "custom-a",
-      agentCommand: "node ./fake-acp.js",
-      stateDir,
-    };
-
-    await runExecutor({
-      ...baseConfig,
-      env: { PAPERCLIP_API_KEY: "first-key" },
-    });
-    await runExecutor({
-      ...baseConfig,
-      env: { PAPERCLIP_API_KEY: "second-key" },
-    });
-
-    const envFileNames = (await fs.readdir(path.join(stateDir, "wrappers"))).filter((name) => name.endsWith(".env"));
-    expect(envFileNames).toHaveLength(2);
-    const envFiles = await Promise.all(
-      envFileNames.map(async (name) => fs.readFile(path.join(stateDir, "wrappers", name), "utf8")),
-    );
-    expect(envFiles.filter((contents) => contents.includes("PAPERCLIP_API_KEY='first-key'"))).toHaveLength(1);
-    expect(envFiles.filter((contents) => contents.includes("PAPERCLIP_API_KEY='second-key'"))).toHaveLength(1);
+  it("keeps concurrent credentials isolated in their session options", async () => {
+    const [first, second] = await Promise.all([
+      runExecutor({ agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_API_KEY: "first" } }),
+      runExecutor({ agent: "custom", agentCommand: "node ./fake-acp.js", env: { PAPERCLIP_API_KEY: "second" } }),
+    ]);
+    expect((first.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env.PAPERCLIP_API_KEY).toBe("first");
+    expect((second.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env.PAPERCLIP_API_KEY).toBe("second");
   });
 
   it("enriches acpx.error diagnostics and child stderr when ensureSession rejects", async () => {
@@ -941,47 +815,11 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(stderrLog!.text).toContain(stderrTail);
   });
 
-  it("writes wrapper that redirects child stderr to a per-run log file", async () => {
+  it("configures in-process child stderr capture without forcing verbose mode", async () => {
     const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-
-    const runtimeOptions: AcpRuntimeOptions[] = [];
-    const execute = createAcpxEngineExecutor({
-      createRuntime: (options) => {
-        runtimeOptions.push(options as unknown as AcpRuntimeOptions);
-        return buildRuntime() as never;
-      },
-    });
-
-    const result = await execute({
-      runId: "run-stderr-1",
-      agent: { id: "agent-1", companyId: "company-1" },
-      runtime: {},
-      config: {
-        agent: "custom",
-        agentCommand: "node ./fake-acp.js",
-        stateDir,
-      },
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-    } as never);
-
-    expect(result.exitCode).toBe(0);
-    const verboseFlags = runtimeOptions.map((options) => (options as { verbose?: boolean }).verbose);
-    // verbose is scoped to the claude agent; the custom agent here
-    // should not opt in to ACPX runtime verbose session-event logs.
-    expect(verboseFlags.every((flag) => flag === false)).toBe(true);
-
-    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
-    const wrapperFile = wrappers.find((name) => name.endsWith(".sh"));
-    expect(wrapperFile).toBeTruthy();
-    const wrapper = await fs.readFile(path.join(stateDir, "wrappers", wrapperFile!), "utf8");
-    expect(wrapper).toContain("stderr_dir=");
-    expect(wrapper).toContain("run-stderr");
-    expect(wrapper).toContain("PAPERCLIP_RUN_ID");
-    expect(wrapper).toContain("tee -a");
-    expect(wrapper).toContain("exec node ./fake-acp.js");
+    const { runtimeOptions } = await runExecutor({ agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") });
+    expect(runtimeOptions[0]!.verbose).toBe(false);
+    expect(runtimeOptions[0]!.onAgentStderr).toBeTypeOf("function");
   });
 
   it("starts sandbox ACP process sessions in the remote execution cwd", async () => {
@@ -1035,88 +873,67 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(payloadEnv.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
   });
 
-  it.skipIf(process.platform === "win32")("drops benign ACP nes/close cleanup stderr but keeps it in the run log", async () => {
+  it("routes child stderr in-process while keeping the unfiltered run log", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-
+    let runtimeOptions: AcpRuntimeOptions | undefined;
     const execute = createAcpxEngineExecutor({
-      createRuntime: () => buildRuntime() as never,
-    });
-
-    const fakeAgentPath = path.join(root, "fake-acp.sh");
-    await fs.writeFile(
-      fakeAgentPath,
-      [
-        "#!/usr/bin/env bash",
-        "echo \"Error handling request { method: 'nes/close' } { code: -32601, message: '\\\"Method not found\\\": nes/close' }\" >&2",
-        "echo \"some genuine crash: TypeError: x is not a function\" >&2",
-        "",
-      ].join("\n"),
-      { mode: 0o700 },
-    );
-
-    const result = await execute({
-      runId: "run-nes-close-1",
-      agent: { id: "agent-1", companyId: "company-1" },
-      runtime: {},
-      config: {
-        agent: "custom",
-        agentCommand: fakeAgentPath,
-        stateDir,
+      createRuntime: (options) => {
+        runtimeOptions = options;
+        return buildRuntime() as never;
       },
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-    } as never);
-
-    expect(result.exitCode).toBe(0);
-    const wrapperFile = (await fs.readdir(path.join(stateDir, "wrappers"))).find((name) => name.endsWith(".sh"));
-    expect(wrapperFile).toBeTruthy();
-    const wrapperPath = path.join(stateDir, "wrappers", wrapperFile!);
-
-    const { stderr } = await execFileAsync("bash", [wrapperPath], {
-      env: { ...process.env, PAPERCLIP_RUN_ID: "run-nes-close-1" },
     });
-
-    expect(stderr).not.toContain("nes/close");
-    expect(stderr).toContain("some genuine crash: TypeError: x is not a function");
-
+    const writes: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const result = await execute({
+        runId: "run-nes-close-1",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+      expect(result.exitCode).toBe(0);
+      runtimeOptions?.onAgentStderr?.("Error handling request { method: 'nes/close' } { code: -32601 }\n");
+      runtimeOptions?.onAgentStderr?.("some genuine crash: TypeError: x is not a function\n");
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    expect(writes.join("")).not.toContain("nes/close");
+    expect(writes.join("")).toContain("some genuine crash");
     const runLog = await fs.readFile(path.join(stateDir, "run-stderr", "run-nes-close-1.log"), "utf8");
     expect(runLog).toContain("nes/close");
-    expect(runLog).toContain("some genuine crash: TypeError: x is not a function");
+    expect(runLog).toContain("some genuine crash");
   });
 
-  it("passes Paperclip env through the ACP agent wrapper instead of process.env", async () => {
-    let observedApiKeyDuringStream: string | undefined;
+  it("passes Paperclip env through ACPX session options instead of process.env", async () => {
+    let observedSessionEnv: Record<string, string> | undefined;
     const execute = createAcpxEngineExecutor({
       createRuntime: () => ({
-        ensureSession: async () => ({
-          backendSessionId: "backend-session",
-          agentSessionId: "agent-session",
-          runtimeSessionName: "runtime-session",
-        }),
+        ensureSession: async (input: { sessionOptions?: { env?: Record<string, string> } }) => {
+          observedSessionEnv = input.sessionOptions?.env;
+          return { backendSessionId: "backend-session", agentSessionId: "agent-session", runtimeSessionName: "runtime-session" };
+        },
         startTurn: () => ({
-          events: (async function* () {
-            await Promise.resolve();
-            observedApiKeyDuringStream = process.env.PAPERCLIP_API_KEY;
-            yield { type: "done", stopReason: "end_turn" };
-          })(),
+          events: (async function* () { yield { type: "done", stopReason: "end_turn" }; })(),
           result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
           cancel: async () => {},
         }),
         close: async () => {},
       }) as never,
     });
-
     const previousApiKey = process.env.PAPERCLIP_API_KEY;
     try {
       delete process.env.PAPERCLIP_API_KEY;
       const result = await execute({
         runId: "run-1",
-        agent: {
-          id: "agent-1",
-          companyId: "company-1",
-        },
+        agent: { id: "agent-1", companyId: "company-1" },
         runtime: {},
         config: { agent: "custom", agentCommand: "node ./fake-acp.js" },
         context: {},
@@ -1124,9 +941,9 @@ describe("shared ACPX engine runtime behavior", () => {
         onLog: async () => {},
         onMeta: async () => {},
       } as never);
-
       expect(result.exitCode).toBe(0);
-      expect(observedApiKeyDuringStream).toBeUndefined();
+      expect(observedSessionEnv?.PAPERCLIP_API_KEY).toBe("runtime-key");
+      expect(process.env.PAPERCLIP_API_KEY).toBeUndefined();
     } finally {
       if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
       else process.env.PAPERCLIP_API_KEY = previousApiKey;
@@ -1460,49 +1277,22 @@ describe("gemini ACP flag selection", () => {
     return [binDir, process.env.PATH ?? ""].filter(Boolean).join(path.delimiter);
   }
 
-  async function readGeminiWrapperScript(stateDir: string): Promise<string> {
-    const wrappersDir = path.join(stateDir, "wrappers");
-    const names = await fs.readdir(wrappersDir);
-    const scriptName = names.find((name) => name.endsWith(".sh"));
-    expect(scriptName).toBeTypeOf("string");
-    return fs.readFile(path.join(wrappersDir, scriptName!), "utf8");
-  }
-
-  it("writes a gemini wrapper that execs a multi-word command instead of a single quoted token", async () => {
+  it("registers the gemini multi-word command directly", async () => {
     const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
     const binDir = path.join(root, "bin");
     await writeFakeGemini(binDir, "0.33.0");
-
-    await runExecutor({
-      agent: "gemini",
-      stateDir,
-      env: { HOME: path.join(root, "home"), PATH: pathWithFakeBin(binDir) },
-    });
-
-    const script = await readGeminiWrapperScript(stateDir);
-    expect(script).toContain('exec gemini --acp "$@"');
-    expect(script).not.toContain("'gemini --acp'");
+    const { runtimeOptions } = await runExecutor({ agent: "gemini", stateDir: path.join(root, "state"), env: { HOME: path.join(root, "home"), PATH: pathWithFakeBin(binDir) } });
+    expect((runtimeOptions[0]!.agentRegistry as { resolve(name: string): string }).resolve("gemini")).toBe("gemini --acp");
   });
 
-  it("downgrades the built-in gemini command flag when the local CLI predates --acp", async () => {
+  it("downgrades the registered gemini command when the local CLI predates --acp", async () => {
     const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
     const binDir = path.join(root, "bin");
     await writeFakeGemini(binDir, "0.30.0");
-
-    await runExecutor({
-      agent: "gemini",
-      stateDir,
-      env: { HOME: path.join(root, "home"), PATH: pathWithFakeBin(binDir) },
-    });
-
-    const script = await readGeminiWrapperScript(stateDir);
-    expect(script).toContain('exec gemini --experimental-acp "$@"');
+    const { runtimeOptions } = await runExecutor({ agent: "gemini", stateDir: path.join(root, "state"), env: { HOME: path.join(root, "home"), PATH: pathWithFakeBin(binDir) } });
+    expect((runtimeOptions[0]!.agentRegistry as { resolve(name: string): string }).resolve("gemini")).toBe("gemini --experimental-acp");
   });
-});
 
-describe("shared ACP engine execution timeouts", () => {
   it("applies the 4h sandbox backstop when timeoutSec is unset on a sandbox execution target", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

@@ -201,11 +201,49 @@ jobs:
             pnpm test:run:general -- --group '${{ matrix.group }}'
           fi
 
+  acpx_spawn_smoke:
+    name: ACPX spawn smoke (${{ matrix.os }})
+    needs: [policy]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run real ACPX spawn smoke
+        run: pnpm exec vitest run packages/adapter-utils/src/acpx-engine/spawn-smoke.test.ts
+
   verify:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [typecheck_release_registry, general_tests, build]
+    needs: [typecheck_release_registry, general_tests, build, acpx_spawn_smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -215,10 +253,12 @@ jobs:
           TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
           GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          ACPX_SPAWN_SMOKE_RESULT: ${{ needs.acpx_spawn_smoke.result }}
         run: |
           test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
           test "$GENERAL_TESTS_RESULT" = "success"
           test "$BUILD_RESULT" = "success"
+          test "$ACPX_SPAWN_SMOKE_RESULT" = "success"
 
   build:
     name: Build
