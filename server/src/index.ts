@@ -40,7 +40,6 @@ import {
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
-  createSecretProposalsService,
   environmentCustomImageService,
   heartbeatService,
   instanceSettingsService,
@@ -51,6 +50,7 @@ import {
   routineService,
   toolAccessService,
 } from "./services/index.js";
+import { createSecretProposalsService } from "./services/secret-proposals.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
