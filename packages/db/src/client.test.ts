@@ -884,6 +884,157 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
   );
 
   it(
+    "replays migration 0183 to bind active legacy agent keys to an active company owner",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const repairAgentKeyHash = await migrationHash(
+        "0183_repair_legacy_agent_key_responsible_users.sql",
+      );
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`
+          INSERT INTO "user" ("id", "name", "email", "email_verified", "created_at", "updated_at")
+          VALUES ('legacy-owner', 'Legacy Owner', 'legacy-owner@example.com', true, now(), now())
+        `);
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000250',
+            'Legacy Agent Key Co',
+            'KEY250',
+            '2026-07-21T10:00:00.000Z',
+            '2026-07-21T10:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "company_memberships" (
+            "id",
+            "company_id",
+            "principal_type",
+            "principal_id",
+            "status",
+            "membership_role",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000251',
+            '00000000-0000-0000-0000-000000000250',
+            'user',
+            'legacy-owner',
+            'active',
+            'owner',
+            '2026-07-21T10:01:00.000Z',
+            '2026-07-21T10:01:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "agents" (
+            "id",
+            "company_id",
+            "name",
+            "role",
+            "adapter_type",
+            "adapter_config",
+            "runtime_config",
+            "permissions",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000252',
+            '00000000-0000-0000-0000-000000000250',
+            'Legacy Agent',
+            'general',
+            'process',
+            '{}',
+            '{}',
+            '{}',
+            '2026-07-21T10:02:00.000Z',
+            '2026-07-21T10:02:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "agent_api_keys" (
+            "id",
+            "agent_id",
+            "company_id",
+            "name",
+            "key_hash",
+            "responsible_user_id",
+            "revoked_at",
+            "created_at"
+          )
+          VALUES
+            (
+              '00000000-0000-0000-0000-000000000253',
+              '00000000-0000-0000-0000-000000000252',
+              '00000000-0000-0000-0000-000000000250',
+              'legacy-key',
+              'legacy-key-hash',
+              NULL,
+              NULL,
+              '2026-07-21T10:03:00.000Z'
+            ),
+            (
+              '00000000-0000-0000-0000-000000000254',
+              '00000000-0000-0000-0000-000000000252',
+              '00000000-0000-0000-0000-000000000250',
+              'revoked-legacy-key',
+              'revoked-legacy-key-hash',
+              NULL,
+              '2026-07-21T10:04:00.000Z',
+              '2026-07-21T10:03:00.000Z'
+            )
+        `);
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${repairAgentKeyHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0183_repair_legacy_agent_key_responsible_users.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{ id: string; responsible_user_id: string | null }[]>(`
+          SELECT "id", "responsible_user_id"
+          FROM "agent_api_keys"
+          WHERE "id" IN (
+            '00000000-0000-0000-0000-000000000253',
+            '00000000-0000-0000-0000-000000000254'
+          )
+          ORDER BY "id"
+        `);
+        expect(rows).toEqual([
+          {
+            id: "00000000-0000-0000-0000-000000000253",
+            responsible_user_id: "legacy-owner",
+          },
+          {
+            id: "00000000-0000-0000-0000-000000000254",
+            responsible_user_id: null,
+          },
+        ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
     "replays migration 0135 to repair updated_at sweeps and no-op when clean",
     async () => {
       const connectionString = await createTempDatabase();

@@ -43,6 +43,7 @@ import {
 import { parseWakePayloadFromMessage } from "./helpers/wake-message.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
@@ -865,7 +866,21 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     const standardActor = agentActor(fixture, fixture.agents.standard.id);
     const standardRes = await request(createApp(db, { ...standardActor, runId: null })).get("/api/agents/me");
     expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
-    expect(JSON.stringify(standardRes.body)).toContain(fixture.canaries.agentConfig);
+    expectNoCanary(standardRes.body, fixture.canaries.agentConfig);
+    expect(standardRes.body.adapterConfig?.token).toBe(REDACTED_EVENT_VALUE);
+    expect(standardRes.body.runtimeConfig?.env?.SECRET_MARKER).toBe(REDACTED_EVENT_VALUE);
+
+    const standardSelfByIdRes = await request(createApp(db, { ...standardActor, runId: null }))
+      .get(`/api/agents/${fixture.agents.standard.id}`);
+    expect(standardSelfByIdRes.status, JSON.stringify(standardSelfByIdRes.body)).toBe(200);
+    expectNoCanary(standardSelfByIdRes.body, fixture.canaries.agentConfig);
+    expect(standardSelfByIdRes.body.adapterConfig?.token).toBe(REDACTED_EVENT_VALUE);
+    expect(standardSelfByIdRes.body.runtimeConfig?.env?.SECRET_MARKER).toBe(REDACTED_EVENT_VALUE);
+
+    const boardAgentDetailRes = await request(createApp(db, boardActor(fixture)))
+      .get(`/api/agents/${fixture.agents.standard.id}`);
+    expect(boardAgentDetailRes.status, JSON.stringify(boardAgentDetailRes.body)).toBe(200);
+    expect(JSON.stringify(boardAgentDetailRes.body)).toContain(fixture.canaries.agentConfig);
 
     const issueScopedLowTrustRes = await request(createApp(db, standardActor)).get("/api/agents/me");
     expect(issueScopedLowTrustRes.status, JSON.stringify(issueScopedLowTrustRes.body)).toBe(200);

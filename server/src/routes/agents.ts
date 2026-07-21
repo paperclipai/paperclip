@@ -668,6 +668,17 @@ export function agentRoutes(
     };
   }
 
+  function redactAgentSelfDetail(
+    agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+  ): NonNullable<Awaited<ReturnType<typeof svc.getById>>> {
+    return {
+      ...agent,
+      adapterConfig: redactEventPayload(agent.adapterConfig) ?? {},
+      runtimeConfig: redactEventPayload(agent.runtimeConfig) ?? {},
+      metadata: agent.metadata ? redactEventPayload(agent.metadata) : agent.metadata,
+    };
+  }
+
   async function resolveAgentSelfTrustPreset(req: Request, agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
     if (req.actor.type !== "agent" || req.actor.agentId !== agent.id) {
       return { kind: "standard" as const };
@@ -2116,7 +2127,7 @@ export function agentRoutes(
       });
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildAgentDetail(redactAgentSelfDetail(agent)));
   });
 
   router.get("/agents/me/inbox-lite", async (req, res) => {
@@ -2210,7 +2221,7 @@ export function agentRoutes(
       res.json(await buildAgentDetail(agent, { restricted: true }));
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildAgentDetail(isSelf ? redactAgentSelfDetail(agent) : agent));
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {
