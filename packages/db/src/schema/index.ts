@@ -110,6 +110,8 @@ export {
   toolApplications,
   toolConnections,
   connectionGrants,
+  connectionTriggers,
+  connectionTriggerDeliveries,
   toolConnectionInstalls,
   toolOauthStates,
   toolCatalogEntries,

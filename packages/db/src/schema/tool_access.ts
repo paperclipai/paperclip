@@ -147,6 +147,54 @@ export const toolConnections = pgTable(
   ],
 );
 
+
+export const connectionTriggers = pgTable(
+  "connection_triggers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    destinationType: text("destination_type").$type<"routine" | "issue_wake" | "plugin_worker">().notNull(),
+    destinationId: text("destination_id").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check("connection_triggers_destination_type_check", sql`${table.destinationType} in ('routine', 'issue_wake', 'plugin_worker')`),
+    index("connection_triggers_company_idx").on(table.companyId),
+    index("connection_triggers_connection_idx").on(table.connectionId),
+    uniqueIndex("connection_triggers_destination_uq").on(table.connectionId, table.destinationType, table.destinationId),
+  ],
+);
+
+export const connectionTriggerDeliveries = pgTable(
+  "connection_trigger_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    deliveryId: text("delivery_id").notNull(),
+    providerSlug: text("provider_slug").notNull(),
+    status: text("status").$type<"received" | "forwarded" | "delivered" | "failed" | "dead_letter">().notNull().default("received"),
+    attempt: integer("attempt").notNull().default(1),
+    envelope: jsonb("envelope").$type<Record<string, unknown>>().notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
+    forwardedAt: timestamp("forwarded_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check("connection_trigger_deliveries_status_check", sql`${table.status} in ('received', 'forwarded', 'delivered', 'failed', 'dead_letter')`),
+    index("connection_trigger_deliveries_company_idx").on(table.companyId),
+    index("connection_trigger_deliveries_connection_status_idx").on(table.connectionId, table.status),
+    uniqueIndex("connection_trigger_deliveries_connection_delivery_uq").on(table.connectionId, table.deliveryId),
+  ],
+);
+
 export const connectionGrants = pgTable(
   "connection_grants",
   {
