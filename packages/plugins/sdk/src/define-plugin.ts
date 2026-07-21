@@ -127,6 +127,8 @@ export interface PluginConfigValidationResult {
  * @see PLUGIN_SPEC.md §13.7 — `handleWebhook`
  */
 export interface PluginWebhookInput {
+  /** Company scope for host-side authorization and stream isolation. */
+  companyId?: string;
   /** Endpoint key matching the manifest declaration. */
   endpointKey: string;
   /** Inbound request headers. */

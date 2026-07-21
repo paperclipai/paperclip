@@ -20,6 +20,7 @@ CREATE TABLE "connection_trigger_deliveries" (
 	"status" text DEFAULT 'received' NOT NULL,
 	"attempt" integer DEFAULT 1 NOT NULL,
 	"envelope" jsonb NOT NULL,
+	"completed_trigger_ids" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"received_at" timestamp with time zone NOT NULL,
 	"forwarded_at" timestamp with time zone,
 	"delivered_at" timestamp with time zone,

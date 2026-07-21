@@ -1,7 +1,7 @@
-import { randomBytes, type KeyObject } from "node:crypto";
+import { createHash, randomBytes, type KeyObject } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectionGrants, toolConnections } from "@paperclipai/db";
+import { companyMemberships, connectionGrants, toolConnections } from "@paperclipai/db";
 import {
   claimRequestSchema, claimResponseSchema, grantTokenRequestSchema, grantTokenResponseSchema,
   handshakeRequestSchema, handshakeResponseSchema, relayRegistrationRequestSchema,
@@ -39,6 +39,10 @@ export type ConnectionBrokerVault = { put(input: { companyId: string; connection
 export type ConnectionBrokerStore = {
   saveGrant(input: { companyId: string; connectionId: string; kind: "workspace" | "user"; subjectUserId: string | null; credentialSecretRefs: SecretRef[]; custodyMode: "A" | "B2"; serviceGrantRef: string | null; tokenMeta: { scopes: string[]; expiresAt?: string | null } }): Promise<{ id: string }>;
   registerRelay(input: { companyId: string; connectionId: string; connectionPublicRef: string; intakeUrls: string[]; relaySecretRef: { secretId: string; versionSelector: "latest" } }): Promise<void>;
+  assertActiveUserMembership(input: { companyId: string; userId: string }): Promise<void>;
+  loadClaimState(input: { companyId: string; connectionId: string; claimCodeHash: string }): Promise<{ claim: ReturnType<typeof claimResponseSchema.parse> } | null>;
+  saveClaimState(input: { companyId: string; connectionId: string; claimCodeHash: string; claim: ReturnType<typeof claimResponseSchema.parse> }): Promise<void>;
+  clearClaimState(input: { companyId: string; connectionId: string; claimCodeHash: string }): Promise<void>;
 };
 export function connectionBrokerStore(db: Db): ConnectionBrokerStore {
   return {
@@ -54,6 +58,28 @@ export function connectionBrokerStore(db: Db): ConnectionBrokerStore {
       if (!connection) throw new Error("Tool connection not found");
       await db.update(toolConnections).set({ config: { ...connection.config, relay: { publicRef: input.connectionPublicRef, intakeUrls: input.intakeUrls, secretId: input.relaySecretRef.secretId, secretVersion: input.relaySecretRef.versionSelector } }, updatedAt: new Date() }).where(eq(toolConnections.id, input.connectionId));
     },
+    async assertActiveUserMembership({ companyId, userId }) {
+      const membership = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, userId), eq(companyMemberships.status, "active"))).limit(1);
+      if (!membership.length) throw new ConnectServiceResponseError(403, "user_not_company_member");
+    },
+    async loadClaimState({ companyId, connectionId, claimCodeHash }) {
+      const row = await db.select({ config: toolConnections.config }).from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId))).limit(1).then((rows) => rows[0]);
+      const state = (row?.config as { brokerClaimState?: { claimCodeHash: string; claim: ReturnType<typeof claimResponseSchema.parse> } } | undefined)?.brokerClaimState;
+      return state?.claimCodeHash === claimCodeHash ? { claim: state.claim } : null;
+    },
+    async saveClaimState({ companyId, connectionId, claimCodeHash, claim }) {
+      const row = await db.select({ config: toolConnections.config }).from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId))).limit(1).then((rows) => rows[0]);
+      if (!row) throw new Error("Tool connection not found");
+      await db.update(toolConnections).set({ config: { ...row.config, brokerClaimState: { claimCodeHash, claim } }, updatedAt: new Date() }).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId)));
+    },
+    async clearClaimState({ companyId, connectionId, claimCodeHash }) {
+      const row = await db.select({ config: toolConnections.config }).from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId))).limit(1).then((rows) => rows[0]);
+      const config = { ...(row?.config ?? {}) } as Record<string, unknown>;
+      const state = config.brokerClaimState as { claimCodeHash?: string } | undefined;
+      if (state?.claimCodeHash !== claimCodeHash) return;
+      delete config.brokerClaimState;
+      await db.update(toolConnections).set({ config, updatedAt: new Date() }).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId)));
+    },
   };
 }
 export function connectionBrokerService(input: { client: ConnectBrokerClient; store: ConnectionBrokerStore; vault: ConnectionBrokerVault; enabled?: boolean }) {
@@ -62,12 +88,20 @@ export function connectionBrokerService(input: { client: ConnectBrokerClient; st
     startOAuth: async (body: unknown) => { assertEnabled(); return input.client.createHandshake(body); },
     async claimOAuth(params: { companyId: string; connectionId: string; claimCode: string; kind: "workspace" | "user"; subjectUserId?: string | null }) {
       assertEnabled();
-      const claim = await input.client.claim(params.claimCode);
+      if (params.kind === "user") {
+        if (!params.subjectUserId) throw new ConnectServiceResponseError(400, "subject_user_required");
+        await input.store.assertActiveUserMembership({ companyId: params.companyId, userId: params.subjectUserId });
+      }
+      const claimCodeHash = createHash("sha256").update(params.claimCode).digest("hex");
+      const existingState = await input.store.loadClaimState({ companyId: params.companyId, connectionId: params.connectionId, claimCodeHash });
+      const claim = existingState?.claim ?? await input.client.claim(params.claimCode);
+      if (!existingState) await input.store.saveClaimState({ companyId: params.companyId, connectionId: params.connectionId, claimCodeHash, claim });
       if (claim.custodyMode !== "A" && claim.custodyMode !== "B2") throw new ConnectServiceResponseError(403, "mode_not_allowed");
       const serviceGrantRef = claim.custodyMode === "A" ? claim.grantRef : null;
       const sealedGrant = claim.custodyMode === "A" ? (await input.client.mintGrantToken(claim.grantRef, randomBytes(32).toString("base64url"))).grantSealed : claim.grantSealed;
       const secretRef = await input.vault.put({ companyId: params.companyId, connectionId: params.connectionId, purpose: "grant", value: sealedGrant });
       const grant = await input.store.saveGrant({ companyId: params.companyId, connectionId: params.connectionId, kind: params.kind, subjectUserId: params.kind === "user" ? params.subjectUserId ?? null : null, credentialSecretRefs: [secretRef], custodyMode: claim.custodyMode, serviceGrantRef, tokenMeta: claim.tokenMeta });
+      await input.store.clearClaimState({ companyId: params.companyId, connectionId: params.connectionId, claimCodeHash });
       return { grantId: grant.id, custodyMode: claim.custodyMode, tokenMeta: claim.tokenMeta };
     },
     async registerRelay(params: { companyId: string; connectionId: string; providerSlug: string; intakeUrls: string[] }) {

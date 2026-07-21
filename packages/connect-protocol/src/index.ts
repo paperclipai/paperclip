@@ -253,8 +253,9 @@ export async function verifyRequestEnvelope(input: {
 export function createRelaySignature(input: {
   body: Uint8Array;
   relaySecret: Uint8Array;
+  timestamp: string;
 }): string {
-  return `v1=${createHmac("sha256", input.relaySecret).update(input.body).digest("hex")}`;
+  return `v1=${createHmac("sha256", input.relaySecret).update(input.timestamp).update(".").update(input.body).digest("hex")}`;
 }
 
 export function verifyRelaySignature(input: {

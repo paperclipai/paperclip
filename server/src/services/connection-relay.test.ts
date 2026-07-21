@@ -21,25 +21,30 @@ function fixture() {
   return { rawBody, relaySecret };
 }
 
-function store(): ConnectionRelayStore & { deliveries: Set<string>; statuses: string[] } {
+function store(): ConnectionRelayStore & { deliveries: Set<string>; statuses: string[]; completedTriggerIds: Set<string> } {
   const deliveries = new Set<string>();
   const statuses: string[] = [];
+  const completedTriggerIds = new Set<string>();
   return {
     deliveries,
     statuses,
+    completedTriggerIds,
     async findConnectionByPublicRef(publicRef) {
       return publicRef === "cn_01K0EXAMPLE" ? { id: "connection-1", companyId: "company-1", enabled: true } : null;
     },
-    async createDeliveryIfAbsent({ envelope }) {
-      if (deliveries.has(envelope.deliveryId)) return false;
+    async claimDelivery({ envelope }) {
+      if (deliveries.has(envelope.deliveryId)) return { claimed: false, completedTriggerIds: [] };
       deliveries.add(envelope.deliveryId);
-      return true;
+      return { claimed: true, completedTriggerIds: [...completedTriggerIds] };
     },
     async listEnabledTriggers() {
-      return [{ id: "trigger-1", destinationType: "routine", destinationId: "routine-1" }];
+      return [{ id: "trigger-1", companyId: "company-1", destinationType: "routine", destinationId: "routine-1" }];
     },
     async updateDelivery({ status }) {
       statuses.push(status);
+    },
+    async markTriggerCompleted({ triggerId }) {
+      completedTriggerIds.add(triggerId);
     },
   };
 }
@@ -48,7 +53,7 @@ describe("processConnectionRelay", () => {
   it("rejects a forged body before persistence or routing", async () => {
     const relayStore = store();
     const { rawBody, relaySecret } = fixture();
-    const signature = createRelaySignature({ body: rawBody, relaySecret });
+    const signature = createRelaySignature({ body: rawBody, relaySecret, timestamp: "1784657045" });
     const forgedBody = Buffer.from(rawBody.toString("utf8").replace("dl_01K0EXAMPLE", "dl_01K0FORGED0"));
 
     await expect(processConnectionRelay(relayStore, {
@@ -66,7 +71,7 @@ describe("processConnectionRelay", () => {
     const { rawBody, relaySecret } = fixture();
     const input = {
       rawBody,
-      signature: createRelaySignature({ body: rawBody, relaySecret }),
+      signature: createRelaySignature({ body: rawBody, relaySecret, timestamp: "1784657045" }),
       timestamp: "1784657045",
       relaySecret,
       now: new Date("2026-07-21T18:04:05.000Z"),
@@ -90,7 +95,7 @@ describe("processConnectionRelay", () => {
       plugin_worker: async () => {},
     }, {
       rawBody,
-      signature: createRelaySignature({ body: rawBody, relaySecret }),
+      signature: createRelaySignature({ body: rawBody, relaySecret, timestamp: "1784657045" }),
       timestamp: "1784657045",
       relaySecret,
       now: new Date("2026-07-21T18:04:05.000Z"),
@@ -113,13 +118,56 @@ describe("processConnectionRelay", () => {
       plugin_worker: async () => {},
     }, {
       rawBody,
-      signature: createRelaySignature({ body: rawBody, relaySecret }),
+      signature: createRelaySignature({ body: rawBody, relaySecret, timestamp: "1784657045" }),
       timestamp: "1784657045",
       relaySecret,
       now: new Date("2026-07-21T18:04:05.000Z"),
     });
     expect(result.status).toBe("dead_letter");
     expect(relayStore.statuses).toEqual(["forwarded", "dead_letter"]);
+  });
+
+  it("reclaims only a higher failed attempt and resumes after completed triggers", async () => {
+    const { rawBody: firstBody, relaySecret } = fixture();
+    let attempt = 0;
+    let status = "received";
+    const completed = new Set<string>();
+    const retryStore: ConnectionRelayStore = {
+      async findConnectionByPublicRef() { return { id: "connection-1", companyId: "company-1", enabled: true }; },
+      async claimDelivery({ envelope }) {
+        if (attempt === 0 || (status === "failed" && envelope.attempt > attempt)) {
+          attempt = envelope.attempt;
+          status = "received";
+          return { claimed: true, completedTriggerIds: [...completed] };
+        }
+        return { claimed: false, completedTriggerIds: [] };
+      },
+      async listEnabledTriggers() {
+        return [
+          { id: "trigger-1", companyId: "company-1", destinationType: "routine", destinationId: "routine-1" },
+          { id: "trigger-2", companyId: "company-1", destinationType: "routine", destinationId: "routine-2" },
+        ];
+      },
+      async updateDelivery(input) { status = input.status; },
+      async markTriggerCompleted({ triggerId }) { completed.add(triggerId); },
+    };
+    const fired: string[] = [];
+    const dispatcher = {
+      routine: async (trigger: { destinationId: string }) => {
+        fired.push(trigger.destinationId);
+        if (trigger.destinationId === "routine-2" && attempt === 1) throw new Error("temporary failure");
+      },
+      issue_wake: async () => {},
+      plugin_worker: async () => {},
+    };
+    const firstInput = { rawBody: firstBody, signature: createRelaySignature({ body: firstBody, relaySecret, timestamp: "1784657045" }), timestamp: "1784657045", relaySecret, now: new Date("2026-07-21T18:04:05.000Z") };
+    await expect(processAndDispatchConnectionRelay(retryStore, dispatcher, firstInput)).resolves.toMatchObject({ status: "failed" });
+    await expect(processAndDispatchConnectionRelay(retryStore, dispatcher, firstInput)).resolves.toMatchObject({ status: "duplicate" });
+
+    const secondEnvelope = { ...JSON.parse(firstBody.toString("utf8")), attempt: 2 };
+    const secondBody = Buffer.from(JSON.stringify(secondEnvelope));
+    await expect(processAndDispatchConnectionRelay(retryStore, dispatcher, { ...firstInput, rawBody: secondBody, signature: createRelaySignature({ body: secondBody, relaySecret, timestamp: "1784657045" }) })).resolves.toMatchObject({ status: "delivered" });
+    expect(fired).toEqual(["routine-1", "routine-2", "routine-2"]);
   });
 
   it("falls back to long-poll and forwards channel envelopes", async () => {
@@ -204,7 +252,7 @@ describeEmbeddedPostgres("connection relay persistence", () => {
       plugin_worker: async () => {},
     }, {
       rawBody,
-      signature: createRelaySignature({ body: rawBody, relaySecret }),
+      signature: createRelaySignature({ body: rawBody, relaySecret, timestamp: "1784657045" }),
       timestamp: "1784657045",
       relaySecret,
       now: new Date("2026-07-21T18:04:05.000Z"),

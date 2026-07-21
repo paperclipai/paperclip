@@ -54,7 +54,7 @@ describe("connect protocol", () => {
   it("rejects a forged relay envelope signature", () => {
     const body = Buffer.from('{"deliveryId":"dl_1"}');
     const relaySecret = randomBytes(32);
-    const signature = createRelaySignature({ body, relaySecret });
+    const signature = createRelaySignature({ body, relaySecret, timestamp: "1784656800" });
     const forgedBody = Buffer.from('{"deliveryId":"dl_2"}');
     expect(verifyRelaySignature({
       body: forgedBody,
@@ -71,16 +71,28 @@ describe("connect protocol", () => {
     expect(verifyRelaySignature({
       body,
       relaySecret,
-      signature: createRelaySignature({ body, relaySecret }),
+      signature: createRelaySignature({ body, relaySecret, timestamp: "1784656200" }),
       timestamp: "1784656200",
       now: new Date("2026-07-21T18:00:00.000Z"),
+    })).toBe(false);
+  });
+
+  it("binds relay signatures to the timestamp", () => {
+    const body = Buffer.from("payload");
+    const relaySecret = randomBytes(32);
+    expect(verifyRelaySignature({
+      body,
+      relaySecret,
+      signature: createRelaySignature({ body, relaySecret, timestamp: "1784656800" }),
+      timestamp: "1784656801",
+      now: new Date("2026-07-21T18:00:01.000Z"),
     })).toBe(false);
   });
 
   it("verifies the pinned webhook profile", () => {
     const rawBody = Buffer.from('{"type":"deployment.created"}');
     const secret = "vercel-webhook-secret";
-    const signature = createRelaySignature({ body: rawBody, relaySecret: Buffer.from(secret) }).slice(3);
+    const signature = createHmac("sha256", secret).update(rawBody).digest("hex");
     expect(verifyProviderWebhook({
       profile: { profile: "vercel@1", scheme: "hmac-sha256", signatureHeader: "x-vercel-signature", encoding: "hex", prefix: "" },
       rawBody,

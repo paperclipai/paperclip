@@ -46,12 +46,17 @@ function fixture(mode: "A" | "B2" = "A") {
     },
   };
   const client = createSignedConnectBrokerClient({ instanceId: INSTANCE_ID, keyId: "key-1", privateKey, transport });
+  const claimStates = new Map<string, { claim: Awaited<ReturnType<typeof client.claim>> }>();
   const store: ConnectionBrokerStore = {
     saveGrant: async (input) => { saved.push(input); return { id: "grant-local" }; },
     registerRelay: async () => undefined,
+    assertActiveUserMembership: async () => undefined,
+    loadClaimState: async ({ claimCodeHash }) => claimStates.get(claimCodeHash) ?? null,
+    saveClaimState: async ({ claimCodeHash, claim }) => { claimStates.set(claimCodeHash, { claim }); },
+    clearClaimState: async ({ claimCodeHash }) => { claimStates.delete(claimCodeHash); },
   };
   const service = connectionBrokerService({ client, store, enabled: true, vault: { put: async (input) => { secrets.push(input); return { secretId: `secret-${input.purpose}`, versionSelector: "latest", configPath: `broker.${input.purpose}`, required: true, label: input.purpose }; } } });
-  return { service, saved, secrets, claims, transport, getCapturedEnvelope: () => capturedEnvelope };
+  return { service, client, store, saved, secrets, claims, claimStates, transport, getCapturedEnvelope: () => capturedEnvelope };
 }
 
 describe("connection broker", () => {
@@ -92,5 +97,37 @@ describe("connection broker", () => {
     const f = fixture();
     const disabled = connectionBrokerService({ client: (f.service as never), store: {} as never, vault: {} as never });
     await expect(disabled.startOAuth({})).rejects.toEqual(new ConnectServiceResponseError(403, "mode_not_allowed"));
+  });
+
+  it("resumes locally after the remote claim succeeds but vault persistence fails", async () => {
+    const f = fixture("B2");
+    let failVault = true;
+    const service = connectionBrokerService({
+      client: f.client,
+      store: f.store,
+      enabled: true,
+      vault: { put: async (input) => {
+        if (failVault) { failVault = false; throw new Error("vault unavailable"); }
+        return { secretId: "secret-grant", versionSelector: "latest", configPath: "broker.grant", required: true, label: input.purpose };
+      } },
+    });
+    const params = { companyId: "company", connectionId: CONNECTION_ID, claimCode: "claim-code-at-least-22-chars", kind: "workspace" as const };
+    await expect(service.claimOAuth(params)).rejects.toThrow("vault unavailable");
+    expect(f.claims.get(params.claimCode)?.consumed).toBe(true);
+    expect(f.claimStates.size).toBe(1);
+    await expect(service.claimOAuth(params)).resolves.toMatchObject({ custodyMode: "B2" });
+    expect(f.claimStates.size).toBe(0);
+  });
+
+  it("rejects user grants before consuming a claim when membership is inactive", async () => {
+    const f = fixture();
+    const service = connectionBrokerService({
+      client: f.client,
+      store: { ...f.store, assertActiveUserMembership: async () => { throw new ConnectServiceResponseError(403, "user_not_company_member"); } },
+      enabled: true,
+      vault: { put: async () => { throw new Error("unreachable"); } },
+    });
+    await expect(service.claimOAuth({ companyId: "company", connectionId: CONNECTION_ID, claimCode: "claim-code-at-least-22-chars", kind: "user", subjectUserId: "user-1" })).rejects.toMatchObject({ status: 403, code: "user_not_company_member" });
+    expect(f.claims.get("claim-code-at-least-22-chars")?.consumed).toBe(false);
   });
 });

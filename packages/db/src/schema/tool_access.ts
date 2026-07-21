@@ -180,6 +180,7 @@ export const connectionTriggerDeliveries = pgTable(
     status: text("status").$type<"received" | "forwarded" | "delivered" | "failed" | "dead_letter">().notNull().default("received"),
     attempt: integer("attempt").notNull().default(1),
     envelope: jsonb("envelope").$type<Record<string, unknown>>().notNull(),
+    completedTriggerIds: jsonb("completed_trigger_ids").$type<string[]>().notNull().default([]),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
     forwardedAt: timestamp("forwarded_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
