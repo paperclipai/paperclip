@@ -24,7 +24,7 @@ jobs:
       matrix:
         include:
           - label: async-image-jobs-implementation
-            sha: 52e5452d057b760f5f041ffe1201b8992f750d85
+            sha: d51a25c8c4206664bd1c1e860b5668db2434b1ef
 
     steps:
       - name: Checkout immutable source
