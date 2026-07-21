@@ -56,6 +56,7 @@ export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
 export { issueAttachments } from "./issue_attachments.js";
+export { issueImageGenerationJobs } from "./issue_image_generation_jobs.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
 export { issueDocuments } from "./issue_documents.js";

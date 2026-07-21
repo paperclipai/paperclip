@@ -66,6 +66,7 @@ import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
+import { createIssueImageGenerationJobService } from "./services/issue-image-generation-jobs.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
@@ -185,6 +186,7 @@ export async function createApp(
 
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  const issueImageGenerationJobs = createIssueImageGenerationJobService(db, opts.storageService);
 
   // Mount API routes
   const api = Router();
@@ -210,6 +212,7 @@ export async function createApp(
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
+    issueImageGenerationJobs,
   }));
   api.use(issueTreeControlRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
@@ -424,6 +427,7 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+  issueImageGenerationJobs.start();
   const feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
       void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {
@@ -460,6 +464,7 @@ export async function createApp(
   });
   process.once("exit", () => {
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
+    issueImageGenerationJobs.stop();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();

@@ -117,6 +117,7 @@ const addCommentToolSchema = z.object({
 const generateIssueImageToolSchema = z.object({
   issueId: issueIdSchema,
   prompt: z.string().trim().min(1).max(12000),
+  idempotencyKey: z.string().trim().min(1).max(255).optional(),
   referenceImageAttachmentIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional(),
   referenceImageAssetIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional(),
   size: z.string().trim().min(1).max(64).optional().default("1024x1024"),
@@ -554,8 +555,31 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipGenerateIssueImage",
       `Generate one audited PNG issue attachment with gpt-image-2. Use this tool instead of generic imagegen whenever the board says an attachment/photo must be a real visual reference. Pass issue attachment ids in referenceImageAttachmentIds or inline /api/assets ids in referenceImageAssetIds. Up to ${PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS} unique reference images can be bound in one generation; name each image's role in the prompt. For board reference-fidelity requests, Paperclip also auto-binds board-linked image attachments/assets and refuses prompt-only completion. The response must show generationMode=reference_backed and non-empty actualImageInputsBound before review. Paperclip downloads and validates the files, passes them to Codex with --image, and stores a JSON audit attachment. Common sizes include 1024x1024, 1024x1536, 1536x1024, or a requested production size like 1080x1350. quality must be auto, low, medium, or high.`,
       generateIssueImageToolSchema,
-      async ({ issueId, ...body }) =>
-        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/image-generations`, { body }),
+      async ({ issueId, ...body }) => {
+        const accepted = await client.requestJson<{
+          jobId: string;
+          status: string;
+          idempotencyKey: string;
+          statusUrl: string;
+          createdAt: string;
+          updatedAt: string;
+        }>("POST", `/issues/${encodeURIComponent(issueId)}/image-generations`, { body });
+        const terminalStatuses = new Set(["succeeded", "failed"]);
+        let latest: Record<string, unknown> = accepted;
+        for (let attempt = 0; attempt < 30; attempt++) {
+          if (typeof latest.status === "string" && terminalStatuses.has(latest.status)) break;
+          await sleep(2_000);
+          latest = await client.requestJson<Record<string, unknown>>("GET", accepted.statusUrl, {
+            includeRunId: false,
+          });
+        }
+        return {
+          enqueue: accepted,
+          final: latest,
+          polled: latest !== accepted,
+          terminal: typeof latest.status === "string" && terminalStatuses.has(latest.status),
+        };
+      },
     ),
     makeTool(
       "paperclipSuggestTasks",

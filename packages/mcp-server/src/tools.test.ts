@@ -135,23 +135,40 @@ describe("paperclip MCP tools", () => {
   });
 
   it("generates issue images through the gpt-image-2 Paperclip endpoint", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      mockJsonResponse({
-        model: "gpt-image-2",
-        generationMode: "reference_backed",
-        actualImageInputsBound: ["2d8a654e-2ece-43cf-9000-ab0fe254e1a6"],
-      }, 201),
-    );
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        mockJsonResponse({
+          jobId: "job-1",
+          status: "queued",
+          idempotencyKey: "idem-1",
+          statusUrl: "/issues/SIX-3560/image-generations/job-1",
+          createdAt: "2026-07-21T08:50:00.000Z",
+          updatedAt: "2026-07-21T08:50:00.000Z",
+        }, 202),
+      )
+      .mockResolvedValueOnce(
+        mockJsonResponse({
+          jobId: "job-1",
+          status: "succeeded",
+          terminalAudit: {
+            generationMode: "reference_backed",
+            actualImageInputsBound: ["2d8a654e-2ece-43cf-9000-ab0fe254e1a6"],
+          },
+        }),
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     const tool = getTool("paperclipGenerateIssueImage");
-    await tool.execute({
+    const executePromise = tool.execute({
       issueId: "SIX-3560",
       prompt: "Generate a cafe founder carousel image.",
       referenceImageAttachmentIds: ["2d8a654e-2ece-43cf-9000-ab0fe254e1a6"],
       size: "1080x1350",
       quality: "high",
     });
+    await vi.runAllTimersAsync();
+    const response = await executePromise;
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(String(url)).toBe("http://localhost:3100/api/issues/SIX-3560/image-generations");
@@ -163,15 +180,31 @@ describe("paperclip MCP tools", () => {
       quality: "high",
       model: "gpt-image-2",
     });
+    const [statusUrl, statusInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(String(statusUrl)).toBe("http://localhost:3100/api/issues/SIX-3560/image-generations/job-1");
+    expect(statusInit.method).toBe("GET");
+    expect(response.content[0]?.text).toContain("\"terminal\": true");
+    vi.useRealTimers();
   });
 
   it("allows 16 image references and rejects a seventeenth before calling Paperclip", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      mockJsonResponse({
-        model: "gpt-image-2",
-        generationMode: "reference_backed",
-      }, 201),
-    );
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        mockJsonResponse({
+          jobId: "job-2",
+          status: "queued",
+          idempotencyKey: "idem-2",
+          statusUrl: "/issues/SIX-3832/image-generations/job-2",
+        }, 202),
+      )
+      .mockResolvedValueOnce(
+        mockJsonResponse({
+          jobId: "job-2",
+          status: "succeeded",
+          terminalAudit: { generationMode: "reference_backed" },
+        }),
+      );
     vi.stubGlobal("fetch", fetchMock);
     const referenceIds = Array.from(
       { length: 17 },
@@ -179,13 +212,15 @@ describe("paperclip MCP tools", () => {
     );
     const tool = getTool("paperclipGenerateIssueImage");
 
-    await tool.execute({
+    const executePromise = tool.execute({
       issueId: "SIX-3832",
       prompt: "Use every supplied image according to its named role.",
       referenceImageAttachmentIds: referenceIds.slice(0, 16),
     });
+    await vi.runAllTimersAsync();
+    await executePromise;
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body)).referenceImageAttachmentIds).toHaveLength(16);
 
@@ -195,26 +230,35 @@ describe("paperclip MCP tools", () => {
       referenceImageAttachmentIds: referenceIds,
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(rejected.content[0]?.text).toContain("at most 16");
+    vi.useRealTimers();
   });
 
   it("leaves reference arrays absent when the caller did not select inputs", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      mockJsonResponse({ model: "gpt-image-2", generationMode: "reference_backed" }, 201),
-    );
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        mockJsonResponse({ jobId: "job-3", status: "queued", idempotencyKey: "idem-3", statusUrl: "/issues/SIX-3832/image-generations/job-3" }, 202),
+      )
+      .mockResolvedValueOnce(
+        mockJsonResponse({ jobId: "job-3", status: "succeeded", terminalAudit: { generationMode: "reference_backed" } }),
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     const tool = getTool("paperclipGenerateIssueImage");
-    await tool.execute({
+    const executePromise = tool.execute({
       issueId: "SIX-3832",
       prompt: "Use the board-linked reference images when required.",
     });
+    await vi.runAllTimersAsync();
+    await executePromise;
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(String(init.body));
     expect(body).not.toHaveProperty("referenceImageAttachmentIds");
     expect(body).not.toHaveProperty("referenceImageAssetIds");
+    vi.useRealTimers();
   });
 
   it("controls issue workspace services through the current execution workspace", async () => {

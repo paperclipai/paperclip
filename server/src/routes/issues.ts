@@ -1,14 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import sharp from "sharp";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { asc, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents as agentRows,
-  assets as assetRows,
   executionWorkspaces,
   heartbeatRuns as heartbeatRunRows,
   issueExecutionDecisions,
@@ -88,7 +86,6 @@ import {
   logActivity,
   projectService,
   routineService,
-  resolveAllCredentialEnv,
   webPushService,
   workProductService,
   type VisibilityPrincipal,
@@ -118,17 +115,12 @@ import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
-import {
-  generateOpenAiIssueImage,
-  PAPERCLIP_IMAGE_MODEL,
-  streamToBuffer,
-  type ImageReferenceInput,
-} from "../services/openai-image-generation.js";
-import { generateCodexIssueImage } from "../services/codex-image-generation.js";
+import { PAPERCLIP_IMAGE_MODEL } from "../services/openai-image-generation.js";
 import {
   hasReferenceBackedImageGenerationEvidence,
   resolveIssueImageReferenceGuardrail,
 } from "../services/image-reference-guardrails.js";
+import { createIssueImageGenerationJobService, parseRequestedImageSize } from "../services/issue-image-generation-jobs.js";
 import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
@@ -185,11 +177,6 @@ const SUPPORTED_REFERENCE_IMAGE_TYPES = new Set([
   "image/jpg",
   "image/webp",
 ]);
-
-type IssueImageProvider = "codex_native" | "openai";
-const MAX_REFERENCE_IMAGE_BYTES = 25 * 1024 * 1024;
-const MAX_GENERATED_IMAGE_DIMENSION = 8192;
-const GENERATED_IMAGE_ASPECT_RATIO_TOLERANCE = 0.02;
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -1575,6 +1562,7 @@ export function issueRoutes(
       attemptCount: number;
       mutation: "accept" | "resolve";
     }) => Promise<void> | void;
+    issueImageGenerationJobs?: ReturnType<typeof createIssueImageGenerationJobService>;
   } = {},
 ) {
   const router = Router();
@@ -1620,6 +1608,7 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+  const imageGenerationJobs = opts.issueImageGenerationJobs ?? createIssueImageGenerationJobService(db, storage);
   function withContentPath<T extends { id: string }>(attachment: T) {
     return {
       ...attachment,
@@ -1627,239 +1616,8 @@ export function issueRoutes(
     };
   }
 
-  function isSupportedReferenceImageContentType(contentType: string) {
-    return SUPPORTED_REFERENCE_IMAGE_TYPES.has(normalizeContentType(contentType));
-  }
-
   function uniqueIds(ids: string[]) {
     return Array.from(new Set(ids));
-  }
-
-  function generatedImageFilename(input: string | undefined) {
-    return input?.trim() || `paperclip-generated-${Date.now()}.png`;
-  }
-
-  function resolveIssueImageProvider(): IssueImageProvider {
-    const configured = (process.env.PAPERCLIP_IMAGE_PROVIDER ?? process.env.PAPERCLIP_IMAGE_BACKEND ?? "")
-      .trim()
-      .toLowerCase();
-    if (configured === "openai") return "openai";
-    if (configured === "codex" || configured === "codex_native" || configured === "codex-native") return "codex_native";
-    return "codex_native";
-  }
-
-  function parseRequestedImageSize(size: string) {
-    const match = /^(\d{1,5})x(\d{1,5})$/i.exec(size.trim());
-    if (!match) {
-      throw unprocessable("Image generation size must be an exact WxH pixel size, for example 1080x1350");
-    }
-    const width = Number(match[1]);
-    const height = Number(match[2]);
-    if (
-      !Number.isSafeInteger(width) ||
-      !Number.isSafeInteger(height) ||
-      width <= 0 ||
-      height <= 0 ||
-      width > MAX_GENERATED_IMAGE_DIMENSION ||
-      height > MAX_GENERATED_IMAGE_DIMENSION
-    ) {
-      throw unprocessable(`Image generation size must be between 1 and ${MAX_GENERATED_IMAGE_DIMENSION} pixels per side`);
-    }
-    return { width, height };
-  }
-
-  function pngHasExplicitColorSpaceEvidence(bytes: Buffer) {
-    return ["sRGB", "iCCP", "gAMA", "cHRM"].some((chunkName) => bytes.includes(Buffer.from(chunkName, "ascii")));
-  }
-
-  async function normalizeGeneratedImageOutput(input: {
-    bytes: Buffer;
-    requestedSize: { width: number; height: number };
-  }) {
-    const providerMetadata = await sharp(input.bytes).metadata().catch(() => null);
-    if (!providerMetadata?.width || !providerMetadata.height) {
-      throw unprocessable("Image generation returned an unreadable image");
-    }
-
-    const requestedRatio = input.requestedSize.width / input.requestedSize.height;
-    const providerRatio = providerMetadata.width / providerMetadata.height;
-    const needsResize =
-      providerMetadata.width !== input.requestedSize.width ||
-      providerMetadata.height !== input.requestedSize.height;
-    if (needsResize && Math.abs(providerRatio - requestedRatio) > GENERATED_IMAGE_ASPECT_RATIO_TOLERANCE) {
-      throw unprocessable(
-        `Image generation returned ${providerMetadata.width}x${providerMetadata.height}, which cannot be safely normalized to requested ${input.requestedSize.width}x${input.requestedSize.height}`,
-      );
-    }
-
-    const finalBytes = await sharp(input.bytes)
-      .resize({
-        width: input.requestedSize.width,
-        height: input.requestedSize.height,
-        fit: "fill",
-      })
-      .toColorspace("srgb")
-      .withMetadata({ icc: "srgb" })
-      .png()
-      .toBuffer();
-    const finalMetadata = await sharp(finalBytes).metadata();
-    if (finalMetadata.width !== input.requestedSize.width || finalMetadata.height !== input.requestedSize.height) {
-      throw unprocessable(
-        `Image output normalization failed: expected ${input.requestedSize.width}x${input.requestedSize.height}, got ${finalMetadata.width ?? "unknown"}x${finalMetadata.height ?? "unknown"}`,
-      );
-    }
-    if (!pngHasExplicitColorSpaceEvidence(finalBytes)) {
-      throw unprocessable("Image output normalization failed to embed explicit sRGB color-space evidence");
-    }
-
-    return {
-      bytes: finalBytes,
-      contentType: "image/png" as const,
-      providerDimensions: {
-        width: providerMetadata.width,
-        height: providerMetadata.height,
-      },
-      finalDimensions: {
-        width: finalMetadata.width,
-        height: finalMetadata.height,
-      },
-      providerColorSpace: providerMetadata.space ?? null,
-      finalColorSpace: finalMetadata.space ?? null,
-      finalColorProfileBytes: finalMetadata.icc?.length ?? 0,
-      finalPngColorSpaceEvidence: {
-        sRGB: finalBytes.includes(Buffer.from("sRGB", "ascii")),
-        iCCP: finalBytes.includes(Buffer.from("iCCP", "ascii")),
-        gAMA: finalBytes.includes(Buffer.from("gAMA", "ascii")),
-        cHRM: finalBytes.includes(Buffer.from("cHRM", "ascii")),
-      },
-      resized: needsResize,
-    };
-  }
-
-  async function createIssueGeneratedAttachment(input: {
-    issueId: string;
-    companyId: string;
-    actor: ReturnType<typeof getActorInfo>;
-    namespace: string;
-    originalFilename: string;
-    contentType: string;
-    body: Buffer;
-  }) {
-    const stored = await storage.putFile({
-      companyId: input.companyId,
-      namespace: input.namespace,
-      originalFilename: input.originalFilename,
-      contentType: input.contentType,
-      body: input.body,
-    });
-
-    return svc.createAttachment({
-      issueId: input.issueId,
-      issueCommentId: null,
-      provider: stored.provider,
-      objectKey: stored.objectKey,
-      contentType: stored.contentType,
-      byteSize: stored.byteSize,
-      sha256: stored.sha256,
-      originalFilename: stored.originalFilename,
-      createdByAgentId: input.actor.agentId,
-      createdByUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
-    });
-  }
-
-  async function loadImageReferences(input: {
-    issueId: string;
-    companyId: string;
-    attachmentIds: string[];
-    assetIds: string[];
-    allowedIssueIds: string[];
-  }): Promise<ImageReferenceInput[]> {
-    const references: ImageReferenceInput[] = [];
-    const allowedIssueIds = new Set(input.allowedIssueIds.length > 0 ? input.allowedIssueIds : [input.issueId]);
-    for (const attachmentId of input.attachmentIds) {
-      const attachment = await svc.getAttachmentById(attachmentId);
-      if (!attachment) {
-        throw notFound(`Reference image attachment not found: ${attachmentId}`);
-      }
-      if (attachment.companyId !== input.companyId || !allowedIssueIds.has(attachment.issueId)) {
-        throw unprocessable(`Reference image attachment does not belong to this issue or its parent chain: ${attachmentId}`);
-      }
-      if (attachment.byteSize && attachment.byteSize > MAX_REFERENCE_IMAGE_BYTES) {
-        throw unprocessable(`Reference image attachment exceeds ${MAX_REFERENCE_IMAGE_BYTES} bytes: ${attachmentId}`);
-      }
-
-      const object = await storage.getObject(attachment.companyId, attachment.objectKey);
-      const contentType = normalizeContentType(attachment.contentType || object.contentType);
-      if (!isSupportedReferenceImageContentType(contentType)) {
-        throw unprocessable(`Reference attachment must be PNG, JPEG, or WEBP: ${attachmentId}`);
-      }
-
-      const bytes = await streamToBuffer(object.stream);
-      if (bytes.length <= 0) {
-        throw unprocessable(`Reference image attachment is empty: ${attachmentId}`);
-      }
-      if (bytes.length > MAX_REFERENCE_IMAGE_BYTES) {
-        throw unprocessable(`Reference image attachment exceeds ${MAX_REFERENCE_IMAGE_BYTES} bytes: ${attachmentId}`);
-      }
-
-      references.push({
-        attachmentId,
-        sourceKind: "attachment",
-        sourceId: attachmentId,
-        assetId: attachment.assetId,
-        sha256: attachment.sha256,
-        filename: attachment.originalFilename,
-        contentType,
-        bytes,
-      });
-    }
-
-    for (const assetId of input.assetIds) {
-      const asset = await db
-        .select()
-        .from(assetRows)
-        .where(and(eq(assetRows.id, assetId), eq(assetRows.companyId, input.companyId)))
-        .then((rows) => rows[0] ?? null);
-      if (!asset) {
-        throw notFound(`Reference image asset not found: ${assetId}`);
-      }
-      if (asset.byteSize && asset.byteSize > MAX_REFERENCE_IMAGE_BYTES) {
-        throw unprocessable(`Reference image asset exceeds ${MAX_REFERENCE_IMAGE_BYTES} bytes: ${assetId}`);
-      }
-
-      const object = await storage.getObject(asset.companyId, asset.objectKey);
-      const contentType = normalizeContentType(asset.contentType || object.contentType);
-      if (!isSupportedReferenceImageContentType(contentType)) {
-        throw unprocessable(`Reference asset must be PNG, JPEG, or WEBP: ${assetId}`);
-      }
-      const bytes = await streamToBuffer(object.stream);
-      if (bytes.length <= 0) {
-        throw unprocessable(`Reference image asset is empty: ${assetId}`);
-      }
-      if (bytes.length > MAX_REFERENCE_IMAGE_BYTES) {
-        throw unprocessable(`Reference image asset exceeds ${MAX_REFERENCE_IMAGE_BYTES} bytes: ${assetId}`);
-      }
-
-      references.push({
-        // Keep attachmentId populated for compatibility with image providers
-        // that predate inline issue assets as direct reference inputs.
-        attachmentId: assetId,
-        sourceKind: "asset",
-        sourceId: assetId,
-        assetId,
-        sha256: asset.sha256,
-        filename: asset.originalFilename,
-        contentType,
-        bytes,
-      });
-    }
-
-    const deduped = new Map<string, ImageReferenceInput>();
-    for (const reference of references) {
-      const key = reference.sha256?.trim() || `${reference.contentType}:${reference.sourceKind}:${reference.sourceId}`;
-      if (!deduped.has(key)) deduped.set(key, reference);
-    }
-    return [...deduped.values()];
   }
 
   function parseBooleanQuery(value: unknown) {
@@ -7645,7 +7403,7 @@ export function issueRoutes(
   router.post("/issues/:id/image-generations", validate(generateIssueImageSchema), async (req, res) => {
     const id = req.params.id as string;
     const body = req.body as z.infer<typeof generateIssueImageSchema>;
-    const requestedSize = parseRequestedImageSize(body.size);
+    parseRequestedImageSize(body.size);
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -7677,150 +7435,135 @@ export function issueRoutes(
       ...requestedReferenceImageAssetIds,
       ...autoBoundReferenceImageAssetIds,
     ]);
-    const references = await loadImageReferences({
-      issueId: issue.id,
-      companyId: issue.companyId,
-      attachmentIds: effectiveReferenceImageAttachmentIds,
-      assetIds: effectiveReferenceImageAssetIds,
-      allowedIssueIds: referenceGuardrail.issueScopeIds,
-    });
-
-    if (
-      (effectiveReferenceImageAttachmentIds.length > 0 || effectiveReferenceImageAssetIds.length > 0) &&
-      references.length === 0
-    ) {
-      throw unprocessable("No reference image attachment or asset could be bound");
-    }
-    if (references.length > PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS) {
+    const effectiveReferenceCount =
+      effectiveReferenceImageAttachmentIds.length + effectiveReferenceImageAssetIds.length;
+    if (effectiveReferenceCount > PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS) {
       throw unprocessable(
         `At most ${PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS} unique image reference inputs can be bound; select the exact required references explicitly`,
       );
     }
-    if (referenceGuardrail.required && references.length === 0) {
+    if (
+      referenceGuardrail.required &&
+      effectiveReferenceImageAttachmentIds.length === 0 &&
+      effectiveReferenceImageAssetIds.length === 0
+    ) {
       throw unprocessable(
         "The board required an actual image reference, but no usable image attachment or inline asset could be bound. Do not continue with prompt-only generation.",
         { code: "image_reference_required_but_unavailable" },
       );
     }
 
-    const imageProvider = resolveIssueImageProvider();
-    const credentialResolution = imageProvider === "openai" && actor.agentId
-      ? await resolveAllCredentialEnv(db, actor.agentId)
-      : { env: {} as Record<string, string> };
-
-    const generated = imageProvider === "openai"
-      ? await generateOpenAiIssueImage({
-          prompt: body.prompt,
-          size: body.size,
-          quality: body.quality,
-          references,
-          apiKey: credentialResolution.env.OPENAI_API_KEY,
-        })
-      : await generateCodexIssueImage({
-          prompt: body.prompt,
-          size: body.size,
-          quality: body.quality,
-          references,
-          companyId: issue.companyId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-        });
-    const normalizedOutput = await normalizeGeneratedImageOutput({
-      bytes: generated.outputBytes,
-      requestedSize,
-    });
-
-    const outputAttachment = await createIssueGeneratedAttachment({
-      issueId: issue.id,
-      companyId: issue.companyId,
-      actor,
-      namespace: `issues/${issue.id}/generated-images`,
-      originalFilename: generatedImageFilename(body.outputFilename),
-      contentType: normalizedOutput.contentType,
-      body: normalizedOutput.bytes,
-    });
-
-    const audit = {
-      generatedAt: new Date().toISOString(),
-      provider: imageProvider,
-      endpoint: generated.endpoint,
-      model: generated.model,
+    const exactReferenceRoles = [
+      ...requestedReferenceImageAttachmentIds.map((sourceId) => ({
+        sourceKind: "attachment" as const,
+        sourceId,
+        binding: "explicit" as const,
+      })),
+      ...requestedReferenceImageAssetIds.map((sourceId) => ({
+        sourceKind: "asset" as const,
+        sourceId,
+        binding: "explicit" as const,
+      })),
+      ...autoBoundReferenceImageAttachmentIds.map((sourceId) => ({
+        sourceKind: "attachment" as const,
+        sourceId,
+        binding: "auto_discovered" as const,
+      })),
+      ...autoBoundReferenceImageAssetIds.map((sourceId) => ({
+        sourceKind: "asset" as const,
+        sourceId,
+        binding: "auto_discovered" as const,
+      })),
+    ];
+    const idempotencyKeyHeader = req.header("Idempotency-Key")?.trim();
+    const idempotencyKey = idempotencyKeyHeader && idempotencyKeyHeader.length > 0
+      ? idempotencyKeyHeader
+      : randomUUID();
+    const requestFingerprint = JSON.stringify({
       prompt: body.prompt,
       size: body.size,
       quality: body.quality,
-      boardReferenceIntentDetected: referenceGuardrail.required,
-      referenceGuardrailApplied: referenceGuardrail.required,
+      model: body.model,
+      outputFilename: body.outputFilename ?? null,
       requestedReferenceImageAttachmentIds,
       requestedReferenceImageAssetIds,
       autoBoundReferenceImageAttachmentIds,
       autoBoundReferenceImageAssetIds,
-      actualImageInputsBound: generated.actualImageInputsBound,
-      generationMode: generated.generationMode,
-      promptOnly: generated.generationMode === "prompt_only",
-      outputAttachmentId: outputAttachment.id,
-      outputContentType: normalizedOutput.contentType,
-      outputByteSize: normalizedOutput.bytes.length,
-      providerOutputDimensions: normalizedOutput.providerDimensions,
-      outputDimensions: normalizedOutput.finalDimensions,
-      outputNormalized: normalizedOutput.resized,
-      providerColorSpace: normalizedOutput.providerColorSpace,
-      outputColorSpace: normalizedOutput.finalColorSpace,
-      outputColorProfileBytes: normalizedOutput.finalColorProfileBytes,
-      outputPngColorSpaceEvidence: normalizedOutput.finalPngColorSpaceEvidence,
-      providerRequestId: generated.providerRequestId,
-      codexThreadId: "codexThreadId" in generated ? generated.codexThreadId : null,
-      codexOutputPath: "codexOutputPath" in generated ? generated.codexOutputPath : null,
-      referenceImageInputs: references.map((reference) => ({
-        sourceKind: reference.sourceKind ?? "attachment",
-        sourceId: reference.sourceId ?? reference.attachmentId,
-        attachmentId: reference.sourceKind === "asset" ? null : reference.attachmentId,
-        assetId: reference.assetId ?? null,
-        sha256: reference.sha256 ?? null,
-        filename: reference.filename,
-        contentType: reference.contentType,
-        byteSize: reference.bytes.length,
-      })),
-    };
-
-    const auditAttachment = await createIssueGeneratedAttachment({
-      issueId: issue.id,
-      companyId: issue.companyId,
-      actor,
-      namespace: `issues/${issue.id}/generated-images/audits`,
-      originalFilename: `paperclip-image-audit-${Date.now()}.json`,
-      contentType: "application/json",
-      body: Buffer.from(JSON.stringify(audit, null, 2), "utf8"),
+      issueScopeIds: referenceGuardrail.issueScopeIds,
     });
-
-    await logActivity(db, {
+    const job = await imageGenerationJobs.enqueue({
       companyId: issue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.image_generation_created",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        provider: imageProvider,
-        model: generated.model,
-        generationMode: generated.generationMode,
+      issueId: issue.id,
+      idempotencyKey,
+      actor,
+      request: {
+        prompt: body.prompt,
+        size: body.size,
+        quality: body.quality,
+        model: body.model,
+        outputFilename: body.outputFilename,
+      },
+      requestFingerprint,
+      referenceSnapshot: {
         boardReferenceIntentDetected: referenceGuardrail.required,
         referenceGuardrailApplied: referenceGuardrail.required,
         requestedReferenceImageAttachmentIds,
         requestedReferenceImageAssetIds,
         autoBoundReferenceImageAttachmentIds,
         autoBoundReferenceImageAssetIds,
-        actualImageInputsBound: generated.actualImageInputsBound,
-        outputAttachmentId: outputAttachment.id,
-        auditAttachmentId: auditAttachment.id,
+        effectiveReferenceImageAttachmentIds,
+        effectiveReferenceImageAssetIds,
+        allowedIssueIds: referenceGuardrail.issueScopeIds,
+        exactReferenceRoles,
       },
     });
 
-    res.status(201).json({
-      ...audit,
-      outputAttachment: withContentPath(outputAttachment),
-      auditAttachment: withContentPath(auditAttachment),
+    res.status(202).json({
+      jobId: job.id,
+      status: job.status,
+      idempotencyKey: job.idempotencyKey,
+      statusUrl: `/api/issues/${encodeURIComponent(issue.id)}/image-generations/${encodeURIComponent(job.id)}`,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+    });
+  });
+
+  router.get("/issues/:id/image-generations/:jobId", async (req, res) => {
+    const issueId = req.params.id as string;
+    const jobId = req.params.jobId as string;
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await gateIssueVisibility(req, res, issue))) return;
+    const job = await imageGenerationJobs.getById({ issueId: issue.id, jobId });
+    if (!job) {
+      res.status(404).json({ error: "Image generation job not found" });
+      return;
+    }
+    const outputAttachment = job.outputAttachmentId ? await svc.getAttachmentById(job.outputAttachmentId) : null;
+    const auditAttachment = job.auditAttachmentId ? await svc.getAttachmentById(job.auditAttachmentId) : null;
+    res.json({
+      jobId: job.id,
+      status: job.status,
+      idempotencyKey: job.idempotencyKey,
+      attemptCount: job.attemptCount,
+      lastError: job.lastError,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      finishedAt: job.finishedAt,
+      request: {
+        size: job.request.size,
+        quality: job.request.quality,
+        model: job.request.model,
+        outputFilename: job.request.outputFilename ?? null,
+      },
+      referenceSnapshot: job.referenceSnapshot,
+      terminalAudit: job.terminalAudit,
+      outputAttachment: outputAttachment ? withContentPath(outputAttachment) : null,
+      auditAttachment: auditAttachment ? withContentPath(auditAttachment) : null,
     });
   });
 
