@@ -21,7 +21,7 @@
   "dependencies": {
     "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/language": "^6.12.4",
-    "@codemirror/state": "^6.7.0",
+    "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.1",
     "@lezer/highlight": "^1.2.1",
     "@paperclipai/plugin-sdk": "workspace:*",

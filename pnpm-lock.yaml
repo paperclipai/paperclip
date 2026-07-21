@@ -10,7 +10,7 @@ overrides:
   react-dom: ^19.2.7
   lexical: 0.46.0
   '@lexical/clipboard': 0.46.0
-  '@lexical/link': 0.48.0
+  '@lexical/link': 0.46.0
   '@lexical/list': 0.46.0
   '@lexical/markdown': 0.46.0
   '@lexical/plain-text': 0.46.0
@@ -480,8 +480,8 @@ importers:
         specifier: ^6.12.4
         version: 6.12.4
       '@codemirror/state':
-        specifier: ^6.7.0
-        version: 6.7.0
+        specifier: ^6.7.1
+        version: 6.7.1
       '@codemirror/view':
         specifier: ^6.43.1
         version: 6.43.1
@@ -886,8 +886,8 @@ importers:
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.7)
       '@lexical/link':
-        specifier: 0.48.0
-        version: 0.48.0(typescript@5.9.3)
+        specifier: 0.46.0
+        version: 0.46.0(typescript@5.9.3)
       '@mdxeditor/editor':
         specifier: ^3.55.0
         version: 3.55.0(@codemirror/language@6.12.4)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3)(yjs@13.6.29)
@@ -1635,8 +1635,8 @@ packages:
   '@codemirror/search@6.6.0':
     resolution: {integrity: sha512-koFuNXcDvyyotWcgOnZGmY7LZqEOXZaaxD/j6n18TCLx2/9HieZJ5H6hs1g8FiRxBD0DNfs0nXn17g872RmYdw==}
 
-  '@codemirror/state@6.7.0':
-    resolution: {integrity: sha512-Zbl9NyscLMZkfXPQnNAIIAFftidrA1UbcJEIMp24C0Bukc2I5T8wJS0wsXYsnDOqCFJUeJ1BITGNs5CqPDSmSg==}
+  '@codemirror/state@6.7.1':
+    resolution: {integrity: sha512-9QzNDgE4EYDnAHfrTlR2lwiPciiOymLtwKK+8yHQzCc7GXhAP9xdEbEJFy2IWB1j9UGUl9BsgMmTo/ImA02T7A==}
 
   '@codemirror/view@6.43.1':
     resolution: {integrity: sha512-+BIjw/AG3tDQ4pJgTLPYdAW25eDE66YsvM4LKyVPgGzVgZ4a9Wj1SRX8kPVKgBDdPt8oHtZ15F0qx7p0oOHdHw==}
@@ -2704,14 +2704,6 @@ packages:
       typescript:
         optional: true
 
-  '@lexical/extension@0.48.0':
-    resolution: {integrity: sha512-4uBObgz84mVbQWiumndmIhkuJL0ojHiMwFSvSUM/FCo1YMVIZvpI56blI0y+2Vix/oLui9EgVQSJjjWV4NAszw==}
-    peerDependencies:
-      typescript: '>=5.2'
-    peerDependenciesMeta:
-      typescript:
-        optional: true
-
   '@lexical/hashtag@0.46.0':
     resolution: {integrity: sha512-6XiL5/KXyCxR+oD7fWjJL3enqsrkn4hgjEa13wAQrBZ5W+avFl/9Cd5bkwcXS+jPjmhk47+zYj76l6uuiFoMoQ==}
     peerDependencies:
@@ -2736,14 +2728,6 @@ packages:
       typescript:
         optional: true
 
-  '@lexical/html@0.48.0':
-    resolution: {integrity: sha512-uBxlgKl4YgSNEgHJSshdBqtGDzruWdx1ewop+u6faT67qHUdP3P0cUXIrG6NToDWvsL6fzCstAbN76PMER1Pnw==}
-    peerDependencies:
-      typescript: '>=5.2'
-    peerDependenciesMeta:
-      typescript:
-        optional: true
-
   '@lexical/internal@0.46.0':
     resolution: {integrity: sha512-OV1ePAAnVVd0K+Bq5SX7vOKE/LqJLYcDM4HD4zVCisbgVaznE+pTj/nDB2uWTidwf8o7QhPR65VhEi+KkUtyEw==}
     peerDependencies:
@@ -2752,16 +2736,8 @@ packages:
       typescript:
         optional: true
 
-  '@lexical/internal@0.48.0':
-    resolution: {integrity: sha512-sRwg53K7N0ZQ7KNAvcCY38LSwGizbXP1zlR1lIojZp0GoqHWNvR+vL49t1wYXu1nXx3Osf4ilHHm+aGcwq5hTw==}
-    peerDependencies:
-      typescript: '>=5.2'
-    peerDependenciesMeta:
-      typescript:
-        optional: true
-
-  '@lexical/link@0.48.0':
-    resolution: {integrity: sha512-E0UDmNLUXs/yMCnnE7hbFO0CvhWghmqa+qqPksFfzLkpMHdPpdS1yg59YEbYoNHLi/DXIu4cFRvpHIEuooxwNg==}
+  '@lexical/link@0.46.0':
+    resolution: {integrity: sha512-MdGiAOAmqnZKtfaQxKFZv18SC+1zJIOfqB7bR43va/rp4M3u1cVniquUCTALub40WEWTuJgT2XvfSlpKm7FuXA==}
     peerDependencies:
       typescript: '>=5.2'
     peerDependenciesMeta:
@@ -7291,8 +7267,8 @@ packages:
     resolution: {integrity: sha512-IQ7TZdoaqbT+LCpShg46jnZVlhWD2w6iQYAcYXfHARZ7X1t/UGhhceQDs5X0cGqKvYlHNOuv7Oa1xmb0oQuA3w==}
     engines: {node: '>=4'}
 
-  postcss@8.5.20:
-    resolution: {integrity: sha512-lW616l85ucIQL+FocMmL7pQFPqBmwejrCMg+iPxyImlrANNJG9NHq/RkyCZopDhd8C3LA03PHRJDjkbGu8vvug==}
+  postcss@8.5.21:
+    resolution: {integrity: sha512-v4sDNP3fdNiWMfabO7OwOQdOX8TiQSztKyT1Wj0w+j7LDallJThJRBBBmzVGyYj0crMh7jlV4zepPkiNu9UwDQ==}
     engines: {node: ^10 || ^12 || >=14}
 
   postcss@8.5.6:
@@ -9108,28 +9084,28 @@ snapshots:
   '@codemirror/autocomplete@6.20.0':
     dependencies:
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
 
   '@codemirror/autocomplete@6.20.3':
     dependencies:
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
 
   '@codemirror/commands@6.10.2':
     dependencies:
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
 
   '@codemirror/commands@6.10.3':
     dependencies:
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
 
@@ -9151,7 +9127,7 @@ snapshots:
     dependencies:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@lezer/common': 1.5.2
       '@lezer/css': 1.3.3
 
@@ -9159,7 +9135,7 @@ snapshots:
     dependencies:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@lezer/common': 1.5.2
       '@lezer/go': 1.0.1
 
@@ -9169,7 +9145,7 @@ snapshots:
       '@codemirror/lang-css': 6.3.1
       '@codemirror/lang-javascript': 6.2.5
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
       '@lezer/css': 1.3.3
@@ -9185,7 +9161,7 @@ snapshots:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/language': 6.12.4
       '@codemirror/lint': 6.9.6
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
       '@lezer/javascript': 1.5.4
@@ -9195,7 +9171,7 @@ snapshots:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/lang-html': 6.4.11
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
       '@lezer/highlight': 1.2.3
@@ -9219,7 +9195,7 @@ snapshots:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/lang-html': 6.4.11
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
       '@lezer/highlight': 1.2.3
@@ -9230,7 +9206,7 @@ snapshots:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/lang-html': 6.4.11
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
       '@lezer/markdown': 1.6.4
@@ -9239,7 +9215,7 @@ snapshots:
     dependencies:
       '@codemirror/lang-html': 6.4.11
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@lezer/common': 1.5.2
       '@lezer/php': 1.0.5
 
@@ -9247,7 +9223,7 @@ snapshots:
     dependencies:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@lezer/common': 1.5.2
       '@lezer/python': 1.1.19
 
@@ -9260,7 +9236,7 @@ snapshots:
     dependencies:
       '@codemirror/lang-css': 6.3.1
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@lezer/common': 1.5.2
       '@lezer/sass': 1.1.0
 
@@ -9268,7 +9244,7 @@ snapshots:
     dependencies:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@lezer/common': 1.5.2
       '@lezer/highlight': 1.2.3
       '@lezer/lr': 1.4.10
@@ -9293,7 +9269,7 @@ snapshots:
     dependencies:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
       '@lezer/xml': 1.0.6
@@ -9302,7 +9278,7 @@ snapshots:
     dependencies:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@lezer/common': 1.5.2
       '@lezer/highlight': 1.2.3
       '@lezer/lr': 1.4.10
@@ -9336,7 +9312,7 @@ snapshots:
 
   '@codemirror/language@6.12.4':
     dependencies:
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
       '@lezer/highlight': 1.2.3
@@ -9349,37 +9325,37 @@ snapshots:
 
   '@codemirror/lint@6.9.4':
     dependencies:
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       crelt: 1.0.6
 
   '@codemirror/lint@6.9.6':
     dependencies:
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       crelt: 1.0.6
 
   '@codemirror/merge@6.12.2':
     dependencies:
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/highlight': 1.2.3
       style-mod: 4.1.3
 
   '@codemirror/search@6.6.0':
     dependencies:
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       crelt: 1.0.6
 
-  '@codemirror/state@6.7.0':
+  '@codemirror/state@6.7.1':
     dependencies:
       '@marijn/find-cluster-break': 1.0.3
 
   '@codemirror/view@6.43.1':
     dependencies:
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       crelt: 1.0.6
       style-mod: 4.1.3
       w3c-keyname: 2.2.8
@@ -9406,7 +9382,7 @@ snapshots:
       '@codemirror/lang-html': 6.4.11
       '@codemirror/lang-javascript': 6.2.5
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@codesandbox/sandpack-client': 2.19.8
       '@lezer/highlight': 1.2.3
@@ -10099,7 +10075,7 @@ snapshots:
   '@lexical/devtools-core@0.46.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3)':
     dependencies:
       '@lexical/html': 0.46.0(typescript@5.9.3)
-      '@lexical/link': 0.48.0(typescript@5.9.3)
+      '@lexical/link': 0.46.0(typescript@5.9.3)
       '@lexical/mark': 0.46.0(typescript@5.9.3)
       '@lexical/table': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
@@ -10119,15 +10095,6 @@ snapshots:
   '@lexical/extension@0.46.0(typescript@5.9.3)':
     dependencies:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
-      '@lexical/utils': 0.46.0(typescript@5.9.3)
-      '@preact/signals-core': 1.14.4
-      lexical: 0.46.0(typescript@5.9.3)
-    optionalDependencies:
-      typescript: 5.9.3
-
-  '@lexical/extension@0.48.0(typescript@5.9.3)':
-    dependencies:
-      '@lexical/internal': 0.48.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
       '@preact/signals-core': 1.14.4
       lexical: 0.46.0(typescript@5.9.3)
@@ -10160,29 +10127,15 @@ snapshots:
     optionalDependencies:
       typescript: 5.9.3
 
-  '@lexical/html@0.48.0(typescript@5.9.3)':
-    dependencies:
-      '@lexical/extension': 0.48.0(typescript@5.9.3)
-      '@lexical/internal': 0.48.0(typescript@5.9.3)
-      '@lexical/selection': 0.46.0(typescript@5.9.3)
-      '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
-    optionalDependencies:
-      typescript: 5.9.3
-
   '@lexical/internal@0.46.0(typescript@5.9.3)':
     optionalDependencies:
       typescript: 5.9.3
 
-  '@lexical/internal@0.48.0(typescript@5.9.3)':
-    optionalDependencies:
-      typescript: 5.9.3
-
-  '@lexical/link@0.48.0(typescript@5.9.3)':
+  '@lexical/link@0.46.0(typescript@5.9.3)':
     dependencies:
-      '@lexical/extension': 0.48.0(typescript@5.9.3)
-      '@lexical/html': 0.48.0(typescript@5.9.3)
-      '@lexical/internal': 0.48.0(typescript@5.9.3)
+      '@lexical/extension': 0.46.0(typescript@5.9.3)
+      '@lexical/html': 0.46.0(typescript@5.9.3)
+      '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
       lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
@@ -10209,7 +10162,7 @@ snapshots:
     dependencies:
       '@lexical/code-core': 0.46.0(typescript@5.9.3)
       '@lexical/internal': 0.46.0(typescript@5.9.3)
-      '@lexical/link': 0.48.0(typescript@5.9.3)
+      '@lexical/link': 0.46.0(typescript@5.9.3)
       '@lexical/list': 0.46.0(typescript@5.9.3)
       '@lexical/rich-text': 0.46.0(typescript@5.9.3)
       '@lexical/selection': 0.46.0(typescript@5.9.3)
@@ -10245,7 +10198,7 @@ snapshots:
       '@lexical/hashtag': 0.46.0(typescript@5.9.3)
       '@lexical/history': 0.46.0(typescript@5.9.3)
       '@lexical/internal': 0.46.0(typescript@5.9.3)
-      '@lexical/link': 0.48.0(typescript@5.9.3)
+      '@lexical/link': 0.46.0(typescript@5.9.3)
       '@lexical/list': 0.46.0(typescript@5.9.3)
       '@lexical/mark': 0.46.0(typescript@5.9.3)
       '@lexical/markdown': 0.46.0(typescript@5.9.3)
@@ -10426,11 +10379,11 @@ snapshots:
       '@codemirror/lang-markdown': 6.5.0
       '@codemirror/language-data': 6.5.2
       '@codemirror/merge': 6.12.2
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@codesandbox/sandpack-react': 2.20.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@lexical/clipboard': 0.46.0(typescript@5.9.3)
-      '@lexical/link': 0.48.0(typescript@5.9.3)
+      '@lexical/link': 0.46.0(typescript@5.9.3)
       '@lexical/list': 0.46.0(typescript@5.9.3)
       '@lexical/markdown': 0.46.0(typescript@5.9.3)
       '@lexical/plain-text': 0.46.0(typescript@5.9.3)
@@ -10449,7 +10402,7 @@ snapshots:
       '@radix-ui/react-toolbar': 1.1.13(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@radix-ui/react-tooltip': 1.2.10(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       classnames: 2.5.1
-      cm6-theme-basic-light: 0.2.0(@codemirror/language@6.12.4)(@codemirror/state@6.7.0)(@codemirror/view@6.43.1)(@lezer/highlight@1.2.3)
+      cm6-theme-basic-light: 0.2.0(@codemirror/language@6.12.4)(@codemirror/state@6.7.1)(@codemirror/view@6.43.1)(@lezer/highlight@1.2.3)
       codemirror: 6.0.2
       downshift: 7.6.2(react@19.2.7)
       js-yaml: 4.1.1
@@ -12884,10 +12837,10 @@ snapshots:
 
   clsx@2.1.1: {}
 
-  cm6-theme-basic-light@0.2.0(@codemirror/language@6.12.4)(@codemirror/state@6.7.0)(@codemirror/view@6.43.1)(@lezer/highlight@1.2.3):
+  cm6-theme-basic-light@0.2.0(@codemirror/language@6.12.4)(@codemirror/state@6.7.1)(@codemirror/view@6.43.1)(@lezer/highlight@1.2.3):
     dependencies:
       '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
       '@lezer/highlight': 1.2.3
 
@@ -12910,7 +12863,7 @@ snapshots:
       '@codemirror/language': 6.12.4
       '@codemirror/lint': 6.9.4
       '@codemirror/search': 6.6.0
-      '@codemirror/state': 6.7.0
+      '@codemirror/state': 6.7.1
       '@codemirror/view': 6.43.1
 
   color-convert@2.0.1:
@@ -15265,7 +15218,7 @@ snapshots:
       cssesc: 3.0.0
       util-deprecate: 1.0.2
 
-  postcss@8.5.20:
+  postcss@8.5.21:
     dependencies:
       nanoid: 3.3.16
       picocolors: 1.1.1
@@ -16389,7 +16342,7 @@ snapshots:
       esbuild: 0.27.7
       fdir: 6.5.0(picomatch@4.0.5)
       picomatch: 4.0.5
-      postcss: 8.5.20
+      postcss: 8.5.21
       rollup: 4.62.2
       tinyglobby: 0.2.17
     optionalDependencies:
@@ -16404,7 +16357,7 @@ snapshots:
       esbuild: 0.27.7
       fdir: 6.5.0(picomatch@4.0.5)
       picomatch: 4.0.5
-      postcss: 8.5.20
+      postcss: 8.5.21
       rollup: 4.62.2
       tinyglobby: 0.2.17
     optionalDependencies:
@@ -16419,7 +16372,7 @@ snapshots:
       esbuild: 0.27.7
       fdir: 6.5.0(picomatch@4.0.5)
       picomatch: 4.0.5
-      postcss: 8.5.20
+      postcss: 8.5.21
       rollup: 4.62.2
       tinyglobby: 0.2.17
     optionalDependencies:
