@@ -11,7 +11,8 @@
     "logoUrl": "https://www.google.com/s2/favicons?domain=notion.so&sz=128"
   },
   "urlPatterns": [
-    "https://mcp.notion.com/*"
+    "https://mcp.notion.com/*",
+    "https://api.notion.com/*"
   ],
   "methods": [
     {
@@ -22,7 +23,7 @@
         "customer",
         "dcr"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "whenToUse": "Use Notion's hosted MCP server for the quickest OAuth setup.",
       "defaults": {
         "serverUrl": "https://mcp.notion.com/mcp",
         "authorizationEndpoint": "https://api.notion.com/v1/oauth/authorize",
@@ -34,6 +35,40 @@
       },
       "guidanceMd": "Connect Notion for workspace content. Share only the pages and databases agents should use.",
       "riskTier": "S3",
+      "requiredResourceFilters": [
+        "workspace",
+        "page",
+        "database"
+      ]
+    },
+    {
+      "key": "api-key",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a Notion integration token for direct REST API access.",
+      "defaults": {
+        "serviceHost": "api.notion.com"
+      },
+      "guidanceMd": "Create a Notion internal integration, copy its secret, and share only the pages and databases agents should use.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "Integration token",
+          "type": "password",
+          "required": true,
+          "placeholder": "secret_...",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
       "requiredResourceFilters": [
         "workspace",
         "page",

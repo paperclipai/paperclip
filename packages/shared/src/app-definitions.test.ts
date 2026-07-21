@@ -3,6 +3,12 @@ import { APP_DEFINITIONS } from "./app-definitions.generated.js";
 import { appDefinitionsSchema } from "./validators/app-definition.js";
 describe("AppDefinition catalog",()=>{
  it("validates all Wave 1 definitions",()=>expect(()=>appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
+ it("ships Notion MCP and REST methods with distinct UID namespaces",()=>{
+  const notion=APP_DEFINITIONS.find((app)=>app.slug==="notion");
+  expect(notion?.methods.map((method)=>method.key)).toEqual(["mcp-oauth","api-key"]);
+  expect(notion?.methods[0]?.defaults?.serverUrl).toBe("https://mcp.notion.com/mcp");
+  expect(notion?.methods[1]?.defaults?.serviceHost).toBe("api.notion.com");
+ });
  it("contains twelve reviewed providers",()=>expect(APP_DEFINITIONS.map((app)=>app.slug)).toEqual(["zapier","github","slack","notion","linear","google-sheets","context7","oauth-generic","api-key-generic","sentry","vercel","anthropic"]));
  it.each([
   ["notion",["read_content","update_content"]],
