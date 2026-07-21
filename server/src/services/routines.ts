@@ -98,13 +98,18 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Sat: 6,
 };
 
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
 async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string) {
   const company = await db
     .select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
     .from(companies)
     .where(eq(companies.id, companyId))
     .then((rows) => rows[0] ?? null);
-  if (company?.defaultResponsibleUserId) return company.defaultResponsibleUserId;
+  const explicitDefault = readNonEmptyString(company?.defaultResponsibleUserId);
+  if (explicitDefault) return explicitDefault;
 
   const owner = await db
     .select({ userId: companyMemberships.principalId })
@@ -120,11 +125,42 @@ async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string)
     .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
     .limit(1)
     .then((rows) => rows[0] ?? null);
-  return owner?.userId ?? null;
+  if (owner?.userId) return owner.userId;
+
+  const firstUser = await db
+    .select({ userId: companyMemberships.principalId })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.status, "active"),
+      ),
+    )
+    .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return firstUser?.userId ?? null;
 }
 
 async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorUserId: string | null | undefined, parentIssueId?: string | null) {
-  if (actorUserId) return actorUserId;
+  const candidateUserId = readNonEmptyString(actorUserId);
+  if (candidateUserId) {
+    const membership = await db
+      .select({ id: companyMemberships.id })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, candidateUserId),
+          eq(companyMemberships.status, "active"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (membership) return candidateUserId;
+  }
   if (parentIssueId) {
     const parent = await db
       .select({ responsibleUserId: issues.responsibleUserId, createdByUserId: issues.createdByUserId })
