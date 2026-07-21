@@ -1242,6 +1242,7 @@ export type {
   PluginObjectReferenceProviderDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
+  CompanyPluginCurrentState,
   PluginDatabaseNamespaceRecord,
   PluginMigrationRecord,
   PluginStateRecord,

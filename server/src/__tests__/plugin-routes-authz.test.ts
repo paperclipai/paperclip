@@ -135,6 +135,14 @@ function agentActor(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function agentBearerActor(overrides: Record<string, unknown> = {}) {
+  return agentActor({
+    source: "agent_key",
+    keyId: "agent-key-1",
+    ...overrides,
+  });
+}
+
 function readyPlugin() {
   mockRegistry.getById.mockResolvedValue({
     id: pluginId,
@@ -143,6 +151,112 @@ function readyPlugin() {
     status: "ready",
   });
 }
+
+describe.sequential("company-scoped current plugin state authz", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reports ready state from the authoritative registry without consulting activity history", async () => {
+    const pluginKey = "cybernative.revenue-liveness";
+    const updatedAt = new Date("2026-07-21T10:00:00.000Z");
+    mockRegistry.getByKey.mockResolvedValue({
+      id: pluginId,
+      pluginKey,
+      status: "ready",
+      version: "1.4.2",
+      apiVersion: 1,
+      updatedAt,
+    });
+    const db = {
+      select: vi.fn(() => {
+        throw new Error("current plugin state must not read activity history");
+      }),
+    };
+    const { app } = await createApp(agentBearerActor(), {}, { db });
+
+    const res = await request(app)
+      .get(`/api/companies/${companyA}/plugins/${pluginKey}/current`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      pluginKey,
+      presence: "present",
+      lifecycleStatus: "ready",
+      pluginId,
+      version: "1.4.2",
+      apiVersion: 1,
+      updatedAt: "2026-07-21T10:00:00.000Z",
+    });
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(mockRegistry.getByKey).toHaveBeenCalledWith(pluginKey);
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it.each(["disabled", "installed", "uninstalled"] as const)(
+    "returns registry lifecycle status %s distinctly from active state",
+    async (status) => {
+      const pluginKey = "cybernative.revenue-liveness";
+      mockRegistry.getByKey.mockResolvedValue({
+        id: pluginId,
+        pluginKey,
+        status,
+        version: "1.4.2",
+        apiVersion: 1,
+        updatedAt: new Date("2026-07-21T10:00:00.000Z"),
+      });
+      const { app } = await createApp(agentBearerActor());
+
+      const res = await request(app)
+        .get(`/api/companies/${companyA}/plugins/${pluginKey}/current`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.presence).toBe("present");
+      expect(res.body.lifecycleStatus).toBe(status);
+    },
+    20_000,
+  );
+
+  it("returns an explicit absent result for an exact unknown key", async () => {
+    const pluginKey = "cybernative.revenue-liveness";
+    mockRegistry.getByKey.mockResolvedValue(null);
+    const { app } = await createApp(agentBearerActor());
+
+    const res = await request(app)
+      .get(`/api/companies/${companyA}/plugins/${pluginKey}/current`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      pluginKey,
+      presence: "absent",
+      lifecycleStatus: null,
+      pluginId: null,
+      version: null,
+      apiVersion: null,
+      updatedAt: null,
+    });
+  }, 20_000);
+
+  it("denies cross-company agent reads before looking up the plugin key", async () => {
+    const { app } = await createApp(agentBearerActor());
+
+    const res = await request(app)
+      .get(`/api/companies/${companyB}/plugins/cybernative.revenue-liveness/current`);
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.getByKey).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("keeps the global plugin inventory board-only for agents", async () => {
+    const { app } = await createApp(agentBearerActor());
+
+    const res = await request(app).get("/api/plugins");
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.getByKey).not.toHaveBeenCalled();
+  }, 20_000);
+});
 
 describe.sequential("plugin install and upgrade authz", () => {
   beforeEach(() => {

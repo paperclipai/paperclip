@@ -36,6 +36,7 @@ import {
   projects,
 } from "@paperclipai/db";
 import type {
+  CompanyPluginCurrentState,
   PluginApiRouteDeclaration,
   PluginStatus,
   PaperclipPluginManifestV1,
@@ -846,6 +847,47 @@ export function pluginRoutes(
       ? await registry.listByStatus(status)
       : await registry.listInstalled();
     res.json(plugins);
+  });
+
+  /**
+   * GET /api/companies/:companyId/plugins/:pluginKey/current
+   *
+   * Return the authoritative current registry state for one exact plugin key.
+   * Both board and agent callers must have access to the path company. This is
+   * deliberately not a list or detail endpoint: it exposes no manifest,
+   * configuration, package metadata, credentials, or error text.
+   */
+  router.get("/companies/:companyId/plugins/:pluginKey/current", async (req, res) => {
+    const { companyId, pluginKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    // This endpoint participates in a fail-closed two-read preflight. A shared
+    // or client cache must not make two distinct reads observe the same stale
+    // registry fingerprint after the underlying lifecycle state changed.
+    res.set("Cache-Control", "no-store");
+
+    const plugin = await registry.getByKey(pluginKey);
+    const state: CompanyPluginCurrentState = plugin
+      ? {
+          pluginKey,
+          presence: "present",
+          lifecycleStatus: plugin.status,
+          pluginId: plugin.id,
+          version: plugin.version,
+          apiVersion: plugin.apiVersion,
+          updatedAt: plugin.updatedAt.toISOString(),
+        }
+      : {
+          pluginKey,
+          presence: "absent",
+          lifecycleStatus: null,
+          pluginId: null,
+          version: null,
+          apiVersion: null,
+          updatedAt: null,
+        };
+
+    res.json(state);
   });
 
   /**
