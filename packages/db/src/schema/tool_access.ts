@@ -169,6 +169,14 @@ export const connectionTriggers = pgTable(
   ],
 );
 
+export type ConnectionTriggerSnapshot = {
+  id: string;
+  companyId: string;
+  destinationType: "routine" | "issue_wake" | "plugin_worker";
+  destinationId: string;
+  config?: Record<string, unknown>;
+};
+
 export const connectionTriggerDeliveries = pgTable(
   "connection_trigger_deliveries",
   {
@@ -180,10 +188,12 @@ export const connectionTriggerDeliveries = pgTable(
     status: text("status").$type<"received" | "forwarded" | "delivered" | "failed" | "dead_letter">().notNull().default("received"),
     attempt: integer("attempt").notNull().default(1),
     envelope: jsonb("envelope").$type<Record<string, unknown>>().notNull(),
+    triggerSnapshot: jsonb("trigger_snapshot").$type<ConnectionTriggerSnapshot[] | null>(),
     completedTriggerIds: jsonb("completed_trigger_ids").$type<string[]>().notNull().default([]),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
     forwardedAt: timestamp("forwarded_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     lastError: text("last_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

@@ -1,11 +1,12 @@
 import { randomBytes } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRelaySignature, type RelayEnvelope } from "@paperclip/connect-protocol";
 import { companies, connectionTriggerDeliveries, connectionTriggers, createDb, toolApplications, toolConnections } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { connectionRelayStore, pollRelayChannel, processAndDispatchConnectionRelay, processConnectionRelay, type ConnectionRelayStore } from "./connection-relay.js";
+import { connectionRelayStore, pollRelayChannel, processAndDispatchConnectionRelay, processConnectionRelay, RELAY_DELIVERY_LEASE_MS, type ConnectionRelayStore, type RelayTrigger } from "./connection-relay.js";
 
-function fixture() {
+function fixture(overrides: Partial<RelayEnvelope> = {}) {
   const envelope: RelayEnvelope = {
     v: 1,
     deliveryId: "dl_01K0EXAMPLE",
@@ -15,6 +16,7 @@ function fixture() {
     attempt: 1,
     provider: { headers: { "x-vercel-signature": "provider-signature" }, bodyB64: "eyJvayI6dHJ1ZX0=" },
     verification: { profile: "vercel@1", result: "verified", keyId: "primary" },
+    ...overrides,
   };
   const rawBody = Buffer.from(JSON.stringify(envelope));
   const relaySecret = randomBytes(32);
@@ -23,6 +25,7 @@ function fixture() {
 
 function store(): ConnectionRelayStore & { deliveries: Set<string>; statuses: string[]; completedTriggerIds: Set<string> } {
   const deliveries = new Set<string>();
+  const snapshots = new Map<string, RelayTrigger[]>();
   const statuses: string[] = [];
   const completedTriggerIds = new Set<string>();
   return {
@@ -32,10 +35,12 @@ function store(): ConnectionRelayStore & { deliveries: Set<string>; statuses: st
     async findConnectionByPublicRef(publicRef) {
       return publicRef === "cn_01K0EXAMPLE" ? { id: "connection-1", companyId: "company-1", enabled: true } : null;
     },
-    async claimDelivery({ envelope }) {
-      if (deliveries.has(envelope.deliveryId)) return { claimed: false, completedTriggerIds: [] };
+    async claimDelivery({ envelope, triggerSnapshot }) {
+      // Mirror the store: the snapshot is captured once, on the first claim, and reused thereafter.
+      if (deliveries.has(envelope.deliveryId)) return { claimed: false, completedTriggerIds: [], triggerSnapshot: snapshots.get(envelope.deliveryId) ?? null };
       deliveries.add(envelope.deliveryId);
-      return { claimed: true, completedTriggerIds: [...completedTriggerIds] };
+      snapshots.set(envelope.deliveryId, triggerSnapshot);
+      return { claimed: true, completedTriggerIds: [...completedTriggerIds], triggerSnapshot };
     },
     async listEnabledTriggers() {
       return [{ id: "trigger-1", companyId: "company-1", destinationType: "routine", destinationId: "routine-1" }];
@@ -131,16 +136,18 @@ describe("processConnectionRelay", () => {
     const { rawBody: firstBody, relaySecret } = fixture();
     let attempt = 0;
     let status = "received";
+    let snapshot: RelayTrigger[] | null = null;
     const completed = new Set<string>();
     const retryStore: ConnectionRelayStore = {
       async findConnectionByPublicRef() { return { id: "connection-1", companyId: "company-1", enabled: true }; },
-      async claimDelivery({ envelope }) {
+      async claimDelivery({ envelope, triggerSnapshot }) {
         if (attempt === 0 || (status === "failed" && envelope.attempt > attempt)) {
+          if (snapshot === null) snapshot = triggerSnapshot;
           attempt = envelope.attempt;
           status = "received";
-          return { claimed: true, completedTriggerIds: [...completed] };
+          return { claimed: true, completedTriggerIds: [...completed], triggerSnapshot: snapshot };
         }
-        return { claimed: false, completedTriggerIds: [] };
+        return { claimed: false, completedTriggerIds: [], triggerSnapshot: snapshot };
       },
       async listEnabledTriggers() {
         return [
@@ -263,5 +270,123 @@ describeEmbeddedPostgres("connection relay persistence", () => {
     expect(fired).toEqual(["11111111-1111-4111-8111-111111111111"]);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ deliveryId: "dl_01K0EXAMPLE", status: "delivered", connectionId: connection.id });
+  });
+
+  it("routes retries to the trigger set captured on the first attempt, not newly enabled triggers", async () => {
+    const company = await db.insert(companies).values({ name: "Relay Snapshot", issuePrefix: "RLS" }).returning().then((rows) => rows[0]!);
+    const application = await db.insert(toolApplications).values({ companyId: company.id, name: "Vercel", type: "mcp_http" }).returning().then((rows) => rows[0]!);
+    const connection = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Vercel Relay",
+      uid: "vercel-relay-snapshot",
+      transport: "rest_api",
+      enabled: true,
+      config: { relay: { publicRef: "cn_01K0SNAPSHOT" } },
+    }).returning().then((rows) => rows[0]!);
+    const originalDestination = "11111111-1111-4111-8111-111111111111";
+    const lateDestination = "22222222-2222-4222-8222-222222222222";
+    await db.insert(connectionTriggers).values({ companyId: company.id, connectionId: connection.id, destinationType: "routine", destinationId: originalDestination });
+
+    const { rawBody: firstBody, relaySecret } = fixture({ connectionPublicRef: "cn_01K0SNAPSHOT", deliveryId: "dl_01K0SNAPSHOT" });
+    const now = new Date("2026-07-21T18:04:05.000Z");
+    const timestamp = String(Math.floor(now.getTime() / 1000));
+    const store = connectionRelayStore(db);
+    const fired: string[] = [];
+    const dispatcher = {
+      routine: async (trigger: { destinationId: string }) => {
+        fired.push(trigger.destinationId);
+        // Fail the very first dispatch so the delivery is retried; succeed on the retry.
+        if (trigger.destinationId === originalDestination && fired.filter((id) => id === originalDestination).length === 1) throw new Error("temporary failure");
+      },
+      issue_wake: async () => {},
+      plugin_worker: async () => {},
+    };
+
+    const first = await processAndDispatchConnectionRelay(store, dispatcher, {
+      rawBody: firstBody,
+      signature: createRelaySignature({ body: firstBody, relaySecret, timestamp }),
+      timestamp,
+      relaySecret,
+      now,
+    });
+    expect(first.status).toBe("failed");
+
+    // Operator enables a brand-new trigger after the envelope was already captured.
+    await db.insert(connectionTriggers).values({ companyId: company.id, connectionId: connection.id, destinationType: "routine", destinationId: lateDestination });
+
+    const secondEnvelope = { ...JSON.parse(firstBody.toString("utf8")), attempt: 2 };
+    const secondBody = Buffer.from(JSON.stringify(secondEnvelope));
+    const second = await processAndDispatchConnectionRelay(store, dispatcher, {
+      rawBody: secondBody,
+      signature: createRelaySignature({ body: secondBody, relaySecret, timestamp }),
+      timestamp,
+      relaySecret,
+      now,
+    });
+
+    expect(second.status).toBe("delivered");
+    // The late trigger never receives the pre-existing envelope; only the snapshotted destination fires.
+    expect(fired).toEqual([originalDestination, originalDestination]);
+    const rows = await db.select().from(connectionTriggerDeliveries).where(eq(connectionTriggerDeliveries.connectionId, connection.id));
+    expect(rows).toHaveLength(1);
+    expect((rows[0]!.triggerSnapshot ?? []).map((trigger) => trigger.destinationId)).toEqual([originalDestination]);
+  });
+
+  it("reclaims an abandoned forwarded delivery only after its lease expires", async () => {
+    const company = await db.insert(companies).values({ name: "Relay Lease", issuePrefix: "RLL" }).returning().then((rows) => rows[0]!);
+    const application = await db.insert(toolApplications).values({ companyId: company.id, name: "Vercel", type: "mcp_http" }).returning().then((rows) => rows[0]!);
+    const connection = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Vercel Relay",
+      uid: "vercel-relay-lease",
+      transport: "rest_api",
+      enabled: true,
+      config: { relay: { publicRef: "cn_01K0LEASE" } },
+    }).returning().then((rows) => rows[0]!);
+    const destination = "33333333-3333-4333-8333-333333333333";
+    await db.insert(connectionTriggers).values({ companyId: company.id, connectionId: connection.id, destinationType: "routine", destinationId: destination });
+
+    const { rawBody, relaySecret } = fixture({ connectionPublicRef: "cn_01K0LEASE", deliveryId: "dl_01K0LEASE" });
+    const envelope = JSON.parse(rawBody.toString("utf8")) as RelayEnvelope;
+    const store = connectionRelayStore(db);
+
+    // A worker claims the delivery and marks it `forwarded`, then crashes before dispatching.
+    const claimedAt = new Date("2026-07-21T18:04:05.000Z");
+    const capturedTriggers = await store.listEnabledTriggers(connection.id);
+    await store.claimDelivery({ companyId: company.id, connectionId: connection.id, envelope, triggerSnapshot: capturedTriggers, now: claimedAt });
+    await store.updateDelivery!({ connectionId: connection.id, deliveryId: envelope.deliveryId, status: "forwarded", now: claimedAt });
+
+    const dispatchAt = async (now: Date) => {
+      const timestamp = String(Math.floor(now.getTime() / 1000));
+      const fired: string[] = [];
+      const result = await processAndDispatchConnectionRelay(store, {
+        routine: async (trigger) => { fired.push(trigger.destinationId); },
+        issue_wake: async () => {},
+        plugin_worker: async () => {},
+      }, { rawBody, signature: createRelaySignature({ body: rawBody, relaySecret, timestamp }), timestamp, relaySecret, now });
+      return { result, fired };
+    };
+
+    // While the lease is still live the row must not be reclaimed — an active worker could still
+    // be running, so a competing attempt is dropped as a duplicate and nothing is dispatched.
+    const duringLease = await dispatchAt(new Date(claimedAt.getTime() + RELAY_DELIVERY_LEASE_MS / 2));
+    expect(duringLease.result.status).toBe("duplicate");
+    expect(duringLease.fired).toEqual([]);
+
+    // A trigger enabled after the crash must not receive this in-flight envelope: recovery reuses
+    // the snapshot captured with the claim, never the connection's current trigger configuration.
+    await db.insert(connectionTriggers).values({ companyId: company.id, connectionId: connection.id, destinationType: "routine", destinationId: "44444444-4444-4444-8444-444444444444" });
+
+    // Once the lease has expired the abandoned delivery is safely reclaimed and the work runs.
+    const afterLease = await dispatchAt(new Date(claimedAt.getTime() + RELAY_DELIVERY_LEASE_MS + 60_000));
+    expect(afterLease.result.status).toBe("delivered");
+    expect(afterLease.fired).toEqual([destination]);
+
+    const rows = await db.select().from(connectionTriggerDeliveries).where(eq(connectionTriggerDeliveries.connectionId, connection.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("delivered");
+    expect((rows[0]!.triggerSnapshot ?? []).map((trigger) => trigger.destinationId)).toEqual([destination]);
   });
 });

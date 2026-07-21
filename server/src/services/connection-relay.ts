@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionTriggerDeliveries, connectionTriggers, issues, pluginCompanySettings, plugins, routines as routinesTable, toolConnections } from "@paperclipai/db";
 import {
@@ -20,9 +20,15 @@ export type RelayTrigger = {
   config?: Record<string, unknown>;
 };
 
+// How long a claimed delivery may stay in an in-progress state (`received`/`forwarded`)
+// before a later attempt is allowed to reclaim it. This must comfortably exceed the time
+// a healthy worker needs to dispatch every trigger, so an active worker is never raced;
+// per-trigger idempotency keys are the correctness backstop if a slow worker overruns it.
+export const RELAY_DELIVERY_LEASE_MS = 5 * 60 * 1000;
+
 export type ConnectionRelayStore = {
   findConnectionByPublicRef(publicRef: string): Promise<{ id: string; companyId: string; enabled: boolean } | null>;
-  claimDelivery(input: { companyId: string; connectionId: string; envelope: RelayEnvelope }): Promise<{ claimed: boolean; completedTriggerIds: string[] }>;
+  claimDelivery(input: { companyId: string; connectionId: string; envelope: RelayEnvelope; triggerSnapshot: RelayTrigger[]; now?: Date }): Promise<{ claimed: boolean; completedTriggerIds: string[]; triggerSnapshot: RelayTrigger[] | null }>;
   listEnabledTriggers(connectionId: string): Promise<RelayTrigger[]>;
   updateDelivery?(input: { connectionId: string; deliveryId: string; status: "forwarded" | "delivered" | "failed" | "dead_letter"; error?: string | null; now?: Date }): Promise<void>;
   markTriggerCompleted?(input: { connectionId: string; deliveryId: string; triggerId: string; now?: Date }): Promise<void>;
@@ -36,19 +42,45 @@ export function connectionRelayStore(db: Db): ConnectionRelayStore {
       const rows = await db.select({ id: toolConnections.id, companyId: toolConnections.companyId, enabled: toolConnections.enabled, config: toolConnections.config }).from(toolConnections);
       return rows.find((row) => (row.config as RelayConnectionConfig).relay?.publicRef === publicRef) ?? null;
     },
-    async claimDelivery({ companyId, connectionId, envelope }) {
-      const rows = await db.insert(connectionTriggerDeliveries).values({ companyId, connectionId, deliveryId: envelope.deliveryId, providerSlug: envelope.providerSlug, attempt: envelope.attempt, envelope, receivedAt: new Date(envelope.receivedAt) }).onConflictDoUpdate({
+    async claimDelivery({ companyId, connectionId, envelope, triggerSnapshot, now = new Date() }) {
+      const leaseExpiresAt = new Date(now.getTime() + RELAY_DELIVERY_LEASE_MS);
+      // The trigger snapshot is written in the INSERT branch only, so it is persisted atomically
+      // with the row's creation — there is no window where a delivery exists without its snapshot.
+      // The reclaim `set` deliberately omits `triggerSnapshot`, so retries and crash recovery reuse
+      // the set captured at first claim and never rebuild it from current configuration.
+      const rows = await db.insert(connectionTriggerDeliveries).values({ companyId, connectionId, deliveryId: envelope.deliveryId, providerSlug: envelope.providerSlug, attempt: envelope.attempt, envelope, triggerSnapshot, receivedAt: new Date(envelope.receivedAt), leaseExpiresAt }).onConflictDoUpdate({
         target: [connectionTriggerDeliveries.connectionId, connectionTriggerDeliveries.deliveryId],
-        set: { attempt: envelope.attempt, envelope, status: "received", lastError: null, updatedAt: new Date() },
-        setWhere: and(eq(connectionTriggerDeliveries.status, "failed"), sql`${connectionTriggerDeliveries.attempt} < ${envelope.attempt}`),
-      }).returning({ completedTriggerIds: connectionTriggerDeliveries.completedTriggerIds });
-      return { claimed: rows.length === 1, completedTriggerIds: rows[0]?.completedTriggerIds ?? [] };
+        set: { attempt: envelope.attempt, envelope, status: "received", lastError: null, leaseExpiresAt, updatedAt: now },
+        // Reclaim either an explicitly failed delivery on a strictly newer attempt, or an
+        // in-progress (`received`/`forwarded`) delivery whose lease has expired — the latter
+        // is how an abandoned handoff from a crashed worker is safely recovered without
+        // racing a worker that still holds a live lease.
+        setWhere: or(
+          and(eq(connectionTriggerDeliveries.status, "failed"), lt(connectionTriggerDeliveries.attempt, envelope.attempt)),
+          and(
+            inArray(connectionTriggerDeliveries.status, ["received", "forwarded"]),
+            isNotNull(connectionTriggerDeliveries.leaseExpiresAt),
+            lt(connectionTriggerDeliveries.leaseExpiresAt, now),
+            lte(connectionTriggerDeliveries.attempt, envelope.attempt),
+          ),
+        ),
+      }).returning({ completedTriggerIds: connectionTriggerDeliveries.completedTriggerIds, triggerSnapshot: connectionTriggerDeliveries.triggerSnapshot });
+      return { claimed: rows.length === 1, completedTriggerIds: rows[0]?.completedTriggerIds ?? [], triggerSnapshot: rows[0]?.triggerSnapshot ?? null };
     },
     async listEnabledTriggers(connectionId) {
       return db.select({ id: connectionTriggers.id, companyId: connectionTriggers.companyId, destinationType: connectionTriggers.destinationType, destinationId: connectionTriggers.destinationId, config: connectionTriggers.config }).from(connectionTriggers).where(and(eq(connectionTriggers.connectionId, connectionId), eq(connectionTriggers.enabled, true)));
     },
     async updateDelivery({ connectionId, deliveryId, status, error, now = new Date() }) {
-      await db.update(connectionTriggerDeliveries).set({ status, forwardedAt: status === "forwarded" ? now : undefined, deliveredAt: status === "delivered" ? now : undefined, lastError: error ?? null, updatedAt: now }).where(and(eq(connectionTriggerDeliveries.connectionId, connectionId), eq(connectionTriggerDeliveries.deliveryId, deliveryId)));
+      await db.update(connectionTriggerDeliveries).set({
+        status,
+        forwardedAt: status === "forwarded" ? now : undefined,
+        deliveredAt: status === "delivered" ? now : undefined,
+        // Renew the lease while the handoff is actively in flight; clear it on terminal
+        // states so a delivered/dead-letter row can never be mistaken for an abandoned one.
+        leaseExpiresAt: status === "forwarded" ? new Date(now.getTime() + RELAY_DELIVERY_LEASE_MS) : status === "delivered" || status === "dead_letter" ? null : undefined,
+        lastError: error ?? null,
+        updatedAt: now,
+      }).where(and(eq(connectionTriggerDeliveries.connectionId, connectionId), eq(connectionTriggerDeliveries.deliveryId, deliveryId)));
     },
     async markTriggerCompleted({ connectionId, deliveryId, triggerId, now = new Date() }) {
       await db.update(connectionTriggerDeliveries).set({
@@ -172,10 +204,15 @@ export async function processConnectionRelay(
     throw new Error("Relay connection not found");
   }
 
-  const claim = await store.claimDelivery({ companyId: connection.companyId, connectionId: connection.id, envelope });
+  // Resolve the currently-enabled triggers up front so they can be captured atomically with the
+  // claim. The claim only persists this set on the very first insert; every later attempt reuses
+  // the stored snapshot. This guarantees a trigger added or re-enabled after the first claim never
+  // receives an envelope for an event that predates it — even across a crash-and-recover cycle.
+  const currentTriggers = await store.listEnabledTriggers(connection.id);
+  const claim = await store.claimDelivery({ companyId: connection.companyId, connectionId: connection.id, envelope, triggerSnapshot: currentTriggers, now: input.now });
   if (!claim.claimed) return { status: "duplicate" as const, envelope, connection, triggers: [] as RelayTrigger[], completedTriggerIds: [] as string[] };
 
-  return { status: "accepted" as const, envelope, connection, triggers: await store.listEnabledTriggers(connection.id), completedTriggerIds: claim.completedTriggerIds };
+  return { status: "accepted" as const, envelope, connection, triggers: claim.triggerSnapshot ?? currentTriggers, completedTriggerIds: claim.completedTriggerIds };
 }
 
 export async function processAndDispatchConnectionRelay(store: ConnectionRelayStore, dispatcher: ConnectionRelayDispatcher, input: Parameters<typeof processConnectionRelay>[1]) {

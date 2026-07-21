@@ -133,6 +133,7 @@ export {
   toolGatewayRateLimitCounters,
   toolAccessAuditEvents,
 } from "./tool_access.js";
+export type { ConnectionTriggerSnapshot } from "./tool_access.js";
 export {
   companySkills,
   companySkillVersions,
