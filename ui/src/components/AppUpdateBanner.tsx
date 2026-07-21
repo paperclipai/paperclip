@@ -26,7 +26,10 @@ export function AppUpdateBanner() {
     <aside
       role="status"
       aria-live="polite"
-      className="fixed bottom-3 right-3 z-(--z-120) w-full max-w-sm px-1"
+      // Below md the toast viewport (bottom-left, w-full) spans the width, so
+      // sit at the top to avoid overlapping it; from md up there is room for
+      // both bottom corners.
+      className="fixed right-3 top-3 z-(--z-120) w-full max-w-sm px-1 md:top-auto md:bottom-3"
     >
       <div className="pointer-events-auto rounded-sm border border-sky-300 bg-sky-50 text-sky-900 shadow-lg backdrop-blur-xl dark:border-sky-500/25 dark:bg-sky-950/60 dark:text-sky-100">
         <div className="flex items-start gap-3 px-3 py-2.5">
