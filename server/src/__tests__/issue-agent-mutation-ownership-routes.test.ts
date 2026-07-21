@@ -1592,7 +1592,7 @@ describe("agent issue mutation checkout ownership", () => {
     },
   );
 
-  it("rejects a stale owner run from resurrecting a cancelled issue", async () => {
+  it.each(["todo", "in_progress"])("rejects a stale owner run from moving a cancelled issue to %s", async (status) => {
     mockIssueService.getById.mockResolvedValue(
       makeIssue({
         status: "cancelled",
@@ -1604,7 +1604,7 @@ describe("agent issue mutation checkout ownership", () => {
 
     const res = await request(await createApp(ownerActor()))
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "in_progress" });
+      .send({ status });
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
