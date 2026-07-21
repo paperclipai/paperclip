@@ -74,4 +74,108 @@ class TestPoll(unittest.TestCase):
         tg.send_message.assert_not_called()
         self.assertIn("a:done", app.seen)
 
+    def test_readded_decision_label_renotifies(self):
+        # Voller Re-Raise-Zyklus über zwei Polls: Issue war gelabelt+gesehen
+        # (Push schon zugestellt); Label wird entfernt (Mensch hat
+        # geantwortet) -> Poll 1 droppt den seen-Key, kein Push. Label wird
+        # erneut gesetzt -> Poll 2 muss den Key wieder als neu behandeln und
+        # erneut pushen.
+        tg = mock.MagicMock(); app = make_app(tg)
+        app.seen = {"a:decision"}
+        unlabeled = [{"id": "a", "status": "in_progress", "parentId": None,
+                     "labelIds": [], "identifier": "WHI-1", "title": "T"}]
+        with mock.patch.object(bot, "resolve_label_id", return_value="L"), \
+             mock.patch.object(bot, "list_issues", return_value=unlabeled), \
+             mock.patch.object(bot.state, "save_state"):
+            app.poll_tenants()
+        tg.send_message.assert_not_called()
+        self.assertNotIn("a:decision", app.seen)
+
+        relabeled = [{"id": "a", "status": "in_progress", "parentId": None,
+                     "labelIds": ["L"], "identifier": "WHI-1", "title": "T"}]
+        with mock.patch.object(bot, "resolve_label_id", return_value="L"), \
+             mock.patch.object(bot, "list_issues", return_value=relabeled), \
+             mock.patch.object(bot.state, "save_state"):
+            app.poll_tenants()
+        pushed = {c.args[0] for c in tg.send_message.call_args_list}
+        self.assertEqual(pushed, {8311805232, 1220010628})
+        self.assertIn("a:decision", app.seen)
+
+    def test_unlabeled_seen_decision_key_dropped_without_relabel(self):
+        # Label wurde entfernt und (noch) nicht erneut gesetzt -> Key raus
+        # aus seen, aber kein Push (kein aktuelles Event).
+        tg = mock.MagicMock(); app = make_app(tg)
+        app.seen = {"a:decision"}
+        with mock.patch.object(bot, "resolve_label_id", return_value="L"), \
+             mock.patch.object(bot, "list_issues",
+                              return_value=[{"id": "a", "status": "in_progress", "parentId": None,
+                                            "labelIds": [], "identifier": "WHI-1", "title": "T"}]), \
+             mock.patch.object(bot.state, "save_state"):
+            app.poll_tenants()
+        tg.send_message.assert_not_called()
+        self.assertNotIn("a:decision", app.seen)
+
+
+class TestRunPollGuard(unittest.TestCase):
+    def test_poll_crash_does_not_propagate_out_of_run(self):
+        # KeyboardInterrupt dient hier nur als Test-Sentinel, um die
+        # Endlosschleife nach der zweiten Iteration kontrolliert zu beenden
+        # (BaseException, nicht von run()s `except Exception` abgefangen) —
+        # keine Aussage über echtes run()-Verhalten bei Interrupts.
+        tg = mock.MagicMock()
+        tg.get_updates.side_effect = [[], KeyboardInterrupt]
+        app = make_app(tg)
+
+        call_count = {"n": 0}
+
+        def boom():
+            call_count["n"] += 1
+            raise RuntimeError("transient auth.json read failure")
+
+        with mock.patch.object(app, "poll_tenants", side_effect=boom), \
+             mock.patch.object(bot.time, "monotonic", side_effect=[100.0]), \
+             mock.patch.object(app, "_drain", return_value=None):
+            with self.assertRaises(KeyboardInterrupt):
+                app.run()
+        # poll_tenants wurde in der ersten Iteration aufgerufen und hat
+        # geworfen, aber run() lief weiter (last_poll wurde trotzdem
+        # vorgerückt) bis zur zweiten get_updates-Iteration (Test-Sentinel) —
+        # der Poll-Fehler selbst hat run() NICHT beendet.
+        self.assertEqual(call_count["n"], 1)
+
+
+class TestBuildAppSeeding(unittest.TestCase):
+    def test_missing_state_file_seeds_empty_and_marks_seeded_false(self):
+        with mock.patch.object(bot.state, "load_state", return_value=None), \
+             mock.patch.object(bot.config, "load_env", return_value={"WHISPER_MODEL": "m.bin",
+                                                                      "TELEGRAM_BOT_TOKEN": "t"}), \
+             mock.patch.object(bot.tenants_mod, "load_tenants", return_value=TENANTS), \
+             mock.patch.object(bot, "Telegram", return_value=mock.MagicMock()):
+            app = bot.build_app()
+        self.assertEqual(app.seen, set())
+        self.assertFalse(app._seeded)
+
+    def test_corrupt_state_file_seeds_empty_and_marks_seeded_false(self):
+        # Kernstück von Fix 1: eine korrupte (aber existierende) Datei darf
+        # NICHT zu _seeded=True + leerem seen führen (sonst Push-Sturm).
+        with mock.patch.object(bot.state, "load_state", return_value=None), \
+             mock.patch.object(bot.config, "load_env", return_value={"WHISPER_MODEL": "m.bin",
+                                                                      "TELEGRAM_BOT_TOKEN": "t"}), \
+             mock.patch.object(bot.tenants_mod, "load_tenants", return_value=TENANTS), \
+             mock.patch.object(bot, "Telegram", return_value=mock.MagicMock()):
+            app = bot.build_app()
+        self.assertEqual(app.seen, set())
+        self.assertFalse(app._seeded)
+
+    def test_valid_state_file_seeds_set_and_marks_seeded_true(self):
+        with mock.patch.object(bot.state, "load_state", return_value={"a:done"}), \
+             mock.patch.object(bot.config, "load_env", return_value={"WHISPER_MODEL": "m.bin",
+                                                                      "TELEGRAM_BOT_TOKEN": "t"}), \
+             mock.patch.object(bot.tenants_mod, "load_tenants", return_value=TENANTS), \
+             mock.patch.object(bot, "Telegram", return_value=mock.MagicMock()):
+            app = bot.build_app()
+        self.assertEqual(app.seen, {"a:done"})
+        self.assertTrue(app._seeded)
+
+
 if __name__ == "__main__": unittest.main()

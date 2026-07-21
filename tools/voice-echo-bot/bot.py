@@ -164,7 +164,15 @@ class BotApp:
                 label_id = resolve_label_id(token, tenant["company_id"], self.cfg["decision_label"])
                 issues = list_issues(token, tenant["company_id"],
                                      assignee_agent_id=tenant["ceo_agent_id"])
-                events, keys = notifier.collect_events(issues, label_id, base_seen)
+                # Re-Raise-Fall: Label wurde entfernt (Mensch hat entschieden)
+                # und später erneut gesetzt -> Key aus 'seen' droppen, damit
+                # collect_events das als neues Event erkennt. Streng auf die
+                # Issue-IDs DIESES Mandanten skaliert.
+                stale = notifier.reconcile_decision_keys(issues, label_id, base_seen)
+                tenant_seen = base_seen - stale if stale else base_seen
+                if stale:
+                    self.seen -= stale
+                events, keys = notifier.collect_events(issues, label_id, tenant_seen)
                 if self._seeded:
                     for ev in events:
                         try:
@@ -197,7 +205,10 @@ class BotApp:
                 time.sleep(5)
             now = time.monotonic()
             if now - last_poll >= self.cfg["poll_interval"]:
-                self.poll_tenants()
+                try:
+                    self.poll_tenants()
+                except Exception:  # noqa: BLE001
+                    traceback.print_exc()
                 last_poll = now
 
 
@@ -212,8 +223,9 @@ def build_app():
         "state_path": config.STATE_PATH,
     }
     app = BotApp(Telegram(env["TELEGRAM_BOT_TOKEN"]), cfg)
-    app.seen = state.load_state(config.STATE_PATH)
-    app._seeded = os.path.exists(config.STATE_PATH)
+    loaded = state.load_state(config.STATE_PATH)
+    app.seen = loaded if loaded is not None else set()
+    app._seeded = loaded is not None
     return app
 
 
