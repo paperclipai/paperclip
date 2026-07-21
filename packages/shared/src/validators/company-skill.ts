@@ -279,6 +279,23 @@ export const companySkillProjectBrowseRequestSchema = z.object({
   path: z.string().nullable().optional(),
 });
 
+export const companySkillProjectBrowseEntrySchema = z.object({
+  name: z.string().min(1),
+  path: z.string().min(1),
+  kind: z.enum(["directory", "file"]),
+  isSkill: z.boolean(),
+});
+
+export const companySkillProjectBrowseResultSchema = z.object({
+  projectId: z.string().uuid(),
+  workspaceId: z.string().uuid(),
+  workspaceName: z.string().min(1),
+  path: z.string().min(1),
+  parentPath: z.string().nullable(),
+  entries: z.array(companySkillProjectBrowseEntrySchema),
+  truncated: z.boolean(),
+});
+
 export const companySkillProjectScanCandidateSchema = z.object({
   slug: z.string().min(1),
   name: z.string().min(1),
