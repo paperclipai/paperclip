@@ -150,6 +150,7 @@ import {
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
+  updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
   // Document annotations
   createDocumentAnnotationCommentSchema,
@@ -727,6 +728,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/bootstrap/claim",
   "GET /api/companies/{companyId}/resource-memberships/me",
   "PUT /api/companies/{companyId}/resource-memberships/me/agents/{agentId}",
+  "PUT /api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
   "PUT /api/companies/{companyId}/resource-memberships/me/projects/{projectId}",
   "GET /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/secret-provider-configs",
@@ -5422,6 +5424,14 @@ registerCurrentRoute({
   path: "/api/issues/{id}/cost-summary",
   tags: ["costs"],
   summary: "Get issue cost summary",
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
+  tags: ["resource-memberships"],
+  summary: "Star or unstar a document resource",
+  body: updateDocumentResourceMembershipSchema,
 });
 
 for (const route of [
