@@ -39,8 +39,10 @@ type RelayConnectionConfig = { relay?: { publicRef?: string; secretId?: string; 
 export function connectionRelayStore(db: Db): ConnectionRelayStore {
   return {
     async findConnectionByPublicRef(publicRef) {
-      const rows = await db.select({ id: toolConnections.id, companyId: toolConnections.companyId, enabled: toolConnections.enabled, config: toolConnections.config }).from(toolConnections);
-      return rows.find((row) => (row.config as RelayConnectionConfig).relay?.publicRef === publicRef) ?? null;
+      // Containment lookup (GIN-indexed) instead of scanning every connection into memory: inbound
+      // relay webhooks run this before auth, so a full-table scan would be a pre-auth DoS vector.
+      const rows = await db.select({ id: toolConnections.id, companyId: toolConnections.companyId, enabled: toolConnections.enabled }).from(toolConnections).where(sql`${toolConnections.config} @> ${JSON.stringify({ relay: { publicRef } })}::jsonb`).limit(1);
+      return rows[0] ?? null;
     },
     async claimDelivery({ companyId, connectionId, envelope, triggerSnapshot, now = new Date() }) {
       const leaseExpiresAt = new Date(now.getTime() + RELAY_DELIVERY_LEASE_MS);
@@ -94,8 +96,10 @@ export function connectionRelayStore(db: Db): ConnectionRelayStore {
 export function connectionRelaySecretResolver(db: Db) {
   const secrets = secretService(db);
   return async (publicRef: string): Promise<Buffer> => {
-    const rows = await db.select({ companyId: toolConnections.companyId, config: toolConnections.config }).from(toolConnections);
-    const connection = rows.find((row) => (row.config as RelayConnectionConfig).relay?.publicRef === publicRef);
+    // Same GIN-indexed containment lookup as findConnectionByPublicRef — this resolver runs before
+    // signature verification, so it must not scan the whole tool_connections table per request.
+    const rows = await db.select({ companyId: toolConnections.companyId, config: toolConnections.config }).from(toolConnections).where(sql`${toolConnections.config} @> ${JSON.stringify({ relay: { publicRef } })}::jsonb`).limit(1);
+    const connection = rows[0];
     const relay = connection && (connection.config as RelayConnectionConfig).relay;
     if (!connection || !relay?.secretId) throw new Error("Relay connection or secret not found");
     const parsedVersion = relay.secretVersion && /^\d+$/.test(relay.secretVersion) ? Number(relay.secretVersion) : "latest";

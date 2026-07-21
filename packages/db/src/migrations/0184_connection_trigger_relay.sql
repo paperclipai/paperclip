@@ -51,3 +51,5 @@ CREATE INDEX "connection_trigger_deliveries_company_idx" ON "connection_trigger_
 CREATE INDEX "connection_trigger_deliveries_connection_status_idx" ON "connection_trigger_deliveries" USING btree ("connection_id","status");
 --> statement-breakpoint
 CREATE UNIQUE INDEX "connection_trigger_deliveries_connection_delivery_uq" ON "connection_trigger_deliveries" USING btree ("connection_id","delivery_id");
+--> statement-breakpoint
+CREATE INDEX "tool_connections_config_gin_idx" ON "tool_connections" USING gin ("config");
