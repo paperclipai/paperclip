@@ -30,3 +30,11 @@ def load_paperclip_token(auth_path=AUTH_JSON):
     with open(auth_path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
     return data["credentials"]["http://localhost:3100"]["token"]
+
+
+# --- Rückkanal + Mehrmandanten ---
+TENANTS_PATH = os.path.expanduser("~/.paperclip/voice-echo-tenants.json")
+STATE_PATH = os.path.expanduser("~/.paperclip/voice-echo-state.json")
+DECISION_LABEL = "entscheidung-noetig"
+POLL_INTERVAL_SEC = 60
+LONGPOLL_TIMEOUT_SEC = 25
