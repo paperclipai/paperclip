@@ -1,6 +1,6 @@
 ---
 name: nopcommerce-marketplace-deploy
-description: Package and submit (or update) a nopCommerce plugin or theme on the official nopCommerce.com marketplace (the seller Partner portal - Upload extension flow). Use whenever the user wants to publish, submit, list, deploy, release, or update a nopCommerce plugin/theme on the marketplace; mentions the marketplace/partner portal, "upload extension", "upload-product", "uploadedItems.json", "ready to deploy package", a marketplace listing/submission, or preparing the source + compiled ZIPs, logos, screenshots, and descriptions for a listing.
+description: Publish or update a nopCommerce plugin/theme on the nopCommerce.com marketplace via the seller Partner portal Upload-extension flow. Use when submitting, listing, releasing, or updating a marketplace listing, or preparing the source/compiled ZIPs, logos, screenshots, and descriptions for one.
 ---
 
 # Deploy a nopCommerce Plugin/Theme to the Marketplace
