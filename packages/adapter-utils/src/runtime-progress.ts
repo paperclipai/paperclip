@@ -101,9 +101,13 @@ export function createSyncStageTimer(options: SyncStageTimerOptions): SyncStageT
       if (!options.sink || stages.length === 0) return;
       const totalMs = stages.reduce((sum, entry) => sum + entry.durationMs, 0);
       const breakdown = stages.map((entry) => `${entry.stage} ${entry.durationMs}ms`).join(", ");
-      await options.sink(
-        `[paperclip] sync ${options.phase} ${options.artifact}: ${breakdown} (total ${totalMs}ms) [transport=${transport}]\n`,
-      );
+      try {
+        await options.sink(
+          `[paperclip] sync ${options.phase} ${options.artifact}: ${breakdown} (total ${totalMs}ms) [transport=${transport}]\n`,
+        );
+      } catch {
+        // Sink errors must not propagate — duration logging is observability-only.
+      }
     },
   };
 }

@@ -385,4 +385,20 @@ describe("createSyncStageTimer", () => {
     await disabled.time("tar", async () => {});
     await expect(disabled.finish()).resolves.toBeUndefined();
   });
+
+  it("swallows a rejecting sink so a logging failure cannot fail a completed sync", async () => {
+    const clock = makeClock();
+    const timer = createSyncStageTimer({
+      sink: async () => {
+        throw new Error("sink rejected");
+      },
+      phase: "git_sync",
+      artifact: "git history",
+      now: clock.now,
+    });
+    clock.advance(5);
+    await timer.time("tar", async () => {});
+    // finish() must resolve even though the sink rejects.
+    await expect(timer.finish()).resolves.toBeUndefined();
+  });
 });
