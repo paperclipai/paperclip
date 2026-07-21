@@ -252,6 +252,30 @@ describe("resolveRunAdapterType", () => {
       );
     });
 
+    it("falls back only when the sole adapter MATCHES the configured default", () => {
+      // The single enabled adapter equals configAdapterType, so the env-default
+      // fallback lands on the image the registry established as the sole harness.
+      expect(
+        resolveRunAdapterType(undefined, "opencode_local", {
+          configuredAdapterTypes: ["opencode_local"],
+        }),
+      ).toBe("opencode_local");
+    });
+
+    it("rejects when the sole adapter DIFFERS from the configured default (no mis-route)", () => {
+      // Registry proves a single-adapter env, but that sole adapter is NOT the
+      // configured default. Falling back to configAdapterType would boot an image
+      // the registry never established as the sole harness (opencode image for a
+      // gemini-only pool). The per-run adapter is required instead.
+      for (const absent of [undefined, null, "   "]) {
+        expect(() =>
+          resolveRunAdapterType(absent, "opencode_local", {
+            configuredAdapterTypes: ["gemini_local"],
+          }),
+        ).toThrow(RunAdapterRequiredError);
+      }
+    });
+
     it("names the environment default and carries the stable code when a mixed pool rejects", () => {
       try {
         resolveRunAdapterType(null, "opencode_local", {
