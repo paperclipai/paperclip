@@ -1286,7 +1286,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
-    expect(["queued", "running"]).toContain(retryRun?.status);
+    // Process-loss retries are scheduled with backoff (they hold no slot) rather
+    // than started immediately, so the retry sits in `scheduled_retry`.
+    expect(retryRun?.status).toBe("scheduled_retry");
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
@@ -1647,7 +1649,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutFired: false,
     });
     expect(retryRun).toMatchObject({
-      status: "queued",
+      status: "scheduled_retry",
       retryOfRunId: runId,
       processLossRetryCount: 1,
     });
@@ -1802,7 +1804,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(originalRetries).toHaveLength(1);
     const secondRetry = runs.find((row) => row.retryOfRunId === firstRetry!.id);
     expect(secondRetry).toMatchObject({
-      status: "queued",
+      status: "scheduled_retry",
       processLossRetryCount: 2,
     });
 
@@ -1880,7 +1882,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
 
     const retryRun = runs.find((row) => row.id !== runId);
-    expect(["queued", "running"]).toContain(retryRun?.status);
+    // Process-loss retries are scheduled with backoff (no slot held).
+    expect(retryRun?.status).toBe("scheduled_retry");
 
     const issue = await db
       .select()
@@ -5113,6 +5116,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     await heartbeat.reconcileStrandedAssignedIssues();
+    // Stranded-failure recovery is now scheduled with backoff (holds no slot);
+    // promote it past its delay and start the promoted run so the recovery run
+    // executes and is classified.
+    await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 60 * 60 * 1000));
+    await heartbeat.resumeQueuedRuns();
 
     const livenessWake = await waitForValue(async () => {
       const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
@@ -5188,6 +5196,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     await heartbeat.reconcileStrandedAssignedIssues();
+    // Stranded-failure recovery is now scheduled with backoff (holds no slot);
+    // promote it past its delay and start the promoted run so the recovery run
+    // executes and is classified.
+    await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 60 * 60 * 1000));
+    await heartbeat.resumeQueuedRuns();
 
     const retryRun = await waitForValue(async () => {
       const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));

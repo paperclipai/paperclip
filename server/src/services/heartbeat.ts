@@ -203,8 +203,8 @@ import {
   readContinuationAttempt,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
-import { computeSameRootRetryDelayMs } from "./same-root-retry-cap.js";
-import { enforceSameRootRetryCap } from "./same-root-retry-gate.js";
+import { computeSameRootRetryDelayMs, type SameRootRetryPark } from "./same-root-retry-cap.js";
+import { enforceSameRootRetryCap, type SameRootRetryGateSource } from "./same-root-retry-gate.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -2032,6 +2032,25 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  /**
+   * When set, this wake mints an *automatic same-root retry*. The same-root cap
+   * is enforced atomically inside the mint transaction (advisory lock + count +
+   * insert under one lock), so a racing recovery path cannot slip a run past the
+   * limit. When allowed the run is inserted as `scheduled_retry` with exponential
+   * backoff + jitter — holding no concurrency slot and started only after commit
+   * by the retry-promotion loop, never immediately. When the `(root, epoch)`
+   * budget is exhausted the root is *parked*: no run is minted, the issue
+   * execution slot is released, and the last failure + next owner/action are left
+   * operator-visible. This is the single primitive every recovery mint point uses
+   * so process-loss, stranded-issue, and source-scoped recovery all apply the
+   * identical cap, backoff, and park behaviour.
+   */
+  sameRootRetry?: {
+    /** The source run being retried, used to resolve `(root, epoch)` and park detail. */
+    source: SameRootRetryGateSource;
+    /** Who should look at the parked issue next; defaults to the source's responsible user. */
+    nextOwner?: string | null;
+  };
 }
 
 type UsageTotals = {
@@ -16143,6 +16162,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        // Automatic same-root retry: enforce the cap atomically with the insert.
+        // The gate takes an advisory lock on (root, epoch) and counts inside this
+        // same transaction, so a racing recovery path cannot also mint past the
+        // limit. When allowed we insert `scheduled_retry` with exponential backoff
+        // (holds no slot, promoted later — never started immediately); on
+        // exhaustion we park the root and mint nothing.
+        let sameRootRetrySchedule:
+          | {
+              scheduledAt: Date;
+              attempt: number;
+              retryRootRunId: string;
+              retryEpoch: number;
+              retryOfRunId: string;
+            }
+          | null = null;
+        if (opts.sameRootRetry) {
+          const gate = await enforceSameRootRetryCap(tx, {
+            source: opts.sameRootRetry.source,
+            wakeReason: reason,
+            nextOwner: opts.sameRootRetry.nextOwner ?? null,
+          });
+          if (!gate.allowed) {
+            return { kind: "parked" as const, park: gate.park, source: opts.sameRootRetry.source };
+          }
+          const delayMs = computeSameRootRetryDelayMs(gate.attempt);
+          sameRootRetrySchedule = {
+            scheduledAt: new Date(Date.now() + delayMs),
+            attempt: gate.attempt,
+            retryRootRunId: gate.retryRootRunId,
+            retryEpoch: gate.retryEpoch,
+            retryOfRunId: opts.sameRootRetry.source.id,
+          };
+        }
+
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -16167,12 +16220,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId,
             invocationSource: source,
             triggerDetail,
-            status: "queued",
+            status: sameRootRetrySchedule ? "scheduled_retry" : "queued",
             responsibleUserId: await resolveQueuedResponsibleUserId(),
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: enrichedContextSnapshot,
             sessionIdBefore: sessionBefore,
             continuationAttempt,
+            ...(sameRootRetrySchedule
+              ? {
+                  retryOfRunId: sameRootRetrySchedule.retryOfRunId,
+                  retryRootRunId: sameRootRetrySchedule.retryRootRunId,
+                  retryEpoch: sameRootRetrySchedule.retryEpoch,
+                  scheduledRetryAt: sameRootRetrySchedule.scheduledAt,
+                  scheduledRetryAttempt: sameRootRetrySchedule.attempt,
+                  scheduledRetryReason: reason,
+                }
+              : {}),
           })
           .returning()
           .then((rows) => rows[0]);
@@ -16193,12 +16256,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "parked") {
+        const parkSource = outcome.source;
+        await logActivity(db, {
+          companyId: parkSource.companyId,
+          actorType: "system",
+          actorId: reason ?? "same_root_retry",
+          agentId,
+          runId: parkSource.id,
+          action: "issue.same_root_retry_parked",
+          entityType: "issue",
+          entityId: issueId ?? parkSource.id,
+          details: outcome.park,
+        });
+        // Release the execution slot so the parked issue is not stuck locked on the
+        // finalized source run. suppressImmediateRecovery avoids re-triggering
+        // recovery (which would just re-park) — the root stays operator-visible.
+        const fullSourceRun = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, parkSource.id))
+          .then((rows) => rows[0] ?? null);
+        if (fullSourceRun) {
+          await releaseIssueExecutionAndPromote(fullSourceRun, { suppressImmediateRecovery: true });
+        }
+        return null;
+      }
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
       }
 
       const newRun = outcome.run;
+      if (newRun.status === "scheduled_retry") {
+        // A same-root retry scheduled with backoff: it holds no concurrency slot
+        // and is promoted by the retry loop after its delay, so we neither publish
+        // a "queued" event nor try to start it now. Surface the schedule as a run
+        // event for operator visibility.
+        await appendRunEvent(newRun, 1, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Scheduled automatic same-root retry with backoff",
+          payload: {
+            retryOfRunId: newRun.retryOfRunId,
+            retryRootRunId: newRun.retryRootRunId,
+            retryEpoch: newRun.retryEpoch,
+            attempt: newRun.scheduledRetryAttempt,
+            scheduledAt: newRun.scheduledRetryAt
+              ? new Date(newRun.scheduledRetryAt).toISOString()
+              : null,
+          },
+        });
+        return newRun;
+      }
       publishLiveEvent({
         companyId: newRun.companyId,
         type: "heartbeat.run.queued",

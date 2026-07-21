@@ -39,7 +39,7 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
-import { enforceSameRootRetryCap, type SameRootRetryGateResult } from "../same-root-retry-gate.js";
+import { type SameRootRetryGateSource } from "../same-root-retry-gate.js";
 import {
   applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -119,6 +119,16 @@ type RecoveryWakeupOptions = {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  /**
+   * Mint an automatic same-root retry: the cap is enforced atomically inside the
+   * mint transaction and, when allowed, the run is scheduled with backoff (no
+   * slot held); on exhaustion the root is parked and nothing is minted. Mirrors
+   * the `sameRootRetry` option of the heartbeat service's `enqueueWakeup`.
+   */
+  sameRootRetry?: {
+    source: SameRootRetryGateSource;
+    nextOwner?: string | null;
+  };
 };
 
 type RecoveryWakeup = (
@@ -680,6 +690,17 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
+/**
+ * Whether a source run is a *failure* whose automatic re-drive should count
+ * against — and be throttled by — the same-root retry cap. Re-waking a run that
+ * finished normally (e.g. a stranded review participant whose run succeeded) is
+ * legitimate progress, not a retry, so it is exempt from the cap and backoff.
+ */
+function isFailureRetrySource(run: { status: string; errorCode: string | null }): boolean {
+  if (run.errorCode != null) return true;
+  return run.status === "failed" || run.status === "timed_out";
+}
+
 export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -1019,16 +1040,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
   }) {
-    // Consult the shared same-root cap before minting another recovery run so
-    // this path cannot bypass the limit by allocating a fresh run id. Only a
-    // lineage with a known source run is capped; a fresh dispatch (no
-    // retryOfRunId) starts its own root and is always allowed.
-    let gate: SameRootRetryGateResult | null = null;
+    // Resolve the source run so the shared same-root cap can be enforced
+    // atomically inside enqueueWakeup's mint transaction (advisory lock + count +
+    // scheduled_retry insert under one lock). This path cannot bypass the limit
+    // by allocating a fresh run id: the (root, epoch) budget, backoff scheduling,
+    // slot release, and park are all owned by the gated mint. Only a *failure*
+    // lineage with a known source run is capped: FALA #9734 is about automatic
+    // retries of a failing run, so a re-wake that continues a run which finished
+    // normally (e.g. re-enqueuing a stranded review participant whose run
+    // succeeded) is legitimate progress, not a retry, and must not be throttled
+    // or parked. A fresh dispatch (no retryOfRunId, or a missing source run)
+    // starts its own root and is always allowed.
+    let sameRootRetrySource: SameRootRetryGateSource | null = null;
     if (input.retryOfRunId) {
       const sourceRun = await db
         .select({
           id: heartbeatRuns.id,
           companyId: heartbeatRuns.companyId,
+          status: heartbeatRuns.status,
           retryRootRunId: heartbeatRuns.retryRootRunId,
           retryEpoch: heartbeatRuns.retryEpoch,
           errorCode: heartbeatRuns.errorCode,
@@ -1038,27 +1067,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, input.retryOfRunId))
         .then((rows) => rows[0] ?? null);
-      if (sourceRun) {
-        gate = await enforceSameRootRetryCap(db, { source: sourceRun, wakeReason: input.reason });
-        if (!gate.allowed) {
-          // Exhausted: do not create another recovery run/issue/comment. Leave
-          // the last failure and next owner/action operator-visible instead.
-          await logActivity(db, {
-            companyId: sourceRun.companyId,
-            actorType: "system",
-            actorId: input.reason,
-            agentId: input.agentId,
-            runId: input.retryOfRunId,
-            action: "issue.same_root_retry_parked",
-            entityType: "issue",
-            entityId: input.issueId,
-            details: gate.park,
-          });
-          return null;
-        }
+      if (sourceRun && isFailureRetrySource(sourceRun)) {
+        const { status: _status, ...gateSource } = sourceRun;
+        sameRootRetrySource = gateSource;
       }
     }
 
+    // For the capped (failure) path, enqueueWakeup enforces the cap atomically,
+    // stamps the source-run linkage + root/epoch inside the mint, records the park
+    // itself (with slot release) on exhaustion, and returns null — nothing else is
+    // needed here. For a non-failure re-wake the run is minted normally; we still
+    // record retryOfRunId below for traceability (lineage metadata, not part of
+    // the cap, so a post-insert stamp is race-free).
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -1079,18 +1099,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
         ...(input.extraContext ?? {}),
       }, "normal_model"),
+      ...(sameRootRetrySource
+        ? {
+            sameRootRetry: {
+              source: sameRootRetrySource,
+              nextOwner: sameRootRetrySource.responsibleUserId ?? null,
+            },
+          }
+        : {}),
     });
 
-    if (queued && input.retryOfRunId) {
+    if (queued && input.retryOfRunId && !sameRootRetrySource) {
       return db
         .update(heartbeatRuns)
-        .set({
-          retryOfRunId: input.retryOfRunId,
-          // Propagate the invariant root/epoch so the next recovery on this
-          // chain counts against the same budget regardless of which path mints it.
-          ...(gate?.allowed ? { retryRootRunId: gate.retryRootRunId, retryEpoch: gate.retryEpoch } : {}),
-          updatedAt: new Date(),
-        })
+        .set({ retryOfRunId: input.retryOfRunId, updatedAt: new Date() })
         .where(eq(heartbeatRuns.id, queued.id))
         .returning()
         .then((rows) => rows[0] ?? queued);
@@ -2894,15 +2916,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (input.recoveryCause === "configuration_incomplete") return;
     if (!input.action.ownerAgentId) return;
 
-    // Same-root cap: this recovery path mints a fresh run id too, so consult the
-    // shared gate before enqueuing so a stranded root cannot loop past the limit.
-    let gate: SameRootRetryGateResult | null = null;
+    // Same-root cap: this recovery path mints a fresh run id too, so resolve the
+    // stranded source run and let enqueueWakeup enforce the shared gate atomically
+    // inside its mint transaction (backoff scheduling, slot release, and park all
+    // owned there). A stranded root therefore cannot loop past the limit.
     const strandedRunId = input.latestRun?.id ?? null;
+    let sameRootRetrySource: SameRootRetryGateSource | null = null;
     if (strandedRunId) {
       const sourceRun = await db
         .select({
           id: heartbeatRuns.id,
           companyId: heartbeatRuns.companyId,
+          status: heartbeatRuns.status,
           retryRootRunId: heartbeatRuns.retryRootRunId,
           retryEpoch: heartbeatRuns.retryEpoch,
           errorCode: heartbeatRuns.errorCode,
@@ -2912,25 +2937,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, strandedRunId))
         .then((rows) => rows[0] ?? null);
-      if (sourceRun) {
-        gate = await enforceSameRootRetryCap(db, {
-          source: sourceRun,
-          wakeReason: "source_scoped_recovery_action",
-        });
-        if (!gate.allowed) {
-          await logActivity(db, {
-            companyId: sourceRun.companyId,
-            actorType: "system",
-            actorId: "source_scoped_recovery_action",
-            agentId: input.action.ownerAgentId,
-            runId: strandedRunId,
-            action: "issue.same_root_retry_parked",
-            entityType: "issue",
-            entityId: input.issue.id,
-            details: gate.park,
-          });
-          return;
-        }
+      if (sourceRun && isFailureRetrySource(sourceRun)) {
+        const { status: _status, ...gateSource } = sourceRun;
+        sameRootRetrySource = gateSource;
       }
     }
 
@@ -2959,16 +2968,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         strandedRunId,
         recoveryCause: input.recoveryCause,
       }, "status_only"),
+      ...(sameRootRetrySource
+        ? {
+            sameRootRetry: {
+              source: sameRootRetrySource,
+              nextOwner: sameRootRetrySource.responsibleUserId ?? null,
+            },
+          }
+        : {}),
     });
 
-    if (wake && strandedRunId) {
+    // Non-failure re-wakes are minted normally; record the source-run linkage for
+    // traceability (the capped path already stamps it atomically inside the mint).
+    if (wake && strandedRunId && !sameRootRetrySource) {
       await db
         .update(heartbeatRuns)
-        .set({
-          retryOfRunId: strandedRunId,
-          ...(gate?.allowed ? { retryRootRunId: gate.retryRootRunId, retryEpoch: gate.retryEpoch } : {}),
-          updatedAt: new Date(),
-        })
+        .set({ retryOfRunId: strandedRunId, updatedAt: new Date() })
         .where(eq(heartbeatRuns.id, wake.id));
     }
   }
