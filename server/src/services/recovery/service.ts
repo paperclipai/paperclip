@@ -1045,7 +1045,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // scheduled_retry insert under one lock). This path cannot bypass the limit
     // by allocating a fresh run id: the (root, epoch) budget, backoff scheduling,
     // slot release, and park are all owned by the gated mint. Only a *failure*
-    // lineage with a known source run is capped: FALA #9734 is about automatic
+    // lineage with a known source run is capped: #9734 is about automatic
     // retries of a failing run, so a re-wake that continues a run which finished
     // normally (e.g. re-enqueuing a stranded review participant whose run
     // succeeded) is legitimate progress, not a retry, and must not be throttled
