@@ -41,7 +41,10 @@ vi.mock("node:fs/promises", () => ({
 import { execute } from "./execute.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 
-function makeCtx(overrides: Record<string, unknown> = {}) {
+function makeCtx(
+  overrides: Record<string, unknown> = {},
+  contextOverrides: Record<string, unknown> = {},
+) {
   const onSpawn = vi.fn(async () => undefined);
   return {
     ctx: {
@@ -69,6 +72,7 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
         issueId: "issue-1",
         wakeReason: "manual",
         paperclipWake: null,
+        ...contextOverrides,
       },
       onLog: vi.fn(async () => undefined),
       onMeta: vi.fn(async () => undefined),
@@ -117,5 +121,56 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       onSpawn: async () => undefined,
     };
     expect(opts.onSpawn).toBeDefined();
+  });
+
+  it("runs from the realized issue workspace before configured cwd fallbacks", async () => {
+    const issueWorkspace = "/tmp/paperclip-issue-workspace";
+    const { ctx } = makeCtx(
+      { cwd: "/tmp/configured-cwd" },
+      {
+        paperclipWorkspace: {
+          cwd: issueWorkspace,
+          source: "task_session",
+          agentHome: "/tmp/agent-home",
+        },
+      },
+    );
+
+    await execute(ctx as any);
+
+    const mocked = vi.mocked(serverUtils.runChildProcess);
+    const opts = mocked.mock.calls.at(-1)?.[3] as Record<string, unknown>;
+    expect(opts.cwd).toBe(issueWorkspace);
+  });
+
+  it("keeps configured cwd precedence over the generic agent-home workspace", async () => {
+    const configuredCwd = "/tmp/configured-cwd";
+    const { ctx } = makeCtx(
+      { cwd: configuredCwd },
+      {
+        paperclipWorkspace: {
+          cwd: "/tmp/agent-home",
+          source: "agent_home",
+          agentHome: "/tmp/agent-home",
+        },
+      },
+    );
+
+    await execute(ctx as any);
+
+    const mocked = vi.mocked(serverUtils.runChildProcess);
+    const opts = mocked.mock.calls.at(-1)?.[3] as Record<string, unknown>;
+    expect(opts.cwd).toBe(configuredCwd);
+  });
+
+  it("preserves workspaceDir as the legacy cwd fallback", async () => {
+    const workspaceDir = "/tmp/legacy-workspace-dir";
+    const { ctx } = makeCtx({ workspaceDir });
+
+    await execute(ctx as any);
+
+    const mocked = vi.mocked(serverUtils.runChildProcess);
+    const opts = mocked.mock.calls.at(-1)?.[3] as Record<string, unknown>;
+    expect(opts.cwd).toBe(workspaceDir);
   });
 });

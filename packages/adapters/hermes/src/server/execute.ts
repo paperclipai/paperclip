@@ -480,8 +480,18 @@ export async function execute(
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
 
   // ── Resolve working directory ──────────────────────────────────────────
-  const cwd =
-    cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+  const workspaceContext =
+    ctxContext.paperclipWorkspace && typeof ctxContext.paperclipWorkspace === "object"
+      ? ctxContext.paperclipWorkspace as Record<string, unknown>
+      : {};
+  const workspaceCwd = cfgString(workspaceContext.cwd);
+  const workspaceSource = cfgString(workspaceContext.source);
+  const agentHome = cfgString(workspaceContext.agentHome);
+  const configuredCwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir);
+  const effectiveWorkspaceCwd = workspaceSource === "agent_home" && configuredCwd
+    ? undefined
+    : workspaceCwd;
+  const cwd = effectiveWorkspaceCwd || configuredCwd || agentHome || ".";
   try {
     await ensureAbsoluteDirectory(cwd);
   } catch {

@@ -74,7 +74,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
         status: "idle",
         adapterType: "process",
         adapterConfig: {},
-        runtimeConfig: {},
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
         permissions: {},
       },
       {
@@ -85,7 +85,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
         status: "idle",
         adapterType: "process",
         adapterConfig: {},
-        runtimeConfig: {},
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
         permissions: {},
       },
     ]);
@@ -116,6 +116,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       status: "in_review",
       priority: "medium",
       assigneeAgentId: reviewerAgentId,
+      responsibleUserId: "local-board",
       executionRunId: holderRunId,
       executionAgentNameKey: "coder",
       executionLockedAt: new Date(),
@@ -194,6 +195,164 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       .then((rows) => rows[0] ?? null);
 
     expect(issue?.executionRunId).toBe(holderRunId);
+  });
+
+  it("does not restore a released foreign run pointer when the assignee is re-woken", async () => {
+    const { companyId, coderAgentId, reviewerAgentId, issueId, holderRunId } =
+      await seedCrossAgentScenario({ holderStatus: "running" });
+
+    // Model an operator force-release after workspace configuration changes:
+    // the foreign recovery run is still alive, but it no longer owns this issue.
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+
+    // Keep the reviewer at its concurrency limit so this test observes the
+    // queued run deterministically without launching an adapter subprocess.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: reviewerAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      responsibleUserId: "local-board",
+      contextSnapshot: { wakeReason: "test_concurrency_holder" },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const freshRun = await heartbeat.wakeup(reviewerAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(freshRun).not.toBeNull();
+    expect(freshRun?.id).not.toBe(holderRunId);
+    expect(freshRun?.agentId).toBe(reviewerAgentId);
+    expect(freshRun?.status).toBe("queued");
+
+    const holder = await db
+      .select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, holderRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(holder).toEqual({ status: "running", agentId: coderAgentId });
+
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).not.toBe(holderRunId);
+  });
+
+  it("does not let the former owner reclaim a released run pointer on a later wake", async () => {
+    const { coderAgentId, issueId, holderRunId } =
+      await seedCrossAgentScenario({ holderStatus: "running" });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.wakeup(coderAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "manual",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "manual" },
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+    });
+
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+
+    const holder = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, holderRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(holder?.status).toBe("running");
+  });
+
+  it("keeps a repeated same-owner queued wake lock-free until claim", async () => {
+    const { companyId, reviewerAgentId, issueId } =
+      await seedCrossAgentScenario({ holderStatus: "running" });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+
+    // Saturate the current assignee so both wakes observe the issue run while
+    // it is still queued and therefore must not own the execution lock.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: reviewerAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      responsibleUserId: "local-board",
+      contextSnapshot: { wakeReason: "test_concurrency_holder" },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const wakeOptions = {
+      source: "assignment" as const,
+      triggerDetail: "system" as const,
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user" as const,
+      requestedByActorId: "local-board",
+    };
+
+    const queuedRun = await heartbeat.wakeup(reviewerAgentId, wakeOptions);
+    expect(queuedRun?.status).toBe("queued");
+
+    await heartbeat.wakeup(reviewerAgentId, wakeOptions);
+
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+
+    const stillQueued = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, queuedRun!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(stillQueued?.status).toBe("queued");
   });
 
   // Race-guard regression: the cancel UPDATE for the queued holder is pinned
