@@ -50,6 +50,7 @@ import {
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { redactSensitiveText } from "../command-redaction.js";
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -1792,13 +1793,15 @@ function describeErrorDiagnostics(err: unknown): {
   return { errorName, acpCode, causeMessage, retryable, stackPreview };
 }
 
-// Signals in a child stderr tail that a session-init failure is really an
-// auth/credential rejection (so it maps to the actionable connect-a-key code
-// rather than the opaque session-init code). Kept narrow so it only reclassifies
-// otherwise-uncoded failures (e.g. a JSON-RPC -32603 whose message is the bare
-// "Internal error").
-const STDERR_AUTH_INDICATOR_RE =
-  /\bauth\b|unauthor|forbidden|\b401\b|\b403\b|invalid[\s_-]*(?:api[\s_-]*)?key|invalid[\s_-]*credential|\bcredential|api[\s_-]*key|\blogin\b|x-api-key/i;
+// A genuine auth/credential FAILURE signal (so a failure maps to the actionable
+// connect-a-key code rather than the opaque session-init code). This must be
+// failure-shaped, not a mere mention: a backend outage that logs "loading api
+// key from credential store" while returning a 5xx is NOT an auth failure and
+// must keep its session-init classification. So we require an HTTP 401/403, an
+// explicit unauthorized/forbidden/permission-denied, an authentication failure,
+// or a credential/key/token that is invalid/expired/rejected/revoked.
+const AUTH_FAILURE_RE =
+  /\b40[13]\b|unauthor|forbidden|permission[\s_-]*denied|authentication[\s_-]*(?:failed|error)|(?:invalid|expired|revoked|rejected|bad|missing)[\s_-]*(?:api[\s_-]*)?(?:key|token|credentials?)|(?:api[\s_-]*key|token|credentials?|oauth)[\s\S]{0,32}?(?:is[\s_-]*)?(?:invalid|expired|revoked|rejected|not[\s_-]*authorized|unauthorized)|x-api-key[\s\S]{0,32}?(?:invalid|rejected|missing)/i;
 
 function classifyError(
   err: unknown,
@@ -1816,22 +1819,25 @@ function classifyError(
     ...(stackPreview ? { stackPreview } : {}),
     ...(phase ? { phase } : {}),
   };
-  const lower = message.toLowerCase();
-  const authLike = lower.includes("auth") || lower.includes("login") || lower.includes("credential");
-  if (authLike) {
+  // Only reclassify as connect-a-key when the error message carries a genuine
+  // auth-FAILURE signal (a 401/403, an invalid/expired credential, etc.), not a
+  // mere mention of "auth"/"credential" (which a backend outage also logs).
+  if (AUTH_FAILURE_RE.test(message)) {
     return {
       errorCode: "acpx_auth_required",
       errorMeta: { category: "auth", ...baseMeta },
     };
   }
   // A session-init failure whose message is opaque (no ACP_* code, e.g. a
-  // JSON-RPC -32603 "Internal error") but whose child stderr indicates an auth
-  // rejection is an actionable connect-a-key case, not a generic init failure.
+  // JSON-RPC -32603 "Internal error") but whose child stderr shows a genuine
+  // auth rejection is an actionable connect-a-key case, not a generic init
+  // failure. A generic "api key"/"credential" mention alongside a non-auth
+  // terminal error (e.g. a 5xx backend outage) must NOT reclassify.
   if (
     phase === "ensure_session" &&
     !acpCode &&
     childStderrTail &&
-    STDERR_AUTH_INDICATOR_RE.test(childStderrTail)
+    AUTH_FAILURE_RE.test(childStderrTail)
   ) {
     return {
       errorCode: "acpx_auth_required",
@@ -2111,11 +2117,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         typeof classified.errorMeta?.causeMessage === "string"
           ? classified.errorMeta.causeMessage
           : null;
-      const composedMessage = composeSessionInitFailureMessage({
-        message,
-        causeMessage,
-        childStderrTail,
-      });
+      // The composed message becomes the tenant-facing, persisted
+      // errorMessage/summary. The raw child stderr (and cause) can carry
+      // secrets (tokens, Authorization headers, api-key values), so redact
+      // before surfacing. The full unredacted tail still reached the internal
+      // run log and the acpx.error event above.
+      const composedMessage = redactSensitiveText(
+        composeSessionInitFailureMessage({
+          message,
+          causeMessage,
+          childStderrTail,
+        }),
+      );
       await cleanupRemoteBridges(prepared);
       // Auto-selected (non-explicit) runs throw so the adapter's execute()
       // wrapper catches it and falls back to the proven CLI lane. Explicit

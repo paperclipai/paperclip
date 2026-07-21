@@ -1029,6 +1029,49 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.summary).toContain(stderrTail);
   });
 
+  it("redacts secrets from the child stderr before surfacing it in the tenant-facing message", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const runStderrDir = path.join(stateDir, "run-stderr");
+    await fs.mkdir(runStderrDir, { recursive: true });
+    const secret = "sk-ant-api03-SUPERSECRETVALUE0123456789";
+    const stderrTail = `session/new failed: request used Authorization: Bearer ${secret}`;
+    await fs.writeFile(path.join(runStderrDir, "run-redact-1.log"), `${stderrTail}\n`, "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      allowSessionInitLaneFallback: () => false,
+      createRuntime: () => ({
+        ensureSession: async () => {
+          throw new Error("Internal error");
+        },
+        startTurn: () => ({
+          events: (async function* () {})(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-redact-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    // The secret must not leak into the persisted, tenant-facing fields...
+    expect(result.errorMessage).not.toContain(secret);
+    expect(result.summary).not.toContain(secret);
+    expect(result.errorMessage).toContain("***REDACTED***");
+    // ...but the non-secret diagnostic context is still surfaced.
+    expect(result.errorMessage).toContain("session/new failed");
+  });
+
   it("classifies an auth-indicating session-init stderr as acpx_auth_required (returned result)", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -1064,6 +1107,81 @@ describe("shared ACPX engine runtime behavior", () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("acpx_auth_required");
+  });
+
+  it("classifies a genuine credential rejection (no HTTP status) as acpx_auth_required", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const runStderrDir = path.join(stateDir, "run-stderr");
+    await fs.mkdir(runStderrDir, { recursive: true });
+    const stderrTail = "authentication failed: invalid api key for provider";
+    await fs.writeFile(path.join(runStderrDir, "run-auth-3.log"), `${stderrTail}\n`, "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      allowSessionInitLaneFallback: () => false,
+      createRuntime: () => ({
+        ensureSession: async () => {
+          throw new Error("Internal error");
+        },
+        startTurn: () => ({
+          events: (async function* () {})(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-auth-3",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.errorCode).toBe("acpx_auth_required");
+  });
+
+  it("does NOT classify a backend outage as auth just because stderr mentions api key/credential", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const runStderrDir = path.join(stateDir, "run-stderr");
+    await fs.mkdir(runStderrDir, { recursive: true });
+    // Mentions "api key" and "credential" (setup logging) but the terminal
+    // error is a 5xx backend outage, not a credential rejection.
+    const stderrTail =
+      "loading api key from credential store; upstream backend returned 503 Service Unavailable";
+    await fs.writeFile(path.join(runStderrDir, "run-outage-1.log"), `${stderrTail}\n`, "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      allowSessionInitLaneFallback: () => false,
+      createRuntime: () => ({
+        ensureSession: async () => {
+          throw new Error("Internal error");
+        },
+        startTurn: () => ({
+          events: (async function* () {})(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-outage-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.errorCode).toBe("acpx_session_init_failed");
   });
 
   it("carries the auth classification on the thrown error for a fallback-eligible run", async () => {
