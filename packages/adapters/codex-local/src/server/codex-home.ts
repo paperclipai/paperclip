@@ -26,12 +26,6 @@ export const CODEX_SYNC_ALLOWLIST = [
   "skills",
 ] as const;
 
-/**
- * Allowlist entries that hold credentials and must be staged with mode `0600`
- * (never the world-readable file default). Currently just `auth.json`.
- */
-const CODEX_SYNC_CREDENTIAL_FILES: ReadonlySet<string> = new Set(SYMLINKED_SHARED_FILES);
-
 export type ManagedCodexMcpGateway = {
   name: string;
   endpointPath: string;
@@ -351,8 +345,8 @@ export interface StageCodexHomeForSyncOptions {
 /**
  * Copies a single allowlist entry from the managed home into the staged dir,
  * dereferencing symlinks to bytes. Missing entries are skipped (keyring mode has
- * no `auth.json`; some homes have no `config.json`). Credential files are
- * written `0600`. Any non-`ENOENT` error propagates to the caller.
+ * no `auth.json`; some homes have no `config.json`). Every staged regular file is
+ * written `0600` (least privilege). Any non-`ENOENT` error propagates to the caller.
  */
 async function stageCodexHomeEntry(
   sourceHome: string,
@@ -380,12 +374,16 @@ async function stageCodexHomeEntry(
   // resolved bytes (the live single-use auth token), which we write as a plain
   // regular file so copy-back and in-sandbox auth read real bytes.
   const bytes = await fs.readFile(source);
-  const isCredential = CODEX_SYNC_CREDENTIAL_FILES.has(entry);
-  await fs.writeFile(target, bytes, { mode: isCredential ? 0o600 : 0o644 });
-  if (isCredential) {
-    // Explicit chmod so the credential mode is 0600 regardless of umask.
-    await fs.chmod(target, 0o600);
-  }
+  // Stage every regular file `0600`, not just `auth.json`. The staged dir is a
+  // 0700 mkdtemp and each file is read back only by the owner (Codex in-sandbox +
+  // copy-back), so nothing needs group/other read. This is least privilege and,
+  // critically, keeps secret-bearing entries protected: `config.toml` embeds the
+  // managed MCP `Authorization = "Bearer …"` header (and the source writer
+  // persists it 0600), so a per-file credential allowlist would silently
+  // downgrade it to 0644 in a world-readable tmpdir.
+  await fs.writeFile(target, bytes, { mode: 0o600 });
+  // Explicit chmod so the mode is 0600 regardless of the process umask.
+  await fs.chmod(target, 0o600);
 }
 
 /**
@@ -400,9 +398,10 @@ async function stageCodexHomeEntry(
  *   land as real files, never dangling links.
  * - **Missing-but-optional entries are skipped** — no `auth.json` in
  *   keyring-credential mode, or no `config.json`, is not an error.
- * - **`mkdtemp` guarantees the staged dir is `0700`** on POSIX, and the staged
- *   `auth.json` is written `0600`, so staged credentials are never
- *   group/other-readable.
+ * - **`mkdtemp` guarantees the staged dir is `0700`** on POSIX, and every staged
+ *   regular file is written `0600` (least privilege), so staged credentials —
+ *   `auth.json` (OAuth token) and `config.toml` (managed MCP bearer header) —
+ *   are never group/other-readable.
  * - **Fail-closed** — any *unexpected* I/O error removes the partial temp dir
  *   and re-throws, so a run never proceeds with a partial or empty home.
  *

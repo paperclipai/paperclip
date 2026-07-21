@@ -860,6 +860,48 @@ describe("stageCodexHomeForSync", () => {
     }
   });
 
+  // config.toml carries the managed MCP `Authorization: Bearer …` header and is
+  // secret-bearing; the staged copy must be 0600, not the world-readable default.
+  it("writes the staged config.toml (managed MCP bearer header) with mode 0600", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-toml-mode-"));
+    let staged: string | null = null;
+    try {
+      const home = path.join(root, "codex-home");
+      await fs.mkdir(home, { recursive: true });
+      // Mirror the source writer: config.toml holds an MCP gateway bearer token
+      // and is persisted 0600 on disk.
+      await fs.writeFile(
+        path.join(home, "config.toml"),
+        "[mcp_servers.paperclip]\nheaders = { Authorization = \"Bearer secret-token\" }\n",
+        { mode: 0o600 },
+      );
+      staged = await stageCodexHomeForSync(home, { runId: "run-toml-mode" });
+      const mode = (await fs.stat(path.join(staged, "config.toml"))).mode & 0o777;
+      expect(mode).toBe(0o600);
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // Least privilege: no staged regular file needs group/other read, so every
+  // one (config.json, instructions.md — not just credentials) is staged 0600.
+  it("writes every staged regular file with mode 0600", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-all-mode-"));
+    let staged: string | null = null;
+    try {
+      const { home } = await buildFakeHome(root);
+      staged = await stageCodexHomeForSync(home, { runId: "run-all-mode" });
+      for (const entry of ["auth.json", "config.toml", "config.json", "instructions.md"]) {
+        const mode = (await fs.stat(path.join(staged, entry))).mode & 0o777;
+        expect(mode, `${entry} should be staged 0600`).toBe(0o600);
+      }
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   // C2 — staged dir must be 0700 (mkdtemp guarantees this on POSIX).
   it("creates the staged dir with mode 0700", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-dir-"));
