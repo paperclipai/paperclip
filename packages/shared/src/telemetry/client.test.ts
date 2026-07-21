@@ -588,4 +588,28 @@ describe("TelemetryClient bounded pending-retry store", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2); // no timer fired
     client.stop();
   });
+
+  // A batch evicted to keep `pending` within the bound must also have its
+  // already-scheduled retry timer cancelled — otherwise each overflow strands a
+  // live timer for a batch that no longer exists, and the timer set grows
+  // unbounded even though `pending` stays bounded.
+  it("cancels the retry timer of a batch evicted from the bounded store", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429 });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { client } = makeClient(undefined, { maxEventsPerBatch: 1, maxPendingRetryBatches: 1 });
+
+    client.trackDynamic("plugin.telemetry.evt", { n: 1 });
+    client.trackDynamic("plugin.telemetry.evt", { n: 2 });
+    client.trackDynamic("plugin.telemetry.evt", { n: 3 });
+    await client.flush();
+
+    // 3 chunks each 429 -> enqueued; every enqueue past the first overflows the
+    // bound (1) and evicts the previous batch. Only the newest batch survives, so
+    // exactly one retry timer should remain live (the two evicted timers were
+    // cancelled), not one per failed chunk.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(1);
+    client.stop();
+  });
 });

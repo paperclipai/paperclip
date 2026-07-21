@@ -70,12 +70,16 @@ const BATCH_ID_HEX_LENGTH = 32;
  * re-sent verbatim on every attempt — re-mixing events would change the content
  * the server hashed under this id and trigger a 409. `attempt` is 1-based (the
  * value of the attempt about to be made); `nextAttemptAt` is an epoch-ms gate.
+ * `timerId` is this batch's scheduled retry wake-up (if any) — held on the record
+ * so it can be cancelled when the batch is evicted from the bounded store,
+ * otherwise the timer would keep firing for a batch that no longer exists.
  */
 interface PendingBatch {
   events: TelemetryEvent[];
   batchId: string;
   attempt: number;
   nextAttemptAt: number;
+  timerId?: ReturnType<typeof setTimeout>;
 }
 
 export class TelemetryClient {
@@ -284,7 +288,8 @@ export class TelemetryClient {
       this.caps.backoff.maxDelayMs,
     );
     this.enqueuePending({
-      ...batch,
+      events: batch.events,
+      batchId: batch.batchId,
       attempt: batch.attempt + 1,
       nextAttemptAt: Date.now() + delayMs,
     });
@@ -327,6 +332,11 @@ export class TelemetryClient {
     const bound = Math.max(0, this.caps.maxPendingRetryBatches);
     while (this.pending.length > bound) {
       const evicted = this.pending.shift();
+      // Cancel the evicted batch's scheduled retry so its timer doesn't keep the
+      // wake-up alive for a batch that is no longer in the store. Without this a
+      // flush that overflows the bound would strand one live timer per evicted
+      // batch even though `pending` itself stays bounded.
+      if (evicted) this.cancelRetryTimer(evicted);
       this.warn(
         `pending-retry store full (bound=${bound}); evicted oldest batch ${evicted?.batchId}; ${evicted?.events.length ?? 0} event(s) lost`,
       );
@@ -336,14 +346,23 @@ export class TelemetryClient {
     // `maxPendingRetryBatches: 0`) it has no pending work, so scheduling a timer
     // for it would strand thousands of no-op timers behind a small bound.
     if (this.pending.includes(batch)) {
-      this.scheduleDrain(batch.nextAttemptAt);
+      this.scheduleDrain(batch);
     }
   }
 
-  private scheduleDrain(at: number): void {
-    const delay = Math.max(0, at - Date.now());
+  /** Cancels a pending batch's scheduled retry wake-up, if it has one. */
+  private cancelRetryTimer(batch: PendingBatch): void {
+    if (batch.timerId === undefined) return;
+    clearTimeout(batch.timerId);
+    this.retryTimers.delete(batch.timerId);
+    batch.timerId = undefined;
+  }
+
+  private scheduleDrain(batch: PendingBatch): void {
+    const delay = Math.max(0, batch.nextAttemptAt - Date.now());
     const timer = setTimeout(() => {
       this.retryTimers.delete(timer);
+      batch.timerId = undefined;
       void this.drainPending();
     }, delay);
     // Don't keep the process alive for a best-effort retry (CLI exits promptly).
@@ -351,6 +370,7 @@ export class TelemetryClient {
       (timer as { unref(): void }).unref();
     }
     this.retryTimers.add(timer);
+    batch.timerId = timer;
   }
 
   /** Re-sends every pending batch whose `nextAttemptAt` is due. */
