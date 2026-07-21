@@ -3,21 +3,23 @@
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { CONNECTABLE_APP_DEFINITIONS } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
+const setSearchParamsMock = vi.hoisted(() => vi.fn());
+const mockSearch = vi.hoisted(() => ({ value: "" }));
 
 vi.mock("@/api/tools", () => ({
-  toolsApi: {
-    listGallery: (companyId: string) => listGalleryMock(companyId),
-  },
+  toolsApi: { listGallery: (companyId: string) => listGalleryMock(companyId) },
 }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
   useNavigate: () => navigateMock,
+  useSearchParams: () => [new URLSearchParams(mockSearch.value), setSearchParamsMock],
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -51,34 +53,22 @@ async function flushReact() {
   }
 }
 
-function galleryEntry(overrides: Record<string, unknown>) {
-  return {
-    key: "github",
-    name: "GitHub",
-    logoUrl: "https://example.com/github.png",
-    tagline: "Let agents open PRs and issues.",
-    authKind: "oauth",
-    transportTemplate: { transport: "mcp_remote", url: "https://api.github.com/mcp" },
-    credentialFields: [],
-    recommendedDefaults: {},
-    urlPatterns: [],
-    ...overrides,
-  };
+function tileFor(name: string): HTMLButtonElement | undefined {
+  return Array.from(document.body.querySelectorAll("button")).find((b) =>
+    b.textContent?.includes(name),
+  ) as HTMLButtonElement | undefined;
 }
 
-describe("Browse store door (PAP-13254 door 1)", () => {
+const GITHUB = CONNECTABLE_APP_DEFINITIONS.find((a) => a.slug === "github")!;
+const SLACK = CONNECTABLE_APP_DEFINITIONS.find((a) => a.slug === "slack")!;
+
+describe("Browse store door — Connections v3 §3", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
-    listGalleryMock.mockResolvedValue({
-      apps: [
-        galleryEntry({ key: "zapier", name: "Zapier", tagline: "Connect automations." }),
-        galleryEntry({ key: "github", name: "GitHub", tagline: "Open PRs and issues." }),
-        galleryEntry({ key: "slack", name: "Slack", tagline: "Post messages to channels." }),
-        galleryEntry({ key: "acme", name: "Acme CRM", tagline: "Sync deals and contacts." }),
-      ],
-    });
+    mockSearch.value = "";
+    listGalleryMock.mockResolvedValue({ apps: CONNECTABLE_APP_DEFINITIONS });
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -102,94 +92,57 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     await flushReact();
   }
 
-  it("renders the store header, popular grid, gallery, and BYO card", async () => {
+  it("renders the header, a category rail, and the gallery", async () => {
     await renderBrowse();
-
     const text = container.textContent ?? "";
     expect(text).toContain("Browse");
-    expect(text).toContain("Connect Zapier or your own MCP server.");
-    expect(text).toContain("Popular");
     expect(text).toContain("All apps");
-    expect(text).toContain("GitHub");
-    expect(text).toContain("Slack");
-    expect(text).toContain("Acme CRM");
-    // Bring-your-own is a first-class row in the store.
-    expect(text).toContain("Connect your own tool");
+    // Category rail carries the categories present in the catalog.
+    expect(container.querySelector('nav[aria-label="Categories"]')).toBeTruthy();
+    expect(text).toContain(GITHUB.name);
+    expect(text).toContain(SLACK.name);
   });
 
-  it("enables Zapier and custom URLs while fading unfinished integrations", async () => {
+  it("every tile is clickable and opens the wizard for that app (no 'Coming soon')", async () => {
     await renderBrowse();
-
-    const zapierTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Zapier"),
-    );
-    const githubTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("GitHub"),
-    );
-    const tile = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Acme CRM"),
-    );
-    const byoCard = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Connect your own tool"),
-    );
-
-    expect(zapierTiles).toHaveLength(2);
-    expect(zapierTiles.every((button) => !button.disabled)).toBe(true);
-    expect(githubTiles.every((button) => button.disabled)).toBe(true);
-    expect(tile?.disabled).toBe(true);
-    expect(byoCard?.disabled).toBe(false);
-    expect(tile?.textContent).toContain("Coming soon");
-    expect(zapierTiles[0]?.textContent).toContain("Connect");
-
+    expect(container.textContent).not.toContain("Coming soon");
+    const tile = tileFor(SLACK.name);
+    expect(tile).toBeTruthy();
+    expect(tile?.disabled).toBe(false);
     await act(async () => {
-      zapierTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      tile?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1&source=zapier");
-
-    await act(async () => {
-      byoCard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1");
+    expect(navigateMock).toHaveBeenCalledWith(`/apps/connect/${SLACK.slug}`);
   });
 
-  it("filters the gallery by the search query", async () => {
+  it("filters by search query via the URL param", async () => {
+    mockSearch.value = "q=slack";
     await renderBrowse();
-
-    const input = container.querySelector<HTMLInputElement>('input[type="search"]');
-    expect(input).toBeTruthy();
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
-      "value",
-    )?.set;
-    await act(async () => {
-      setter?.call(input, "slack");
-      input?.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await flushReact();
-
     const text = container.textContent ?? "";
     expect(text).toContain("Results (1)");
-    expect(text).toContain("Slack");
-    expect(text).not.toContain("Acme CRM");
-    // Popular grid is hidden while searching.
-    expect(text).not.toContain("Popular");
+    expect(text).toContain(SLACK.name);
+    expect(text).not.toContain(GITHUB.name);
   });
 
-  it("keeps the custom URL option available when gallery search has no matches", async () => {
+  it("surfaces a suggest-a-connector card in empty search results", async () => {
+    mockSearch.value = "q=definitely-not-a-connector";
     await renderBrowse();
+    const text = container.textContent ?? "";
+    expect(text).toContain("Suggest a connector");
+    expect(text).toContain("No connectors match");
+  });
 
-    const input = container.querySelector<HTMLInputElement>('input[type="search"]');
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
-      "value",
-    )?.set;
+  it("selecting a category writes the category URL param", async () => {
+    await renderBrowse();
+    const devButton = Array.from(
+      container.querySelectorAll('nav[aria-label="Categories"] button'),
+    ).find((b) => b.textContent?.includes("Developer"));
+    expect(devButton).toBeTruthy();
     await act(async () => {
-      setter?.call(input, "missing app");
-      input?.dispatchEvent(new Event("input", { bubbles: true }));
+      devButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    await flushReact();
-
-    expect(container.textContent).toContain("No planned apps match");
-    expect(container.textContent).toContain("Connect your own tool");
+    expect(setSearchParamsMock).toHaveBeenCalled();
+    const [params] = setSearchParamsMock.mock.calls.at(-1)!;
+    expect((params as URLSearchParams).get("category")).toBe("developer");
   });
 });
