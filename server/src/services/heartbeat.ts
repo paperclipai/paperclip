@@ -281,7 +281,10 @@ import {
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { serverVersion } from "../version.js";
-import { recordTerminalFailure } from "./terminal-failure-ledger.js";
+import {
+  recordTerminalFailure,
+  type CreateTerminalFailureReportIssue,
+} from "./terminal-failure-ledger.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -9154,6 +9157,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         errorCode:
           | "agent_not_invokable"
           | "budget_blocked"
+          | "timer_only_policy"
           | "issue_not_found"
           | "issue_reassigned"
           | "issue_cancelled"
@@ -9180,6 +9184,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       input.retryReason ?? readNonEmptyString(contextSnapshot.retryReason) ?? run.scheduledRetryReason ?? null;
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const projectId = readNonEmptyString(contextSnapshot.projectId);
+
+    // Fail-closed timer-only mediation at the promotion boundary: a non-timer
+    // scheduled retry must not be promoted into the queue while the agent is
+    // timer-only. claimQueuedRun re-checks this too, but suppressing here avoids
+    // a promote→queue→cancel churn and keeps the invariant enforced at every
+    // authoritative transition (enqueue, promote, claim).
+    if (run.invocationSource !== "timer" && parseHeartbeatPolicy(agent).timerOnly) {
+      return {
+        allowed: false,
+        reason:
+          "Scheduled retry suppressed because the agent is configured for timer-only execution",
+        errorCode: "timer_only_policy",
+        issueId,
+        details: { invocationSource: run.invocationSource },
+      };
+    }
 
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId,
@@ -10664,6 +10684,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    // Fail-closed timer-only mediation. This is the authoritative gate: every
+    // run — a queued assignment, a directly-inserted automation run, a promoted
+    // scheduled retry, or a continuation/recovery run — reaches "running" only
+    // through this atomic queued→running claim. Re-reading the agent row here
+    // (see `getAgent` above) and rejecting any non-timer source before the claim
+    // guarantees timer and non-timer runs never overlap while timerOnly is set,
+    // even when the run was enqueued before the policy transition.
+    if (run.invocationSource !== "timer" && parseHeartbeatPolicy(agent).timerOnly) {
+      await cancelRunInternal(
+        run.id,
+        `Cancelled because the agent is configured for timer-only execution; ` +
+          `source "${run.invocationSource}" may not start.`,
+        { errorCode: "timer_only_policy" },
+      );
+      logger.info(
+        { runId: run.id, agentId: run.agentId, invocationSource: run.invocationSource },
+        "claimQueuedRun: fail-closed timer-only gate cancelled non-timer run",
+      );
+      return null;
+    }
+
     const context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
@@ -11360,6 +11401,64 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  /**
+   * Resolve the canonical root run id of a retry lineage by walking the
+   * `retryOfRunId` chain to its origin. All retries of the same original
+   * failure resolve to the same root, so the terminal-failure dedupe key
+   * collapses the whole lineage to one ledger row. A pre-propagated
+   * `contextSnapshot.rootRunId`, if present, is honored directly.
+   */
+  async function resolveCanonicalRootRunId(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<string> {
+    const ctxRoot = readNonEmptyString(parseObject(run.contextSnapshot).rootRunId);
+    if (ctxRoot) return ctxRoot;
+    let current = run;
+    const seen = new Set<string>([current.id]);
+    while (current.retryOfRunId && !seen.has(current.retryOfRunId)) {
+      seen.add(current.retryOfRunId);
+      const parent = await getRun(current.retryOfRunId);
+      if (!parent) break;
+      current = parent;
+    }
+    return current.id;
+  }
+
+  /**
+   * Create the top-level internal report issue for a terminal control-plane
+   * failure. The report is UNASSIGNED and in `backlog` status so it never
+   * triggers an assignment wakeup, mention, or automation for any agent — it is
+   * a durable fail-closed record, not a work assignment. Deduped a second time
+   * by `idempotencyKey` for defense-in-depth on top of the ledger unique index.
+   */
+  const createTerminalFailureReportIssue: CreateTerminalFailureReportIssue = async (input) => {
+    const scope = input.issueId ? `issue ${input.issueId}` : "a generic (issue-less) run";
+    const report = await issuesSvc.create(input.companyId, {
+      title: `[Fail-closed] Terminal control-plane failure (${input.failureCause}) — agent ${input.agentId}`,
+      description: [
+        `The Paperclip control plane recorded a terminal failure that the worker ` +
+          `could not self-report (\`${input.failureCause}\`).`,
+        ``,
+        `- Scope: ${scope}`,
+        `- Run ID: \`${input.runId}\``,
+        `- Root run ID: \`${input.rootRunId}\``,
+        `- Agent ID: \`${input.agentId}\``,
+        `- Dedupe key: \`${input.dedupeKey}\``,
+        ``,
+        `This is a durable, unassigned internal report. Re-delivery of the same ` +
+          `failure is deduplicated by the terminal-failure ledger and will not ` +
+          `create another report.`,
+      ].join("\n"),
+      status: "backlog",
+      priority: "high",
+      originKind: "control_plane_terminal_failure",
+      originId: input.dedupeKey,
+      idempotencyKey: `terminal-failure-report:${input.companyId}:${input.dedupeKey}`,
+      allowDuplicate: false,
+    });
+    return { issueId: report.id };
+  };
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -11512,24 +11611,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         failureReason: finalizedRun.error ?? undefined,
       });
 
-      // Fail-closed ledger: record process_lost as a visible issue-comment with
-      // dedupe so the same failure is never double-counted. Only fires when the
-      // run has issue context — generic heartbeat runs have no issue to attach to.
+      // Fail-closed ledger: record every process_lost terminal failure — the
+      // worker cannot self-report it. This fires for issue-scoped runs AND for
+      // generic (issue-less) timer runs: the ledger is a dedicated durable table
+      // plus a top-level internal report, so it is reachable with or without an
+      // issue. Dedupe is atomic (DB unique key) keyed by the canonical root run
+      // id resolved from the retry lineage, so a retry chain of the same failure
+      // collapses to one ledger row and one top-level report.
       const finalizedRunContext = parseObject(finalizedRun.contextSnapshot);
-      const finalizedRunIssueId = readNonEmptyString(finalizedRunContext.issueId);
-      if (finalizedRunIssueId) {
-        const rootRunId = readNonEmptyString(finalizedRunContext.rootRunId) ?? finalizedRun.id;
-        await recordTerminalFailure(db, {
-          companyId: finalizedRun.companyId,
-          agentId: finalizedRun.agentId,
-          issueId: finalizedRunIssueId,
-          runId: finalizedRun.id,
-          rootRunId,
-          failureCause: "process_lost",
-        }).catch((err) => {
-          logger.warn({ err, runId: finalizedRun!.id }, "terminal-failure-ledger: failed to record process_lost");
-        });
-      }
+      const finalizedRunIssueId = readNonEmptyString(finalizedRunContext.issueId) ?? null;
+      const rootRunId = await resolveCanonicalRootRunId(finalizedRun);
+      await recordTerminalFailure(db, {
+        companyId: finalizedRun.companyId,
+        agentId: finalizedRun.agentId,
+        issueId: finalizedRunIssueId,
+        runId: finalizedRun.id,
+        rootRunId,
+        failureCause: "process_lost",
+        createReportIssue: createTerminalFailureReportIssue,
+      }).catch((err) => {
+        logger.warn({ err, runId: finalizedRun!.id }, "terminal-failure-ledger: failed to record process_lost");
+      });
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       const retryAgent = await getAgent(run.agentId);
@@ -16955,6 +17057,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     prepareHotRestartShutdown,
     reconcileHotRestartAdoption,
     reapOrphanedRuns,
+    // Authoritative queued→running claim and scheduled-retry promotion.
+    // Exposed so tests can exercise the real transition (and its timer-only
+    // fail-closed gate) without spawning an adapter, which happens separately
+    // in executeRun.
+    claimQueuedRun,
+    promoteScheduledRetryRun,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
     // gate on suppression should prefer this over the env-only resolver.

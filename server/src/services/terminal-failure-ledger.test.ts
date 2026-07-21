@@ -1,183 +1,280 @@
 /**
- * Tests for the terminal failure fail-closed ledger (FALA-880).
+ * Terminal control-plane failure ledger — real-DB atomicity/dedupe tests
+ * (FALA-880).
  *
- * Verifies:
- * - First delivery creates exactly one ledger comment.
- * - Re-delivery of the same (agentId, rootRunId, cause) deduplicates:
- *   no new comment, redeliveryCount incremented.
- * - dedupe key normalization is stable.
+ * These run against an embedded Postgres and exercise the REAL ledger table
+ * (`terminal_failure_ledger`) with its DB unique index and ON CONFLICT upsert,
+ * plus the REAL top-level report issue creation via `issueService.create`. They
+ * prove:
+ *   - issue-scoped process_lost → 1 ledger row + 1 top-level report + 1 comment
+ *   - generic (issue-less) process_lost → 1 ledger row + 1 top-level report + 0 comments
+ *   - re-delivery (sequential AND concurrent) → 0 duplicate ledger, 0 duplicate
+ *     report, redelivery counter bumps
+ *   - a retry lineage sharing one canonical root collapses to a single record
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { buildDedupeKey, normalizeFailureCause, recordTerminalFailure } from "./terminal-failure-ledger.js";
-import type { TerminalFailureInput } from "./terminal-failure-ledger.js";
+import { randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { and, eq, sql } from "drizzle-orm";
+import {
+  agents,
+  companies,
+  createDb,
+  issueComments,
+  issues,
+  terminalFailureLedger,
+} from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "../__tests__/helpers/embedded-postgres.js";
+import { issueService } from "./issues.js";
+import {
+  buildDedupeKey,
+  recordTerminalFailure,
+  type CreateTerminalFailureReportIssue,
+} from "./terminal-failure-ledger.js";
 
-// ---------------------------------------------------------------------------
-// Pure-function tests (no DB required)
-// ---------------------------------------------------------------------------
+const REPORT_ORIGIN_KIND = "control_plane_terminal_failure";
 
-describe("normalizeFailureCause", () => {
-  it("lowercases and collapses punctuation", () => {
-    expect(normalizeFailureCause("process_lost")).toBe("process_lost");
-    expect(normalizeFailureCause("Process Lost")).toBe("process_lost");
-    expect(normalizeFailureCause("process-lost!")).toBe("process_lost");
-    expect(normalizeFailureCause("  PROCESS LOST  ")).toBe("process_lost");
-  });
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-  it("produces stable output for equivalent inputs", () => {
-    const a = normalizeFailureCause("process_lost");
-    const b = normalizeFailureCause("process lost");
-    const c = normalizeFailureCause("process-lost");
-    expect(a).toBe(b);
-    expect(b).toBe(c);
-  });
-});
-
-describe("buildDedupeKey", () => {
-  it("combines agentId, rootRunId, and normalized cause", () => {
-    const key = buildDedupeKey("agent-1", "root-run-1", "process_lost");
-    expect(key).toBe("agent-1|root-run-1|process_lost");
-  });
-
-  it("normalizes the failure cause in the key", () => {
-    const key1 = buildDedupeKey("a", "r", "process_lost");
-    const key2 = buildDedupeKey("a", "r", "Process Lost");
-    expect(key1).toBe(key2);
-  });
-
-  it("differentiates on agentId", () => {
-    const key1 = buildDedupeKey("agent-1", "root", "process_lost");
-    const key2 = buildDedupeKey("agent-2", "root", "process_lost");
-    expect(key1).not.toBe(key2);
-  });
-
-  it("differentiates on rootRunId", () => {
-    const key1 = buildDedupeKey("agent", "root-1", "process_lost");
-    const key2 = buildDedupeKey("agent", "root-2", "process_lost");
-    expect(key1).not.toBe(key2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// DB-backed behaviour — mocked drizzle
-// ---------------------------------------------------------------------------
-
-const mockSelect = vi.fn();
-const mockInsert = vi.fn();
-const mockUpdate = vi.fn();
-
-// Mock the logger so we don't need transport config.
-vi.mock("../middleware/logger.js", () => ({
-  logger: { info: vi.fn(), warn: vi.fn() },
-}));
-
-// Minimal fake drizzle Db shaped for the paths we exercise.
-function buildMockDb(existingComment: { id: string; metadata: Record<string, unknown> } | null) {
-  const selectRows = existingComment ? [existingComment] : [];
-  const insertValues: Record<string, unknown>[] = [];
-  const updatePatches: Array<{ set: Record<string, unknown>; where: unknown }> = [];
-
-  const db = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve(selectRows),
-        }),
-      }),
-    }),
-    insert: (table: unknown) => ({
-      values: (row: Record<string, unknown>) => {
-        insertValues.push(row);
-        return Promise.resolve();
-      },
-    }),
-    update: (table: unknown) => ({
-      set: (patch: Record<string, unknown>) => ({
-        where: (where: unknown) => {
-          updatePatches.push({ set: patch, where });
-          return Promise.resolve();
-        },
-      }),
-    }),
-    _insertValues: insertValues,
-    _updatePatches: updatePatches,
-  };
-
-  return db as unknown as import("@paperclipai/db").Db;
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres terminal-failure ledger tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
 }
 
-const BASE_INPUT: TerminalFailureInput = {
-  companyId: "company-1",
-  agentId: "agent-1",
-  issueId: "issue-1",
-  runId: "run-1",
-  rootRunId: "root-1",
-  failureCause: "process_lost",
-};
+describeEmbeddedPostgres("terminal-failure-ledger — real DB atomicity/dedupe", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
-describe("recordTerminalFailure — first delivery", () => {
-  it("creates exactly one ledger comment", async () => {
-    const db = buildMockDb(null);
-    const result = await recordTerminalFailure(db, BASE_INPUT);
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("terminal-failure-ledger-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(terminalFailureLedger);
+    await db.delete(issueComments);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seed() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Ledger Co",
+      status: "active",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Ledger Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true } },
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  async function seedIssue(companyId: string, agentId: string) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Source issue",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    return issueId;
+  }
+
+  // Real top-level report creation — unassigned, non-waking backlog issue.
+  function makeCreateReportIssue(): CreateTerminalFailureReportIssue {
+    const svc = issueService(db);
+    return async (input) => {
+      const report = await svc.create(input.companyId, {
+        title: `[Fail-closed] Terminal control-plane failure (${input.failureCause})`,
+        description: `Dedupe key: ${input.dedupeKey}`,
+        status: "backlog",
+        priority: "high",
+        originKind: REPORT_ORIGIN_KIND,
+        originId: input.dedupeKey,
+        idempotencyKey: `terminal-failure-report:${input.companyId}:${input.dedupeKey}`,
+        allowDuplicate: false,
+      });
+      return { issueId: report.id };
+    };
+  }
+
+  async function countLedger(companyId: string, dedupeKey: string) {
+    return db
+      .select({ id: terminalFailureLedger.id })
+      .from(terminalFailureLedger)
+      .where(
+        and(
+          eq(terminalFailureLedger.companyId, companyId),
+          eq(terminalFailureLedger.dedupeKey, dedupeKey),
+        ),
+      )
+      .then((rows) => rows.length);
+  }
+
+  async function countReportIssues(companyId: string) {
+    return db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, REPORT_ORIGIN_KIND)))
+      .then((rows) => rows.length);
+  }
+
+  async function countLedgerComments(companyId: string, dedupeKey: string) {
+    return db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.authorType, "system"),
+          sql`${issueComments.metadata} ->> 'terminalFailureDedupeKey' = ${dedupeKey}`,
+        ),
+      )
+      .then((rows) => rows.length);
+  }
+
+  it("issue-scoped: 1 ledger row + 1 top-level report + 1 comment", async () => {
+    const { companyId, agentId } = await seed();
+    const issueId = await seedIssue(companyId, agentId);
+    const rootRunId = randomUUID();
+    const dedupeKey = buildDedupeKey(agentId, rootRunId, "process_lost");
+
+    const result = await recordTerminalFailure(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId: rootRunId,
+      rootRunId,
+      failureCause: "process_lost",
+      createReportIssue: makeCreateReportIssue(),
+    });
 
     expect(result.kind).toBe("created");
-    expect(typeof result.commentId).toBe("string");
-    expect(result.dedupeKey).toBe(buildDedupeKey("agent-1", "root-1", "process_lost"));
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const dbAny = db as any;
-    expect(dbAny._insertValues).toHaveLength(1);
-    expect(dbAny._updatePatches).toHaveLength(0);
-
-    const inserted = dbAny._insertValues[0] as Record<string, unknown>;
-    const meta = inserted.metadata as Record<string, unknown>;
-    expect(meta.terminalFailureDedupeKey).toBe(result.dedupeKey);
-    expect(meta.redeliveryCount).toBe(0);
-  });
-});
-
-describe("recordTerminalFailure — re-delivery (deduplicate)", () => {
-  it("does not create a duplicate comment; increments redeliveryCount", async () => {
-    const existingMeta = {
-      terminalFailureDedupeKey: buildDedupeKey("agent-1", "root-1", "process_lost"),
-      redeliveryCount: 0,
-    };
-    const db = buildMockDb({ id: "existing-comment-1", metadata: existingMeta });
-    const result = await recordTerminalFailure(db, BASE_INPUT);
-
-    expect(result.kind).toBe("deduplicated");
-    expect(result.commentId).toBe("existing-comment-1");
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const dbAny = db as any;
-    // No new comment inserted.
-    expect(dbAny._insertValues).toHaveLength(0);
-    // Existing comment updated with incremented count.
-    expect(dbAny._updatePatches).toHaveLength(1);
-    const patch = dbAny._updatePatches[0].set as Record<string, unknown>;
-    const patchedMeta = patch.metadata as Record<string, unknown>;
-    expect(patchedMeta.redeliveryCount).toBe(1);
+    expect(result.reportIssueId).toBeTruthy();
+    expect(result.ledgerCommentId).toBeTruthy();
+    expect(await countLedger(companyId, dedupeKey)).toBe(1);
+    expect(await countReportIssues(companyId)).toBe(1);
+    expect(await countLedgerComments(companyId, dedupeKey)).toBe(1);
   });
 
-  it("duplicate 0 — re-delivery of same event produces 0 new top-level comments", async () => {
-    // Simulate: first delivery → create; then two re-deliveries → 0 new comments.
-    const dedupeKey = buildDedupeKey("agent-1", "root-1", "process_lost");
+  it("generic (issue-less) run: 1 ledger row + 1 top-level report + 0 comments", async () => {
+    const { companyId, agentId } = await seed();
+    const rootRunId = randomUUID();
+    const dedupeKey = buildDedupeKey(agentId, rootRunId, "process_lost");
 
-    // First delivery: no existing comment.
-    const dbFirst = buildMockDb(null);
-    const first = await recordTerminalFailure(dbFirst, BASE_INPUT);
+    const result = await recordTerminalFailure(db, {
+      companyId,
+      agentId,
+      issueId: null,
+      runId: rootRunId,
+      rootRunId,
+      failureCause: "process_lost",
+      createReportIssue: makeCreateReportIssue(),
+    });
+
+    expect(result.kind).toBe("created");
+    expect(result.reportIssueId).toBeTruthy();
+    expect(result.ledgerCommentId).toBeNull();
+    expect(await countLedger(companyId, dedupeKey)).toBe(1);
+    expect(await countReportIssues(companyId)).toBe(1);
+    expect(await countLedgerComments(companyId, dedupeKey)).toBe(0);
+  });
+
+  it("sequential re-delivery: 0 duplicate ledger, 0 duplicate report, counter bumps", async () => {
+    const { companyId, agentId } = await seed();
+    const rootRunId = randomUUID();
+    const dedupeKey = buildDedupeKey(agentId, rootRunId, "process_lost");
+    const createReportIssue = makeCreateReportIssue();
+
+    const first = await recordTerminalFailure(db, {
+      companyId, agentId, issueId: null, runId: rootRunId, rootRunId,
+      failureCause: "process_lost", createReportIssue,
+    });
+    const second = await recordTerminalFailure(db, {
+      companyId, agentId, issueId: null, runId: rootRunId, rootRunId,
+      failureCause: "process_lost", createReportIssue,
+    });
+
     expect(first.kind).toBe("created");
-
-    // Second delivery (re-delivery 1): comment now exists.
-    const dbSecond = buildMockDb({ id: first.commentId, metadata: { terminalFailureDedupeKey: dedupeKey, redeliveryCount: 0 } });
-    const second = await recordTerminalFailure(dbSecond, BASE_INPUT);
     expect(second.kind).toBe("deduplicated");
-    expect((dbSecond as any)._insertValues).toHaveLength(0);
+    expect(second.redeliveryCount).toBe(1);
+    expect(await countLedger(companyId, dedupeKey)).toBe(1);
+    expect(await countReportIssues(companyId)).toBe(1);
+  });
 
-    // Third delivery (re-delivery 2): still no new comment.
-    const dbThird = buildMockDb({ id: first.commentId, metadata: { terminalFailureDedupeKey: dedupeKey, redeliveryCount: 1 } });
-    const third = await recordTerminalFailure(dbThird, BASE_INPUT);
-    expect(third.kind).toBe("deduplicated");
-    expect((dbThird as any)._insertValues).toHaveLength(0);
+  it("concurrent re-delivery (race): atomic upsert → 1 ledger, 1 report, exactly one created", async () => {
+    const { companyId, agentId } = await seed();
+    const rootRunId = randomUUID();
+    const dedupeKey = buildDedupeKey(agentId, rootRunId, "process_lost");
+    const createReportIssue = makeCreateReportIssue();
+
+    const N = 6;
+    const results = await Promise.all(
+      Array.from({ length: N }, () =>
+        recordTerminalFailure(db, {
+          companyId, agentId, issueId: null, runId: rootRunId, rootRunId,
+          failureCause: "process_lost", createReportIssue,
+        }),
+      ),
+    );
+
+    const created = results.filter((r) => r.kind === "created").length;
+    const deduped = results.filter((r) => r.kind === "deduplicated").length;
+    expect(created).toBe(1);
+    expect(deduped).toBe(N - 1);
+    expect(await countLedger(companyId, dedupeKey)).toBe(1);
+    expect(await countReportIssues(companyId)).toBe(1);
+
+    const [row] = await db
+      .select({ redeliveryCount: terminalFailureLedger.redeliveryCount })
+      .from(terminalFailureLedger)
+      .where(eq(terminalFailureLedger.dedupeKey, dedupeKey));
+    expect(row.redeliveryCount).toBe(N - 1);
+  });
+
+  it("retry lineage sharing a canonical root collapses to one record", async () => {
+    const { companyId, agentId } = await seed();
+    const rootRunId = randomUUID();
+    const retryRunId = randomUUID(); // a later retry of the same failure
+    const dedupeKey = buildDedupeKey(agentId, rootRunId, "process_lost");
+    const createReportIssue = makeCreateReportIssue();
+
+    // First failure of the origin run.
+    await recordTerminalFailure(db, {
+      companyId, agentId, issueId: null, runId: rootRunId, rootRunId,
+      failureCause: "process_lost", createReportIssue,
+    });
+    // The retry fails too, but carries the SAME canonical root.
+    const retry = await recordTerminalFailure(db, {
+      companyId, agentId, issueId: null, runId: retryRunId, rootRunId,
+      failureCause: "process_lost", createReportIssue,
+    });
+
+    expect(retry.kind).toBe("deduplicated");
+    expect(await countLedger(companyId, dedupeKey)).toBe(1);
+    expect(await countReportIssues(companyId)).toBe(1);
   });
 });
