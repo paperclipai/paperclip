@@ -26,7 +26,12 @@ def transcribe(ogg_path, model, workdir=None):
         raise TranscriptionError(str(exc)) from exc
 
     txt_path = prefix + ".txt"
-    if not os.path.exists(txt_path):
-        raise TranscriptionError("whisper produced no output")
-    with open(txt_path, "r", encoding="utf-8") as fh:
-        return fh.read().strip()
+    try:
+        if not os.path.exists(txt_path):
+            raise TranscriptionError("whisper produced no output")
+        with open(txt_path, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except TranscriptionError:
+        raise
+    except Exception as exc:
+        raise TranscriptionError(f"failed to read transcript: {exc}") from exc

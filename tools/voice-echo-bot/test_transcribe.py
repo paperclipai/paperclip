@@ -37,6 +37,20 @@ class TestTranscribe(unittest.TestCase):
             with self.assertRaises(transcribe.TranscriptionError):
                 transcribe.transcribe(ogg, "model.bin", workdir=workdir)
 
+    def test_raises_when_whisper_produces_no_output(self):
+        workdir = tempfile.mkdtemp()
+        ogg = os.path.join(workdir, "in.oga")
+        open(ogg, "wb").close()
+
+        def fake_run(cmd, **kwargs):
+            # Both ffmpeg and whisper succeed, but don't create the .txt file
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("transcribe.subprocess.run", side_effect=fake_run):
+            with self.assertRaises(transcribe.TranscriptionError) as ctx:
+                transcribe.transcribe(ogg, "model.bin", workdir=workdir)
+            self.assertIn("whisper produced no output", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
