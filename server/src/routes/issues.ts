@@ -191,6 +191,20 @@ import {
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
 
+/**
+ * multer decodes multipart filenames as latin1 per RFC 7578.
+ * Browsers send UTF-8, so non-ASCII names (e.g. Korean) get mangled.
+ * Re-encode as latin1 bytes then decode as UTF-8 to recover the original name.
+ */
+function fixMulterFilename(raw: string): string {
+  if (!raw) return raw;
+  try {
+    return Buffer.from(raw, "latin1").toString("utf8");
+  } catch {
+    return raw;
+  }
+}
+
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
@@ -10443,6 +10457,8 @@ export function issueRoutes(
       res.status(400).json({ error: "Missing file field 'file'" });
       return;
     }
+    // multer decodes multipart filenames as latin1; re-decode as UTF-8 for non-ASCII names
+    const decodedFilename = fixMulterFilename(file.originalname);
     const contentType = normalizeContentType(file.mimetype);
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: "Attachment is empty" });
@@ -10459,7 +10475,7 @@ export function issueRoutes(
     const stored = await storage.putFile({
       companyId,
       namespace: `issues/${issueId}`,
-      originalFilename: file.originalname || null,
+      originalFilename: decodedFilename || null,
       contentType,
       body: file.buffer,
     });
