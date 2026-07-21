@@ -771,6 +771,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     }
     env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+    Object.assign(env, managedMcp.env);
     if (!hasExplicitApiKey && authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
