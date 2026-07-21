@@ -406,6 +406,81 @@ describe("TelemetryClient batched retry + backoff", () => {
     expect(warn).toHaveBeenCalled();
     client.stop();
   });
+
+  // Issue 1 (PR #9946): a transient upstream 5xx on the primary endpoint must
+  // fall through to the healthy secondary endpoint instead of returning early.
+  it("falls through to the secondary endpoint on a transient 5xx", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 }) // primary endpoint: transient
+      .mockResolvedValueOnce({ ok: true }); // secondary endpoint: healthy
+    vi.stubGlobal("fetch", fetchMock);
+    // Empty endpoint => the two built-in DEFAULT_ENDPOINTS are used.
+    const { client } = makeClient(undefined, { endpoint: "" });
+
+    client.track("install.started", {});
+    await client.flush();
+
+    // Both endpoints tried within a single attempt; delivered on the secondary,
+    // so no retry is queued.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    client.stop();
+  });
+
+  // Issue 1 (PR #9946): when every endpoint returns a transient 5xx the status
+  // is still surfaced as retryable (not swallowed).
+  it("surfaces the transient status for retry when all endpoints 5xx", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 502 }) // primary
+      .mockResolvedValueOnce({ ok: false, status: 502 }) // secondary
+      .mockResolvedValue({ ok: true }); // retry succeeds
+    vi.stubGlobal("fetch", fetchMock);
+    const { client } = makeClient(undefined, {
+      endpoint: "",
+      backoff: { baseDelayMs: 1_000, maxDelayMs: 30_000, maxAttempts: 5, jitterRatio: 0.25 },
+    });
+
+    client.track("install.started", {});
+    await client.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(2); // both endpoints 502 -> queued for retry
+
+    await vi.advanceTimersByTimeAsync(1_000); // attempt 2 -> ok on primary
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    client.stop();
+  });
+
+  // Issue 3 (PR #9946): an out-of-range `Retry-After` hint is clamped to
+  // maxDelayMs rather than overflowing the timer range into a near-immediate
+  // (Node-clamped ~1ms) retry.
+  it("caps a large Retry-After hint at maxDelayMs", async () => {
+    const retryAfterResponse = {
+      ok: false,
+      status: 429,
+      headers: { get: (name: string) => (name === "retry-after" ? "999999999" : null) },
+    };
+    const fetchMock = vi.fn().mockResolvedValueOnce(retryAfterResponse).mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+    const { client } = makeClient(undefined, {
+      backoff: { baseDelayMs: 1_000, maxDelayMs: 30_000, maxAttempts: 5, jitterRatio: 0.25 },
+    });
+
+    client.track("install.started", {});
+    await client.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Well before the cap: without clamping the huge hint overflows the timer
+    // range and Node fires it near-immediately, so this would already be 2.
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // At the cap the retry fires.
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    client.stop();
+  });
 });
 
 // Phase 6 (PAP-2869): the pending-retry store is bounded at
@@ -453,6 +528,29 @@ describe("TelemetryClient bounded pending-retry store", () => {
       .map((b) => b.batchId as string);
     expect(retriedIds.sort()).toEqual([midId, newestId].sort());
     expect(retriedIds).not.toContain(oldestId);
+    client.stop();
+  });
+
+  // Issue 2 (PR #9946): a batch that is immediately evicted by the bound must
+  // NOT leave a retry timer behind. With maxPendingRetryBatches: 0 every failed
+  // batch is discarded on enqueue, so no timer should ever fire.
+  it("schedules no retry timer for a batch evicted on enqueue (bound 0)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429 });
+    vi.stubGlobal("fetch", fetchMock);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { client } = makeClient(undefined, { maxEventsPerBatch: 1, maxPendingRetryBatches: 0 });
+
+    client.trackDynamic("plugin.telemetry.evt", { n: 1 });
+    client.trackDynamic("plugin.telemetry.evt", { n: 2 });
+    await client.flush();
+
+    // 2 initial attempts (one per chunk); each 429 is enqueued then immediately
+    // evicted by the 0 bound, so nothing is retried.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalled(); // eviction logged
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // no timer fired
     client.stop();
   });
 });

@@ -249,7 +249,15 @@ export class TelemetryClient {
       );
       return;
     }
-    const delayMs = outcome.retryAfterMs ?? this.computeBackoffMs(batch.attempt);
+    // Cap the delay at maxDelayMs. `computeBackoffMs` is already capped, but a
+    // server `Retry-After` hint is not — an out-of-range value could otherwise
+    // overflow the runtime timer range and be clamped by Node to a near-immediate
+    // timeout, causing rapid retries. The cap keeps every retry within the
+    // configured backoff ceiling.
+    const delayMs = Math.min(
+      outcome.retryAfterMs ?? this.computeBackoffMs(batch.attempt),
+      this.caps.backoff.maxDelayMs,
+    );
     this.enqueuePending({
       ...batch,
       attempt: batch.attempt + 1,
@@ -298,7 +306,13 @@ export class TelemetryClient {
         `pending-retry store full (bound=${bound}); evicted oldest batch ${evicted?.batchId}; ${evicted?.events.length ?? 0} event(s) lost`,
       );
     }
-    this.scheduleDrain(batch.nextAttemptAt);
+    // Only schedule a wake-up if this batch actually survived eviction. When the
+    // batch is immediately evicted by the bound (e.g. a large failed flush, or
+    // `maxPendingRetryBatches: 0`) it has no pending work, so scheduling a timer
+    // for it would strand thousands of no-op timers behind a small bound.
+    if (this.pending.includes(batch)) {
+      this.scheduleDrain(batch.nextAttemptAt);
+    }
   }
 
   private scheduleDrain(at: number): void {
@@ -331,14 +345,19 @@ export class TelemetryClient {
 
   /**
    * POSTs a serialized envelope, trying each endpoint in order. Returns the
-   * definitive outcome: `ok` on a 2xx, the HTTP `status` on a non-2xx response
-   * (no endpoint fallback — the endpoints front the same backend, so a real
-   * status is authoritative), or `network` when every endpoint threw.
+   * definitive outcome: `ok` on a 2xx; the HTTP `status` on a definitive non-2xx
+   * response (4xx incl. 429, which the shared API gateway fronts for every
+   * endpoint, so it is authoritative — stop here); or `network` when every
+   * endpoint threw. A transient upstream 5xx (502/503/504) does NOT stop the
+   * loop: a sibling endpoint may be healthy, so we fall through to it and only
+   * surface the last transient status if every endpoint returns one — matching
+   * the pre-retry loop's endpoint-fallback behavior.
    */
   private async postEnvelope(
     body: string,
   ): Promise<{ kind: "ok" } | { kind: "status"; status: number; retryAfterMs?: number } | { kind: "network" }> {
     const endpoints = this.resolveEndpoints();
+    let lastTransient: { kind: "status"; status: number; retryAfterMs?: number } | undefined;
     for (const endpoint of endpoints) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
@@ -350,14 +369,27 @@ export class TelemetryClient {
           signal: controller.signal,
         });
         if (response.ok) return { kind: "ok" };
-        return { kind: "status", status: response.status, retryAfterMs: parseRetryAfterMs(response) };
+        const status = { kind: "status" as const, status: response.status, retryAfterMs: parseRetryAfterMs(response) };
+        // Transient upstream 5xx: remember it and try the next endpoint.
+        if (this.isTransientServerStatus(response.status)) {
+          lastTransient = status;
+          continue;
+        }
+        return status;
       } catch {
         // Network/timeout on this endpoint — try the next built-in endpoint.
       } finally {
         clearTimeout(timer);
       }
     }
-    return { kind: "network" };
+    // Every endpoint failed: surface the last transient status (still retryable)
+    // if we saw one, otherwise report a pure network failure.
+    return lastTransient ?? { kind: "network" };
+  }
+
+  /** Upstream 5xx that a healthy sibling endpoint may still be able to serve. */
+  private isTransientServerStatus(status: number): boolean {
+    return status === 502 || status === 503 || status === 504;
   }
 
   private warn(message: string): void {
