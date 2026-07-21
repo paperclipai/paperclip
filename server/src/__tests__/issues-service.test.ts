@@ -5243,6 +5243,21 @@ describeEmbeddedPostgres("issueService.checkout pending interaction guard", () =
     expect(checkedOut.checkoutRunId).toBe(runId);
     expect(checkedOut.executionRunId).toBe(runId);
   });
+
+  it("allows checkout when the claimed heartbeat run is no longer available", async () => {
+    const { agentId, issueId, runId } = await seedPendingInteractionCheckoutFixture({
+      source: "issue.interaction",
+      wakeReason: "issue_commented",
+      interactionId: "interaction-1",
+    });
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["in_review"], runId);
+
+    expect(checkedOut.status).toBe("in_progress");
+    expect(checkedOut.checkoutRunId).toBe(runId);
+    expect(checkedOut.executionRunId).toBe(runId);
+  });
 });
 
 describeEmbeddedPostgres("accepted plan decomposition", () => {

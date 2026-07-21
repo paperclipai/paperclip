@@ -4667,7 +4667,8 @@ export function issueService(db: Db) {
       .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, input.checkoutRunId)))
       .then((rows) => rows[0] ?? null);
 
-    return !isInteractionOrCommentWakeContext(run?.contextSnapshot ?? null);
+    if (!run) return false;
+    return !isInteractionOrCommentWakeContext(run.contextSnapshot);
   }
 
   return {

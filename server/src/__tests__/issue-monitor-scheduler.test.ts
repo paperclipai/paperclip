@@ -336,7 +336,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const result = await heartbeat.tickTimers(tickAt);
 
     expect(result.enqueued).toBe(0);
-    expect(result.skipped).toBe(0);
+    expect(result.skipped).toBe(1);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
     expect(issue.status).toBe("in_review");

@@ -6515,7 +6515,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let skipped = 0;
 
     for (const due of dueMonitors) {
-      if (await isIssueMonitorSuppressedByPendingInteraction(due)) continue;
+      if (await isIssueMonitorSuppressedByPendingInteraction(due)) {
+        skipped += 1;
+        continue;
+      }
 
       const claimed = await db.transaction(async (tx) => {
         const [updated] = await tx
