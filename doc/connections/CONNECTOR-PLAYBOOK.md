@@ -357,3 +357,7 @@ Linear's real-vendor evidence belongs in [PAP-12373](/PAP/issues/PAP-12373). The
 - A call against a disallowed team/project is denied.
 - Revocation removes Linear tools and blocks execution.
 - Audit rows include company, connection, run/issue, agent/user actor, tool, decision, reason code, and outcome.
+### AppDefinition catalog authoring
+
+Connector proposals now target the versioned `AppDefinition` contract in `packages/shared/src/types/app-definition.ts`. Seed data is one JSON file per provider under `packages/shared/src/app-definitions/`; regenerate Wave 1 with `pnpm connections:ingest-app-definitions`. The generator parses all 99 captured templates, validates required placeholders, OAuth ownership modes, and API-key placement, and produces deterministic output for review. FIRST-30 remains authoritative for `riskTier` and `requiredResourceFilters`; managed ownership modes stay data-visible but runtime-hidden until availability is injected.
+

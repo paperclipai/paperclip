@@ -152,6 +152,8 @@ export {
   type AppGalleryKey,
   type AppGalleryTransportTemplate,
 } from "./tool-app-gallery.js";
+export { APP_DEFINITIONS } from "./app-definitions.generated.js";
+export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export {
   humanizeConnectionDisplayName,
   connectionDisplaySecondaryHint,
