@@ -22,5 +22,7 @@ describe("STATE_MANIFEST", () => {
     }
     expect(STATE_MANIFEST.find((entry) => entry.id === "secrets_master_key")?.resolve({ homeDir, instanceId: "live" })[0])
       .toBe(path.join(homeDir, "instances", "live", "secrets", "master.key"));
+    expect(STATE_MANIFEST.find((entry) => entry.id === "codex_agent_home")?.resolve({ homeDir, instanceId: "live" }))
+      .toContain(path.join(homeDir, "instances", "live", "companies", "*", "agents", "*", "codex-home"));
   });
 });

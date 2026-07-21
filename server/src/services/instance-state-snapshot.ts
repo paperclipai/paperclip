@@ -66,6 +66,19 @@ async function expandPattern(pattern: string): Promise<string[]> {
   const segments = pattern.slice(parsed.root.length).split(path.sep);
   let current = [parsed.root];
   for (const segment of segments) {
+    if (segment === "**") {
+      const directories: string[] = [];
+      const visit = async (directory: string): Promise<void> => {
+        if (!(await exists(directory))) return;
+        directories.push(directory);
+        for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+          if (entry.isDirectory()) await visit(path.join(directory, entry.name));
+        }
+      };
+      for (const base of current) await visit(base);
+      current = directories;
+      continue;
+    }
     if (!segment.includes("*")) {
       current = current.map((base) => path.join(base, segment));
       continue;
@@ -104,6 +117,7 @@ export type InstanceStateSnapshotResult = {
   sizeBytes: number;
   sha256: string;
   entryCount: number;
+  retentionObjects: Array<{ objectKey: string; retentionDays: number; sizeBytes: number; sha256: string; entryCount: number }>;
   startedAt: string;
   finishedAt: string;
 };
@@ -125,30 +139,50 @@ export function createInstanceStateSnapshotService(opts: {
     const startedAt = new Date();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-state-snapshot-"));
     try {
-      const stageDir = path.join(tempDir, "stage");
-      let entryCount = 0;
-      for (const entry of manifest) {
-        if (entry.disposition === "db" || entry.disposition === "cache" || entry.disposition === "ephemeral") continue;
-        for (const pattern of entry.resolve(context)) {
-          for (const source of await expandPattern(pattern)) {
-            const root = source === homeRoot || source.startsWith(homeRoot + path.sep) ? homeRoot : userRoot;
-            const rootName = root === homeRoot ? "paperclip-home" : "user-home";
-            await copyEntry(entry, source, path.join(stageDir, rootName, path.relative(root, source)));
-            entryCount += 1;
+      const timestamp = startedAt.toISOString().replace(/[:.]/g, "-");
+      const eligible = manifest.filter((entry) => entry.disposition !== "db" && entry.disposition !== "cache" && entry.disposition !== "ephemeral");
+      const writeArchive = async (entries: readonly StateClassEntry[], objectKey: string, label: string) => {
+        const stageDir = path.join(tempDir, `stage-${label}`);
+        let entryCount = 0;
+        for (const entry of entries) {
+          for (const pattern of entry.resolve(context)) {
+            for (const source of await expandPattern(pattern)) {
+              const root = source === homeRoot || source.startsWith(homeRoot + path.sep) ? homeRoot : userRoot;
+              const rootName = root === homeRoot ? "paperclip-home" : "user-home";
+              await copyEntry(entry, source, path.join(stageDir, rootName, path.relative(root, source)));
+              entryCount += 1;
+            }
           }
         }
+        await fs.mkdir(stageDir, { recursive: true });
+        await fs.writeFile(path.join(stageDir, "snapshot-manifest.json"), JSON.stringify({ version: 1, createdAt: startedAt.toISOString(), entries: entries.map(({ resolve: _resolve, ...entry }) => entry) }, null, 2));
+        const archivePath = path.join(tempDir, `${label}.tar.gz`);
+        await execFileAsync("tar", ["-czf", archivePath, "-C", stageDir, "."]);
+        const encryptedPath = `${archivePath}.enc`;
+        await opts.encryptionProvider.encrypt(archivePath, encryptedPath);
+        const encryptedStat = await fs.stat(encryptedPath);
+        const sha256 = createHash("sha256");
+        for await (const chunk of createReadStream(encryptedPath)) sha256.update(chunk);
+        await opts.storageProvider.putObject({ objectKey, body: createReadStream(encryptedPath), contentType: "application/vnd.paperclip.state-snapshot", contentLength: encryptedStat.size });
+        return { objectKey, sizeBytes: encryptedStat.size, sha256: sha256.digest("hex"), entryCount };
+      };
+
+      const objectKey = `instance-state/${context.instanceId ?? "default"}/${timestamp}.tar.gz.enc`;
+      const durable = await writeArchive(eligible.filter((entry) => !entry.retention?.days), objectKey, "durable");
+      const retentionGroups = new Map<number, StateClassEntry[]>();
+      for (const entry of eligible) {
+        const days = entry.retention?.days;
+        if (!days) continue;
+        const group = retentionGroups.get(days) ?? [];
+        group.push(entry);
+        retentionGroups.set(days, group);
       }
-      await fs.writeFile(path.join(stageDir, "snapshot-manifest.json"), JSON.stringify({ version: 1, createdAt: startedAt.toISOString(), entries: manifest.map(({ resolve: _resolve, ...entry }) => entry) }, null, 2));
-      const archivePath = path.join(tempDir, "snapshot.tar.gz");
-      await execFileAsync("tar", ["-czf", archivePath, "-C", stageDir, "."]);
-      const encryptedPath = `${archivePath}.enc`;
-      await opts.encryptionProvider.encrypt(archivePath, encryptedPath);
-      const encryptedStat = await fs.stat(encryptedPath);
-      const objectKey = `instance-state/${context.instanceId ?? "default"}/${startedAt.toISOString().replace(/[:.]/g, "-")}.tar.gz.enc`;
-      const sha256 = createHash("sha256");
-      for await (const chunk of createReadStream(encryptedPath)) sha256.update(chunk);
-      await opts.storageProvider.putObject({ objectKey, body: createReadStream(encryptedPath), contentType: "application/vnd.paperclip.state-snapshot", contentLength: encryptedStat.size });
-      const result = { objectKey, sizeBytes: encryptedStat.size, sha256: sha256.digest("hex"), entryCount, startedAt: startedAt.toISOString(), finishedAt: new Date().toISOString() };
+      const retentionObjects: InstanceStateSnapshotResult["retentionObjects"] = [];
+      for (const [retentionDays, entries] of retentionGroups) {
+        const retained = await writeArchive(entries, `retention/${retentionDays}-days/instance-state/${context.instanceId ?? "default"}/${timestamp}.tar.gz.enc`, `retention-${retentionDays}`);
+        retentionObjects.push({ ...retained, retentionDays });
+      }
+      const result = { ...durable, entryCount: durable.entryCount + retentionObjects.reduce((sum, item) => sum + item.entryCount, 0), retentionObjects, startedAt: startedAt.toISOString(), finishedAt: new Date().toISOString() };
       await fs.mkdir(markerDir, { recursive: true });
       await fs.writeFile(path.join(markerDir, "state-snapshot.success.json"), JSON.stringify(result));
       await fs.rm(path.join(markerDir, "state-snapshot.failure"), { force: true });

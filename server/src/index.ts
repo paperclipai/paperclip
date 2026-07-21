@@ -60,6 +60,7 @@ import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runt
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
+import { configureRunLogS3Defaults } from "./services/run-log-store.js";
 import { createAesStateSnapshotEncryptionProvider, createInstanceStateSnapshotService } from "./services/instance-state-snapshot.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -592,6 +593,14 @@ export async function startServer(): Promise<StartedServer> {
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
   const storageProvider = createStorageProviderFromConfig(config);
+  configureRunLogS3Defaults({
+    enabled: process.env.PAPERCLIP_K8S_IN_CLUSTER === "true" && config.storageProvider === "s3",
+    bucket: config.storageS3Bucket,
+    region: config.storageS3Region,
+    endpoint: config.storageS3Endpoint,
+    prefix: config.storageS3Prefix,
+    forcePathStyle: config.storageS3ForcePathStyle,
+  });
   const stateSnapshotInstanceId = resolvePaperclipInstanceId();
   const stateSnapshotKeyRaw = process.env.PAPERCLIP_STATE_SNAPSHOT_KEY?.trim();
   const stateSnapshotKey = stateSnapshotKeyRaw
