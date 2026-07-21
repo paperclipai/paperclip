@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   buildSshEnvLabFixtureConfig,
   getSshEnvLabSupport,
@@ -5600,6 +5600,225 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const firstMetadata = JSON.stringify(first.lease.metadata);
     expect(firstMetadata).not.toContain("resolved-provider-key");
     expect(firstMetadata).not.toContain("rotated-provider-key");
+  });
+
+  it("does not resume released reusable plugin sandbox leases after an in-place secret value change under the same version", async () => {
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const apiSecret = await secretService(db).create(companyId, {
+      name: `inplace-plugin-api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "resolved-provider-key",
+    });
+    const providerConfig = {
+      provider: "secure-plugin",
+      template: "base",
+      apiKey: apiSecret.id,
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "In-place Secure Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await secretService(db).createBinding({
+      companyId,
+      secretId: apiSecret.id,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.inplace-sandbox-provider",
+      packageName: "@acme/inplace-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.inplace-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "In-place Sandbox Provider",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "secure-plugin",
+            kind: "sandbox_provider",
+            displayName: "Secure Sandbox",
+            supportsReusableLeases: true,
+            configSchema: {
+              type: "object",
+              properties: {
+                template: { type: "string" },
+                apiKey: { type: "string", format: "secret-ref" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Reusable workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: any) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: `lease-${params.config.apiKey}`,
+            metadata: {
+              provider: "secure-plugin",
+              template: params.config.template,
+              apiKey: params.config.apiKey,
+              timeoutMs: params.config.timeoutMs,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentResumeLease") {
+          // If the lease fingerprint fails to detect the value change, the runtime
+          // would resume this stale sandbox. Return it so the negative assertions
+          // below fail loudly instead of falling back to acquire.
+          return {
+            providerLeaseId: params.providerLeaseId,
+            metadata: {
+              provider: "secure-plugin",
+              reuseLease: true,
+              remoteCwd: "/workspace",
+              resumed: true,
+            },
+          };
+        }
+        if (method === "environmentReleaseLease" || method === "environmentDestroyLease") {
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const first = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+    await runtimeWithPlugin.releaseRunLeases(runId);
+
+    // Simulate an in-place re-encryption: the credential material changes but the
+    // secret keeps the SAME version number (no rotate, latestVersion is unchanged).
+    const [versionBefore] = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, apiSecret.id));
+    expect(versionBefore).toBeDefined();
+    const sameVersionNumber = versionBefore.version;
+    await db
+      .update(companySecretVersions)
+      .set({
+        fingerprintSha256: `sha256:in-place-${randomUUID()}`,
+        valueSha256: `sha256:in-place-${randomUUID()}`,
+      })
+      .where(
+        and(
+          eq(companySecretVersions.secretId, apiSecret.id),
+          eq(companySecretVersions.version, sameVersionNumber),
+        ),
+      );
+    const versionRowsAfter = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, apiSecret.id));
+    // Proves the change was in place: still exactly one version, same number, and
+    // the providerVersionRef (the other lease discriminator) did not move.
+    expect(versionRowsAfter).toHaveLength(1);
+    expect(versionRowsAfter[0].version).toBe(sameVersionNumber);
+    expect(versionRowsAfter[0].providerVersionRef).toBe(versionBefore.providerVersionRef);
+
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: nextRunId,
+      companyId,
+      agentId,
+      invocationSource: "manual",
+      status: "running",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const second = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: nextRunId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    // The stale sandbox must not be resumed; it must be destroyed and replaced.
+    expect(second.lease.id).not.toBe(first.lease.id);
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentResumeLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", expect.objectContaining({
+      providerLeaseId: "lease-resolved-provider-key",
+    }), 31234);
+    await expect(environmentService(db).getLeaseById(first.lease.id)).resolves.toMatchObject({
+      status: "expired",
+      cleanupStatus: "success",
+      failureReason: "lease_fingerprint_mismatch",
+    });
+    // The lease metadata must never carry the raw credential value.
+    const firstMetadata = JSON.stringify(first.lease.metadata);
+    expect(firstMetadata).not.toContain("resolved-provider-key");
   });
 
   it("preserves active reusable sandbox leases held by another running run", async () => {
