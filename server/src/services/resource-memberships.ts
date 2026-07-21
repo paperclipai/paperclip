@@ -524,15 +524,19 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
           policySource: decision.source ?? "oss_default",
         };
       }
-      await db.delete(documentMemberships).where(eq(documentMemberships.id, existing.id));
+      const [deleted] = await db
+        .delete(documentMemberships)
+        .where(eq(documentMemberships.id, existing.id))
+        .returning({ id: documentMemberships.id });
+      const changed = deleted !== undefined;
       return {
         resourceType: "document",
         resourceId: input.documentId,
         state: "joined",
         starredAt: null,
         updatedAt: new Date(),
-        changed: true,
-        changeKind: "unstarred",
+        changed,
+        changeKind: changed ? "unstarred" : null,
         policySource: decision.source ?? "oss_default",
       };
     },

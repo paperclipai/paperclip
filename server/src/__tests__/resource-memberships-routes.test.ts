@@ -447,14 +447,15 @@ describeEmbeddedPostgres("resource membership routes", () => {
     expect(list.body.documentStarredAt[documentId]).toBe(first.body.starredAt);
     await expect(db.select().from(documentMemberships)).resolves.toHaveLength(1);
 
-    await request(app)
-      .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
-      .send({ starred: false })
-      .expect(200);
-    await request(app)
-      .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
-      .send({ starred: false })
-      .expect(200);
+    const unstars = await Promise.all([
+      request(app)
+        .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
+        .send({ starred: false }),
+      request(app)
+        .put(`/api/companies/${companyId}/resource-memberships/me/documents/${documentId}`)
+        .send({ starred: false }),
+    ]);
+    expect(unstars.map((response) => response.status)).toEqual([200, 200]);
     await expect(db.select().from(documentMemberships)).resolves.toHaveLength(0);
 
     await request(app)
