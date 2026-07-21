@@ -74,6 +74,10 @@ export function connectionRelaySecretResolver(db: Db) {
 
 export type ConnectionRelayDispatcher = Record<RelayTrigger["destinationType"], (trigger: RelayTrigger, envelope: RelayEnvelope) => Promise<void>>;
 
+function relayTriggerIdempotencyKey(envelope: RelayEnvelope, trigger: RelayTrigger) {
+  return `connection-relay:${envelope.deliveryId}:${trigger.id}`;
+}
+
 export function connectionRelayDispatcher(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -87,7 +91,7 @@ export function connectionRelayDispatcher(
       await routines.runRoutine(trigger.destinationId, {
         source: "api",
         payload: { connectionRelay: envelope },
-        idempotencyKey: `connection-relay:${envelope.deliveryId}:${trigger.id}`,
+        idempotencyKey: relayTriggerIdempotencyKey(envelope, trigger),
       });
     },
     issue_wake: async (trigger, envelope) => {
@@ -101,7 +105,7 @@ export function connectionRelayDispatcher(
         source: "automation",
         triggerDetail: "system",
         reason: "connection_trigger",
-        idempotencyKey: `connection-relay:${envelope.deliveryId}:${trigger.id}`,
+        idempotencyKey: relayTriggerIdempotencyKey(envelope, trigger),
         requestedByActorType: "system",
         contextSnapshot: {
           issueId: issue.id,
@@ -130,7 +134,7 @@ export function connectionRelayDispatcher(
         headers: envelope.provider.headers,
         rawBody,
         parsedBody,
-        requestId: envelope.deliveryId,
+        requestId: relayTriggerIdempotencyKey(envelope, trigger),
       });
     },
   };
