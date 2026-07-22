@@ -16,6 +16,7 @@ import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
+import { assertForegroundRunAllowed } from "../services/service-manager.js";
 
 interface RunOptions {
   config?: string;
@@ -23,6 +24,7 @@ interface RunOptions {
   repair?: boolean;
   yes?: boolean;
   bind?: "loopback" | "lan" | "tailnet";
+  force?: boolean;
 }
 
 interface StartedServer {
@@ -35,6 +37,7 @@ interface StartedServer {
 export async function runCommand(opts: RunOptions): Promise<void> {
   const instanceId = resolvePaperclipInstanceId(opts.instance);
   process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+  await assertForegroundRunAllowed(instanceId, opts.force);
 
   const homeDir = resolvePaperclipHomeDir();
   fs.mkdirSync(homeDir, { recursive: true });
