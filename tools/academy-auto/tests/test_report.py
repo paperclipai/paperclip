@@ -67,3 +67,27 @@ def test_send_digest_uses_sender():
     sent = []
     send_digest("hallo", sender=lambda t: sent.append(t))
     assert sent == ["hallo"]
+
+
+def test_build_digest_includes_reason_and_quarantine():
+    from academy_auto.gate import GateResult, GateStep
+    from academy_auto.runner import RunOutcome
+    from academy_auto.report import build_digest
+    text = build_digest(
+        task_prompt="Fix a.ts",
+        run_outcome=RunOutcome(ok=True, output="done"),
+        gate_result=GateResult(passed=True, steps=[GateStep(["npm", "test"], 0, "ok")]),
+        committed=True,
+        reason="höchste Priorität",
+        quarantined=["todo:x.ts:9"],
+    )
+    assert "höchste Priorität" in text
+    assert "todo:x.ts:9" in text
+    assert "Quarant" in text
+
+
+def test_build_nothing_digest():
+    from academy_auto.report import build_nothing_digest
+    text = build_nothing_digest(quarantined=["todo:x.ts:9"])
+    assert "nichts" in text.lower() or "keine" in text.lower()
+    assert "todo:x.ts:9" in text

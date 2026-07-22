@@ -11,6 +11,8 @@ def build_digest(
     committed: bool,
     cap_exceeded: bool = False,
     scope_violations: list[str] | None = None,
+    reason: str = "",
+    quarantined: list[str] | None = None,
 ) -> str:
     """Deutschen Tages-Digest für Jarvis/Telegram bauen."""
     lines = ["🎓 Academy-Auto — Tagesstand", ""]
@@ -33,9 +35,22 @@ def build_digest(
     else:
         lines.append("Ergebnis: verworfen (kein grünes Gate)")
 
+    if reason:
+        lines.append(f"Warum diese Aufgabe: {reason}")
+    if quarantined:
+        lines.append("Quarantäne (bitte anschauen): " + ", ".join(quarantined))
+
     return "\n".join(lines)
 
 
 def send_digest(text: str, sender) -> None:
     """Digest verschicken. `sender` kapselt den Jarvis/Telegram-Versand."""
     sender(text)
+
+
+def build_nothing_digest(quarantined: list[str] | None = None) -> str:
+    """Digest, wenn die Triage keine umsetzbare Aufgabe findet."""
+    lines = ["🎓 Academy-Auto — Tagesstand", "", "Aufgabe: keine (Triage fand nichts Umsetzbares)"]
+    if quarantined:
+        lines.append("Quarantäne (bitte anschauen): " + ", ".join(quarantined))
+    return "\n".join(lines)
