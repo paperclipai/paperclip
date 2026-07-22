@@ -13,6 +13,7 @@ import {
   pruneInstallPayloads,
   readInstallManifest,
   resolveInstallStorePaths,
+  withInstallStoreLock,
   writeInstallManifestAtomic,
   writeManagedShim,
   type InstallChannel,
@@ -88,8 +89,11 @@ async function smokePayload(payloadPath: string, expectedVersion: string, runCom
   }
 }
 
-async function installNpmPayload(version: string, runCommand: CommandRunner): Promise<{ payloadPath: string; reused: boolean }> {
-  const paths = resolveInstallStorePaths();
+async function installNpmPayload(
+  version: string,
+  runCommand: CommandRunner,
+  paths = resolveInstallStorePaths(),
+): Promise<{ payloadPath: string; reused: boolean }> {
   const payloadPath = payloadPathFor(paths, "npm", version);
   if (fs.existsSync(payloadPath)) {
     await smokePayload(payloadPath, version, runCommand);
@@ -185,28 +189,31 @@ export async function installCommand(
   console.log(`Installing paperclipai@${version}...`);
 
   const paths = resolveInstallStorePaths();
-  assertManagedShimWritable(paths);
-  const currentManifest = readInstallManifest(paths);
-  const installed = await installNpmPayload(version, runCommand);
-  const record: InstallRecord = {
-    source: "npm",
-    version,
-    channel: request.channel,
-    payloadPath: installed.payloadPath,
-    installedAt: (dependencies.now?.() ?? new Date()).toISOString(),
-  };
-  const nextManifest = buildNextManifest(record, currentManifest);
-  const oldTarget = fs.existsSync(paths.currentPath) ? fs.readlinkSync(paths.currentPath) : null;
-  flipCurrentAtomic(installed.payloadPath, paths);
-  try {
-    writeInstallManifestAtomic(nextManifest, paths);
-  } catch (error) {
-    if (oldTarget) flipCurrentAtomic(path.resolve(paths.cliRoot, oldTarget), paths);
-    else fs.rmSync(paths.currentPath, { force: true });
-    throw error;
-  }
-  writeManagedShim(paths);
-  pruneInstallPayloads(nextManifest, paths);
+  const installed = await withInstallStoreLock(async () => {
+    assertManagedShimWritable(paths);
+    const currentManifest = readInstallManifest(paths);
+    const payload = await installNpmPayload(version, runCommand, paths);
+    const record: InstallRecord = {
+      source: "npm",
+      version,
+      channel: request.channel,
+      payloadPath: payload.payloadPath,
+      installedAt: (dependencies.now?.() ?? new Date()).toISOString(),
+    };
+    const nextManifest = buildNextManifest(record, currentManifest);
+    const oldTarget = fs.existsSync(paths.currentPath) ? fs.readlinkSync(paths.currentPath) : null;
+    flipCurrentAtomic(payload.payloadPath, paths);
+    try {
+      writeInstallManifestAtomic(nextManifest, paths);
+    } catch (error) {
+      if (oldTarget) flipCurrentAtomic(path.resolve(paths.cliRoot, oldTarget), paths);
+      else fs.rmSync(paths.currentPath, { force: true });
+      throw error;
+    }
+    writeManagedShim(paths);
+    pruneInstallPayloads(nextManifest, paths);
+    return payload;
+  }, paths);
   await ensureShimOnPath(options);
 
   console.log(pc.green(`${installed.reused ? "Activated cached" : "Installed"} paperclipai ${version} (${request.channel}).`));

@@ -3,7 +3,8 @@ import path from "node:path";
 import { resolvePaperclipHomeDir } from "./config/home.js";
 
 export const INSTALL_MANIFEST_VERSION = 1;
-export const MANAGED_SHIM_MARKER = "paperclipai managed install shim";
+export const MANAGED_SHIM_MARKER = "paperclipai managed install shim v1";
+export const MANAGED_STORE_MARKER = "paperclipai managed install store v1\n";
 export const PATH_BLOCK_START = "# >>> paperclipai managed PATH >>>";
 export const PATH_BLOCK_END = "# <<< paperclipai managed PATH <<<";
 
@@ -31,6 +32,8 @@ export type InstallStorePaths = {
   cliRoot: string;
   installsRoot: string;
   manifestPath: string;
+  markerPath: string;
+  lockPath: string;
   currentPath: string;
   shimPath: string;
 };
@@ -76,9 +79,127 @@ export function resolveInstallStorePaths(options: {
     cliRoot,
     installsRoot: path.join(cliRoot, "installs"),
     manifestPath: path.join(cliRoot, "install.json"),
+    markerPath: path.join(cliRoot, ".managed-install"),
+    lockPath: path.join(cliRoot, ".install.lock"),
     currentPath: path.join(cliRoot, "current"),
     shimPath: path.join(homeDir, ".local", "bin", "paperclipai"),
   };
+}
+
+export function initializeInstallStore(paths = resolveInstallStorePaths()): void {
+  ensurePrivateDirectory(paths.cliRoot);
+  ensurePrivateDirectory(paths.installsRoot);
+  try {
+    const markerStat = fs.lstatSync(paths.markerPath);
+    if (!markerStat.isFile() || markerStat.isSymbolicLink() || markerStat.nlink > 1) {
+      throw new Error(`Refusing to use unsafe install-store marker ${paths.markerPath}.`);
+    }
+    assertOwnedByCurrentUser(markerStat, paths.markerPath);
+    if (fs.readFileSync(paths.markerPath, "utf8") !== MANAGED_STORE_MARKER) {
+      throw new Error(`Refusing to use unrecognized install store ${paths.cliRoot}.`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    try {
+      fs.writeFileSync(paths.markerPath, MANAGED_STORE_MARKER, { mode: 0o600, flag: "wx" });
+    } catch (writeError) {
+      if (
+        (writeError as NodeJS.ErrnoException).code !== "EEXIST" ||
+        fs.readFileSync(paths.markerPath, "utf8") !== MANAGED_STORE_MARKER
+      ) {
+        throw writeError;
+      }
+    }
+  }
+}
+
+export function assertManagedInstallStore(paths = resolveInstallStorePaths()): InstallManifest {
+  const cliStat = fs.lstatSync(paths.cliRoot);
+  if (!cliStat.isDirectory() || cliStat.isSymbolicLink()) {
+    throw new Error(`Refusing to remove unsafe install-store path ${paths.cliRoot}.`);
+  }
+  assertOwnedByCurrentUser(cliStat, paths.cliRoot);
+  let markerStat: fs.Stats;
+  try {
+    markerStat = fs.lstatSync(paths.markerPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`Refusing to remove unverified install store ${paths.cliRoot}.`);
+    }
+    throw error;
+  }
+  if (!markerStat.isFile() || markerStat.isSymbolicLink() || markerStat.nlink > 1) {
+    throw new Error(`Refusing to remove unverified install store ${paths.cliRoot}.`);
+  }
+  assertOwnedByCurrentUser(markerStat, paths.markerPath);
+  if (fs.readFileSync(paths.markerPath, "utf8") !== MANAGED_STORE_MARKER) {
+    throw new Error(`Refusing to remove unverified install store ${paths.cliRoot}.`);
+  }
+  const manifest = readInstallManifest(paths);
+  if (!manifest) throw new Error(`Refusing to remove install store without a manifest at ${paths.cliRoot}.`);
+  const relativePayload = path.relative(paths.installsRoot, path.resolve(manifest.payloadPath));
+  if (!relativePayload || relativePayload.startsWith("..") || path.isAbsolute(relativePayload)) {
+    throw new Error(`Refusing to remove install store with an invalid manifest at ${paths.cliRoot}.`);
+  }
+  return manifest;
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+export async function withInstallStoreLock<T>(
+  callback: () => Promise<T>,
+  paths = resolveInstallStorePaths(),
+): Promise<T> {
+  initializeInstallStore(paths);
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const acquire = (): void => {
+    const temporaryPath = `${paths.lockPath}.${token}.tmp`;
+    try {
+      fs.writeFileSync(temporaryPath, `${token}\n`, { mode: 0o600, flag: "wx" });
+      try {
+        fs.linkSync(temporaryPath, paths.lockPath);
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      const owner = fs.readFileSync(paths.lockPath, "utf8").trim();
+      const ownerPid = Number.parseInt(owner.split(":", 1)[0] ?? "", 10);
+      if (Number.isInteger(ownerPid) && ownerPid > 0 && processIsAlive(ownerPid)) {
+        throw new Error(`Another managed install is already running (pid ${ownerPid}).`);
+      }
+      fs.rmSync(paths.lockPath, { force: true });
+      try {
+        fs.linkSync(temporaryPath, paths.lockPath);
+      } catch (retryError) {
+        if ((retryError as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new Error("Another managed install started while recovering a stale lock.");
+        }
+        throw retryError;
+      }
+    } finally {
+      fs.rmSync(temporaryPath, { force: true });
+    }
+  };
+
+  acquire();
+  try {
+    return await callback();
+  } finally {
+    try {
+      if (fs.readFileSync(paths.lockPath, "utf8").trim() === token) {
+        fs.rmSync(paths.lockPath, { force: true });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
 }
 
 export function payloadPathFor(
@@ -246,12 +367,28 @@ export function assertManagedShimWritable(paths = resolveInstallStorePaths()): v
     assertOwnedByCurrentUser(stat, paths.shimPath);
     if (stat.nlink > 1) throw new Error(`Refusing to replace multiply linked shim ${paths.shimPath}.`);
     const existing = fs.readFileSync(paths.shimPath, "utf8");
-    if (!existing.includes(MANAGED_SHIM_MARKER)) {
+    if (!isManagedShimContents(existing)) {
       throw new Error(`Refusing to replace existing non-managed command ${paths.shimPath}.`);
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function isManagedShimContents(contents: string): boolean {
+  const lines = contents.split("\n");
+  return (
+    lines.length === 5 &&
+    lines[0] === "#!/bin/sh" &&
+    lines[1] === `# ${MANAGED_SHIM_MARKER}` &&
+    lines[2] === "set -eu" &&
+    /^exec '(?:[^']|'"'"')+' '(?:[^']|'"'"')+' "\$@"$/.test(lines[3]) &&
+    lines[4] === ""
+  );
 }
 
 export function writeManagedShim(paths = resolveInstallStorePaths()): void {
@@ -262,14 +399,15 @@ export function writeManagedShim(paths = resolveInstallStorePaths()): void {
   fs.mkdirSync(localDir, { mode: 0o755 });
   fs.mkdirSync(path.dirname(paths.shimPath), { mode: 0o755 });
   assertManagedShimWritable(paths);
-  const contents = `#!/bin/sh\n# ${MANAGED_SHIM_MARKER}\nset -eu\nPAPERCLIP_HOME="\${PAPERCLIP_HOME:-\$HOME/.paperclip}"\nexec node "\$PAPERCLIP_HOME/cli/current/node_modules/paperclipai/dist/index.js" "\$@"\n`;
+  const entrypoint = path.join(paths.currentPath, "node_modules", "paperclipai", "dist", "index.js");
+  const contents = `#!/bin/sh\n# ${MANAGED_SHIM_MARKER}\nset -eu\nexec ${shellQuote(process.execPath)} ${shellQuote(entrypoint)} "\$@"\n`;
   writeFileAtomic(paths.shimPath, contents, 0o755);
 }
 
 export function removeManagedShim(paths = resolveInstallStorePaths()): boolean {
   try {
     const contents = fs.readFileSync(paths.shimPath, "utf8");
-    if (!contents.includes(MANAGED_SHIM_MARKER)) return false;
+    if (!isManagedShimContents(contents)) return false;
     fs.rmSync(paths.shimPath, { force: true });
     return true;
   } catch (error) {
@@ -333,7 +471,11 @@ export function isManagedExecutable(
   try {
     const executableRealPath = fs.realpathSync(executablePath);
     const payloadRealPath = fs.realpathSync(manifest.payloadPath);
-    return executableRealPath.startsWith(`${payloadRealPath}${path.sep}`) && fs.existsSync(paths.currentPath);
+    const currentRealPath = fs.realpathSync(paths.currentPath);
+    return (
+      currentRealPath === payloadRealPath &&
+      executableRealPath.startsWith(`${payloadRealPath}${path.sep}`)
+    );
   } catch {
     return false;
   }

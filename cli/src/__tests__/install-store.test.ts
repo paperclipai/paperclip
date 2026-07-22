@@ -8,11 +8,14 @@ import {
   addManagedPathBlock,
   buildNextManifest,
   flipCurrentAtomic,
+  isManagedExecutable,
   payloadPathFor,
   pruneInstallPayloads,
   readInstallManifest,
   removeManagedPathBlock,
+  removeManagedShim,
   resolveInstallStorePaths,
+  withInstallStoreLock,
   writeInstallManifestAtomic,
   writeManagedShim,
   type InstallManifest,
@@ -101,10 +104,12 @@ describe("managed install store", () => {
     expect(payloads.slice(1).every((payload) => fs.existsSync(payload))).toBe(true);
   });
 
-  it("writes a stable shim and manages an idempotent shell PATH block", () => {
+  it("writes a stable shim with the validated runtime and custom store path", () => {
     writeManagedShim(paths);
     const shim = fs.readFileSync(paths.shimPath, "utf8");
-    expect(shim).toContain("$PAPERCLIP_HOME/cli/current/node_modules/paperclipai/dist/index.js");
+    expect(shim).toContain(process.execPath);
+    expect(shim).toContain(paths.currentPath);
+    expect(shim).not.toContain("PAPERCLIP_HOME");
     expect(fs.statSync(paths.shimPath).mode & 0o777).toBe(0o755);
 
     const rcPath = path.join(root, "home", ".bashrc");
@@ -112,6 +117,42 @@ describe("managed install store", () => {
     expect(addManagedPathBlock(rcPath)).toBe(false);
     expect(removeManagedPathBlock(rcPath)).toBe(true);
     expect(fs.readFileSync(rcPath, "utf8")).not.toContain("paperclipai managed PATH");
+  });
+
+  it("rejects marker substrings that are not the exact managed shim format", () => {
+    fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true });
+    fs.writeFileSync(paths.shimPath, `#!/bin/sh\necho '${MANAGED_SHIM_MARKER}'\n`);
+
+    expect(removeManagedShim(paths)).toBe(false);
+    expect(fs.existsSync(paths.shimPath)).toBe(true);
+    expect(() => writeManagedShim(paths)).toThrow("non-managed command");
+  });
+
+  it("serializes install-store mutations with an exclusive lock", async () => {
+    await expect(
+      withInstallStoreLock(
+        () => withInstallStoreLock(async () => undefined, paths),
+        paths,
+      ),
+    ).rejects.toThrow("already running");
+    expect(fs.existsSync(paths.lockPath)).toBe(false);
+  });
+
+  it("reports managed provenance only for the payload selected by current", () => {
+    const manifestPayload = payloadPathFor(paths, "npm", "1.0.0");
+    const currentPayload = payloadPathFor(paths, "npm", "2.0.0");
+    const executable = path.join(manifestPayload, "node_modules", "paperclipai", "dist", "index.js");
+    fs.mkdirSync(path.dirname(executable), { recursive: true });
+    fs.writeFileSync(executable, "");
+    fs.mkdirSync(currentPayload, { recursive: true });
+    flipCurrentAtomic(currentPayload, paths);
+    const manifest: InstallManifest = {
+      schemaVersion: INSTALL_MANIFEST_VERSION,
+      ...record(manifestPayload, "1.0.0"),
+      previous: [],
+    };
+
+    expect(isManagedExecutable(executable, manifest, paths)).toBe(false);
   });
 
   it("refuses symlinked payload roots and pre-existing non-managed shims", () => {
