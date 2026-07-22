@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import type { WorkflowListItem } from "@paperclipai/shared";
-import { ArchiveConfirmation, filterWorkflowItems, getWorkflowEmptyStateMessage } from "./Workflows";
+import { ArchiveConfirmation, filterWorkflowItems, getWorkflowEmptyStateMessage, WorkflowCard } from "./Workflows";
+
+vi.mock("@/lib/router", () => ({
+  Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
+}));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -70,6 +74,56 @@ describe("workflow list archival filter", () => {
     });
     expect(onCancel).toHaveBeenCalledOnce();
     expect(onConfirm).toHaveBeenCalledOnce();
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders lifecycle actions and shared status treatment by workflow state", async () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const onArchive = vi.fn();
+    const onRestore = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <WorkflowCard
+          item={workflow("active", "active-1")}
+          archiveConfirmationOpen={false}
+          onArchive={onArchive}
+          onConfirmArchive={vi.fn()}
+          onCancelArchive={vi.fn()}
+          onRestore={onRestore}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("active");
+    expect(container.textContent).toContain("Archive");
+    expect(container.textContent).not.toContain("Restore");
+    expect(container.querySelector('[data-slot="card"]')?.className).toContain("rounded-xl");
+    container.querySelector("button")?.click();
+    expect(onArchive).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      root.render(
+        <WorkflowCard
+          item={workflow("archived", "archived-1")}
+          archiveConfirmationOpen={false}
+          onArchive={onArchive}
+          onConfirmArchive={vi.fn()}
+          onCancelArchive={vi.fn()}
+          onRestore={onRestore}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("archived");
+    expect(container.textContent).toContain("Restore");
+    expect(Array.from(container.querySelectorAll("button")).map((button) => button.textContent)).not.toContain("Archive");
+    container.querySelector("button")?.click();
+    expect(onRestore).toHaveBeenCalledOnce();
+
     await act(async () => {
       root.unmount();
     });
