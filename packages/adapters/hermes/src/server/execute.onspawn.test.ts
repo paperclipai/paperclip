@@ -38,7 +38,7 @@ vi.mock("node:fs/promises", () => ({
   stat: vi.fn(async () => ({ isFile: () => true, isDirectory: () => false })),
 }));
 
-import { execute } from "./execute.js";
+import { buildHermesChildEnv, execute } from "./execute.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
@@ -170,5 +170,17 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       if (previous.hermesHome === undefined) delete process.env.HERMES_HOME;
       else process.env.HERMES_HOME = previous.hermesHome;
     }
+  });
+});
+
+describe("buildHermesChildEnv", () => {
+  it("lets configured Windows environment keys override inherited casing", () => {
+    const env = buildHermesChildEnv(
+      { env: { Path: "C:\\agent-bin" } },
+      { PATH: "C:\\server-bin" },
+      "win32",
+    );
+
+    expect(env).toEqual({ Path: "C:\\agent-bin" });
   });
 });

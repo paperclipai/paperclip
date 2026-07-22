@@ -128,11 +128,19 @@ function buildHermesInheritedEnv(source: NodeJS.ProcessEnv): Record<string, stri
 export function buildHermesChildEnv(
   config: Record<string, unknown>,
   source: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): Record<string, string> {
   const env = buildHermesInheritedEnv(source);
   const userEnv = (config.env ?? {}) as Record<string, unknown>;
   for (const [key, value] of Object.entries(userEnv)) {
-    if (typeof value === "string") env[key] = value;
+    if (typeof value !== "string") continue;
+    if (platform === "win32") {
+      const inheritedKey = Object.keys(env).find(
+        (envKey) => envKey.toLowerCase() === key.toLowerCase(),
+      );
+      if (inheritedKey !== undefined) delete env[inheritedKey];
+    }
+    env[key] = value;
   }
   return env;
 }
