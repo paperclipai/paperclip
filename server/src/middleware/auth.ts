@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, lt, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -19,6 +19,12 @@ import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unprocessable } from "../errors.js";
+
+const AGENT_API_KEY_LAST_USED_THROTTLE_MS = 60_000;
+
+function shouldUpdateAgentApiKeyLastUsed(lastUsedAt: Date | null, now: Date): boolean {
+  return lastUsedAt === null || now.getTime() - lastUsedAt.getTime() > AGENT_API_KEY_LAST_USED_THROTTLE_MS;
+}
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -325,11 +331,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    await db
-      .update(agentApiKeys)
-      .set({ lastUsedAt: new Date() })
-      .where(eq(agentApiKeys.id, key.id));
-
     const agentRecord = await db
       .select()
       .from(agents)
@@ -356,6 +357,31 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    const onBehalfOfMemberships = await loadResponsibleUserMemberships(db, {
+      companyId: key.companyId,
+      userId: responsibleUserId,
+    });
+    const authenticatedAt = new Date();
+    if (shouldUpdateAgentApiKeyLastUsed(key.lastUsedAt, authenticatedAt)) {
+      try {
+        await db
+          .update(agentApiKeys)
+          .set({ lastUsedAt: authenticatedAt })
+          .where(and(
+            eq(agentApiKeys.id, key.id),
+            or(
+              isNull(agentApiKeys.lastUsedAt),
+              lt(agentApiKeys.lastUsedAt, new Date(authenticatedAt.getTime() - AGENT_API_KEY_LAST_USED_THROTTLE_MS)),
+            ),
+          ));
+      } catch (err) {
+        logger.warn(
+          { err, companyId: key.companyId, agentId: key.agentId, keyId: key.id },
+          "Failed to update agent API key last-used timestamp",
+        );
+      }
+    }
+
     req.actor = {
       type: "agent",
       agentId: key.agentId,
@@ -363,10 +389,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       keyId: key.id,
       keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
       onBehalfOfUserId: responsibleUserId,
-      onBehalfOfMemberships: await loadResponsibleUserMemberships(db, {
-        companyId: key.companyId,
-        userId: responsibleUserId,
-      }),
+      onBehalfOfMemberships,
       runId: runIdHeader || undefined,
       source: "agent_key",
     };

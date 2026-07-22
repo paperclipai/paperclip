@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Search, Zap } from "lucide-react";
 import type { Agent, AgentEnvConfig } from "@paperclipai/shared";
-import { adapterLabels } from "./agent-config-primitives";
+import { adapterLabels, help } from "./agent-config-primitives";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "../lib/utils";
 
@@ -14,28 +14,114 @@ export type AgentConfigurationSectionId =
   | "danger"
   | "history";
 
+export type AgentConfigurationSetting = {
+  key: string;
+  label: string;
+  helpText: string;
+  synonyms?: readonly string[];
+};
+
 export const agentConfigurationSections: ReadonlyArray<{
   id: AgentConfigurationSectionId;
   label: string;
   instant?: boolean;
-  fields: string[];
+  settings: readonly AgentConfigurationSetting[];
 }> = [
-  { id: "runtime", label: "Runtime", fields: ["adapter", "model", "effort", "turns", "command", "arguments", "engine", "timeout", "chrome"] },
-  { id: "environment", label: "Environment", fields: ["execution environment", "environment override", "variables", "secrets"] },
-  { id: "schedule", label: "Schedule & Runs", fields: ["heartbeat", "wake on demand", "cooldown", "concurrent runs", "continuation"] },
-  { id: "access", label: "Access & Governance", instant: true, fields: ["trust preset", "boundary", "create agents", "create skills", "assign tasks"] },
-  { id: "keys", label: "API Keys", instant: true, fields: ["credentials", "create key", "revoke key"] },
-  { id: "danger", label: "Danger & Legacy", fields: ["skip permissions", "bypass sandbox", "working directory", "deprecated"] },
-  { id: "history", label: "History", instant: true, fields: ["configuration revisions", "restore"] },
+  {
+    id: "runtime",
+    label: "Runtime",
+    settings: [
+      { key: "adapterType", label: "Adapter type", helpText: help.adapterType },
+      { key: "model", label: "Model", helpText: help.model },
+      { key: "thinkingEffort", label: "Thinking effort", helpText: help.thinkingEffort, synonyms: ["reasoning"] },
+      { key: "maxTurnsPerRun", label: "Max turns per run", helpText: help.maxTurnsPerRun },
+      { key: "command", label: "Command", helpText: help.localCommand, synonyms: ["arguments", "args", "engine"] },
+      { key: "timeoutSec", label: "Timeout", helpText: help.timeoutSec },
+      { key: "chrome", label: "Chrome", helpText: help.chrome },
+    ],
+  },
+  {
+    id: "environment",
+    label: "Environment",
+    settings: [
+      { key: "defaultEnvironmentId", label: "Execution environment", helpText: "Override the company default execution environment for this agent." },
+      { key: "env", label: "Environment variables", helpText: help.envVars },
+      { key: "secretAccess", label: "Secret access", helpText: help.secretAccess },
+      { key: "workspaceStrategy", label: "Workspace strategy", helpText: help.workspaceStrategy, synonyms: ["worktree"] },
+    ],
+  },
+  {
+    id: "schedule",
+    label: "Schedule & Runs",
+    settings: [
+      { key: "heartbeat.enabled", label: "Heartbeat on interval", helpText: help.heartbeatInterval, synonyms: ["cron", "schedule", "timer"] },
+      { key: "heartbeat.intervalSec", label: "Heartbeat interval", helpText: help.intervalSec, synonyms: ["cron", "cadence"] },
+      { key: "heartbeat.wakeOnDemand", label: "Wake on demand", helpText: help.wakeOnDemand },
+      { key: "heartbeat.cooldownSec", label: "Cooldown", helpText: help.cooldownSec },
+      { key: "heartbeat.maxConcurrentRuns", label: "Max concurrent runs", helpText: help.maxConcurrentRuns },
+      { key: "heartbeat.maxTurnContinuation", label: "Continue after max-turn stop", helpText: help.maxTurnContinuationEnabled, synonyms: ["continuation"] },
+    ],
+  },
+  {
+    id: "access",
+    label: "Access & Governance",
+    instant: true,
+    settings: [
+      { key: "permissions.trustPreset", label: "Trust preset", helpText: "Choose the default governance boundary for this agent." },
+      { key: "permissions.canCreateAgents", label: "Create agents", helpText: "Allow this agent to create or hire other agents." },
+      { key: "permissions.canCreateSkills", label: "Create skills", helpText: "Allow this agent to create reusable company skills." },
+      { key: "permissions.canAssignTasks", label: "Assign tasks", helpText: "Allow this agent to assign tasks to other agents." },
+    ],
+  },
+  {
+    id: "keys",
+    label: "API Keys",
+    instant: true,
+    settings: [
+      { key: "apiKeys", label: "API keys", helpText: "Credentials used by this agent to authenticate calls to the Paperclip server.", synonyms: ["credentials", "revoke"] },
+    ],
+  },
+  {
+    id: "danger",
+    label: "Danger & Legacy",
+    settings: [
+      { key: "dangerouslySkipPermissions", label: "Skip permissions", helpText: help.dangerouslySkipPermissions },
+      { key: "dangerouslyBypassSandbox", label: "Bypass sandbox", helpText: help.dangerouslyBypassSandbox, synonyms: ["filesystem", "network"] },
+      { key: "cwd", label: "Working directory", helpText: help.cwd, synonyms: ["deprecated", "legacy"] },
+    ],
+  },
+  {
+    id: "history",
+    label: "History",
+    instant: true,
+    settings: [
+      { key: "configurationRevisions", label: "Configuration revisions", helpText: "Review and restore earlier saved agent configurations.", synonyms: ["restore", "rollback"] },
+    ],
+  },
 ];
+
+export const agentConfigurationSettingIndex = agentConfigurationSections.flatMap((section) =>
+  section.settings.map((setting) => ({
+    ...setting,
+    section: section.id,
+    sectionLabel: section.label,
+    sectionAnchor: `config-${section.id}`,
+  })),
+);
 
 export function filterAgentConfigurationSections(query: string): Set<AgentConfigurationSectionId> {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return new Set(agentConfigurationSections.map((section) => section.id));
   return new Set(
-    agentConfigurationSections
-      .filter((section) => section.label.toLowerCase().includes(normalized) || section.fields.some((field) => field.includes(normalized)))
-      .map((section) => section.id),
+    agentConfigurationSettingIndex
+      .filter((setting) => [
+        setting.key,
+        setting.label,
+        setting.helpText,
+        setting.sectionLabel,
+        ...(setting.synonyms ?? []),
+      ].some((value) => value.toLowerCase().includes(normalized)))
+      .map((setting) => setting.section),
   );
 }
 
