@@ -106,6 +106,40 @@ function cleanupEmbeddedPostgresTestDirs(dataDir: string) {
   fs.rmSync(dataDir, { recursive: true, force: true });
 }
 
+// Upper bound (ms) on how long we wait for the embedded Postgres cluster to
+// stop gracefully before abandoning the wait and reclaiming the data dir.
+const EMBEDDED_POSTGRES_STOP_TIMEOUT_MS = 5000;
+
+// `embedded-postgres@18.1.0-beta.16` exposes only `stop(): Promise<void>` — no
+// shutdown-mode argument. Internally it SIGINTs the postgres process (already
+// PostgreSQL "fast shutdown") and resolves *only* on the child's `exit` event,
+// with no time bound of its own. Under the loaded serial server shard a slow
+// shutdown checkpoint can push that past vitest's hookTimeout and hang the
+// afterAll hook. The test data dir is disposable and removed unconditionally by
+// the caller, so we bound the graceful stop: if it overruns, we stop waiting and
+// let the caller reclaim the dir. The SIGINT has already been delivered, so the
+// abandoned process still exits on its own (and again when the runner exits).
+// Errors are swallowed, matching prior behavior.
+async function stopEmbeddedPostgresBounded(
+  instance: EmbeddedPostgresInstance | null,
+): Promise<void> {
+  if (!instance) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      instance.stop(),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, EMBEDDED_POSTGRES_STOP_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+  } catch {
+    // Swallow shutdown errors — the data dir is reclaimed by the caller regardless.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function formatEmbeddedPostgresError(error: unknown): string {
   if (error instanceof Error && error.message.length > 0) return error.message;
   if (typeof error === "string" && error.length > 0) return error;
@@ -131,7 +165,7 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
       reason: formatEmbeddedPostgresError(error),
     };
   } finally {
-    await instance?.stop().catch(() => {});
+    await stopEmbeddedPostgresBounded(instance);
     if (dataDir) cleanupEmbeddedPostgresTestDirs(dataDir);
   }
 }
@@ -165,12 +199,12 @@ export async function startEmbeddedPostgresTestDatabase(
     return {
       connectionString,
       cleanup: async () => {
-        await instance?.stop().catch(() => {});
+        await stopEmbeddedPostgresBounded(instance);
         if (dataDir) cleanupEmbeddedPostgresTestDirs(dataDir);
       },
     };
   } catch (error) {
-    await instance?.stop().catch(() => {});
+    await stopEmbeddedPostgresBounded(instance);
     if (dataDir) cleanupEmbeddedPostgresTestDirs(dataDir);
     throw new Error(
       `Failed to start embedded PostgreSQL test database: ${formatEmbeddedPostgresError(error)}`,
