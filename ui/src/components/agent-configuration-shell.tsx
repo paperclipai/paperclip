@@ -69,6 +69,25 @@ export function resolveEffectiveConfiguration(agent: Agent, apiKeyCount = 0) {
   };
 }
 
+export type EffectiveConfigurationChip = {
+  label: string;
+  value: string;
+  section: AgentConfigurationSectionId;
+  inherited?: boolean;
+};
+
+export function buildEffectiveConfigurationChips(effectiveConfig: ReturnType<typeof resolveEffectiveConfiguration>): EffectiveConfigurationChip[] {
+  return [
+    { label: "Adapter", value: effectiveConfig.adapter, section: "runtime" },
+    { label: "Model", value: effectiveConfig.model, section: "runtime", inherited: effectiveConfig.modelInherited },
+    { label: "Cost saver", value: effectiveConfig.cheapModel, section: "runtime", inherited: effectiveConfig.cheapInherited },
+    { label: "Environment", value: effectiveConfig.environment, section: "environment", inherited: effectiveConfig.environmentInherited },
+    { label: "Cadence", value: effectiveConfig.cadence, section: "schedule" },
+    { label: "Trust", value: effectiveConfig.trust, section: "access" },
+    { label: "API keys", value: String(effectiveConfig.apiKeyCount), section: "keys" },
+  ];
+}
+
 export function AgentConfigurationRail({
   query,
   onQueryChange,
@@ -120,20 +139,29 @@ export function AgentConfigurationRail({
             </a>
           ))}
         </nav>
+        <div className="mt-4 space-y-1 border-t border-border pt-3 text-xs text-muted-foreground" aria-label="Configuration section legend">
+          <p><span className="text-primary" aria-hidden="true">●</span> = unsaved change in section</p>
+          <p><span aria-hidden="true">⚡</span> = changes apply immediately</p>
+        </div>
       </aside>
     </>
   );
 }
 
-export function EffectiveConfigurationStrip({ chips }: { chips: Array<{ label: string; value: string; section: AgentConfigurationSectionId; inherited?: boolean }> }) {
+export function EffectiveConfigurationStrip({ chips }: { chips: EffectiveConfigurationChip[] }) {
   return (
-    <div className="flex gap-2 overflow-x-auto border-b border-border pb-3" aria-label="Effective configuration">
+    <div className="flex max-w-full gap-2 overflow-x-auto border-b border-border pb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Effective configuration" tabIndex={0}>
       {chips.map((chip) => (
-        <a key={chip.label} href={`#config-${chip.section}`} className="shrink-0">
+        <a
+          key={chip.label}
+          href={`#config-${chip.section}`}
+          className="shrink-0"
+          title={chip.inherited ? `${chip.label} is inherited` : undefined}
+        >
           <Badge variant="outline" className={cn("gap-1.5 py-1", chip.inherited && "text-muted-foreground")}>
             <span>{chip.label}</span>
             <span className="font-mono">{chip.value}</span>
-            {chip.inherited ? <span>inherited</span> : null}
+            {chip.inherited ? <span className="sr-only">inherited</span> : null}
           </Badge>
         </a>
       ))}
