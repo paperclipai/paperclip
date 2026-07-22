@@ -1031,6 +1031,14 @@ describe.sequential("agent permission routes", () => {
           role: "engineer",
           adapterType: "failing_profile_discovery",
           adapterConfig: {},
+          runtimeConfig: {
+            modelProfiles: {
+              cheap: {
+                enabled: true,
+                adapterConfig: {},
+              },
+            },
+          },
         }));
 
       expect(res.status, JSON.stringify(res.body)).toBe(201);
@@ -1041,6 +1049,12 @@ describe.sequential("agent permission routes", () => {
             heartbeat: {
               enabled: false,
               maxConcurrentRuns: 20,
+            },
+            modelProfiles: {
+              cheap: {
+                enabled: true,
+                adapterConfig: {},
+              },
             },
           },
         }),
