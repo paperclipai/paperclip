@@ -54,8 +54,11 @@
     "drizzle-orm": "0.45.2",
     "dotenv": "^17.4.2",
     "commander": "^13.1.0",
-    "embedded-postgres": "^18.1.0-beta.16",
+    "embedded-postgres": "18.1.0-beta.15",
     "picocolors": "^1.1.1"
+  },
+  "optionalDependencies": {
+    "@embedded-postgres/windows-x64": "18.1.0-beta.15"
   },
   "devDependencies": {
     "@types/node": "^22.19.21",
