@@ -639,7 +639,7 @@ function ActionGroup({
                 <div className="flex items-center gap-2">
                   <span className="truncate text-sm text-foreground">{action.title}</span>
                   {showAskFirst && (
-                    <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                    <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-(length:--text-nano) font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
                       Ask first
                     </span>
                   )}

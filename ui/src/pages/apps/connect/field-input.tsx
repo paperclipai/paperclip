@@ -143,7 +143,7 @@ export function FieldInput({ field, value, onChange, rotation, id }: FieldInputP
         {field.label}
         {field.required && <span className="text-destructive">*</span>}
         {field.secret && (
-          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal uppercase tracking-wide text-muted-foreground">
+          <span className="rounded bg-muted px-1.5 py-0.5 text-(length:--text-nano) font-normal uppercase tracking-wide text-muted-foreground">
             secret
           </span>
         )}

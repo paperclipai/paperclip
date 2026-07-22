@@ -268,7 +268,7 @@ function AppTile({ app, onClick }: { app: AppDefinition; onClick: () => void }) 
         <div className="mt-1.5 flex items-center gap-1.5">
           {method && <MethodBadges method={method} />}
           {limited && (
-            <span className="text-[10px] font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
+            <span className="text-(length:--text-nano) font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
               Limited
             </span>
           )}
