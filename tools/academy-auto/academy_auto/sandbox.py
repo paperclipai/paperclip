@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -43,3 +44,16 @@ def write_profile(cfg: Config) -> Path:
 
 def wrap_command(cfg: Config, cmd, profile_path) -> list[str]:
     return ["sandbox-exec", "-f", str(profile_path), *cmd]
+
+
+def sandbox_available(cfg: Config, runner=subprocess.run) -> bool:
+    """True nur wenn sandbox-exec vorhanden UND das Profil sauber kompiliert (Dry-Run)."""
+    profile = write_profile(cfg)
+    try:
+        proc = runner(
+            ["sandbox-exec", "-f", str(profile), "/usr/bin/true"],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except Exception:
+        return False
+    return getattr(proc, "returncode", 1) == 0

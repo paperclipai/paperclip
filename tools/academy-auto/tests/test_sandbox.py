@@ -1,7 +1,10 @@
 import os
+import shutil
+import subprocess
 from pathlib import Path
+import pytest
 from academy_auto.config import Config
-from academy_auto.sandbox import build_profile, write_profile, wrap_command
+from academy_auto.sandbox import build_profile, write_profile, wrap_command, sandbox_available
 
 
 def _cfg(tmp_path, **over):
@@ -72,3 +75,60 @@ def test_each_sandbox_write_path_appears_in_profile():
     prof = build_profile(cfg)
     for w in cfg.sandbox_write_paths:
         assert os.path.realpath(w) in prof
+
+
+def test_sandbox_available_false_when_tool_missing(tmp_path):
+    cfg = _cfg(tmp_path)
+    def no_tool(*a, **k):
+        raise FileNotFoundError("sandbox-exec not found")
+    assert sandbox_available(cfg, runner=no_tool) is False
+
+
+def test_sandbox_available_true_on_clean_dryrun(tmp_path):
+    cfg = _cfg(tmp_path)
+    def ok(*a, **k):
+        class R:
+            returncode = 0
+        return R()
+    assert sandbox_available(cfg, runner=ok) is True
+
+
+def test_sandbox_available_false_on_bad_profile(tmp_path):
+    cfg = _cfg(tmp_path)
+    def rc1(*a, **k):
+        class R:
+            returncode = 1
+        return R()
+    assert sandbox_available(cfg, runner=rc1) is False
+
+
+@pytest.mark.skipif(shutil.which("sandbox-exec") is None, reason="sandbox-exec nicht verfügbar")
+def test_generated_profile_really_isolates(tmp_path):
+    wt = tmp_path / "wt"; wt.mkdir()
+    secret = tmp_path / "secret"; secret.mkdir()
+    (secret / "token.txt").write_text("TOPSECRET")
+    outside = tmp_path / "outside"; outside.mkdir()
+    # NUR der Worktree ist schreibbar (Caches leer), Secret-Pfad gesperrt
+    cfg = Config(**{**Config.default().__dict__,
+                    "worktree_path": wt,
+                    "sandbox_write_paths": (),
+                    "secret_read_paths": (str(secret),)})
+    profile = write_profile(cfg)
+
+    def sb(bash):
+        return subprocess.run(
+            wrap_command(cfg, ["/bin/bash", "-c", bash], str(profile)),
+            capture_output=True, text=True,
+        )
+
+    # Schreiben IM Worktree: erlaubt
+    r = sb(f'echo x > "{wt}/a.txt" && echo WROTE')
+    assert "WROTE" in r.stdout and (wt / "a.txt").exists()
+    # Schreiben AUSSERHALB: blockiert
+    r = sb(f'echo x > "{outside}/b.txt" 2>/dev/null && echo LEAK || echo BLOCKED')
+    assert "BLOCKED" in r.stdout
+    assert not (outside / "b.txt").exists()
+    # Secret LESEN: verweigert
+    r = sb(f'cat "{secret}/token.txt" 2>/dev/null && echo READ || echo DENIED')
+    assert "DENIED" in r.stdout
+    assert "TOPSECRET" not in r.stdout
