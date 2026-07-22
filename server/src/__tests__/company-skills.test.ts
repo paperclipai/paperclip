@@ -1,13 +1,14 @@
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   discoverProjectWorkspaceSkillDirectories,
   findMissingLocalSkillIds,
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
   readLocalSkillImportFromDirectory,
+  readUrlSkillImports,
 } from "../services/company-skills.js";
 
 const cleanupDirs = new Set<string>();
@@ -406,5 +407,65 @@ describe("missing local skill reconciliation", () => {
     ]);
 
     expect(missingIds).toEqual(["skill-1"]);
+  });
+});
+
+describe("authenticated GitHub skill import", () => {
+  const commitSha = "a".repeat(40);
+  const source = `https://github.com/acme/private-skills/tree/${commitSha}/skills`;
+  let calls: Array<{ url: string; authorization: string | null }>;
+
+  function readHeader(init: RequestInit | undefined, name: string): string | null {
+    const headers = init?.headers;
+    if (!headers) return null;
+    if (headers instanceof Headers) return headers.get(name);
+    const record = headers as Record<string, string>;
+    return record[name] ?? record[name.toLowerCase()] ?? null;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubGitHub() {
+    calls = [];
+    vi.stubGlobal("fetch", async (url: string | URL, init?: RequestInit) => {
+      const target = String(url);
+      calls.push({ url: target, authorization: readHeader(init, "authorization") });
+      if (target.includes("/git/trees/")) {
+        return new Response(
+          JSON.stringify({ tree: [{ path: "skills/demo/SKILL.md", type: "blob" }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      // raw.githubusercontent.com file content
+      return new Response("---\nname: Demo Skill\n---\n\n# Demo\n", { status: 200 });
+    });
+  }
+
+  it("sends Authorization: Bearer on every GitHub call when a token is configured", async () => {
+    stubGitHub();
+    const result = await readUrlSkillImports("company-1", source, null, "secret-token");
+
+    expect(result.skills).toHaveLength(1);
+    // The pinned commit ref skips branch/commit resolution: expect the tree read
+    // and the raw SKILL.md fetch, both authenticated.
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(calls.some((call) => call.url.includes("/git/trees/"))).toBe(true);
+    expect(calls.some((call) => call.url.includes("raw.githubusercontent.com"))).toBe(true);
+    for (const call of calls) {
+      expect(call.authorization).toBe("Bearer secret-token");
+    }
+  });
+
+  it("omits Authorization when no token is configured (public repos unchanged)", async () => {
+    stubGitHub();
+    const result = await readUrlSkillImports("company-1", source, null);
+
+    expect(result.skills).toHaveLength(1);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    for (const call of calls) {
+      expect(call.authorization).toBeNull();
+    }
   });
 });
