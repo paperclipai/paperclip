@@ -101,6 +101,8 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       originKind: overrides.originKind,
       originId: overrides.originId,
       originFingerprint: overrides.originFingerprint,
+      executionState: overrides.executionState,
+      monitorNextCheckAt: overrides.monitorNextCheckAt,
       updatedAt: overrides.updatedAt,
       // Default to an "established" issue (created well before the first-run
       // grace window) so the pending-first-run guard does not defer it. Tests
@@ -331,6 +333,38 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       reason: "issue_assigned",
       payload: { issueId: childId },
     });
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(wakes).toHaveLength(0);
+    const watchdogIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
+    expect(watchdogIssues).toHaveLength(0);
+  });
+
+  it("does not trigger while the source has a server-visible scheduled monitor", async () => {
+    const companyId = await seedCompany();
+    // A stopped-looking source (in_review) whose only live continuation is a
+    // scheduled monitor. Without recognizing the monitor the classifier would
+    // mint a stop fingerprint and re-arm the watchdog on every child completion.
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-MON",
+      status: "in_review",
+      monitorNextCheckAt: new Date(Date.now() + 40 * 60 * 1000),
+      executionState: {
+        monitor: {
+          state: "scheduled",
+          timeoutAt: new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString(),
+          recoveryPolicy: "wake_owner",
+        },
+      },
+    });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
     const { service, wakes } = createService();
 
     const result = await service.reconcileTaskWatchdogs({ companyId });

@@ -20,6 +20,7 @@ import { conflict, notFound } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
+import { hasScheduledMonitor } from "./recovery/issue-graph-liveness.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
@@ -74,6 +75,13 @@ export type TaskWatchdogClassifierIssue = Pick<
   latestCommentAt?: Date | string | null;
   latestDocumentAt?: Date | string | null;
   latestWorkProductAt?: Date | string | null;
+  // Monitor fields let the classifier treat a server-visible scheduled monitor
+  // (or scheduled retry) as a live continuation of the watched subtree. Optional
+  // so callers/tests that do not care about monitors keep working.
+  executionPolicy?: Record<string, unknown> | null;
+  executionState?: Record<string, unknown> | null;
+  monitorNextCheckAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
 };
 
 export type TaskWatchdogClassifierPath = {
@@ -320,15 +328,26 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
 
   const includedIds = included.map((issue) => issue.id);
   const includedIdSet = new Set(includedIds);
+  // A server-visible scheduled monitor (or scheduled retry) is a live
+  // continuation of the subtree just like an active run or queued wake: the
+  // owner will be re-woken at `monitorNextCheckAt`. Reuse the canonical
+  // liveness check so a monitored source is never classified as stopped and
+  // re-armed by a watchdog child completion that merely bumps its timestamps.
+  const nowMs = toEpochMs(input.evaluatedAt) ?? Date.now();
+  const monitorLiveIssueIds = included
+    .filter((issue) => hasScheduledMonitor(issue, nowMs))
+    .map((issue) => issue.id);
   const liveIssueIds = [
     ...pathIssueIds(input.activeRuns, input.watchdog.companyId),
     ...pathIssueIds(input.queuedWakeRequests, input.watchdog.companyId),
+    ...monitorLiveIssueIds,
   ].filter((issueId) => includedIdSet.has(issueId));
   const uniqueLiveIssueIds = [...new Set(liveIssueIds)].sort();
   if (uniqueLiveIssueIds.length > 0) {
     return {
       state: "live",
-      reason: "At least one issue in the watched subtree has a live run, queued wake, or scheduled retry.",
+      reason:
+        "At least one issue in the watched subtree has a live run, queued wake, scheduled retry, or scheduled monitor.",
       includedIssueIds: includedIds,
       liveIssueIds: uniqueLiveIssueIds,
     };
@@ -736,6 +755,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           origin_kind,
           updated_at,
           created_at,
+          execution_policy,
+          execution_state,
+          monitor_next_check_at,
+          monitor_attempt_count,
           0 AS depth
         FROM issues
         WHERE company_id = ${companyId}
@@ -755,6 +778,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           child.origin_kind,
           child.updated_at,
           child.created_at,
+          child.execution_policy,
+          child.execution_state,
+          child.monitor_next_check_at,
+          child.monitor_attempt_count,
           watched_issues.depth + 1
         FROM issues child
         JOIN watched_issues ON child.parent_id = watched_issues.id
@@ -775,7 +802,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         assignee_user_id AS "assigneeUserId",
         origin_kind AS "originKind",
         updated_at AS "updatedAt",
-        created_at AS "createdAt"
+        created_at AS "createdAt",
+        execution_policy AS "executionPolicy",
+        execution_state AS "executionState",
+        monitor_next_check_at AS "monitorNextCheckAt",
+        monitor_attempt_count AS "monitorAttemptCount"
       FROM watched_issues
     `);
 

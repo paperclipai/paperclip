@@ -163,13 +163,24 @@ function readDateMs(value: unknown): number | null {
   return Number.isNaN(time) ? null : time;
 }
 
-function monitorFromIssue(issue: IssueLivenessIssueInput) {
+// Minimal shape needed to decide whether an issue carries a server-visible
+// scheduled monitor. `IssueLivenessIssueInput` satisfies this, and so do other
+// callers (e.g. the task-watchdog classifier) that only track the monitor
+// fields — keeping the check in one place avoids liveness definitions drifting.
+export interface ScheduledMonitorInput {
+  executionPolicy?: Record<string, unknown> | null;
+  executionState?: Record<string, unknown> | null;
+  monitorNextCheckAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
+}
+
+function monitorFromIssue(issue: ScheduledMonitorInput) {
   const policyMonitor = readRecord(readRecord(issue.executionPolicy)?.monitor);
   const stateMonitor = readRecord(readRecord(issue.executionState)?.monitor);
   return { policyMonitor, stateMonitor };
 }
 
-function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+export function hasScheduledMonitor(issue: ScheduledMonitorInput, nowMs: number) {
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 

@@ -183,6 +183,88 @@ describe("task watchdog subtree classifier", () => {
     expect(result.state).toBe("stopped");
   });
 
+  it("treats a server-visible scheduled monitor as a live continuation", () => {
+    const evaluatedAt = new Date("2026-07-22T05:00:00.000Z");
+    const result = classify({
+      issues: [
+        issue({
+          status: "in_review",
+          monitorNextCheckAt: new Date("2026-07-22T05:40:00.000Z"),
+          executionState: {
+            monitor: {
+              state: "scheduled",
+              timeoutAt: "2026-07-23T02:00:00.000Z",
+              recoveryPolicy: "wake_owner",
+            },
+          },
+        }),
+      ],
+      evaluatedAt,
+    });
+
+    expect(result).toMatchObject({ state: "live", liveIssueIds: [sourceId] });
+  });
+
+  it("does not re-arm a monitored source when a watchdog child completion bumps its timestamps", () => {
+    const evaluatedAt = new Date("2026-07-22T05:00:00.000Z");
+    // The watchdog child completing wakes the source (issue_children_completed)
+    // and bumps its updatedAt/latestCommentAt. With a live scheduled monitor the
+    // source must stay `live` so no new stop fingerprint is minted — otherwise
+    // the child completion feeds back into a fresh watchdog review.
+    const monitoredSource = () =>
+      issue({
+        status: "in_review",
+        updatedAt: new Date("2026-07-22T04:59:59.000Z"),
+        latestCommentAt: new Date("2026-07-22T04:59:59.000Z"),
+        monitorNextCheckAt: new Date("2026-07-22T05:40:00.000Z"),
+        executionState: {
+          monitor: { state: "scheduled", timeoutAt: "2026-07-23T02:00:00.000Z" },
+        },
+      });
+
+    const before = classify({ issues: [monitoredSource()], evaluatedAt });
+    expect(before.state).toBe("live");
+
+    const afterChildCompletion = classify({
+      // A prior stopped fingerprint the watchdog already acted on; the child
+      // completion changed the source timestamps but the monitor is still live.
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: "task_watchdog_stop:stale",
+      },
+      issues: [
+        {
+          ...monitoredSource(),
+          updatedAt: new Date("2026-07-22T05:00:01.000Z"),
+          latestCommentAt: new Date("2026-07-22T05:00:01.000Z"),
+        },
+      ],
+      evaluatedAt,
+    });
+
+    expect(afterChildCompletion).toMatchObject({ state: "live", liveIssueIds: [sourceId] });
+  });
+
+  it("does not treat an expired or exhausted monitor as live", () => {
+    const evaluatedAt = new Date("2026-07-22T05:00:00.000Z");
+    const result = classify({
+      issues: [
+        issue({
+          status: "blocked",
+          // nextCheckAt already elapsed relative to the evaluation snapshot.
+          monitorNextCheckAt: new Date("2026-07-22T04:00:00.000Z"),
+          executionState: {
+            monitor: { state: "scheduled", timeoutAt: "2026-07-23T02:00:00.000Z" },
+          },
+        }),
+      ],
+      evaluatedAt,
+    });
+
+    expect(result.state).toBe("stopped");
+  });
+
   it("does not evaluate a task-watchdog issue as a watched source", () => {
     const result = classify({
       watchdog: {
