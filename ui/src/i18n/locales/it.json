@@ -5,5 +5,40 @@
       "description": "Inizia creando un'azienda.",
       "newCompany": "Nuova azienda"
     }
+  },
+  "sidebar": {
+    "openSearch": "Open search",
+    "keepExpanded": "Keep sidebar expanded",
+    "expand": "Expand sidebar",
+    "collapse": "Collapse sidebar",
+    "newTask": "New Task",
+    "sections": {
+      "work": "Work",
+      "company": "Company"
+    },
+    "nav": {
+      "dashboard": "Dashboard",
+      "inbox": "Inbox",
+      "unreadBadge": "unread",
+      "decisions": "Decisions",
+      "decisionsBadge": "decisions",
+      "conferenceRoom": "Conference Room",
+      "tasks": "Tasks",
+      "cases": "Cases",
+      "betaBadge": "beta",
+      "routines": "Routines",
+      "pipelines": "Pipelines",
+      "goals": "Goals",
+      "artifacts": "Artifacts",
+      "skills": "Skills",
+      "workspaces": "Workspaces",
+      "projects": "Projects",
+      "org": "Org",
+      "apps": "Apps",
+      "timeline": "Timeline",
+      "costs": "Costs",
+      "activity": "Activity",
+      "settings": "Settings"
+    }
   }
 }
