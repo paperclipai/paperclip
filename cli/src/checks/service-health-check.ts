@@ -6,6 +6,7 @@ import {
   detectServiceManager,
   type ServiceManagerDetection,
 } from "../services/service-manager.js";
+import { buildLocalHealthUrl } from "../utils/health-url.js";
 import type { CheckResult } from "./index.js";
 
 type HealthResult = { ok: boolean; version: string | null; error?: string };
@@ -14,17 +15,11 @@ type ServiceCheckDependencies = {
   probe: (config: PaperclipConfig) => Promise<HealthResult>;
 };
 
-function healthUrl(config: PaperclipConfig): string {
-  const configuredHost = config.server.host?.trim();
-  const host = !configuredHost || configuredHost === "0.0.0.0" || configuredHost === "::"
-    ? "127.0.0.1"
-    : configuredHost;
-  return `http://${host}:${config.server.port}/api/health`;
-}
-
 async function probeHealth(config: PaperclipConfig): Promise<HealthResult> {
   try {
-    const response = await fetch(healthUrl(config), { signal: AbortSignal.timeout(2_000) });
+    const response = await fetch(buildLocalHealthUrl(config.server.host, config.server.port), {
+      signal: AbortSignal.timeout(2_000),
+    });
     const body = (await response.json()) as {
       status?: unknown;
       serverVersion?: unknown;
