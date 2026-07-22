@@ -12,6 +12,9 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
+  PluginEnvironmentSyncResult,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
@@ -34,6 +37,7 @@ import {
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
+import { performSyncIn, performSyncOut, type PodExec } from "./file-sync.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
   deriveCompanySlug,
@@ -108,6 +112,81 @@ const readySandboxesByLease = new Set<string>();
 // faster and more reliable than waiting.
 const RESUME_READY_TIMEOUT_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
+
+// The workspace remote dir is the confinement root for native file sync. It is
+// recorded on the lease metadata at realizeWorkspace time (`remoteCwd`); require
+// it so a sync can never run without a concrete root to confine every sandbox
+// path against.
+function resolveSyncRemoteDir(lease: PluginEnvironmentLease): string {
+  const remoteCwd = lease.metadata?.remoteCwd;
+  if (typeof remoteCwd === "string" && remoteCwd.trim().length > 0) {
+    return remoteCwd.trim();
+  }
+  throw new Error("Kubernetes file sync requires a workspace remote dir on the lease metadata.");
+}
+
+/**
+ * Resolve the running Sandbox-CR pod for a native file-sync operation and return
+ * a `PodExec` bound to it, exactly like `onEnvironmentExecute` resolves its exec
+ * target: parse config, derive the namespace, wait for the Sandbox pod to reach
+ * Ready (cached per lease), and find the pod name. The `job` backend carries no
+ * file path and is out of scope — file sync is only supported on `sandbox-cr`.
+ */
+async function resolveSyncPodExec(
+  params:
+    | PluginEnvironmentSyncInParams
+    | PluginEnvironmentSyncOutParams,
+): Promise<{ exec: PodExec; timeoutMs: number }> {
+  const { lease } = params;
+  if (!lease.providerLeaseId) {
+    throw new Error("Kubernetes file sync requires a provider lease ID.");
+  }
+
+  const config = kubernetesProviderConfigSchema.parse(params.config);
+  const namespace =
+    typeof lease.metadata?.namespace === "string"
+      ? lease.metadata.namespace
+      : deriveTenantNamespace(config, params.companyId);
+
+  const leaseBackend =
+    typeof lease.metadata?.backend === "string"
+      ? (lease.metadata.backend as "sandbox-cr" | "job")
+      : config.backend;
+  if (leaseBackend !== "sandbox-cr") {
+    throw new Error(
+      `Kubernetes file sync is only supported on the sandbox-cr backend (lease backend: ${leaseBackend}).`,
+    );
+  }
+
+  const kc = createKubeConfig({
+    inCluster: config.inCluster,
+    kubeconfig: config.kubeconfig,
+  });
+  const clients = makeKubeClients(kc);
+  const timeoutMs = config.podActivityDeadlineSec * 1000;
+
+  // Ensure the Sandbox pod is Ready (wait only the first time for this lease),
+  // then resolve the pod name — mirrors the onEnvironmentExecute resolution.
+  if (!readySandboxesByLease.has(lease.providerLeaseId)) {
+    await sandboxCrOrchestrator.waitForCompletion(clients, namespace, lease.providerLeaseId, {
+      timeoutMs,
+      pollMs: 2000,
+    });
+    readySandboxesByLease.add(lease.providerLeaseId);
+  }
+
+  const podName =
+    typeof lease.metadata?.podName === "string" && lease.metadata.podName
+      ? lease.metadata.podName
+      : await sandboxCrOrchestrator.findPod(clients, namespace, lease.providerLeaseId);
+  if (!podName) {
+    throw new Error("Kubernetes file sync could not resolve the Sandbox pod name.");
+  }
+
+  const exec: PodExec = (command, stdin, execTimeoutMs) =>
+    execInPod(kc, namespace, podName, "agent", command, stdin, execTimeoutMs ?? timeoutMs);
+  return { exec, timeoutMs };
+}
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -858,6 +937,40 @@ const plugin = definePlugin({
         },
       };
     }
+  },
+
+  // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)
+  // makes the worker advertise `environmentSyncIn`/`environmentSyncOut`, so the
+  // host runner routes workspace/asset transfers through a single pod exec per
+  // operation (host tar → base64 over the exec stdin → in-pod `base64 -d | tar -x`
+  // → stage-then-atomic-`mv -f`) instead of the base64-over-exec chunk loop.
+  // Only the sandbox-cr backend is supported; the job backend carries no file
+  // path. Providers that do not define these keep the byte-identical fallback.
+  async onEnvironmentSyncIn(
+    params: PluginEnvironmentSyncInParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    const remoteDir = resolveSyncRemoteDir(params.lease);
+    const { exec, timeoutMs } = await resolveSyncPodExec(params);
+    return await performSyncIn({
+      exec,
+      operations: params.operations,
+      remoteDir,
+      timeoutMs,
+    });
+  },
+
+  // Opt-in native outbound transfer. See onEnvironmentSyncIn.
+  async onEnvironmentSyncOut(
+    params: PluginEnvironmentSyncOutParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    const remoteDir = resolveSyncRemoteDir(params.lease);
+    const { exec, timeoutMs } = await resolveSyncPodExec(params);
+    return await performSyncOut({
+      exec,
+      operations: params.operations,
+      remoteDir,
+      timeoutMs,
+    });
   },
 });
 
