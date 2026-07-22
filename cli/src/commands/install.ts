@@ -236,6 +236,22 @@ async function ensureShimOnPath(options: InstallOptions): Promise<void> {
   console.log(changed ? pc.green(`Updated ${rcPath}.`) : pc.dim(`${rcPath} already contains the PATH block.`));
 }
 
+async function confirmGitInstall(options: InstallOptions, repo: string, ref: string): Promise<void> {
+  const warning = `Installing ${repo}@${ref} executes dependency and build scripts from that repository.`;
+  console.log(pc.yellow(`Warning: ${warning}`));
+  if (options.yes === true) return;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(`${warning} Re-run with --yes to consent in non-interactive environments.`);
+  }
+  const confirmed = await p.confirm({
+    message: `${warning} Continue?`,
+    initialValue: false,
+  });
+  if (p.isCancel(confirmed) || !confirmed) {
+    throw new Error("Git-ref install cancelled before downloading or executing repository code.");
+  }
+}
+
 export async function installCommand(
   options: InstallOptions,
   dependencies: { runCommand?: CommandRunner; now?: () => Date } = {},
@@ -244,6 +260,7 @@ export async function installCommand(
   const runCommand = dependencies.runCommand ?? execFileAsync;
   const gitRequest = resolveGitInstallRequest(options);
   if (gitRequest) {
+    await confirmGitInstall(options, gitRequest.repo, gitRequest.ref);
     const sha = await resolveGitHubRef(gitRequest.repo, gitRequest.ref, runCommand);
     const paths = resolveInstallStorePaths();
     const installed = await withInstallStoreLock(async () => {
@@ -258,7 +275,6 @@ export async function installCommand(
       writeManagedShim(paths); pruneInstallPayloads(nextManifest, paths); return payload;
     }, paths);
     await ensureShimOnPath(options);
-    console.log(pc.yellow(`Warning: running unreleased code from ${gitRequest.repo}@${gitRequest.ref} (${sha.slice(0, 12)}).`));
     console.log(pc.green(`${installed.reused ? "Activated cached" : "Installed"} paperclipai git payload ${sha.slice(0, 12)}.`));
     return;
   }

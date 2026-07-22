@@ -66,7 +66,7 @@ program
   .option("--version <version>", "Install an exact published npm version")
   .option("--ref <ref>", "Install a GitHub branch, tag, or commit SHA")
   .option("--repo <owner/name>", "Override the GitHub repository used with --ref")
-  .option("-y, --yes", "Consent to the supported shell PATH update without prompting")
+  .option("-y, --yes", "Consent to git-ref code execution and supported shell PATH updates without prompting")
   .action(installCommand);
 
 program
