@@ -61,6 +61,7 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
+import { buildAgentConfigChanges, revertAgentConfigChange, type AgentConfigChange } from "../lib/agent-config-changeset";
 
 /* ---- Create mode values ---- */
 
@@ -75,6 +76,7 @@ import { Badge } from "@/components/ui/badge";
 type AgentConfigFormProps = {
   adapterModels?: AdapterModel[];
   onDirtyDetailsChange?: (details: { count: number; sections: string[] }) => void;
+  onChangesetChange?: (changes: AgentConfigChange[], revert: (key: string) => void) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onSaveActionChange?: (save: (() => void) | null) => void;
   onCancelActionChange?: (cancel: (() => void) | null) => void;
@@ -349,6 +351,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const isDirty = !isCreate && isOverlayDirty(overlay);
   const dirtyDetails = useMemo(() => getAgentConfigDirtyDetails(overlay), [overlay]);
+  const changes = useMemo(
+    () => isCreate ? [] : buildAgentConfigChanges(props.agent, overlay),
+    [isCreate, overlay, !isCreate ? props.agent : undefined], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const revertChange = useCallback((key: string) => {
+    setOverlay((current) => revertAgentConfigChange(current, key));
+  }, []);
 
   type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "runtime";
 
@@ -419,10 +428,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     if (!isCreate) {
       props.onDirtyChange?.(isDirty);
       props.onDirtyDetailsChange?.(dirtyDetails);
+      props.onChangesetChange?.(changes, revertChange);
       props.onSaveActionChange?.(handleSave);
       props.onCancelActionChange?.(handleCancel);
     }
-  }, [isCreate, isDirty, dirtyDetails, props.onDirtyChange, props.onDirtyDetailsChange, props.onSaveActionChange, props.onCancelActionChange, handleSave, handleCancel]);
+  }, [isCreate, isDirty, dirtyDetails, changes, revertChange, props.onDirtyChange, props.onDirtyDetailsChange, props.onChangesetChange, props.onSaveActionChange, props.onCancelActionChange, handleSave, handleCancel]);
 
   useEffect(() => {
     if (isCreate) return;
@@ -431,8 +441,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       props.onCancelActionChange?.(null);
       props.onDirtyChange?.(false);
       props.onDirtyDetailsChange?.({ count: 0, sections: [] });
+      props.onChangesetChange?.([], () => undefined);
     };
-  }, [isCreate, props.onDirtyChange, props.onDirtyDetailsChange, props.onSaveActionChange, props.onCancelActionChange]);
+  }, [isCreate, props.onDirtyChange, props.onDirtyDetailsChange, props.onChangesetChange, props.onSaveActionChange, props.onCancelActionChange]);
 
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
