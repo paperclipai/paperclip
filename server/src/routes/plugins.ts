@@ -84,6 +84,11 @@ import {
 import {
   extractSecretRefBindingsFromConfig,
 } from "../services/plugin-secrets-handler.js";
+import {
+  canonicalizeLocalPluginPath,
+  isCloudManagedInstance,
+  isWithinBundledPluginRoot,
+} from "../services/plugin-install-guard.js";
 import { secretService } from "../services/secrets.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
@@ -1104,10 +1109,18 @@ export function pluginRoutes(
    * 3. Registers in the database
    * 4. Transitions to `ready` state if no new capability approval is needed
    *
+   * Cloud-managed instances (identified by the harness-injected
+   * `PAPERCLIP_MANAGED_CONFIG` environment variable) enforce a positive
+   * allowlist: only local paths that canonicalize to a directory inside the
+   * bundled plugin catalog root may be installed. npm/registry installs and
+   * arbitrary local paths are rejected with `403`. Local paths are
+   * canonicalized and validated on every instance.
+   *
    * Response: `PluginRecord`
    *
    * Errors:
    * - `400` — validation failure or install error (package not found, bad manifest, etc.)
+   * - `403` — install source not permitted on a cloud-managed instance
    * - `500` — installation succeeded but manifest is missing (indicates a loader bug)
    */
   router.post("/plugins/install", async (req, res) => {
@@ -1143,9 +1156,39 @@ export function pluginRoutes(
       return;
     }
 
+    // Cloud install floor: on harness-managed instances only bundled-catalog
+    // sources are installable, regardless of actor privileges or flag state.
+    const cloudManaged = isCloudManagedInstance();
+    if (cloudManaged && !isLocalPath) {
+      res.status(403).json({
+        error:
+          "npm installs are disabled on cloud-managed instances; only plugins bundled with the application may be installed",
+      });
+      return;
+    }
+
+    // Canonicalize local install paths on every instance so traversal
+    // segments and symlinks cannot smuggle an aliased path past validation.
+    let canonicalLocalPath: string | undefined;
+    if (isLocalPath) {
+      const validated = await canonicalizeLocalPluginPath(trimmedPackage);
+      if (!validated.ok) {
+        res.status(400).json({ error: `Invalid localPath: ${validated.reason}` });
+        return;
+      }
+      if (cloudManaged && !(await isWithinBundledPluginRoot(validated.canonicalPath))) {
+        res.status(403).json({
+          error:
+            "cloud-managed instances may only install plugins from the bundled plugin catalog",
+        });
+        return;
+      }
+      canonicalLocalPath = validated.canonicalPath;
+    }
+
     try {
-      const installOptions = isLocalPath
-        ? { localPath: trimmedPackage }
+      const installOptions = canonicalLocalPath !== undefined
+        ? { localPath: canonicalLocalPath }
         : { packageName: trimmedPackage, version: version?.trim() };
 
       const discovered = await loader.installPlugin(installOptions);
