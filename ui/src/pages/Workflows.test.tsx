@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { describe, expect, it, vi } from "vitest";
 import type { WorkflowListItem } from "@paperclipai/shared";
-import { filterWorkflowItems, getWorkflowEmptyStateMessage } from "./Workflows";
+import { ArchiveConfirmation, filterWorkflowItems, getWorkflowEmptyStateMessage } from "./Workflows";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 function workflow(status: string, id: string): WorkflowListItem {
   return {
@@ -43,5 +50,28 @@ describe("workflow list archival filter", () => {
       .toBe("All workflows are archived. Switch to the Archived view to see them.");
     expect(getWorkflowEmptyStateMessage([], "active"))
       .toContain("No workflows yet.");
+  });
+
+  it("renders inline archive confirmation and exposes confirm/cancel actions", async () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+
+    await act(async () => {
+      root.render(<ArchiveConfirmation title="Social" onConfirm={onConfirm} onCancel={onCancel} />);
+    });
+
+    expect(container.textContent).toContain("Runs and history remain available.");
+    const buttons = Array.from(container.querySelectorAll("button"));
+    await act(async () => {
+      buttons.find((button) => button.textContent === "Cancel")?.click();
+      buttons.find((button) => button.textContent === "Archive workflow")?.click();
+    });
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(onConfirm).toHaveBeenCalledOnce();
+    await act(async () => {
+      root.unmount();
+    });
   });
 });

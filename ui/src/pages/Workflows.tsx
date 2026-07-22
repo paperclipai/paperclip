@@ -59,6 +59,7 @@ export function Workflows() {
   const [draft, setDraft] = useState<WorkflowCreateDraft>(defaultDraft);
   const [clickUpWarnDismissed, setClickUpWarnDismissed] = useState(false);
   const [workflowFilter, setWorkflowFilter] = useState<WorkflowFilter>("active");
+  const [archiveConfirmationId, setArchiveConfirmationId] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Workflows" }]);
@@ -300,11 +301,13 @@ export function Workflows() {
             <WorkflowCard
               key={item.id}
               item={item}
-              onArchive={() => {
-                if (window.confirm(`Archive workflow "${item.title}"? Existing runs and history remain available. New runs stop; in-flight runs finish.`)) {
-                  statusMutation.mutate({ id: item.id, status: "archived" });
-                }
+              archiveConfirmationOpen={archiveConfirmationId === item.id}
+              onArchive={() => setArchiveConfirmationId(item.id)}
+              onConfirmArchive={() => {
+                setArchiveConfirmationId(null);
+                statusMutation.mutate({ id: item.id, status: "archived" });
               }}
+              onCancelArchive={() => setArchiveConfirmationId(null)}
               onRestore={() => statusMutation.mutate({ id: item.id, status: "active" })}
             />
           ))}
@@ -314,13 +317,19 @@ export function Workflows() {
   );
 }
 
-function WorkflowCard({
+export function WorkflowCard({
   item,
+  archiveConfirmationOpen,
   onArchive,
+  onConfirmArchive,
+  onCancelArchive,
   onRestore,
 }: {
   item: WorkflowListItem;
+  archiveConfirmationOpen: boolean;
   onArchive: () => void;
+  onConfirmArchive: () => void;
+  onCancelArchive: () => void;
   onRestore: () => void;
 }) {
   return (
@@ -388,8 +397,14 @@ function WorkflowCard({
             />
           </div>
         </Link>
-        <div className="flex justify-end border-t border-border/70 pt-3">
-          {item.status === "archived" ? (
+        <div className="border-t border-border/70 pt-3">
+          {archiveConfirmationOpen ? (
+            <ArchiveConfirmation
+              title={item.title}
+              onConfirm={onConfirmArchive}
+              onCancel={onCancelArchive}
+            />
+          ) : item.status === "archived" ? (
             <Button variant="outline" size="sm" onClick={onRestore}>
               <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
               Restore
@@ -403,6 +418,31 @@ function WorkflowCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+export function ArchiveConfirmation({
+  title,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div role="alertdialog" aria-label={`Archive workflow ${title}`} className="space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+      <div>
+        <p className="text-sm font-medium">Archive “{title}”?</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Runs and history remain available. New runs stop; in-flight runs finish.
+        </p>
+      </div>
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+        <Button variant="outline" size="sm" onClick={onConfirm}>Archive workflow</Button>
+      </div>
+    </div>
   );
 }
 
