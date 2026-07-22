@@ -88,6 +88,8 @@ import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
@@ -1394,6 +1396,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
 
+      case "environmentSyncIn":
+        return handleEnvironmentSyncIn(params as PluginEnvironmentSyncInParams);
+
+      case "environmentSyncOut":
+        return handleEnvironmentSyncOut(params as PluginEnvironmentSyncOutParams);
+
       case "environmentStartInteractiveSetup":
         return handleEnvironmentStartInteractiveSetup(params as PluginEnvironmentStartInteractiveSetupParams);
 
@@ -1453,6 +1461,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onEnvironmentSyncIn) supportedMethods.push("environmentSyncIn");
+    if (plugin.definition.onEnvironmentSyncOut) supportedMethods.push("environmentSyncOut");
     if (plugin.definition.onEnvironmentStartInteractiveSetup) supportedMethods.push("environmentStartInteractiveSetup");
     if (plugin.definition.onEnvironmentGetInteractiveSetup) supportedMethods.push("environmentGetInteractiveSetup");
     if (plugin.definition.onEnvironmentCaptureTemplate) supportedMethods.push("environmentCaptureTemplate");
@@ -1713,6 +1723,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentExecute");
     }
     return plugin.definition.onEnvironmentExecute(params);
+  }
+
+  async function handleEnvironmentSyncIn(params: PluginEnvironmentSyncInParams) {
+    if (!plugin.definition.onEnvironmentSyncIn) {
+      throw methodNotImplemented("environmentSyncIn");
+    }
+    return plugin.definition.onEnvironmentSyncIn(params);
+  }
+
+  async function handleEnvironmentSyncOut(params: PluginEnvironmentSyncOutParams) {
+    if (!plugin.definition.onEnvironmentSyncOut) {
+      throw methodNotImplemented("environmentSyncOut");
+    }
+    return plugin.definition.onEnvironmentSyncOut(params);
   }
 
   async function handleEnvironmentStartInteractiveSetup(params: PluginEnvironmentStartInteractiveSetupParams) {

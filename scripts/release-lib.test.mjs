@@ -91,7 +91,7 @@ exit 1
 set -euo pipefail
 printf 'npx %s\n' "$*" >> "$FAKE_CALL_LOG"
 [ "$1" = "--yes" ] && shift
-[ "$1" = "npm@10.9.7" ] && shift
+[ "$1" = "npm@11.16.0" ] && shift
 exec npm "$@"
 `,
   );
@@ -141,11 +141,11 @@ test("publish_package_to_npm returns after a successful pnpm publish", () => {
   assert.doesNotMatch(result.calls, /--provenance=false/);
 });
 
-test("publish_package_to_npm uses npm for bundled dependencies", () => {
+test("publish_package_to_npm uses trusted-publishing-capable npm for bundled dependencies", () => {
   const result = runPublishHelper({ pnpmMode: "success", publishTool: "npm" });
 
   assert.equal(result.status, 0);
-  assert.match(result.calls, /^npx --yes npm@10\.9\.7 publish --tag canary --access public$/m);
+  assert.match(result.calls, /^npx --yes npm@11\.16\.0 publish --tag canary --access public$/m);
   assert.match(result.calls, /^npm publish --tag canary --access public$/m);
   assert.doesNotMatch(result.calls, /^pnpm publish/m);
 });

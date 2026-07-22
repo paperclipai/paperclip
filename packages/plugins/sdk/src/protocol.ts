@@ -650,6 +650,66 @@ export interface PluginEnvironmentExecuteResult {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * A single source→target file or directory transfer within a sync operation.
+ *
+ * For `environmentSyncIn`, `sourcePath` is a host path and `targetPath` is a
+ * sandbox path; for `environmentSyncOut` the direction is reversed. All sandbox
+ * paths are POSIX. The contract is provider-agnostic: a provider may transfer a
+ * directory by whatever native mechanism it prefers (bulk upload, internal tar,
+ * per-file enumeration) as long as the observable result matches this mapping.
+ */
+export interface PluginSyncFileMapping {
+  /** Absolute path of the transfer source (host for syncIn, sandbox for syncOut). */
+  sourcePath: string;
+  /** Absolute path of the transfer target (sandbox for syncIn, host for syncOut). */
+  targetPath: string;
+  /** Whether the mapping transfers a single regular file or a directory tree. */
+  kind: "file" | "directory";
+  /**
+   * POSIX file mode to apply at the target (e.g. `0o600` for secret material).
+   * When set, providers MUST create the target with this mode with no
+   * world-readable window (create-with-mode or chmod-before-bytes, never after).
+   */
+  mode?: number;
+  /** Glob patterns to exclude when `kind` is `"directory"`. */
+  exclude?: string[];
+  /**
+   * Symlink handling for `kind: "directory"` transfers. Falsy preserves symlinks
+   * as links; `true` dereferences them to their target bytes. Mirrors tar's `-h`.
+   */
+  followSymlinks?: boolean;
+}
+
+/**
+ * An ordered, opaque unit of work handed to a sync hook. The `operationId` is an
+ * opaque, non-sensitive token authored by the orchestrator; a provider MUST NOT
+ * interpret it. Operations are applied in array order.
+ */
+export interface PluginSyncOperation {
+  operationId: string;
+  files: PluginSyncFileMapping[];
+}
+
+export interface PluginEnvironmentSyncInParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  operations: PluginSyncOperation[];
+}
+
+export interface PluginEnvironmentSyncOutParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  operations: PluginSyncOperation[];
+}
+
+/** Per-operation transfer accounting returned by a sync hook, for observability. */
+export interface PluginEnvironmentSyncResult {
+  operations: {
+    operationId: string;
+    filesTransferred: number;
+    bytesTransferred: number;
+  }[];
+}
+
 export type PluginEnvironmentInteractiveSetupStatus =
   | "starting"
   | "waiting_for_user"
@@ -864,6 +924,14 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
   ];
+  environmentSyncIn: [
+    params: PluginEnvironmentSyncInParams,
+    result: PluginEnvironmentSyncResult,
+  ];
+  environmentSyncOut: [
+    params: PluginEnvironmentSyncOutParams,
+    result: PluginEnvironmentSyncResult,
+  ];
   environmentStartInteractiveSetup: [
     params: PluginEnvironmentStartInteractiveSetupParams,
     result: PluginEnvironmentInteractiveSetupSession,
@@ -918,6 +986,8 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
+  "environmentSyncIn",
+  "environmentSyncOut",
   "environmentStartInteractiveSetup",
   "environmentGetInteractiveSetup",
   "environmentCaptureTemplate",

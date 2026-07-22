@@ -55,6 +55,9 @@ import type {
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
+  PluginEnvironmentSyncResult,
   PluginEnvironmentStartInteractiveSetupParams,
   PluginEnvironmentInteractiveSetupSession,
   PluginEnvironmentGetInteractiveSetupParams,
@@ -335,6 +338,27 @@ export interface PluginDefinition {
   onEnvironmentExecute?(
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult>;
+
+  /**
+   * Optional, opt-in: called before execution to place host files/directories at
+   * target sandbox paths using a provider-native transport instead of the default
+   * base64-over-exec fallback. Defining this hook (together with
+   * `onEnvironmentSyncOut`) advertises `environmentSyncIn`; leaving it undefined
+   * keeps the byte-identical fallback. See `doc/plugins/SANDBOX_FILE_SYNC_HOOKS.md`.
+   */
+  onEnvironmentSyncIn?(
+    params: PluginEnvironmentSyncInParams,
+  ): Promise<PluginEnvironmentSyncResult>;
+
+  /**
+   * Optional, opt-in: called after execution to copy sandbox files/directories
+   * back to target host paths using a provider-native transport. Defining this
+   * hook (together with `onEnvironmentSyncIn`) advertises `environmentSyncOut`.
+   * See `doc/plugins/SANDBOX_FILE_SYNC_HOOKS.md`.
+   */
+  onEnvironmentSyncOut?(
+    params: PluginEnvironmentSyncOutParams,
+  ): Promise<PluginEnvironmentSyncResult>;
 
   /** Called to start an interactive setup sandbox and return redacted connection metadata. */
   onEnvironmentStartInteractiveSetup?(

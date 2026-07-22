@@ -5,6 +5,8 @@ import {
   type SandboxManagedRuntimeAsset,
   type SandboxManagedRuntimeClient,
   type SandboxRemoteExecutionSpec,
+  type SandboxSyncOperation,
+  type SandboxSyncResult,
 } from "./sandbox-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
@@ -28,6 +30,16 @@ export interface CommandManagedRuntimeRunner {
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
   }): Promise<RunProcessResult>;
+  /**
+   * Optional native inbound file transfer. Present only when the sandbox
+   * provider advertises both `environmentSyncIn` and `environmentSyncOut`; the
+   * client exposes `syncIn`/`syncOut` only when BOTH are present, so the
+   * orchestrator either uses the native path for both directions or falls back
+   * to the base64 transport for both.
+   */
+  syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  /** Optional native outbound file transfer. See {@link syncIn}. */
+  syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
 }
 
 export interface CommandManagedRuntimeSpec {
@@ -118,7 +130,7 @@ export function createCommandManagedRuntimeClient(input: {
     return result;
   };
 
-  return {
+  const client: SandboxManagedRuntimeClient = {
     makeDir: async (remotePath) => {
       await runShell(`mkdir -p ${shellQuote(remotePath)}`);
     },
@@ -240,6 +252,17 @@ export function createCommandManagedRuntimeClient(input: {
       requireSuccessfulResult(result, command);
     },
   };
+
+  // Expose the native sync capability to the orchestrator only when the runner
+  // supports BOTH directions; a provider that advertises just one verb (or
+  // neither) keeps the byte-identical base64 fallback for both.
+  const { syncIn, syncOut } = input.runner;
+  if (syncIn && syncOut) {
+    client.syncIn = (operations) => syncIn(operations);
+    client.syncOut = (operations) => syncOut(operations);
+  }
+
+  return client;
 }
 
 export async function prepareCommandManagedRuntime(input: {

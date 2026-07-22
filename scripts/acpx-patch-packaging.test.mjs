@@ -34,7 +34,9 @@ test("bundled package staging materializes publishConfig entrypoints", () => {
 });
 
 test("bundled package dry runs preview without querying published versions", () => {
-  assert.match(releaseScript, /run_bundled_npm pack --pack-destination "\$publish_dir"/);
-  assert.match(releaseLib, /BUNDLED_NPM_VERSION="10\.9\.7"/);
-  assert.match(releaseLib, /npx --yes "npm@\$BUNDLED_NPM_VERSION"/);
+  assert.match(releaseScript, /run_bundled_npm_pack pack --pack-destination "\$publish_dir"/);
+  assert.match(releaseLib, /BUNDLED_NPM_PACK_VERSION="10\.9\.7"/);
+  assert.match(releaseLib, /BUNDLED_NPM_PUBLISH_VERSION="11\.16\.0"/);
+  assert.match(releaseLib, /npx --yes "npm@\$BUNDLED_NPM_PACK_VERSION"/);
+  assert.match(releaseLib, /npx --yes "npm@\$BUNDLED_NPM_PUBLISH_VERSION"/);
 });
