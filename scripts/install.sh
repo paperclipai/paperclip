@@ -4,6 +4,10 @@ set -euo pipefail
 MIN_NODE_MAJOR=20
 DEFAULT_NODE_MAJOR=22
 PAPERCLIP_PACKAGE="paperclipai"
+HOMEBREW_INSTALL_COMMIT="99e13e96cbbdc1ac1ac09c0a40b450bf219ef3aa"
+HOMEBREW_INSTALL_SHA256="99287f194a8b3c9e6b0203a11a5fa54518be57209343e6bb954dec4635796d9d"
+NODESOURCE_DEB_SHA256="575583bbac2fccc0b5edd0dbc03e222d9f9dc8d724da996d22754d6411104fd1"
+NODESOURCE_RPM_SHA256="b0ed2b9b66002e7ee802e8777cf3a92b25f1ecc0129812dc6f59a43a536810cc"
 
 CANARY=0
 VERSION=""
@@ -237,10 +241,20 @@ ensure_temp_dir() {
 download_checked_script() {
   local url="$1"
   local destination="$2"
+  local expected_sha256="$3"
+  local actual_sha256
 
   command -v curl >/dev/null 2>&1 || fail "curl is required to bootstrap Node.js"
   curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$destination"
   [ -s "$destination" ] || fail "downloaded script is empty: $url"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual_sha256="$(sha256sum "$destination" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual_sha256="$(shasum -a 256 "$destination" | awk '{print $1}')"
+  else
+    fail "sha256sum or shasum is required to verify downloaded scripts"
+  fi
+  [ "$actual_sha256" = "$expected_sha256" ] || fail "checksum mismatch for downloaded script: $url"
   [ "$(head -c 2 "$destination")" = '#!' ] || fail "downloaded file is not an executable script: $url"
   bash -n "$destination" || fail "downloaded script failed syntax validation: $url"
 }
@@ -259,7 +273,7 @@ install_node_macos() {
     ensure_temp_dir
     local brew_installer="$TEMP_DIR/homebrew-install.sh"
     log "Homebrew is required to install Node.js"
-    download_checked_script "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" "$brew_installer"
+    download_checked_script "https://raw.githubusercontent.com/Homebrew/install/$HOMEBREW_INSTALL_COMMIT/install.sh" "$brew_installer" "$HOMEBREW_INSTALL_SHA256"
     if [ "$NO_PROMPT" = "1" ]; then
       run_command env NONINTERACTIVE=1 /bin/bash "$brew_installer"
     else
@@ -282,7 +296,7 @@ install_node_apt() {
   local nodesource_installer="$TEMP_DIR/nodesource-setup.sh"
   run_privileged env DEBIAN_FRONTEND=noninteractive apt-get update
   run_privileged env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl
-  download_checked_script "https://deb.nodesource.com/setup_${DEFAULT_NODE_MAJOR}.x" "$nodesource_installer"
+  download_checked_script "https://deb.nodesource.com/setup_${DEFAULT_NODE_MAJOR}.x" "$nodesource_installer" "$NODESOURCE_DEB_SHA256"
   run_privileged env DEBIAN_FRONTEND=noninteractive bash "$nodesource_installer"
   run_privileged env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
 }
@@ -291,7 +305,7 @@ install_node_dnf() {
   ensure_temp_dir
   local nodesource_installer="$TEMP_DIR/nodesource-setup.sh"
   run_privileged dnf install -y ca-certificates curl
-  download_checked_script "https://rpm.nodesource.com/setup_${DEFAULT_NODE_MAJOR}.x" "$nodesource_installer"
+  download_checked_script "https://rpm.nodesource.com/setup_${DEFAULT_NODE_MAJOR}.x" "$nodesource_installer" "$NODESOURCE_RPM_SHA256"
   run_privileged bash "$nodesource_installer"
   run_privileged dnf install -y nodejs
 }
