@@ -383,6 +383,31 @@ describe("Agents", () => {
     expect(heartbeatCell?.textContent).not.toContain("\n");
   });
 
+  it("suppresses stale configured model text for antigravity agents on the all agents page", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        adapterType: "antigravity_local",
+        adapterConfig: { model: "Gemini 3.1 Pro (High)" },
+      }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("antigravity_local");
+    expect(container.textContent).not.toContain("Gemini 3.1 Pro (High)");
+  });
+
   it("gives mobile agent names the full row width after the leading status indicator", async () => {
     mockSidebarState.isMobile = true;
     mockResourceMembershipsApi.listMine.mockResolvedValue({

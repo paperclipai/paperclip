@@ -4332,8 +4332,10 @@ export function resolveExecutionWorkspaceConfigFreshness(input: {
 }
 
 function readConfiguredModelFromAdapterConfig(
+  adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown> | null | undefined,
 ) {
+  if (adapterType === "antigravity_local") return null;
   return readNonEmptyString(adapterConfig?.model);
 }
 
@@ -13898,7 +13900,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : null,
     });
-    const configuredModel = readConfiguredModelFromAdapterConfig(runtimeConfig);
+    const configuredModel = readConfiguredModelFromAdapterConfig(agent.adapterType, runtimeConfig);
     const wakeSessionResetReason = describeSessionResetReason(context);
     const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
       hasTaskSession: taskSession != null,

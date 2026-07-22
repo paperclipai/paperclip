@@ -1170,7 +1170,7 @@ async function buildAgentContext(
 
   const usage = asRecord(run?.usageJson) ?? {};
   const runtime = {
-    configuredModel: asString(adapterConfig.model),
+    configuredModel: agent.adapterType === "antigravity_local" ? null : asString(adapterConfig.model),
     configuredInstructionsBundleMode: asString(adapterConfig.instructionsBundleMode),
     configuredInstructionsEntryFile: asString(adapterConfig.instructionsEntryFile),
     configuredInstructionsFilePath: asString(adapterConfig.instructionsFilePath),

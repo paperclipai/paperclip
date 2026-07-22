@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   getAgentFallbackLane,
+  getAgentModelBadge,
   getAgentRegistryLaneRole,
   groupAgentFallbackLanes,
   groupAgentFallbackLanesWithRegistry,
@@ -33,6 +34,34 @@ describe("groupAgentFallbackLanes", () => {
     const names = ["GrowthSEO-Gemini", "Kestrel"];
     const grouped = groupAgentFallbackLanes(names.map((name) => ({ name }))).map((a) => a.name);
     expect(grouped).toEqual(["GrowthSEO-Gemini", "Kestrel"]);
+  });
+});
+
+describe("getAgentModelBadge", () => {
+  it("shows antigravity as a fixed adapter identity instead of raw config.model", () => {
+    expect(
+      getAgentModelBadge({
+        adapterType: "antigravity_local",
+        adapterConfig: { model: "Gemini 3.1 Pro (High)" },
+      }),
+    ).toEqual({
+      label: "Antigravity",
+      tone: "gemini",
+      title: "Antigravity",
+    });
+  });
+
+  it("keeps raw configured model titles for other adapters", () => {
+    expect(
+      getAgentModelBadge({
+        adapterType: "gemini_local",
+        adapterConfig: { model: "gemini-3.5-flash" },
+      }),
+    ).toEqual({
+      label: "Gemini",
+      tone: "gemini",
+      title: "gemini-3.5-flash",
+    });
   });
 });
 

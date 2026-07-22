@@ -31,15 +31,23 @@ export function getAgentFallbackLane(name: string): AgentFallbackLane | null {
 export type AgentModelTone = "claude" | "gpt" | "grok" | "gemini";
 export type AgentModelBadgeInfo = { label: string; tone: AgentModelTone; title: string };
 
+function getAgentModelTitle(agent: {
+  adapterType?: string | null;
+  adapterConfig?: Record<string, unknown> | null;
+}) {
+  if (agent.adapterType === "antigravity_local") return "Antigravity";
+  const configuredModel =
+    agent.adapterConfig && typeof agent.adapterConfig.model === "string"
+      ? (agent.adapterConfig.model as string)
+      : "";
+  return configuredModel || agent.adapterType || "";
+}
+
 export function getAgentModelBadge(agent: {
   adapterType?: string | null;
   adapterConfig?: Record<string, unknown> | null;
 }): AgentModelBadgeInfo | null {
-  const model =
-    agent.adapterConfig && typeof agent.adapterConfig.model === "string"
-      ? (agent.adapterConfig.model as string)
-      : "";
-  const title = model || agent.adapterType || "";
+  const title = getAgentModelTitle(agent);
   switch (agent.adapterType) {
     case "claude_local":
       return { label: "Claude", tone: "claude", title };
@@ -49,6 +57,7 @@ export function getAgentModelBadge(agent: {
     case "grok_local":
       return { label: "Grok", tone: "grok", title };
     case "antigravity_local":
+      return { label: "Antigravity", tone: "gemini", title };
     case "gemini_local":
       return { label: "Gemini", tone: "gemini", title };
     default:

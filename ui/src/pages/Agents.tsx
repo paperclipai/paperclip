@@ -108,6 +108,7 @@ function filterAgents(agents: Agent[], tab: FilterTab, builtInAgentIds: Set<stri
 }
 
 function getConfiguredModel(agent: Agent): string | null {
+  if (agent.adapterType === "antigravity_local") return null;
   const value = agent.adapterConfig?.model;
   if (typeof value !== "string") return null;
   const model = value.trim();
