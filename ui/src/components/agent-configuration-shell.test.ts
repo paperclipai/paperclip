@@ -16,7 +16,7 @@ describe("agent configuration shell", () => {
   it("does not guess an inherited adapter model from available choices", () => {
     const agent = {
       adapterType: "claude_local",
-      adapterConfig: { modelReasoningEffort: "high" },
+      adapterConfig: { modelReasoningEffort: "high", env: { EXAMPLE: "value" } },
       runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
       permissions: { trustPreset: "standard" },
       defaultEnvironmentId: null,
@@ -27,6 +27,7 @@ describe("agent configuration shell", () => {
       modelInherited: true,
       environmentInherited: true,
       apiKeyCount: 2,
+      environmentVariableCount: 1,
     });
   });
 

@@ -1092,11 +1092,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Execution ---- */}
+      {configurationShell && sectionVisible("environment") ? (
+        <div id="config-environment" className="scroll-mt-24" />
+      ) : null}
       {sectionVisible("environment") && (forcedKubernetes ? (
         // Instance execution policy forces the managed Kubernetes sandbox
         // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
         // Render the environment read-only instead of the selectable picker.
-        <div id={configurationShell ? "config-environment" : undefined} className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), configurationShell && "scroll-mt-24")}>
+        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">Environment</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
@@ -1121,7 +1124,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       ) : showEnvironmentOverrideControl ? (
-        <div id={configurationShell ? "config-environment" : undefined} className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), configurationShell && "scroll-mt-24")}>
+        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">Environment</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
