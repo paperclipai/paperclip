@@ -304,6 +304,60 @@ describe("command managed runtime", () => {
     expect(progress.at(-1)).toEqual({ done: payload.length, total: payload.length });
   });
 
+  it("stages a single-file write to <path>.paperclip-upload then atomically renames it (single-stream path)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-atomic-"));
+    cleanupDirs.push(rootDir);
+    const remotePath = path.join(rootDir, "nested", "payload.bin");
+
+    const { runner, calls } = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
+    await client.writeFile(remotePath, toArrayBuffer(Buffer.from("hello atomic\n")));
+
+    // Characterization guardrail: the legacy single-file transport must keep its
+    // stage-then-atomic-rename shape (temp .paperclip-upload + `mv -f`).
+    const script = (calls[0].args ?? []).join(" ");
+    expect(script).toContain(`${remotePath}.paperclip-upload`);
+    expect(script).toContain(`mv -f`);
+    expect(script.indexOf(".paperclip-upload")).toBeLessThan(script.indexOf("mv -f"));
+    expect(await readFile(remotePath, "utf8")).toBe("hello atomic\n");
+  });
+
+  it("stages a single-file write to a temp then renames it on the chunked fallback path too", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-atomic-fallback-"));
+    cleanupDirs.push(rootDir);
+    const remotePath = path.join(rootDir, "nested", "payload.bin");
+
+    const payload = Buffer.alloc(10 * 1024 * 1024);
+    for (let i = 0; i < payload.length; i++) payload[i] = i % 256;
+    const { runner, calls } = makeSpawnRunner({ supportsSingleStreamStdinProgress: false });
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
+    await client.writeFile(remotePath, toArrayBuffer(payload));
+
+    const scripts = calls.map((call) => (call.args ?? []).join(" "));
+    expect(scripts.some((script) => script.includes(`${remotePath}.paperclip-upload`))).toBe(true);
+    expect(scripts.some((script) => script.includes(`mv -f`))).toBe(true);
+    expect((await readFile(remotePath)).equals(payload)).toBe(true);
+  });
+
+  it("leaves the client without syncIn/syncOut unless the runner supports both (fallback preserved)", () => {
+    const base = makeSpawnRunner().runner;
+    expect(createCommandManagedRuntimeClient({ runner: base, commandCwd: "/", timeoutMs: 1 }).syncIn).toBeUndefined();
+
+    const onlyIn: CommandManagedRuntimeRunner = { ...base, syncIn: async () => ({ operations: [] }) };
+    const partial = createCommandManagedRuntimeClient({ runner: onlyIn, commandCwd: "/", timeoutMs: 1 });
+    expect(partial.syncIn).toBeUndefined();
+    expect(partial.syncOut).toBeUndefined();
+
+    const both: CommandManagedRuntimeRunner = {
+      ...base,
+      syncIn: async () => ({ operations: [] }),
+      syncOut: async () => ({ operations: [] }),
+    };
+    const native = createCommandManagedRuntimeClient({ runner: both, commandCwd: "/", timeoutMs: 1 });
+    expect(native.syncIn).toBeTypeOf("function");
+    expect(native.syncOut).toBeTypeOf("function");
+  });
+
   it("falls back to chunked upload progress when the runner cannot report mid-stream stdin progress", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-write-fallback-"));
     cleanupDirs.push(rootDir);
