@@ -1459,9 +1459,11 @@ describe("sandbox adapter execution targets", () => {
     // Simulate a deployment where a public base URL is configured: server boot
     // exports the public origin via PAPERCLIP_RUNTIME_API_URL / PAPERCLIP_API_URL
     // and the local listen host/port via PAPERCLIP_LISTEN_HOST / PAPERCLIP_LISTEN_PORT.
+    // The wildcard listen host must map to the loopback address of the same
+    // family (0.0.0.0 -> 127.0.0.1), where the test API server is bound.
     vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", "https://public.example.invalid");
     vi.stubEnv("PAPERCLIP_API_URL", "https://public.example.invalid");
-    vi.stubEnv("PAPERCLIP_LISTEN_HOST", "127.0.0.1");
+    vi.stubEnv("PAPERCLIP_LISTEN_HOST", "0.0.0.0");
     vi.stubEnv("PAPERCLIP_LISTEN_PORT", String(address.port));
 
     const target: AdapterSandboxExecutionTarget = {
