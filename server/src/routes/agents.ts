@@ -1109,6 +1109,20 @@ export function agentRoutes(
     };
   }
 
+  async function listNewAgentAdapterModelProfiles(
+    adapterType: string,
+  ): Promise<AdapterModelProfileDefinition[]> {
+    try {
+      return await listAdapterModelProfiles(adapterType);
+    } catch (error) {
+      logger.warn(
+        { err: error, adapterType },
+        "Failed to discover adapter model profiles while normalizing a new agent; continuing without profile defaults",
+      );
+      return [];
+    }
+  }
+
   async function normalizeNewAgentRuntimeConfig(
     adapterType: string,
     runtimeConfig: unknown,
@@ -1130,15 +1144,7 @@ export function agentRoutes(
     const parsedModelProfiles = asRecord(normalizedRuntimeConfig.modelProfiles);
     const modelProfiles = parsedModelProfiles ? { ...parsedModelProfiles } : {};
     if (!Object.prototype.hasOwnProperty.call(modelProfiles, "cheap")) {
-      let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
-      try {
-        adapterModelProfiles = await listAdapterModelProfiles(adapterType);
-      } catch (error) {
-        logger.warn(
-          { err: error, adapterType },
-          "Failed to discover adapter model profiles while normalizing a new agent; leaving profiles unchanged",
-        );
-      }
+      const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
       if (adapterModelProfiles.some((profile) => profile.key === "cheap")) {
         modelProfiles.cheap = { enabled: false };
       }
@@ -1217,7 +1223,7 @@ export function agentRoutes(
   ): Promise<Record<string, unknown>> {
     const entries = listRuntimeModelProfileAdapterConfigs(runtimeConfig);
     if (entries.length === 0) return runtimeConfig;
-    const adapterModelProfiles = await listAdapterModelProfiles(adapterType);
+    const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
 
     const normalizedRuntimeConfig = { ...runtimeConfig };
     const modelProfiles = asRecord(runtimeConfig.modelProfiles) ?? {};
