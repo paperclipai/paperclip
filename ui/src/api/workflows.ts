@@ -22,6 +22,10 @@ export interface WorkflowMutationInput {
   runnerConfig: Record<string, unknown>;
 }
 
+export interface WorkflowListOptions {
+  includeArchived?: boolean;
+}
+
 export interface WorkflowInvocationInput {
   sourceRoutineRunId: string;
   invocation: {
@@ -49,12 +53,16 @@ export interface WorkflowScheduleMutationInput {
 }
 
 export const workflowsApi = {
-  list: (companyId: string) => api.get<WorkflowListItem[]>(`/companies/${companyId}/workflows`),
+  list: (companyId: string, options: WorkflowListOptions = {}) => api.get<WorkflowListItem[]>(
+    `/companies/${companyId}/workflows${options.includeArchived ? "?includeArchived=true" : ""}`,
+  ),
   create: (companyId: string, data: WorkflowMutationInput) =>
     api.post<Workflow>(`/companies/${companyId}/workflows`, data),
   get: (id: string) => api.get<WorkflowDetail>(`/workflows/${id}`),
   update: (id: string, data: Partial<WorkflowMutationInput>) =>
     api.patch<Workflow>(`/workflows/${id}`, data),
+  archive: (id: string) => api.patch<Workflow>(`/workflows/${id}`, { status: "archived" }),
+  restore: (id: string) => api.patch<Workflow>(`/workflows/${id}`, { status: "active" }),
   run: (id: string, data: { inputMarkdown: string; resourceManifest?: WorkflowResourceManifest }) =>
     api.post<WorkflowRun>(`/workflows/${id}/run`, data),
   invokeFromRoutine: (routineId: string, data: WorkflowInvocationInput) =>

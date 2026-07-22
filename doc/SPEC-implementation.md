@@ -407,6 +407,20 @@ Operational policy:
   - `document_id` uuid fk not null
   - `key` text not null (`plan`, `design`, `notes`, etc.)
 
+## 7.16 Workflows
+
+Workflows are company-scoped, soft-archivable execution definitions. Their status is
+`active | paused | archived`.
+
+- `active`: manual, scheduled, and routine-invoked runs are eligible.
+- `paused`: retained and visible; scheduler eligibility follows existing paused-state behavior.
+- `archived`: hidden from default workflow lists; configuration, runs, schedules, deliverables,
+  and activity history remain retained.
+- Archiving blocks new manual, scheduled, and routine-invoked runs.
+- Existing `queued`, `running`, and `awaiting_human` runs continue to terminal completion.
+- Restore always changes `archived` to `active`; retained active schedules become eligible again.
+- Archive and restore are auditable as `workflow.archived` and `workflow.restored` activity actions.
+
 ## 8. State Machines
 
 ## 8.1 Agent Status
@@ -591,7 +605,19 @@ Dashboard payload must include:
 - month-to-date spend and budget utilization
 - pending approvals count
 
-## 10.9 Error Semantics
+## 10.9 Workflows
+
+- `GET /companies/:companyId/workflows`
+- `GET /companies/:companyId/workflows?includeArchived=true`
+- `POST /companies/:companyId/workflows`
+- `GET /workflows/:workflowId`
+- `PATCH /workflows/:workflowId` with `{ "status": "archived" | "active" }`
+- `POST /workflows/:workflowId/run`
+
+The default workflow list excludes archived workflows. Archived workflow launch attempts return
+`409 Conflict`; direct detail and explicit archived-inclusive listing retain historical access.
+
+## 10.10 Error Semantics
 
 - `400` validation error
 - `401` unauthenticated

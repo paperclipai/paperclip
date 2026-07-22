@@ -576,6 +576,25 @@ describe("WorkflowDetail page", () => {
     );
   });
 
+  it("keeps archived workflow history visible but disables new runs", async () => {
+    getWorkflowMock.mockResolvedValueOnce({
+      ...workflowDetail,
+      status: "archived",
+    });
+
+    await renderAt(container, "/workflows/workflow-1");
+    await flushReact();
+    await flushReact();
+
+    const runButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Run workflow"));
+
+    expect(runButton).toBeTruthy();
+    expect(runButton?.disabled).toBe(true);
+    expect(container.textContent).toContain("Workflow archived. Restore it before starting new runs.");
+    expect(container.textContent).toContain("Latest run summary");
+  });
+
   it("shows stderr details by default and still lets the user collapse them", async () => {
     await renderAt(container, "/workflows/workflow-1");
     await flushReact();

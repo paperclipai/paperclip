@@ -1591,7 +1591,7 @@ export function WorkflowDetail() {
                   <Button
                     onClick={() => runMutation.mutate()}
                     disabled={
-                      runMutation.isPending || inputMarkdown.trim().length === 0
+                      workflow.status === "archived" || runMutation.isPending || inputMarkdown.trim().length === 0
                     }
                   >
                     {runMutation.isPending ? (
@@ -1602,6 +1602,11 @@ export function WorkflowDetail() {
                     Run workflow
                   </Button>
                 </div>
+                {workflow.status === "archived" ? (
+                  <p className="text-xs text-muted-foreground">
+                    Workflow archived. Restore it before starting new runs. Existing runs and history remain available.
+                  </p>
+                ) : null}
               </CardContent>
             </Card>
 
@@ -1671,7 +1676,7 @@ export function WorkflowDetail() {
                     className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                   >
                     <option value="active">Active</option>
-                    <option value="paused">Paused</option>
+                    {editDraft.status !== "archived" ? <option value="paused">Paused</option> : null}
                     <option value="archived">Archived</option>
                   </select>
                 </div>

@@ -3636,7 +3636,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.workflows) {
-      const allWorkflows = await workflows.list(companyId);
+      const allWorkflows = await workflows.list(companyId, { includeArchived: true });
       for (const wf of allWorkflows) {
         const runnerConfig = (wf.runnerConfig as Record<string, unknown> | null) ?? {};
         const adkPath = typeof runnerConfig.agentPath === "string" ? runnerConfig.agentPath : "";
@@ -4008,7 +4008,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }
       }
 
-      const existingWorkflowRows = include.workflows ? await workflows.list(input.target.companyId) : [];
+      const existingWorkflowRows = include.workflows
+        ? await workflows.list(input.target.companyId, { includeArchived: true })
+        : [];
       for (const wf of existingWorkflowRows) {
         existingWorkflowTitleToId.set(wf.title, wf.id);
       }

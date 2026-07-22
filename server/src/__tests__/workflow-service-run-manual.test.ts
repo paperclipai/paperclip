@@ -175,6 +175,32 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
     expect(phases[0]?.phaseKey).toBe("phase-1");
   });
 
+  it("rejects manual runs for archived workflows", async () => {
+    const companyId = randomUUID();
+    const workflowId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(workflows).values({
+      id: workflowId,
+      companyId,
+      title: "Archived workflow",
+      status: "archived",
+      runnerType: "google_adk",
+      runnerConfig: { agentPath: "/tmp/agent.py" },
+      pipelineDefinition: { entrypoint: "agent.py", generatedAt: new Date(0).toISOString(), phases: [] },
+      pipelineSourceHash: null,
+    });
+
+    await expect(workflowService(db).runManual(workflowId, { inputMarkdown: "generate" }))
+      .rejects.toThrow(/archived.*restore/i);
+    expect(mockInvokeGoogleAdk).not.toHaveBeenCalled();
+  });
+
   it("closes active phases when the ADK invocation exits", async () => {
     const companyId = randomUUID();
     const workflowId = randomUUID();

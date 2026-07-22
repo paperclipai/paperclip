@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@/lib/router";
-import { AlertTriangle, GitBranch, Play, Plus, Sparkles, Workflow as WorkflowIcon, X } from "lucide-react";
+import { AlertTriangle, Archive, GitBranch, Play, Plus, RotateCcw, Sparkles, Workflow as WorkflowIcon, X } from "lucide-react";
 import type { WorkflowListItem } from "@paperclipai/shared";
 import { workflowsApi } from "../api/workflows";
 import { companyAwaitingHumanSettingsApi } from "../api/companyAwaitingHumanSettings";
@@ -17,6 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { StatusBadge } from "../components/StatusBadge";
 
 type WorkflowCreateDraft = {
   title: string;
@@ -26,6 +27,20 @@ type WorkflowCreateDraft = {
   command: string;
   model: string;
 };
+
+type WorkflowFilter = "active" | "archived" | "all";
+
+export function filterWorkflowItems(items: WorkflowListItem[], filter: WorkflowFilter) {
+  return items.filter((item) => filter === "all" || (filter === "archived"
+    ? item.status === "archived"
+    : item.status !== "archived"));
+}
+
+export function getWorkflowEmptyStateMessage(items: WorkflowListItem[], filter: WorkflowFilter) {
+  if (filter === "archived") return "No archived workflows.";
+  if (items.length > 0) return "All workflows are archived. Switch to the Archived view to see them.";
+  return "No workflows yet. Create one and point it at a Google ADK project to generate its first pipeline.";
+}
 
 const defaultDraft: WorkflowCreateDraft = {
   title: "",
@@ -44,6 +59,8 @@ export function Workflows() {
   const navigate = useNavigate();
   const [draft, setDraft] = useState<WorkflowCreateDraft>(defaultDraft);
   const [clickUpWarnDismissed, setClickUpWarnDismissed] = useState(false);
+  const [workflowFilter, setWorkflowFilter] = useState<WorkflowFilter>("active");
+  const [archiveConfirmationId, setArchiveConfirmationId] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Workflows" }]);
@@ -69,8 +86,8 @@ export function Workflows() {
   })();
 
   const workflowsQuery = useQuery({
-    queryKey: queryKeys.workflows.list(selectedCompanyId ?? ""),
-    queryFn: () => workflowsApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.workflows.list(selectedCompanyId ?? ""), { includeArchived: true }],
+    queryFn: () => workflowsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
     refetchInterval: (query) => {
       const items = (query.state.data ?? []) as WorkflowListItem[];
@@ -106,7 +123,37 @@ export function Workflows() {
     },
   });
 
+  const statusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: "archived" | "active" }) =>
+      status === "archived" ? workflowsApi.archive(id) : workflowsApi.restore(id),
+    onSuccess: async (updated) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.workflows.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.workflows.detail(updated.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.workflows.schedules(updated.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.workflows.activity(selectedCompanyId!, updated.id) }),
+      ]);
+      pushToast({
+        title: updated.status === "archived" ? "Workflow archived" : "Workflow restored",
+        body: updated.title,
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to update workflow status",
+        body: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    },
+  });
+
   const items = workflowsQuery.data ?? [];
+  const archivedCount = items.filter((item) => item.status === "archived").length;
+  const visibleItems = useMemo(
+    () => filterWorkflowItems(items, workflowFilter),
+    [items, workflowFilter],
+  );
   const activeCount = useMemo(
     () => items.filter((item) => item.latestRun && ["queued", "running", "awaiting_human"].includes(item.latestRun.status)).length,
     [items],
@@ -149,12 +196,24 @@ export function Workflows() {
           <h1 className="text-xl font-semibold">Workflows</h1>
           <p className="text-sm text-muted-foreground">
             Company-scoped ADK automations with live pipeline runs and workflow-backed deliverables.
-            {items.length > 0 ? ` ${items.length} total, ${activeCount} active.` : ""}
+            {items.length > 0 ? ` ${items.length} total, ${activeCount} active${archivedCount > 0 ? `, ${archivedCount} archived` : ""}.` : ""}
           </p>
         </div>
+        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span>Show</span>
+          <select
+            value={workflowFilter}
+            onChange={(event) => setWorkflowFilter(event.target.value as WorkflowFilter)}
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+          >
+            <option value="active">Active</option>
+            <option value="archived">Archived</option>
+            <option value="all">All</option>
+          </select>
+        </label>
       </div>
 
-      <Card className="overflow-hidden">
+      <Card className="overflow-hidden rounded-xl">
         <CardHeader>
           <CardTitle className="text-base">Create workflow</CardTitle>
         </CardHeader>
@@ -232,15 +291,26 @@ export function Workflows() {
         </p>
       ) : null}
 
-      {items.length === 0 ? (
+      {visibleItems.length === 0 ? (
         <EmptyState
           icon={Sparkles}
-          message="No workflows yet. Create one and point it at a Google ADK project to generate its first pipeline."
+          message={getWorkflowEmptyStateMessage(items, workflowFilter)}
         />
       ) : (
-        <div className="grid gap-4 xl:grid-cols-2">
-          {items.map((item) => (
-            <WorkflowCard key={item.id} item={item} />
+        <div className="grid items-start gap-4 xl:grid-cols-2">
+          {visibleItems.map((item) => (
+            <WorkflowCard
+              key={item.id}
+              item={item}
+              archiveConfirmationOpen={archiveConfirmationId === item.id}
+              onArchive={() => setArchiveConfirmationId(item.id)}
+              onConfirmArchive={() => {
+                setArchiveConfirmationId(null);
+                statusMutation.mutate({ id: item.id, status: "archived" });
+              }}
+              onCancelArchive={() => setArchiveConfirmationId(null)}
+              onRestore={() => statusMutation.mutate({ id: item.id, status: "active" })}
+            />
           ))}
         </div>
       )}
@@ -248,12 +318,26 @@ export function Workflows() {
   );
 }
 
-function WorkflowCard({ item }: { item: WorkflowListItem }) {
+export function WorkflowCard({
+  item,
+  archiveConfirmationOpen,
+  onArchive,
+  onConfirmArchive,
+  onCancelArchive,
+  onRestore,
+}: {
+  item: WorkflowListItem;
+  archiveConfirmationOpen: boolean;
+  onArchive: () => void;
+  onConfirmArchive: () => void;
+  onCancelArchive: () => void;
+  onRestore: () => void;
+}) {
   return (
-    <Link to={`/workflows/${item.id}`} className="no-underline text-inherit">
-      <Card className="h-full transition-colors hover:border-foreground/30">
-        <CardContent className="space-y-4 p-5">
-          <div className="flex items-start justify-between gap-3">
+    <Card className="gap-0 rounded-xl py-0 transition-colors hover:border-foreground/30">
+      <CardContent className="space-y-3 p-4 pb-3">
+        <Link to={`/workflows/${item.id}`} className="block no-underline text-inherit">
+          <div className="flex items-start justify-between gap-3 pb-3">
             <div className="space-y-1">
               <div className="flex items-center gap-2">
                 <WorkflowIcon className="h-4 w-4 text-muted-foreground" />
@@ -263,10 +347,10 @@ function WorkflowCard({ item }: { item: WorkflowListItem }) {
                 <p className="text-sm text-muted-foreground line-clamp-2">{item.description}</p>
               ) : null}
             </div>
-            <StatusPill status={item.status} />
+            <StatusBadge status={item.status} />
           </div>
 
-          <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
+          <div className="border-y border-border/70 pb-4 pt-2.5">
             <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-wide text-muted-foreground">
               <span>Pipeline</span>
               <span>{item.pipelineDefinition.phases.length} phases</span>
@@ -277,8 +361,8 @@ function WorkflowCard({ item }: { item: WorkflowListItem }) {
                 return (
                   <div
                     key={phase.key}
-                    className={`rounded-full border px-3 py-1 text-xs ${
-                      isCurrent ? "border-amber-500 bg-amber-500/10 text-amber-100 animate-pulse" : "border-border bg-background"
+                    className={`rounded-md border px-2.5 py-1 text-xs ${
+                      isCurrent ? "border-amber-500/60 bg-amber-500/10 text-amber-100" : "border-border bg-muted/30 text-muted-foreground"
                     }`}
                   >
                     {phase.label}
@@ -286,14 +370,14 @@ function WorkflowCard({ item }: { item: WorkflowListItem }) {
                 );
               })}
               {item.pipelineDefinition.phases.length > 4 ? (
-                <div className="rounded-full border border-border px-3 py-1 text-xs text-muted-foreground">
+                <div className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground">
                   +{item.pipelineDefinition.phases.length - 4} more
                 </div>
               ) : null}
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid divide-y divide-border/70 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
             <InfoBlock
               icon={<Play className="h-3.5 w-3.5" />}
               label="Latest run"
@@ -313,9 +397,57 @@ function WorkflowCard({ item }: { item: WorkflowListItem }) {
               hint={item.latestDeliverable ? formatDateTime(item.latestDeliverable.createdAt) : null}
             />
           </div>
-        </CardContent>
-      </Card>
-    </Link>
+        </Link>
+      </CardContent>
+      <footer className="border-t border-border/70 px-4 py-2">
+        <div className="w-full">
+          {archiveConfirmationOpen ? (
+            <ArchiveConfirmation
+              title={item.title}
+              onConfirm={onConfirmArchive}
+              onCancel={onCancelArchive}
+            />
+          ) : item.status === "archived" ? (
+            <Button variant="outline" size="sm" onClick={onRestore}>
+              <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+              Restore
+            </Button>
+          ) : (
+            <div className="flex justify-end">
+              <Button variant="ghost" size="sm" onClick={onArchive}>
+                <Archive className="mr-1.5 h-3.5 w-3.5" />
+                Archive
+              </Button>
+            </div>
+          )}
+        </div>
+      </footer>
+    </Card>
+  );
+}
+
+export function ArchiveConfirmation({
+  title,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div role="alertdialog" aria-label={`Archive workflow ${title}`} className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <p className="text-sm font-medium">Archive “{title}”?</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Runs and history remain available. New runs stop; in-flight runs finish.
+        </p>
+      </div>
+      <div className="flex shrink-0 justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+        <Button variant="outline" size="sm" onClick={onConfirm}>Archive workflow</Button>
+      </div>
+    </div>
   );
 }
 
@@ -331,7 +463,7 @@ function InfoBlock({
   hint: string | null;
 }) {
   return (
-    <div className="rounded-lg border border-border/70 bg-background p-3">
+    <div className="min-w-0 px-3 py-1.5 first:pl-0 last:pr-0">
       <div className="mb-1 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
         {icon}
         <span>{label}</span>
@@ -339,18 +471,5 @@ function InfoBlock({
       <div className="text-sm font-medium text-foreground">{value}</div>
       {hint ? <div className="mt-1 text-xs text-muted-foreground">{hint}</div> : null}
     </div>
-  );
-}
-
-function StatusPill({ status }: { status: string }) {
-  const tone = status === "active"
-    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-    : status === "paused"
-      ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
-      : "border-border bg-muted text-muted-foreground";
-  return (
-    <span className={`rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide ${tone}`}>
-      {status.replaceAll("_", " ")}
-    </span>
   );
 }
