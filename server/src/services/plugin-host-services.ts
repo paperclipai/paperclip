@@ -2016,6 +2016,7 @@ export function buildHostServices(
           params.issueId,
           params.body,
           { agentId: params.authorAgentId },
+          { presentation: params.presentation ?? null, metadata: params.metadata ?? null },
         )) as IssueComment;
         await logPluginActivity({
           companyId,

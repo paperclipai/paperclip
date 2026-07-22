@@ -19,6 +19,8 @@ import type {
   Project,
   Issue,
   IssueComment,
+  IssueCommentPresentation,
+  IssueCommentMetadata,
   IssueDocument,
   IssueDocumentSummary,
   IssueRelationIssueSummary,
@@ -120,6 +122,8 @@ export type {
   Project,
   Issue,
   IssueComment,
+  IssueCommentPresentation,
+  IssueCommentMetadata,
   IssueDocument,
   IssueDocumentSummary,
   IssueRelationIssueSummary,
@@ -1438,7 +1442,11 @@ export interface PluginIssuesClient {
     issueId: string,
     body: string,
     companyId: string,
-    options?: { authorAgentId?: string },
+    options?: {
+      authorAgentId?: string;
+      presentation?: IssueCommentPresentation | null;
+      metadata?: IssueCommentMetadata | null;
+    },
   ): Promise<IssueComment>;
   createInteraction(
     issueId: string,

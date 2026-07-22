@@ -229,7 +229,11 @@ export type SummarySlotStatus = (typeof SUMMARY_SLOT_STATUSES)[number];
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
 export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
 
-export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice"] as const;
+// "phase_boundary" marks a comment (typically posted by a plugin on a workflow
+// transition) as the start of a new logical section in the issue's activity
+// feed — the UI groups and collapses everything between two boundaries so a
+// ticket spanning many phases doesn't render as one undifferentiated scroll.
+export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice", "phase_boundary"] as const;
 export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KINDS)[number];
 
 export const ISSUE_COMMENT_PRESENTATION_TONES = ["neutral", "info", "success", "warning", "danger"] as const;

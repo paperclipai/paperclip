@@ -3,6 +3,7 @@ import type { Agent } from "@paperclipai/shared";
 import {
   buildAssistantPartsFromTranscript,
   buildIssueChatMessages,
+  groupMessagesIntoPhaseSections,
   isCoTSegmentActive,
   preserveReadableStreamingRetraction,
   stabilizeThreadMessages,
@@ -1281,5 +1282,105 @@ describe("stabilizeThreadMessages", () => {
     );
 
     expect(secondStable.messages).toBe(firstStable.messages);
+  });
+});
+
+describe("groupMessagesIntoPhaseSections", () => {
+  function phaseBoundaryComment(id: string, title: string, createdAt: Date): IssueChatComment {
+    return createComment({
+      id,
+      authorType: "system",
+      authorUserId: null,
+      body: `## Workflow: advanced\nRouted to next step.`,
+      presentation: { kind: "phase_boundary", tone: "info", title, detailsDefaultOpen: false },
+      createdAt,
+      updatedAt: createdAt,
+    });
+  }
+
+  it("puts everything before the first boundary into a boundary-less prelude section", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({ id: "c1", createdAt: new Date("2026-04-06T12:00:00.000Z"), updatedAt: new Date("2026-04-06T12:00:00.000Z") }),
+        phaseBoundaryComment("c2", "Design", new Date("2026-04-06T12:01:00.000Z")),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+    });
+
+    const sections = groupMessagesIntoPhaseSections(messages);
+    expect(sections).toHaveLength(2);
+    expect(sections[0]?.boundaryMessage).toBeNull();
+    expect(sections[0]?.messages.map((m) => m.id)).toEqual(["c1"]);
+    expect(sections[1]?.boundaryTitle).toBe("Design");
+    expect(sections[1]?.messages.map((m) => m.id)).toEqual(["c2"]);
+  });
+
+  it("groups every message up to (but not including) the next boundary with its own boundary", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        phaseBoundaryComment("c1", "PRD", new Date("2026-04-06T12:00:00.000Z")),
+        createComment({ id: "c2", createdAt: new Date("2026-04-06T12:01:00.000Z"), updatedAt: new Date("2026-04-06T12:01:00.000Z") }),
+        createComment({ id: "c3", createdAt: new Date("2026-04-06T12:02:00.000Z"), updatedAt: new Date("2026-04-06T12:02:00.000Z") }),
+        phaseBoundaryComment("c4", "Design", new Date("2026-04-06T12:03:00.000Z")),
+        createComment({ id: "c5", createdAt: new Date("2026-04-06T12:04:00.000Z"), updatedAt: new Date("2026-04-06T12:04:00.000Z") }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+    });
+
+    const sections = groupMessagesIntoPhaseSections(messages);
+    expect(sections).toHaveLength(2);
+    expect(sections[0]?.boundaryTitle).toBe("PRD");
+    expect(sections[0]?.messages.map((m) => m.id)).toEqual(["c1", "c2", "c3"]);
+    expect(sections[1]?.boundaryTitle).toBe("Design");
+    expect(sections[1]?.messages.map((m) => m.id)).toEqual(["c4", "c5"]);
+  });
+
+  it("treats a thread with no boundaries as a single prelude section", () => {
+    const messages = buildIssueChatMessages({
+      comments: [createComment({ id: "c1" })],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+    });
+
+    const sections = groupMessagesIntoPhaseSections(messages);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.boundaryMessage).toBeNull();
+  });
+
+  it("ignores non-phase-boundary system notices as section dividers", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          id: "c1",
+          authorType: "system",
+          authorUserId: null,
+          presentation: { kind: "system_notice", tone: "warning", title: "Blocked", detailsDefaultOpen: true },
+          createdAt: new Date("2026-04-06T12:00:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+        }),
+        createComment({ id: "c2", createdAt: new Date("2026-04-06T12:01:00.000Z"), updatedAt: new Date("2026-04-06T12:01:00.000Z") }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+    });
+
+    const sections = groupMessagesIntoPhaseSections(messages);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.boundaryMessage).toBeNull();
+    expect(sections[0]?.messages.map((m) => m.id)).toEqual(["c1", "c2"]);
+  });
+
+  it("returns a single empty prelude section for an empty thread, never []", () => {
+    const sections = groupMessagesIntoPhaseSections([]);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.key).toBe("prelude");
+    expect(sections[0]?.boundaryMessage).toBeNull();
+    expect(sections[0]?.messages).toEqual([]);
   });
 });

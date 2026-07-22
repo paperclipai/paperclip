@@ -295,6 +295,8 @@ export type {
   Project,
   Issue,
   IssueComment,
+  IssueCommentPresentation,
+  IssueCommentMetadata,
   IssueDocumentSummary,
   Agent,
   Goal,
