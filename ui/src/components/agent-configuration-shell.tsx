@@ -156,12 +156,12 @@ export function EffectiveConfigurationStrip({ chips }: { chips: EffectiveConfigu
           key={chip.label}
           href={`#config-${chip.section}`}
           className="shrink-0"
+          aria-label={chip.inherited ? `${chip.label}: ${chip.value}, inherited` : undefined}
           title={chip.inherited ? `${chip.label} is inherited` : undefined}
         >
           <Badge variant="outline" className={cn("gap-1.5 py-1", chip.inherited && "text-muted-foreground")}>
             <span>{chip.label}</span>
             <span className="font-mono">{chip.value}</span>
-            {chip.inherited ? <span className="sr-only">inherited</span> : null}
           </Badge>
         </a>
       ))}

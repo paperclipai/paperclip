@@ -92,6 +92,7 @@ describe("agent configuration shell", () => {
     expect(markup).toContain("overflow-x-auto");
     expect(markup).toContain('tabindex="0"');
     expect(markup).toContain('title="Model is inherited"');
-    expect(markup).toContain('class="sr-only">inherited</span>');
+    expect(markup).toContain('aria-label="Model: Adapter default, inherited"');
+    expect(markup).not.toContain("sr-only");
   });
 });
