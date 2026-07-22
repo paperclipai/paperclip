@@ -108,7 +108,8 @@ describe("ActivityCharts", () => {
     // Tooltip now carries the per-day breakdown (incl. failure error codes).
     const dayCell = container.querySelector("[title^='2026-04-20: 2 runs']");
     expect(dayCell).not.toBeNull();
-    expect(dayCell?.getAttribute("title")).toContain("provider_quota: 1");
+    expect(dayCell?.getAttribute("title")).toContain("provider quota: 1");
+    expect(dayCell?.getAttribute("title")).not.toContain("provider_quota");
   });
 
   it("renders a distinct recovered segment and legend for recovered restart kills", () => {
@@ -131,5 +132,56 @@ describe("ActivityCharts", () => {
     expect(container.textContent).toContain("Recovered");
     const dayCell = container.querySelector("[title*='recovered: 4']");
     expect(dayCell).not.toBeNull();
+  });
+
+  it("uses restart-induced supervisor loss labels for aggregate dashboard activity", () => {
+    render(
+      <RunActivityChart
+        activity={[
+          {
+            date: "2026-04-20",
+            succeeded: 0,
+            failed: 1,
+            recovered: 0,
+            other: 0,
+            total: 1,
+            failedByErrorCode: { restart_induced_process_supervisor_loss: 1 },
+          },
+        ]}
+      />,
+    );
+
+    const dayCell = container.querySelector("[title*='restart-induced supervisor loss: 1']");
+    expect(dayCell).not.toBeNull();
+    expect(dayCell?.getAttribute("title")).not.toContain("restart_induced_process_supervisor_loss");
+  });
+
+  it("separates restart-induced supervisor loss from plain process_lost in raw run lists", () => {
+    render(
+      <RunActivityChart
+        runs={[
+          createRun({
+            id: "run-restart-loss",
+            status: "failed",
+            errorCode: "process_lost",
+            resultJson: {
+              stopReason: "process_lost",
+              stopReasonDetail: "restart_induced_process_supervisor_loss",
+            },
+          }),
+          createRun({
+            id: "run-plain-loss",
+            status: "failed",
+            errorCode: "process_lost",
+            resultJson: { stopReason: "process_lost" },
+          }),
+        ]}
+      />,
+    );
+
+    const dayCell = container.querySelector("[title^='2026-04-20: 2 runs']");
+    expect(dayCell?.getAttribute("title")).toContain("restart-induced supervisor loss: 1");
+    expect(dayCell?.getAttribute("title")).toContain("process lost: 1");
+    expect(dayCell?.getAttribute("title")).not.toContain("process_lost");
   });
 });

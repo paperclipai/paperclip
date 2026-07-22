@@ -16,6 +16,7 @@ import { useToastActions } from "../context/ToastContext";
 import { cn, relativeTime } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
+import { formatRunFailureCode, RESTART_INDUCED_SUPERVISOR_LOSS } from "../lib/runFailureLabels";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { SourceResolvedFoldBadge } from "./SourceResolvedFoldBadge";
@@ -309,6 +310,7 @@ function livenessCopyForRun(run: LedgerRun) {
 function stopReasonLabel(run: RunForIssue) {
   const result = asRecord(run.resultJson);
   const stopReason = readString(result?.stopReason);
+  const stopReasonDetail = readString(result?.stopReasonDetail);
   const timeoutFired = result?.timeoutFired === true;
   const effectiveTimeoutSec = readNumber(result?.effectiveTimeoutSec);
   const timeoutText =
@@ -321,6 +323,10 @@ function stopReasonLabel(run: RunForIssue) {
   if (stopReason === "budget_paused") return "budget paused";
   if (stopReason === "cancelled") return "cancelled";
   if (stopReason === "paused") return "paused by board";
+  if (
+    (stopReason === "process_lost" || stopReason === "interrupted") &&
+    stopReasonDetail === RESTART_INDUCED_SUPERVISOR_LOSS
+  ) return formatRunFailureCode(stopReasonDetail);
   if (stopReason === "process_lost") return "process lost";
   if (stopReason === "unmanaged_background_task_stopped") return "unmanaged background task stopped";
   if (stopReason === "adapter_failed") return "adapter failed";

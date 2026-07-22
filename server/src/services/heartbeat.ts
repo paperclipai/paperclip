@@ -5079,20 +5079,38 @@ async function terminateHeartbeatRunProcess(input: {
   );
 }
 
+type ProcessLossCause =
+  | "descendant_process_group_alive"
+  | "child_pid_exited"
+  | "process_group_exited"
+  | "missing_supervisor_state";
+
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
 }, options?: { descendantOnly?: boolean }) {
   if (options?.descendantOnly && run.processGroupId) {
-    return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
+    return {
+      message: `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`,
+      cause: "descendant_process_group_alive" as const,
+    };
   }
   if (run.processPid) {
-    return `Process lost -- child pid ${run.processPid} is no longer running`;
+    return {
+      message: `Process lost -- child pid ${run.processPid} is no longer running`,
+      cause: "child_pid_exited" as const,
+    };
   }
   if (run.processGroupId) {
-    return `Process lost -- process group ${run.processGroupId} is no longer running`;
+    return {
+      message: `Process lost -- process group ${run.processGroupId} is no longer running`,
+      cause: "process_group_exited" as const,
+    };
   }
-  return "Process lost -- server may have restarted";
+  return {
+    message: "Process lost -- server may have restarted",
+    cause: "missing_supervisor_state" as const,
+  };
 }
 
 function readHotRestartAdoptionMetadata(resultJson: Record<string, unknown> | null | undefined) {
@@ -5126,6 +5144,33 @@ function mergeHotRestartAdoptionResultJson(
       newServerPid: input.newServerPid,
       previousServerVersion: input.previousServerVersion,
       newServerVersion: input.newServerVersion,
+      processPid: input.processPid,
+      processGroupId: input.processGroupId,
+    },
+  };
+}
+
+function mergeRestartRecoveryResultJson(
+  resultJson: Record<string, unknown> | null | undefined,
+  input: {
+    mode: "startup_orphan_reap" | "graceful_shutdown_interruption";
+    occurredAt: Date;
+    signal?: "SIGINT" | "SIGTERM";
+    processPid: number | null;
+    processGroupId: number | null;
+  },
+) {
+  const result = parseObject(resultJson);
+  const existing = parseObject(result.restartRecovery);
+  return {
+    ...result,
+    stopReasonDetail: "restart_induced_process_supervisor_loss",
+    restartRecovery: {
+      ...existing,
+      classification: "restart_induced_process_supervisor_loss",
+      mode: input.mode,
+      occurredAt: input.occurredAt.toISOString(),
+      ...(input.signal ? { signal: input.signal } : {}),
       processPid: input.processPid,
       processGroupId: input.processGroupId,
     },
@@ -9060,13 +9105,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
+      const hasLocalProcessHandle = Boolean(running || run.processPid || run.processGroupId);
+      const existingResultJson = parseObject(run.resultJson);
+      const shutdownResultJson = hasLocalProcessHandle
+        ? mergeRestartRecoveryResultJson(existingResultJson, {
+            mode: "graceful_shutdown_interruption",
+            occurredAt: now,
+            signal,
+            processPid: run.processPid ?? null,
+            processGroupId: run.processGroupId ?? null,
+          })
+        : existingResultJson;
       const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
         finishedAt: now,
         error: message,
         errorCode: "server_shutdown_interrupted",
         signal,
         resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
-          resultJson: parseObject(run.resultJson),
+          resultJson: shutdownResultJson,
           errorCode: "server_shutdown_interrupted",
           errorMessage: message,
         }),
@@ -11334,7 +11390,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; startupOrphanReap?: boolean }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
@@ -11436,7 +11492,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
         monitorDispatchLostWithoutFutureWake
       );
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const processLoss = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const baseMessage = processLoss.message;
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
           kind: "orphaned_process_group_cleanup",
@@ -11462,13 +11519,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
             },
           );
+          const resultWithRestartRecovery = opts?.startupOrphanReap === true && processLoss.cause === "missing_supervisor_state"
+            ? mergeRestartRecoveryResultJson(result, {
+              mode: "startup_orphan_reap",
+              occurredAt: now,
+              processPid: run.processPid ?? null,
+              processGroupId: run.processGroupId ?? null,
+            })
+            : result;
           return unmanagedBackgroundTaskEvidence
             ? {
-              ...result,
+              ...resultWithRestartRecovery,
               stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
               unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
             }
-            : result;
+            : resultWithRestartRecovery;
         })(),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {

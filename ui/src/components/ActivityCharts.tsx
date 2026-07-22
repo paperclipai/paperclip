@@ -1,4 +1,5 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import { formatRunFailureCode, resolveRunFailureCode } from "@/lib/runFailureLabels";
 
 /* ---- Utilities ---- */
 
@@ -34,7 +35,7 @@ function runDayTooltip(entry: DashboardRunActivityDay): string {
   if (entry.failed > 0) {
     lines.push(`  failed: ${entry.failed}`);
     const codes = Object.entries(entry.failedByErrorCode ?? {}).sort((a, b) => b[1] - a[1]);
-    for (const [code, count] of codes) lines.push(`    ${code}: ${count}`);
+    for (const [code, count] of codes) lines.push(`    ${formatRunFailureCode(code)}: ${count}`);
   }
   if (entry.other > 0) lines.push(`  other: ${entry.other}`);
   return lines.join("\n");
@@ -102,7 +103,7 @@ function aggregateRuns(runs: readonly HeartbeatRun[] = []): DashboardRunActivity
       // here (the company dashboard computes it server-side). Attribute the
       // failure to its error class so the breakdown still renders.
       entry.failed++;
-      const code = run.errorCode && run.errorCode.length > 0 ? run.errorCode : "unknown";
+      const code = resolveRunFailureCode(run);
       entry.failedByErrorCode[code] = (entry.failedByErrorCode[code] ?? 0) + 1;
     } else {
       entry.other++;

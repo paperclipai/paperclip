@@ -118,13 +118,27 @@ export function dashboardService(db: Db) {
         SELECT
           to_char(run.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date,
           run.status AS status,
-          run.error_code AS error_code,
+          CASE
+            WHEN run.error_code = 'process_lost'
+              AND run.result_json->>'stopReasonDetail' = 'restart_induced_process_supervisor_loss'
+            THEN run.result_json->>'stopReasonDetail'
+            ELSE run.error_code
+          END AS error_code,
           (run.id IN (SELECT id FROM recovered_runs)) AS recovered,
           count(*)::double precision AS count
         FROM ${heartbeatRuns} AS run
         WHERE run.company_id = ${companyId}
           AND run.created_at >= ${runActivityStart.toISOString()}::timestamptz
-        GROUP BY date, run.status, run.error_code, recovered
+        GROUP BY
+          date,
+          run.status,
+          CASE
+            WHEN run.error_code = 'process_lost'
+              AND run.result_json->>'stopReasonDetail' = 'restart_induced_process_supervisor_loss'
+            THEN run.result_json->>'stopReasonDetail'
+            ELSE run.error_code
+          END,
+          recovered
       `)) as unknown as Iterable<{
         date: string;
         status: string;

@@ -12,6 +12,9 @@ export type HeartbeatRunStopReason =
   | "unmanaged_background_task_stopped"
   | "adapter_failed";
 
+export type HeartbeatRunStopReasonDetail =
+  | "restart_induced_process_supervisor_loss";
+
 export interface HeartbeatRunTimeoutPolicy {
   effectiveTimeoutSec: number | null;
   effectiveTimeoutMs?: number | null;
@@ -21,6 +24,7 @@ export interface HeartbeatRunTimeoutPolicy {
 
 export interface HeartbeatRunStopMetadata extends HeartbeatRunTimeoutPolicy {
   stopReason: HeartbeatRunStopReason;
+  stopReasonDetail?: HeartbeatRunStopReasonDetail;
   timeoutFired: boolean;
 }
 
@@ -124,6 +128,7 @@ export function mergeHeartbeatRunStopMetadata(
   return {
     ...(resultJson ?? {}),
     stopReason: existingMaxTurnStopReason ?? metadata.stopReason,
+    ...(metadata.stopReasonDetail ? { stopReasonDetail: metadata.stopReasonDetail } : {}),
     effectiveTimeoutSec: metadata.effectiveTimeoutSec,
     timeoutConfigured: metadata.timeoutConfigured,
     timeoutSource: metadata.timeoutSource,

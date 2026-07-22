@@ -395,6 +395,22 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("paused by board");
   });
 
+  it("does not let restart detail override unrelated stop reasons", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          resultJson: {
+            stopReason: "adapter_failed",
+            stopReasonDetail: "restart_induced_process_supervisor_loss",
+          },
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("adapter failed");
+    expect(container.textContent).not.toContain("restart-induced supervisor loss");
+  });
+
   it("surfaces active and completed child issue summaries", () => {
     renderLedger({
       childIssues: [

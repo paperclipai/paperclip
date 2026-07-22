@@ -1286,6 +1286,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
+    expect(failedRun?.resultJson as Record<string, unknown>).not.toHaveProperty("stopReasonDetail");
     expect(["queued", "running"]).toContain(retryRun?.status);
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
@@ -1388,7 +1389,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("does not retry a lost monitor dispatch while another monitor wake remains scheduled", async () => {
+  it("keeps a steady-state pidless gateway loss as plain process_lost when another monitor wake remains scheduled", async () => {
     const { companyId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",
       agentStatus: "idle",
@@ -1407,11 +1408,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reapOrphanedRuns();
 
     expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    const failedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(failedRun?.resultJson).toMatchObject({
+      stopReason: "process_lost",
+    });
+    expect(failedRun?.resultJson as Record<string, unknown>).not.toHaveProperty("stopReasonDetail");
+    expect(failedRun?.resultJson as Record<string, unknown>).not.toHaveProperty("restartRecovery");
     const retries = await db
       .select()
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
     expect(retries).toHaveLength(0);
+  });
+
+  it("classifies pidless orphan reaping as restart-induced only during startup recovery", async () => {
+    const { runId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({ startupOrphanReap: true });
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    const failedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(failedRun?.resultJson).toMatchObject({
+      stopReason: "process_lost",
+      stopReasonDetail: "restart_induced_process_supervisor_loss",
+      restartRecovery: {
+        classification: "restart_induced_process_supervisor_loss",
+        mode: "startup_orphan_reap",
+      },
+    });
   });
 
   async function withTempPaperclipHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
@@ -1611,6 +1652,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it("interrupts running runs on graceful shutdown and queues restart recovery without recording a failure", async () => {
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
+      processPid: 999_999_999,
       contextSnapshot: {
         modelProfile: "cheap",
         allowDeliverableWork: false,
@@ -1643,6 +1685,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(interruptedRun?.resultJson).toMatchObject({
       stopReason: "interrupted",
+      stopReasonDetail: "restart_induced_process_supervisor_loss",
+      restartRecovery: {
+        classification: "restart_induced_process_supervisor_loss",
+        mode: "graceful_shutdown_interruption",
+        occurredAt: "2026-03-19T00:06:00.000Z",
+        signal: "SIGTERM",
+      },
       timeoutConfigured: false,
       timeoutFired: false,
     });
@@ -1671,6 +1720,49 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.checkoutRunId).toBeNull();
     expect(issue?.executionRunId).toBe(retryRun?.id);
+  });
+
+  it("does not stamp restart-recovery detail on graceful shutdown for runs without a local process", async () => {
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: null,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+    );
+    expect(result.interruptedRunIds).toEqual([runId]);
+
+    const interruptedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(interruptedRun).toMatchObject({
+      status: "interrupted",
+      errorCode: "server_shutdown_interrupted",
+      signal: "SIGTERM",
+    });
+    expect(interruptedRun?.resultJson).toMatchObject({
+      stopReason: "interrupted",
+      timeoutConfigured: false,
+      timeoutFired: false,
+    });
+    expect(interruptedRun?.resultJson as Record<string, unknown>).not.toHaveProperty("stopReasonDetail");
+    expect(interruptedRun?.resultJson as Record<string, unknown>).not.toHaveProperty("restartRecovery");
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.retryOfRunId, runId)))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).toMatchObject({
+      status: "queued",
+      processLossRetryCount: 1,
+    });
   });
 
   it("does not overwrite a run that is no longer running during graceful shutdown drain", async () => {
