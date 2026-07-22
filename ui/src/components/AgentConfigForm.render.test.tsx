@@ -9,6 +9,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
+import type { AgentConfigChange } from "../lib/agent-config-changeset";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModelProfiles: vi.fn(),
@@ -203,6 +204,10 @@ async function renderForm(
     showAdapterTestEnvironmentButton?: boolean;
     configurationShell?: boolean;
     visibleConfigurationSections?: ReadonlySet<string>;
+    onDirtyChange?: (dirty: boolean) => void;
+    onDirtyDetailsChange?: (details: { count: number; sections: string[] }) => void;
+    onChangesetChange?: (changes: AgentConfigChange[], revert: (key: string) => void) => void;
+    onCancelActionChange?: (cancel: (() => void) | null) => void;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -232,6 +237,10 @@ async function renderForm(
               configurationShell={options.configurationShell}
               visibleConfigurationSections={options.visibleConfigurationSections}
               sectionLayout={options.configurationShell ? "cards" : undefined}
+              onDirtyChange={options.onDirtyChange}
+              onDirtyDetailsChange={options.onDirtyDetailsChange}
+              onChangesetChange={options.onChangesetChange}
+              onCancelActionChange={options.onCancelActionChange}
             />
           </TooltipProvider>
         </ToastProvider>
@@ -628,6 +637,56 @@ describe("AgentConfigForm environment selector", () => {
         }),
       ]);
     }
+  });
+
+  it("previews unpromoted environment edits in the outer changeset and can revert them", async () => {
+    const onDirtyChange = vi.fn();
+    const onDirtyDetailsChange = vi.fn();
+    const onChangesetChange = vi.fn();
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: {
+        env: { API_TOKEN: { type: "plain", value: "old-token" } },
+      },
+    }, {
+      configurationShell: true,
+      visibleConfigurationSections: new Set(["environment"]),
+      onDirtyChange,
+      onDirtyDetailsChange,
+      onChangesetChange,
+    });
+    roots.push(result.root);
+
+    const valueInput = result.container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]');
+    expect(valueInput).toBeTruthy();
+
+    await act(async () => {
+      setInputValue(valueInput!, "draft-token");
+    });
+    await flushReact();
+
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expect(onDirtyDetailsChange).toHaveBeenLastCalledWith({ count: 1, sections: ["environment"] });
+    const [changes, revert] = onChangesetChange.mock.calls.at(-1) as [AgentConfigChange[], (key: string) => void];
+    expect(changes).toEqual([
+      expect.objectContaining({
+        key: "adapterConfig.env",
+        section: "Environment",
+        before: { API_TOKEN: { type: "plain", value: "old-token" } },
+        after: { API_TOKEN: { type: "plain", value: "draft-token" } },
+      }),
+    ]);
+
+    await act(async () => {
+      revert("adapterConfig.env");
+    });
+    await flushReact();
+
+    expect(valueInput!.value).toBe("old-token");
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expect(onDirtyDetailsChange).toHaveBeenLastCalledWith({ count: 0, sections: [] });
+    expect(onChangesetChange.mock.calls.at(-1)?.[0]).toEqual([]);
   });
 
   it("surfaces request failures instead of converting them into model test checks", async () => {
