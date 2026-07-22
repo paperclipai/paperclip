@@ -34,6 +34,8 @@ export interface AdapterConfigFieldsProps {
   models: { id: string; label: string }[];
   /** When true, hides the instructions file path field (e.g. during import where it's set automatically) */
   hideInstructionsFile?: boolean;
+  /** Configuration-shell subgroup. Omitted outside the redesigned settings page. */
+  configurationSection?: "runtime" | "danger";
 }
 
 export interface UIAdapterModule extends TranscriptParserSource {

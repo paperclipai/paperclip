@@ -20,7 +20,31 @@ export function OpenCodeLocalConfigFields({
   eff,
   mark,
   hideInstructionsFile,
+  configurationSection = "runtime",
 }: AdapterConfigFieldsProps) {
+  if (configurationSection === "danger") {
+    return (
+      <ToggleField
+        label="Skip permissions"
+        hint={help.dangerouslySkipPermissions}
+        checked={
+          isCreate
+            ? values!.dangerouslySkipPermissions
+            : eff(
+                "adapterConfig",
+                "dangerouslySkipPermissions",
+                config.dangerouslySkipPermissions !== false,
+              )
+        }
+        onChange={(v) =>
+          isCreate
+            ? set!({ dangerouslySkipPermissions: v })
+            : mark("adapterConfig", "dangerouslySkipPermissions", v)
+        }
+      />
+    );
+  }
+
   return (
     <>
       {!hideInstructionsFile && (
@@ -49,24 +73,6 @@ export function OpenCodeLocalConfigFields({
           </div>
         </Field>
       )}
-      <ToggleField
-        label="Skip permissions"
-        hint={help.dangerouslySkipPermissions}
-        checked={
-          isCreate
-            ? values!.dangerouslySkipPermissions
-            : eff(
-                "adapterConfig",
-                "dangerouslySkipPermissions",
-                config.dangerouslySkipPermissions !== false,
-              )
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslySkipPermissions: v })
-            : mark("adapterConfig", "dangerouslySkipPermissions", v)
-        }
-      />
     </>
   );
 }
