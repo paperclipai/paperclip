@@ -150,6 +150,32 @@ describe("workflow routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it("allows metadata edits while keeping archived status", async () => {
+    mockWorkflowService.get.mockResolvedValue({
+      id: "workflow-1",
+      companyId,
+      title: "Social",
+      status: "archived",
+    });
+    mockWorkflowService.update.mockResolvedValue({
+      id: "workflow-1",
+      companyId,
+      title: "Updated Social",
+      status: "archived",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/workflows/workflow-1")
+      .send({ title: "Updated Social", status: "archived" });
+
+    expect(res.status).toBe(200);
+    expect(mockWorkflowService.update).toHaveBeenCalledWith(
+      "workflow-1",
+      { title: "Updated Social", status: "archived" },
+      { userId: "board-user" },
+    );
+  });
+
   it("cancels a workflow run", async () => {
     mockWorkflowService.getRunDetail.mockResolvedValue({
       id: runId,
