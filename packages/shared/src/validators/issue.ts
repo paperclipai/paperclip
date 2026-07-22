@@ -833,6 +833,12 @@ export const requestConfirmationResultSchema = z.object({
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
+  // Set by send tools (send_email / espo_send_email / complete_approved_send) so a re-wake
+  // can see the accept was already actioned. Without these fields Zod strips them from the
+  // API response and agents re-post the same "Send?" card forever (CK-359).
+  send_used_at: z.string().trim().max(80).optional(),
+  send_email_id: z.string().trim().max(120).optional(),
+  send_error: z.string().trim().max(500).optional(),
 });
 
 export const requestCheckboxConfirmationResultSchema = requestConfirmationResultSchema.extend({

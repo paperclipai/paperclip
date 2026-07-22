@@ -200,6 +200,22 @@ function skillLocationLabel(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function readLegacySkillEnvPreference(config: Record<string, unknown>): PaperclipDesiredSkillEntry[] {
+  const env = config.env;
+  if (typeof env !== "object" || env === null || Array.isArray(env)) return [];
+  const record = env as Record<string, unknown>;
+  const raw = record.CK_SKILLS;
+  const value = typeof raw === "string"
+    ? raw
+    : typeof raw === "object" && raw !== null && !Array.isArray(raw) && typeof (raw as Record<string, unknown>).value === "string"
+      ? String((raw as Record<string, unknown>).value)
+      : "";
+  return value.split(",").flatMap((entry) => {
+    const key = entry.trim();
+    return key ? [{ key, versionId: null }] : [];
+  });
+}
+
 function buildManagedSkillOrigin(entry: { required?: boolean }): Pick<
   AdapterSkillEntry,
   "origin" | "originLabel" | "readOnly"
@@ -1748,13 +1764,11 @@ export function readPaperclipSkillSyncPreference(config: Record<string, unknown>
   desiredSkillEntries: PaperclipDesiredSkillEntry[];
 } {
   const raw = config.paperclipSkillSync;
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { explicit: false, desiredSkills: [], desiredSkillEntries: [] };
-  }
-  const syncConfig = raw as Record<string, unknown>;
-  const desiredValues = syncConfig.desiredSkills;
-  const desired = Array.isArray(desiredValues)
-    ? desiredValues.flatMap((value): PaperclipDesiredSkillEntry[] => {
+  const desired = typeof raw === "object" && raw !== null && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>).desiredSkills
+    : undefined;
+  const desiredEntries = Array.isArray(desired)
+    ? desired.flatMap((value): PaperclipDesiredSkillEntry[] => {
         if (typeof value === "string") {
           const key = value.trim();
           return key ? [{ key, versionId: null }] : [];
@@ -1771,13 +1785,15 @@ export function readPaperclipSkillSyncPreference(config: Record<string, unknown>
         return [];
       })
     : [];
+  const legacyEnvEntries = desiredEntries.length === 0 ? readLegacySkillEnvPreference(config) : [];
+  const mergedEntries = desiredEntries.length > 0 ? desiredEntries : legacyEnvEntries;
   const byKey = new Map<string, PaperclipDesiredSkillEntry>();
-  for (const entry of desired) {
+  for (const entry of mergedEntries) {
     if (!byKey.has(entry.key)) byKey.set(entry.key, entry);
   }
   const desiredSkillEntries = Array.from(byKey.values());
   return {
-    explicit: Object.prototype.hasOwnProperty.call(raw, "desiredSkills"),
+    explicit: Object.prototype.hasOwnProperty.call(raw ?? {}, "desiredSkills") || legacyEnvEntries.length > 0,
     desiredSkills: desiredSkillEntries.map((entry) => entry.key),
     desiredSkillEntries,
   };

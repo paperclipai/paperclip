@@ -683,7 +683,10 @@ export function adapterRoutes() {
     const { type } = req.params;
     const source = getOrExtractUiParserSource(type);
     if (!source) {
-      res.status(404).json({ error: `No UI parser available for adapter "${type}".` });
+      // A UI parser is an optional adapter capability. Returning 204 keeps a
+      // normal generic-parser fallback from appearing as a failed resource in
+      // browser consoles and operational monitoring.
+      res.status(204).send();
       return;
     }
     res.type("application/javascript").send(source);

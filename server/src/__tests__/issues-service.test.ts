@@ -161,6 +161,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueRelations);
     await db.delete(issueDocuments);
     await db.delete(issueInboxArchives);
+    await db.delete(issueThreadInteractions);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(documents);
@@ -1520,6 +1521,42 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(resultIds).toEqual(expect.arrayContaining([todoIssueId, inProgressIssueId]));
     expect(resultIds).not.toContain(doneIssueId);
     await expect(svc.count(companyId, { status: ["todo", "in_progress"] })).resolves.toBe(2);
+  });
+
+  it("includes untouched issues with pending human decisions in the Mine inbox", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const userId = "board-user";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Untouched decision",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Approve?" },
+    });
+
+    const result = await svc.list(companyId, {
+      touchedByUserId: userId,
+      inboxArchivedByUserId: userId,
+      status: "in_review",
+    });
+
+    expect(result.map((issue) => issue.id)).toContain(issueId);
   });
 
   it("hides archived inbox issues until new external activity arrives", async () => {

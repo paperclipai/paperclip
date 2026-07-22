@@ -15,6 +15,7 @@ import {
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
+  readPaperclipSkillSyncPreference,
   sanitizeSshRemoteEnv,
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
@@ -64,6 +65,52 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** PAPERCLIP_API_KEY='***REDACTED***' custom-acp --paperclip-api-key=***REDACTED*** --token ***REDACTED***",
     );
+  });
+});
+
+describe("readPaperclipSkillSyncPreference", () => {
+  it("reads legacy CK_SKILLS env lists when paperclipSkillSync is absent", () => {
+    expect(
+      readPaperclipSkillSyncPreference({
+        env: {
+          CK_SKILLS: {
+            type: "plain",
+            value: "alpha, beta , gamma",
+          },
+        },
+      }),
+    ).toEqual({
+      explicit: true,
+      desiredSkills: ["alpha", "beta", "gamma"],
+      desiredSkillEntries: [
+        { key: "alpha", versionId: null },
+        { key: "beta", versionId: null },
+        { key: "gamma", versionId: null },
+      ],
+    });
+  });
+
+  it("prefers structured paperclipSkillSync entries when present", () => {
+    expect(
+      readPaperclipSkillSyncPreference({
+        env: {
+          CK_SKILLS: {
+            type: "plain",
+            value: "ignored",
+          },
+        },
+        paperclipSkillSync: {
+          desiredSkills: ["alpha", { key: "beta", versionId: "11111111-1111-4111-8111-111111111111" }],
+        },
+      }),
+    ).toEqual({
+      explicit: true,
+      desiredSkills: ["alpha", "beta"],
+      desiredSkillEntries: [
+        { key: "alpha", versionId: null },
+        { key: "beta", versionId: "11111111-1111-4111-8111-111111111111" },
+      ],
+    });
   });
 });
 

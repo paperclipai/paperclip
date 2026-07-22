@@ -828,6 +828,13 @@ function touchedByUserCondition(companyId: string, userId: string) {
           AND ${issueComments.companyId} = ${companyId}
           AND ${issueComments.authorUserId} = ${userId}
       )
+      OR EXISTS (
+        SELECT 1
+        FROM ${issueThreadInteractions}
+        WHERE ${issueThreadInteractions.issueId} = ${issues.id}
+          AND ${issueThreadInteractions.companyId} = ${companyId}
+          AND ${issueThreadInteractions.status} = 'pending'
+      )
     )
   `;
 }

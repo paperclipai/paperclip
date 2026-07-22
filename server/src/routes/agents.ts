@@ -3648,9 +3648,21 @@ export function agentRoutes(
     assertCompanyAccess(req, run.companyId);
 
     const offset = Number(req.query.offset ?? 0);
+    const normalizedOffset = Number.isFinite(offset) ? Math.max(0, offset) : 0;
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
+    if ((!run.logStore || !run.logRef) && (run.status === "queued" || run.status === "running")) {
+      res.set("Cache-Control", "no-cache, no-store");
+      res.json({
+        runId,
+        store: null,
+        logRef: null,
+        content: "",
+        nextOffset: normalizedOffset,
+      });
+      return;
+    }
     const result = await heartbeat.readLog(run, {
-      offset: Number.isFinite(offset) ? offset : 0,
+      offset: normalizedOffset,
       limitBytes,
     });
 

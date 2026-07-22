@@ -66,6 +66,15 @@ export interface AdapterRuntimeServiceReport {
 
 export type AdapterExecutionErrorFamily = "transient_upstream";
 
+export interface AdapterCostBreakdown {
+  provider?: string | null;
+  biller?: string | null;
+  billingType?: AdapterBillingType | null;
+  model: string;
+  usage: UsageSummary;
+  costUsd?: number | null;
+}
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
@@ -87,6 +96,12 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  /**
+   * Optional per-model ledger rows for adapters that invoke more than one
+   * model during a single heartbeat. Aggregate `usage` and `costUsd` remain
+   * required for runtime totals; this breakdown preserves cost attribution.
+   */
+  costBreakdown?: AdapterCostBreakdown[];
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
