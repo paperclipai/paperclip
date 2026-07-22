@@ -156,8 +156,9 @@ function processIsAlive(pid: number): boolean {
 export async function withInstallStoreLock<T>(
   callback: () => Promise<T>,
   paths = resolveInstallStorePaths(),
+  options: { initialize?: boolean } = {},
 ): Promise<T> {
-  initializeInstallStore(paths);
+  if (options.initialize !== false) initializeInstallStore(paths);
   const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
   const acquire = (): void => {
     const temporaryPath = `${paths.lockPath}.${token}.tmp`;
