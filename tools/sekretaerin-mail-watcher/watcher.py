@@ -25,6 +25,7 @@ import paperclip_client as pc  # noqa: E402
 import approval_queue as approval_queue  # noqa: E402
 import approval_parse as approval_parse  # noqa: E402
 import approval_send as approval_send  # noqa: E402
+import blocklist as blocklist  # noqa: E402
 import ews_sent as ews_sent  # noqa: E402
 import office_inbox as office_inbox  # noqa: E402
 
@@ -161,12 +162,14 @@ def _apply_reply(token, body, *, dry_run, send, make_issue, save_sent):
     """Kernlogik für EINE Freigabe-Antwort (quellenunabhängig: Vault ODER office@).
 
     Gibt eine action zurück: skip | would-send | sent | send-error | would-correct
-    | correction. Terminale Aktionen (sent/correction/skip) darf der Aufrufer als
-    erledigt markieren; **send-error bleibt retrybar** (Status bleibt pending)."""
+    | correction | would-ignore | ignored. Terminale Aktionen (sent/correction/
+    skip/ignored) darf der Aufrufer als erledigt markieren; **send-error bleibt
+    retrybar** (Status bleibt pending)."""
     entry = approval_queue.load(token)
     if entry is None or entry.get("status") != "pending":
         return "skip"
-    if approval_parse.classify(body) == "send":
+    cls = approval_parse.classify(body)
+    if cls == "send":
         if dry_run:
             return "would-send"
         code, resp = send(entry)
@@ -184,6 +187,13 @@ def _apply_reply(token, body, *, dry_run, send, make_issue, save_sent):
             except Exception as ex:  # noqa: BLE001
                 print(f"WARN Sent-Kopie #{token}: {ex}", file=sys.stderr)
         return "sent"
+    if cls == "ignore":
+        if dry_run:
+            return "would-ignore"
+        blocklist.add(entry["to"])
+        approval_queue.mark(token, "ignored")
+        print(f"Freigabe #{token}: ignoriert — {entry['to']} gesperrt")
+        return "ignored"
     if dry_run:
         return "would-correct"
     make_issue(token, body, entry)
@@ -391,7 +401,7 @@ def main() -> None:
             # Nur terminal erledigte Antworten als gesehen markieren. send-error/error
             # bleiben ungesehen → nächster Lauf versucht die noch pending Freigabe
             # erneut (kein stiller Verlust; Doppelversand blockt der Queue-Status-Guard).
-            terminal = {"sent", "correction", "skip"}
+            terminal = {"sent", "correction", "skip", "ignored"}
             done = {r["file"] for r in results if r.get("action") in terminal}
             if done:
                 seen = seen | done

@@ -50,6 +50,14 @@ Okay
 """
 
 
+MAIL_IGNORE = """---
+von: w.schonenbrocher@whitestag.ai
+subject: AW: [Freigabe #A7X3] AW: Textkorrektur → an k@x.de
+---
+Ignorieren
+"""
+
+
 class ApprovalScanTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -203,6 +211,28 @@ class ApprovalScanTest(unittest.TestCase):
                                 dry_run=False, send=boom, make_issue=lambda *a, **k: None)
         self.assertEqual(r[0]["action"], "error")
         self.assertEqual(q.load("A7X3")["status"], "pending")
+
+    def test_ignore_blocks_recipient_no_send_no_issue(self):
+        import blocklist as bl
+        bl.STATE = self.dir / "luna-blocklist.json"
+        self._write("2026-07-22-ign-w.schonenbrocher.md", MAIL_IGNORE)
+        r = w.process_approvals(
+            ["2026-07-22-ign-w.schonenbrocher.md"], dry_run=False,
+            send=lambda *a, **k: (_ for _ in ()).throw(AssertionError("darf nicht senden")),
+            make_issue=lambda *a, **k: (_ for _ in ()).throw(AssertionError("kein Issue")))
+        self.assertEqual(r[0]["action"], "ignored")
+        self.assertEqual(q.load("A7X3")["status"], "ignored")
+        self.assertTrue(bl.is_blocked("k@x.de"))
+
+    def test_ignore_dry_run_would_ignore_no_write(self):
+        import blocklist as bl
+        bl.STATE = self.dir / "luna-blocklist.json"
+        self._write("2026-07-22-igndry-w.schonenbrocher.md", MAIL_IGNORE)
+        r = w.process_approvals(["2026-07-22-igndry-w.schonenbrocher.md"], dry_run=True,
+                                send=lambda *a, **k: (200, "ok"), make_issue=lambda *a, **k: None)
+        self.assertEqual(r[0]["action"], "would-ignore")
+        self.assertEqual(q.load("A7X3")["status"], "pending")  # nichts verändert
+        self.assertFalse(bl.is_blocked("k@x.de"))
 
 
 if __name__ == "__main__":
