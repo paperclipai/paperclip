@@ -1,5 +1,40 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  decisionEffectStalenessSchema,
+  decisionOptionStyleSchema,
+  commentOnIssueDecisionEffectSchema,
+  createIssueDecisionEffectSchema,
+  updateIssueStatusDecisionEffectSchema,
+  assignIssueDecisionEffectSchema,
+  cancelIssueTreeDecisionEffectSchema,
+  resolveBlockerDecisionEffectSchema,
+  decisionEffectSchema,
+  decisionInputSchema,
+  decisionOptionSchema,
+  decisionOptionsSchema,
+  decisionInputsSchema,
+  decisionSpecSchema,
+  type DecisionEffectInput,
+  type DecisionOptionInput,
+  type DecisionInputInput,
+  type DecisionSpecInput,
+} from "./validators/decision.js";
+
+export type {
+  DecisionEffectStaleness,
+  DecisionOptionStyle,
+  DecisionInput,
+  CommentOnIssueDecisionEffect,
+  CreateIssueDecisionEffect,
+  UpdateIssueStatusDecisionEffect,
+  AssignIssueDecisionEffect,
+  CancelIssueTreeDecisionEffect,
+  ResolveBlockerDecisionEffect,
+  DecisionEffect,
+  DecisionOption,
+} from "./types/decision.js";
+
+export {
   getAgentOrgChainHealth,
   getAgentWorkEligibility,
   isAgentAssignableToWork,
