@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, Link, Navigate, useBeforeUnload, useBlocker, type NavigateFunction } from "@/lib/router";
+import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
@@ -38,6 +38,7 @@ import {
   type AgentConfigurationSectionId,
 } from "../components/agent-configuration-shell";
 import { PageTabBar } from "../components/PageTabBar";
+import { useUnsavedNavigationGuard } from "@/lib/use-unsaved-navigation-guard";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
@@ -742,12 +743,7 @@ export function AgentDetail() {
     event.preventDefault();
     event.returnValue = "";
   }, [configDirty]));
-  const navigationBlocker = useBlocker(configDirty);
-  useEffect(() => {
-    if (navigationBlocker.state !== "blocked") return;
-    if (window.confirm("Discard your unsaved agent configuration changes?")) navigationBlocker.proceed();
-    else navigationBlocker.reset();
-  }, [navigationBlocker]);
+  useUnsavedNavigationGuard(configDirty, "Discard your unsaved agent configuration changes?");
 
   const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
@@ -756,6 +752,9 @@ export function AgentDetail() {
   });
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
+  const handleViewChange = useCallback((value: string) => {
+    navigate(`/agents/${canonicalAgentRef}/${value}`);
+  }, [canonicalAgentRef, navigate]);
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
   const membershipsQuery = useResourceMemberships(resolvedCompanyId);
@@ -1282,7 +1281,7 @@ export function AgentDetail() {
       {!urlRunId && (
         <Tabs
           value={activeView}
-          onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
+          onValueChange={isMobile ? undefined : handleViewChange}
         >
           <PageTabBar
             items={[
@@ -1295,7 +1294,7 @@ export function AgentDetail() {
               { value: "budget", label: "Budget" },
             ]}
             value={activeView}
-            onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
+            onValueChange={isMobile ? handleViewChange : undefined}
           />
         </Tabs>
       )}
