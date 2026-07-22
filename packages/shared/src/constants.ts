@@ -1252,6 +1252,7 @@ export const PLUGIN_CAPABILITIES = [
   // Data Write
   "issues.create",
   "issues.update",
+  "approvals.resolve",
   "issue.relations.write",
   "issues.checkout",
   "issues.wakeup",

@@ -305,7 +305,11 @@ export type {
   HumanCompanyMembershipRole,
   MembershipStatus,
   EnvSecretRefBinding,
+  PluginApprovalsClient,
 } from "./types.js";
+
+// Approval type re-exported from @paperclipai/shared via types.js's import surface
+export type { Approval } from "@paperclipai/shared";
 
 // Manifest and constant types re-exported from @paperclipai/shared
 // Plugin authors import manifest types from here so they have a single

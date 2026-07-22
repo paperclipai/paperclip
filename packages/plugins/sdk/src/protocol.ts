@@ -25,6 +25,7 @@ import type {
   Project,
   Issue,
   IssueComment,
+  Approval,
   IssueDocument,
   IssueDocumentSummary,
   IssueAssigneeAdapterOverrides,
@@ -1280,6 +1281,26 @@ export interface WorkerToHostMethods {
       companyId: string;
     },
     result: Issue,
+  ];
+  "approvals.approve": [
+    params: {
+      approvalId: string;
+      companyId: string;
+      decidedByUserId: string;
+      decisionNote?: string | null;
+      actorAgentId?: string | null;
+    },
+    result: { approval: Approval; applied: boolean },
+  ];
+  "approvals.reject": [
+    params: {
+      approvalId: string;
+      companyId: string;
+      decidedByUserId: string;
+      decisionNote?: string | null;
+      actorAgentId?: string | null;
+    },
+    result: { approval: Approval; applied: boolean },
   ];
   "issues.relations.get": [
     params: { issueId: string; companyId: string },

@@ -25,6 +25,7 @@ import type {
   PluginIssueAssigneeSummary,
   PluginIssueOrchestrationSummary,
   PluginExecutionWorkspaceMetadata,
+  Approval,
 } from "@paperclipai/plugin-sdk";
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
@@ -39,6 +40,7 @@ import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
+import { approvalService } from "./approvals.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -543,6 +545,7 @@ export function buildHostServices(
   const authorization = authorizationService(db);
   const budgets = budgetService(db);
   const issueApprovals = issueApprovalService(db);
+  const approvals = approvalService(db);
   const scopedBus = eventBus.forPlugin(pluginKey);
 
   // Track active session event subscriptions for cleanup
@@ -2112,6 +2115,102 @@ export function buildHostServices(
             documentKey: params.key,
           },
         });
+      },
+    },
+
+    approvals: {
+      async approve(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Approval", await approvals.getById(params.approvalId), companyId);
+
+        const { approval, applied } = await approvals.approve(
+          params.approvalId,
+          params.decidedByUserId,
+          params.decisionNote,
+        );
+
+        if (applied) {
+          await logPluginActivity({
+            companyId: approval.companyId,
+            action: "approval.approved",
+            entityType: "approval",
+            entityId: approval.id,
+            details: {
+              type: approval.type,
+              requestedByAgentId: approval.requestedByAgentId,
+              decidedByUserId: params.decidedByUserId,
+            },
+          });
+
+          if (approval.requestedByAgentId) {
+            try {
+              const linkedIssues = await issueApprovals.listIssuesForApproval(approval.id);
+              const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+              await heartbeat.wakeup(approval.requestedByAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "approval_approved",
+                payload: {
+                  approvalId: approval.id,
+                  approvalStatus: approval.status,
+                  issueId: linkedIssueIds[0] ?? null,
+                  issueIds: linkedIssueIds,
+                  pluginId,
+                  pluginKey,
+                },
+                requestedByActorType: "system",
+                requestedByActorId: pluginId,
+                contextSnapshot: {
+                  source: "approval.approved",
+                  approvalId: approval.id,
+                  approvalStatus: approval.status,
+                  issueId: linkedIssueIds[0] ?? null,
+                  issueIds: linkedIssueIds,
+                  taskId: linkedIssueIds[0] ?? null,
+                  wakeReason: "approval_approved",
+                  pluginId,
+                  pluginKey,
+                },
+              });
+            } catch (err) {
+              logger.warn(
+                { err, approvalId: approval.id, requestedByAgentId: approval.requestedByAgentId, pluginId, pluginKey },
+                "failed to queue requester wakeup after plugin approval",
+              );
+            }
+          }
+        }
+
+        return { approval: approval as Approval, applied };
+      },
+
+      async reject(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Approval", await approvals.getById(params.approvalId), companyId);
+
+        const { approval, applied } = await approvals.reject(
+          params.approvalId,
+          params.decidedByUserId,
+          params.decisionNote,
+        );
+
+        if (applied) {
+          await logPluginActivity({
+            companyId: approval.companyId,
+            action: "approval.rejected",
+            entityType: "approval",
+            entityId: approval.id,
+            details: {
+              type: approval.type,
+              requestedByAgentId: approval.requestedByAgentId,
+              decidedByUserId: params.decidedByUserId,
+            },
+          });
+        }
+
+        return { approval: approval as Approval, applied };
       },
     },
 
