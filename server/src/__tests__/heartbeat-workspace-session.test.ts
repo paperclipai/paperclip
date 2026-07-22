@@ -1850,6 +1850,20 @@ describe("effective run session config freshness", () => {
     ]);
   });
 
+  it("does not emit a model-drift reset reason when antigravity no longer records configuredModel", async () => {
+    const base = await buildSessionConfigMetadata();
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: null,
+      taskSessionParams: sessionParamsWithConfigMetadata(base, "Gemini 3.1 Pro (High)"),
+      configMetadata: base,
+    });
+
+    expect(decision.reset).toBe(false);
+    expect(decision.reasons).toEqual([]);
+  });
+
   it("freshens legacy task sessions that lack versioned config metadata", async () => {
     const metadata = await buildSessionConfigMetadata();
 
@@ -1866,20 +1880,6 @@ describe("effective run session config freshness", () => {
     expect(decision.reset).toBe(true);
     expect(decision.changedCategories).toEqual(metadata.categories);
     expect(decision.reasons).toEqual(["effective run configuration fingerprint metadata is missing"]);
-  });
-
-  it("does not emit a model-drift reset reason when antigravity no longer records configuredModel", async () => {
-    const base = await buildSessionConfigMetadata();
-
-    const decision = resolveTaskSessionConfigFreshness({
-      hasTaskSession: true,
-      configuredModel: null,
-      taskSessionParams: sessionParamsWithConfigMetadata(base, "Gemini 3.1 Pro (High)"),
-      configMetadata: base,
-    });
-
-    expect(decision.reset).toBe(false);
-    expect(decision.reasons).toEqual([]);
   });
 
   it("uses persisted fingerprint metadata even when an adapter codec omits it from resume params", async () => {

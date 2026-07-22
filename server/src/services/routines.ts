@@ -379,6 +379,13 @@ function nextResultText(status: string, issueId?: string | null) {
   return status;
 }
 
+function withLegacyRoutineRunIssueId<T extends { linkedIssueId: string | null }>(run: T): T & { issueId: string | null } {
+  return {
+    ...run,
+    issueId: run.linkedIssueId,
+  };
+}
+
 function normalizeWebhookTimestampMs(rawTimestamp: string) {
   const parsed = Number(rawTimestamp);
   if (!Number.isFinite(parsed)) return null;
@@ -1377,7 +1384,7 @@ export function routineService(
 
     const map = new Map<string, RoutineRunSummary>();
     for (const row of rows) {
-      map.set(row.routineId, {
+      map.set(row.routineId, withLegacyRoutineRunIssueId({
         id: row.id,
         companyId: row.companyId,
         routineId: row.routineId,
@@ -1412,7 +1419,7 @@ export function routineService(
             label: row.triggerLabel,
           }
           : null,
-      });
+      }));
     }
     return map;
   }
@@ -1730,7 +1737,7 @@ export function routineService(
       logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log skipped routine run");
     }
 
-    return run;
+    return withLegacyRoutineRunIssueId(run);
   }
 
   async function recordFailedScheduleDispatch(input: {
@@ -1799,7 +1806,7 @@ export function routineService(
       logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log failed routine run");
     }
 
-    return run;
+    return withLegacyRoutineRunIssueId(run);
   }
 
   async function recordIgnoredWebhookRun(input: {
@@ -1856,7 +1863,7 @@ export function routineService(
       logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log ignored webhook routine run");
     }
 
-    return run;
+    return withLegacyRoutineRunIssueId(run);
   }
 
   function routineExecutionFingerprintCondition(dispatchFingerprint?: string | null) {
@@ -2712,7 +2719,7 @@ export function routineService(
             status: "skipped",
             nextRunAt,
           }, txDb);
-          return updated ?? createdRun;
+          return withLegacyRoutineRunIssueId(updated ?? createdRun);
         }
       }
 
@@ -2781,7 +2788,7 @@ export function routineService(
                 status: "skipped",
                 nextRunAt,
               }, txDb);
-              return updated ?? createdRun;
+              return withLegacyRoutineRunIssueId(updated ?? createdRun);
             }
             reusedIssueSnapshot = reusableIssue;
             executionIssue = await issueSvc.update(reusableIssue.id, {
@@ -2896,7 +2903,7 @@ export function routineService(
               issueId: existingIssue.id,
               nextRunAt,
             }, txDb);
-            return updated ?? createdRun;
+            return withLegacyRoutineRunIssueId(updated ?? createdRun);
           }
         }
 
@@ -2938,7 +2945,7 @@ export function routineService(
           issueId: executionIssue.id,
           nextRunAt,
         }, txDb);
-        return updated ?? createdRun;
+        return withLegacyRoutineRunIssueId(updated ?? createdRun);
       } catch (error) {
         if (createdIssue) {
           await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
@@ -2959,7 +2966,7 @@ export function routineService(
           status: "failed",
           nextRunAt,
         }, txDb);
-        return failed ?? createdRun;
+        return withLegacyRoutineRunIssueId(failed ?? createdRun);
       }
     });
 
@@ -3010,7 +3017,7 @@ export function routineService(
       run,
     });
 
-    return run;
+    return withLegacyRoutineRunIssueId(run);
   }
 
   return {
@@ -3103,7 +3110,7 @@ export function routineService(
           .orderBy(desc(routineRuns.createdAt))
           .limit(25)
           .then((runs) =>
-            runs.map((run) => ({
+            runs.map((run) => withLegacyRoutineRunIssueId({
               id: run.id,
               companyId: run.companyId,
               routineId: run.routineId,
@@ -4011,7 +4018,7 @@ export function routineService(
         .orderBy(desc(routineRuns.createdAt))
         .limit(cappedLimit);
 
-      return rows.map((row) => ({
+      return rows.map((row) => withLegacyRoutineRunIssueId({
         id: row.id,
         companyId: row.companyId,
         routineId: row.routineId,

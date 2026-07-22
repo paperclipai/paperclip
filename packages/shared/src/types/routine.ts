@@ -209,6 +209,11 @@ export interface RoutineRun {
   triggerPayload: Record<string, unknown> | null;
   dispatchFingerprint: string | null;
   linkedIssueId: string | null;
+  /**
+   * @deprecated Use linkedIssueId. Kept as a backwards-compatible alias for
+   * routine-run issue lookups.
+   */
+  issueId: string | null;
   coalescedIntoRunId: string | null;
   failureReason: string | null;
   completedAt: Date | null;

@@ -2203,7 +2203,7 @@ function readWakeupIssueLockTimeoutMs() {
 
 interface WakeupOptions {
   source?: "timer" | "assignment" | "on_demand" | "automation";
-  triggerDetail?: "manual" | "ping" | "callback" | "system";
+  triggerDetail?: string;
   reason?: string | null;
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
@@ -12682,19 +12682,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         run: heartbeatRuns,
         adapterType: agents.adapterType,
         runtimeConfig: agents.runtimeConfig,
+        activityWindow: companies.activityWindow,
         issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
         retryNotBefore: sql<string | null>`${heartbeatRuns.resultJson} ->> 'retryNotBefore'`,
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .innerJoin(companies, eq(heartbeatRuns.companyId, companies.id))
       .where(and(eq(heartbeatRuns.status, "queued"), lt(heartbeatRuns.createdAt, cutoff)));
 
     const reaped: string[] = [];
-    for (const { run, adapterType, runtimeConfig, issueId, retryNotBefore } of candidates) {
-      // Only window-exempt agents: a non-exempt agent's queue is correctly deferred while
-      // its activity window is closed (it resumes at next open), so it is not stuck.
+    for (const { run, adapterType, runtimeConfig, activityWindow, issueId, retryNotBefore } of candidates) {
+      // Closed-window queues are correctly deferred and must not be reaped.
+      // A company with no activity window is always active, so its queued rows
+      // are eligible for stale reaping even for non-exempt adapters.
       const parsedRuntimeConfig = parseObject(runtimeConfig);
-      if (!isActivityWindowExemptAgent({ adapterType, runtimeConfig: parsedRuntimeConfig })) continue;
+      if (getActivityWindowScheduleSkip({
+        activityWindow,
+        adapterType,
+        runtimeConfig: parsedRuntimeConfig,
+        now,
+      })) {
+        continue;
+      }
       // If the agent has a RUNNING run, its queue is draining normally behind it.
       const running = await db
         .select({ id: heartbeatRuns.id })

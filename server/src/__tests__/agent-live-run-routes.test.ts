@@ -644,4 +644,23 @@ describe("agent live run routes", () => {
       },
     });
   });
+
+  it("accepts free-text triggerDetail on the wakeup route", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup`)
+        .send({
+          triggerDetail: "board-authorized TSBC Grok completion",
+          reason: "issue_assigned",
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      source: "on_demand",
+      triggerDetail: "board-authorized TSBC Grok completion",
+      reason: "issue_assigned",
+    }));
+  });
 });

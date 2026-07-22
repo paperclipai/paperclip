@@ -281,6 +281,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(runRes.body.status).toBe("issue_created");
     expect(runRes.body.source).toBe("manual");
     expect(runRes.body.linkedIssueId).toBeTruthy();
+    expect(runRes.body.issueId).toBe(runRes.body.linkedIssueId);
 
     const listRes = await request(app).get(`/api/companies/${companyId}/routines`);
     expect(listRes.status).toBe(200);
@@ -289,6 +290,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(listed.triggers).toHaveLength(1);
     expect(listed.triggers[0].cronExpression).toBe("0 10 * * 1-5");
     expect(listed.triggers[0].timezone).toBe("UTC");
+    expect(listed.lastRun?.issueId).toBe(runRes.body.linkedIssueId);
 
     const detailRes = await request(app).get(`/api/routines/${routineId}`);
     expect(detailRes.status).toBe(200);
@@ -296,10 +298,12 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(detailRes.body.triggers[0]?.id).toBe(createdTrigger.id);
     expect(detailRes.body.recentRuns).toHaveLength(1);
     expect(detailRes.body.recentRuns[0]?.id).toBe(runRes.body.id);
+    expect(detailRes.body.recentRuns[0]?.issueId).toBe(runRes.body.linkedIssueId);
     expect(detailRes.body.activeIssue?.id).toBe(runRes.body.linkedIssueId);
 
     const runsRes = await request(app).get(`/api/routines/${routineId}/runs?limit=10`);
     expect(runsRes.status).toBe(200);
+    expect(runsRes.body[0]?.issueId).toBe(runRes.body.linkedIssueId);
     const [persistedRun] = await db
       .select({ id: routineRuns.id })
       .from(routineRuns)

@@ -1,0 +1,8 @@
+{
+  "name": "sdk",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "pnpm --filter @paperclipai/plugin-sdk build"
+  }
+}

@@ -1208,6 +1208,61 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("creates blocked child issues with their unresolved blockers intact", async () => {
+    const blockerIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    mockIssueService.createChild.mockImplementationOnce(async (_parentId: string, input: Record<string, unknown>) => ({
+      issue: {
+        ...makeIssue({
+          id: "99999999-9999-4999-8999-999999999999",
+          status: "blocked",
+          parentId: issueId,
+          assigneeAgentId: null,
+        }),
+        ...input,
+        companyId,
+        blockedBy: [{
+          id: blockerIssueId,
+          identifier: "PAP-2000",
+          title: "Existing blocker",
+          status: "todo",
+          priority: "high",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        }],
+        blocks: [],
+      },
+      parentBlockerAdded: false,
+    }));
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/children`)
+      .send({
+        title: "Blocked follow-up",
+        priority: "medium",
+        status: "blocked",
+        blockedByIssueIds: [blockerIssueId],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.createChild).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        title: "Blocked follow-up",
+        status: "blocked",
+        blockedByIssueIds: [blockerIssueId],
+      }),
+    );
+    expect(res.body).toEqual(expect.objectContaining({
+      title: "Blocked follow-up",
+      status: "blocked",
+      blockedBy: [expect.objectContaining({
+        id: blockerIssueId,
+        title: "Existing blocker",
+      })],
+    }));
+  });
+
   it("defaults agent-created root follow-up issues to inherit the current run workspace", async () => {
     const app = await createApp(
       ownerActor(),

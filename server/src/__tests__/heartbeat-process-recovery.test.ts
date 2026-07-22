@@ -2193,7 +2193,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const result = await heartbeat.reapStaleQueuedRuns({
       staleMs: 60_000,
-      now: new Date(Date.now() + 86_400_000),
+      now: new Date("2026-07-22T22:00:00.000Z"),
     });
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
@@ -2203,20 +2203,42 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("leaves a non-exempt agent's stale queued run alone (closed-window queues are correctly deferred)", async () => {
-    const { runId } = await seedRunFixture({
+    const { companyId, runId } = await seedRunFixture({
       runStatus: "queued",
       agentStatus: "idle",
       adapterType: "claude_local", // not adapter-exempt + no ignoreActivityWindow flag
+      includeIssue: false,
+    });
+    await db
+      .update(companies)
+      .set({ activityWindow: { startHour: 9, endHour: 17, timezone: "UTC" } })
+      .where(eq(companies.id, companyId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapStaleQueuedRuns({
+      staleMs: 60_000,
+      now: new Date("2026-07-22T22:00:00.000Z"),
+    });
+    expect(result.reaped).toBe(0);
+    expect((await heartbeat.getRun(runId))?.status).toBe("queued");
+  });
+
+  it("reaps a stale queued run for a non-exempt agent when the company has no activity window", async () => {
+    const { runId } = await seedRunFixture({
+      runStatus: "queued",
+      agentStatus: "idle",
+      adapterType: "claude_local",
       includeIssue: false,
     });
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapStaleQueuedRuns({
       staleMs: 60_000,
-      now: new Date(Date.now() + 86_400_000),
+      now: new Date("2026-07-22T22:00:00.000Z"),
     });
-    expect(result.reaped).toBe(0);
-    expect((await heartbeat.getRun(runId))?.status).toBe("queued");
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect((await heartbeat.getRun(runId))?.status).toBe("cancelled");
   });
 
   it("never reaps a queued continuation of an in-progress issue (loop caveat)", async () => {
