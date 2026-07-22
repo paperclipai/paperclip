@@ -2932,7 +2932,12 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(authorizationUrl.searchParams.get("scope")).toBe("users:read");
 
     const [state] = await db.select().from(toolOauthStates);
-    expect(state).toMatchObject({ subjectUserId: "user-for-run", issueId: issue.id, requestedScopes: ["users:read"] });
+    expect(state).toMatchObject({
+      subjectUserId: "user-for-run",
+      issueId: issue.id,
+      requestedScopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
     const [interaction] = await db.select().from(issueThreadInteractions);
     expect(interaction).toMatchObject({
       issueId: issue.id,
@@ -2960,6 +2965,76 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(unchangedConnection.credentialSecretRefs.map((ref) => ref.secretId).sort()).toEqual(workspaceSecretIds);
     const [resolved] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
     expect(resolved).toMatchObject({ status: "accepted", result: { version: 1, outcome: "accepted" } });
+
+    await expect(service.completeOAuthCallback({
+      state: state.state,
+      code: "user-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    })).rejects.toMatchObject({
+      status: 400,
+      message: "OAuth state was not found or has already been used",
+    });
+  });
+
+  it("rejects agent-started user authorization for the wrong responsible user and mismatched callback redirects", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack per-user redirect guard" });
+
+    await expect(service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "someone-else",
+      scopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: {
+        code: "subject_not_permitted",
+        subject: { type: "user", userId: "someone-else" },
+      },
+    });
+
+    const started = await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    expect(started.authorizationUrl).toContain("state=");
+
+    const [state] = await db.select().from(toolOauthStates);
+    expect(state).toMatchObject({
+      issueId: issue.id,
+      subjectUserId: "user-for-run",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+
+    await expect(service.completeOAuthCallback({
+      state: state.state,
+      code: "user-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback/other",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    })).rejects.toMatchObject({
+      status: 400,
+      message: "OAuth callback redirect URI does not match the original request",
+    });
+
+    await expect(db.select().from(toolOauthStates)).resolves.toEqual([
+      expect.objectContaining({ state: state.state, redirectUri: "https://paperclip.example/api/tools/oauth/callback" }),
+    ]);
+    await expect(db.select().from(connectionGrants)).resolves.toEqual([]);
+    await expect(db.select().from(companySecrets)).resolves.toEqual([]);
   });
 
   it("starts and completes OAuth app sign-in with PKCE state and secret-backed tokens", async () => {
@@ -4368,6 +4443,7 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       connectionId: connection!.id,
       codeVerifier: "legacy-smoke-code-verifier",
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
       createdByActorType: "user",
       createdByActorId: "board",
       createdBySessionId: null,

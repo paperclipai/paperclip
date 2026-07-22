@@ -1275,6 +1275,13 @@
       "when": 1784653200000,
       "tag": "0183_connection_user_authorization_state",
       "breakpoints": true
+    },
+    {
+      "idx": 184,
+      "version": "7",
+      "when": 1784689200000,
+      "tag": "0184_tool_oauth_state_redirect_binding",
+      "breakpoints": true
     }
   ]
 }
