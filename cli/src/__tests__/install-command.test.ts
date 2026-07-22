@@ -79,8 +79,20 @@ describe("managed install commands", () => {
     const userData = path.join(process.env.PAPERCLIP_HOME!, "instances", "default", "keep.txt");
     fs.mkdirSync(path.dirname(userData), { recursive: true });
     fs.writeFileSync(userData, "keep");
-    await uninstallCommand();
+    const uninstallService = vi.fn(async () => {
+      expect(fs.existsSync(paths.shimPath)).toBe(true);
+    });
+    await uninstallCommand({
+      detectServiceManager: vi.fn(async () => ({
+        supported: true as const,
+        manager: {
+          status: vi.fn(async () => ({ installed: true, active: true })),
+          uninstall: uninstallService,
+        } as never,
+      })),
+    });
 
+    expect(uninstallService).toHaveBeenCalledOnce();
     expect(fs.existsSync(paths.cliRoot)).toBe(false);
     expect(fs.existsSync(paths.shimPath)).toBe(false);
     expect(fs.readFileSync(userData, "utf8")).toBe("keep");
