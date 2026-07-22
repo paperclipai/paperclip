@@ -77,3 +77,60 @@ def scan_skipped_tests(root: Path) -> list[Candidate]:
 
 def _is_test_file(rel: str) -> bool:
     return ".test." in rel or ".spec." in rel or "__tests__/" in rel
+
+
+import json
+import subprocess
+
+_TSC_RE = re.compile(r"^(.+?)\((\d+),\d+\):\s+error\s+(TS\d+):\s+(.+)$")
+
+
+def scan_tsc(root, runner=subprocess.run) -> list[Candidate]:
+    try:
+        proc = runner(
+            ["npx", "tsc", "--noEmit"],
+            cwd=str(root) if root is not None else None,
+            capture_output=True, text=True, check=False,
+        )
+    except Exception:
+        return []
+    out = (getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or "")
+    cands: list[Candidate] = []
+    for line in out.splitlines():
+        m = _TSC_RE.match(line.strip())
+        if not m:
+            continue
+        file, ln, code, msg = m.group(1), int(m.group(2)), m.group(3), m.group(4)
+        cands.append(Candidate(
+            source="tsc", key=f"tsc:{file}:{ln}:{code}", file=file, line=ln,
+            text=msg.strip(), raw_priority=50,
+        ))
+    return cands
+
+
+def scan_lint(root, runner=subprocess.run, repo_root=None) -> list[Candidate]:
+    base = repo_root if repo_root is not None else (str(root) if root is not None else "")
+    try:
+        proc = runner(
+            ["npx", "eslint", ".", "--format", "json"],
+            cwd=str(root) if root is not None else None,
+            capture_output=True, text=True, check=False,
+        )
+    except Exception:
+        return []
+    try:
+        data = json.loads(getattr(proc, "stdout", "") or "")
+    except (ValueError, TypeError):
+        return []
+    cands: list[Candidate] = []
+    for entry in data:
+        abs_path = entry.get("filePath", "")
+        rel = abs_path[len(base):].lstrip("/") if base and abs_path.startswith(base) else abs_path
+        for m in entry.get("messages", []):
+            ln = m.get("line", 0)
+            rule = m.get("ruleId") or "unknown"
+            cands.append(Candidate(
+                source="lint", key=f"lint:{rel}:{ln}:{rule}", file=rel, line=ln,
+                text=(m.get("message") or "").strip(), raw_priority=45,
+            ))
+    return cands

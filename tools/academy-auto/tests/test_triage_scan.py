@@ -62,3 +62,51 @@ def test_scan_todos_in_substring_path_is_found(tmp_path):
 def test_scan_skipped_tests_ignores_non_test_files(tmp_path):
     _write(tmp_path, "src/app.ts", "it.skip('x', () => {});\nxit('y', () => {});\n")
     assert scan_skipped_tests(tmp_path) == []
+
+
+from academy_auto.triage.scan import scan_tsc, scan_lint
+
+
+def _proc(stdout="", returncode=0):
+    class R:
+        pass
+    r = R()
+    r.stdout = stdout
+    r.stderr = ""
+    r.returncode = returncode
+    return r
+
+
+def test_scan_tsc_parses_errors():
+    tsc_out = (
+        "src/App.tsx(12,7): error TS2322: Type 'string' is not assignable to type 'number'.\n"
+        "src/lib/u.ts(3,1): error TS2531: Object is possibly 'null'.\n"
+        "Found 2 errors.\n"
+    )
+    cands = scan_tsc(None, runner=lambda *a, **k: _proc(stdout=tsc_out, returncode=2))
+    keys = {c.key for c in cands}
+    assert "tsc:src/App.tsx:12:TS2322" in keys
+    assert "tsc:src/lib/u.ts:3:TS2531" in keys
+    assert all(c.source == "tsc" and c.raw_priority == 50 for c in cands)
+
+
+def test_scan_tsc_fail_soft_on_crash():
+    def boom(*a, **k):
+        raise FileNotFoundError("npx not found")
+    assert scan_tsc(None, runner=boom) == []
+
+
+def test_scan_lint_parses_json():
+    lint_json = (
+        '[{"filePath":"/repo/src/a.ts","messages":['
+        '{"line":4,"ruleId":"no-unused-vars","message":"x unused","severity":1}]}]'
+    )
+    cands = scan_lint(None, runner=lambda *a, **k: _proc(stdout=lint_json, returncode=1), repo_root="/repo")
+    assert len(cands) == 1
+    c = cands[0]
+    assert c.key == "lint:src/a.ts:4:no-unused-vars"
+    assert c.source == "lint" and c.raw_priority == 45
+
+
+def test_scan_lint_fail_soft_on_bad_json():
+    assert scan_lint(None, runner=lambda *a, **k: _proc(stdout="not json", returncode=1), repo_root="/repo") == []
