@@ -142,6 +142,10 @@ export function buildRuntimeApiCandidateUrls(input: {
   if (bindHost && !isWildcardHost(bindHost)) {
     pushCandidate(candidates, seen, formatOrigin(protocol, bindHost, input.port));
   }
+  if (!bindHost || isWildcardHost(bindHost)) {
+    pushCandidate(candidates, seen, formatOrigin("http:", "localhost", input.port));
+    pushCandidate(candidates, seen, formatOrigin("http:", "127.0.0.1", input.port));
+  }
 
   if (explicitOrigin) {
     const hostname = new URL(explicitOrigin).hostname;
