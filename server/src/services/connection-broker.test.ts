@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { verifyRequestEnvelope, type ReplayStore } from "@paperclip/connect-protocol";
+import { verifyRequestEnvelope, type ReplayStore } from "@paperclipai/connect-protocol";
 import { companies, createDb, toolApplications, toolConnections } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import {

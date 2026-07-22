@@ -6,7 +6,7 @@ import {
   claimRequestSchema, claimResponseSchema, grantTokenRequestSchema, grantTokenResponseSchema,
   handshakeRequestSchema, handshakeResponseSchema, relayRegistrationRequestSchema,
   relayRegistrationResponseSchema, signRequestEnvelope,
-} from "@paperclip/connect-protocol";
+} from "@paperclipai/connect-protocol";
 
 export class ConnectServiceResponseError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); }

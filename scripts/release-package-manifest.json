@@ -1,8 +1,8 @@
 [
   {
     "dir": "packages/connect-protocol",
-    "name": "@paperclip/connect-protocol",
-    "publishFromCi": false
+    "name": "@paperclipai/connect-protocol",
+    "publishFromCi": true
   },
   {
     "dir": "packages/adapter-utils",

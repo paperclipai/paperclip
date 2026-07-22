@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createRelaySignature, type RelayEnvelope } from "@paperclip/connect-protocol";
+import { createRelaySignature, type RelayEnvelope } from "@paperclipai/connect-protocol";
 import { agentWakeupRequests, agents, companies, connectionTriggerDeliveries, connectionTriggers, createDb, issues, toolApplications, toolConnections } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { connectionRelayDispatcher, connectionRelayStore, pollRelayChannel, processAndDispatchConnectionRelay, processConnectionRelay, RELAY_DELIVERY_LEASE_MS, type ConnectionRelayStore, type RelayTrigger } from "./connection-relay.js";

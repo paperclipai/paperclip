@@ -6,7 +6,7 @@ import {
   relayEnvelopeSchema,
   verifyRelaySignature,
   type RelayEnvelope,
-} from "@paperclip/connect-protocol";
+} from "@paperclipai/connect-protocol";
 import { secretService } from "./secrets.js";
 import { routineService } from "./routines.js";
 import { heartbeatService } from "./heartbeat.js";
