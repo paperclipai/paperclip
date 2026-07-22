@@ -26,7 +26,7 @@ const EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 export type InstallOptions = { canary?: boolean; version?: string; yes?: boolean };
 
-type CommandRunner = (
+export type CommandRunner = (
   file: string,
   args: string[],
   options?: Parameters<typeof execFileAsync>[2],
@@ -66,7 +66,7 @@ function parseResolvedVersion(stdout: string): string {
   throw new Error(`npm returned an unexpected version response: ${trimmed}`);
 }
 
-async function resolvePublishedVersion(spec: string, runCommand: CommandRunner): Promise<string> {
+export async function resolvePublishedVersion(spec: string, runCommand: CommandRunner): Promise<string> {
   const result = await runCommand(
     "npm",
     ["view", `paperclipai@${spec}`, "version", "--json", `--registry=${PUBLIC_NPM_REGISTRY}`],
@@ -79,7 +79,7 @@ function payloadEntrypoint(payloadPath: string): string {
   return path.join(payloadPath, "node_modules", "paperclipai", "dist", "index.js");
 }
 
-async function smokePayload(payloadPath: string, expectedVersion: string, runCommand: CommandRunner): Promise<void> {
+export async function smokePayload(payloadPath: string, expectedVersion: string, runCommand: CommandRunner): Promise<void> {
   const entrypoint = payloadEntrypoint(payloadPath);
   if (!fs.existsSync(entrypoint)) throw new Error(`Installed package is missing its CLI entrypoint: ${entrypoint}`);
   const result = await runCommand(process.execPath, [entrypoint, "--version"], { maxBuffer: 1024 * 1024 });
@@ -89,7 +89,7 @@ async function smokePayload(payloadPath: string, expectedVersion: string, runCom
   }
 }
 
-async function installNpmPayload(
+export async function installNpmPayload(
   version: string,
   runCommand: CommandRunner,
   paths = resolveInstallStorePaths(),
