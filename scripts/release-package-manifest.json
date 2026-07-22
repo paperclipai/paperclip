@@ -2,7 +2,7 @@
   {
     "dir": "packages/connect-protocol",
     "name": "@paperclip/connect-protocol",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapter-utils",
