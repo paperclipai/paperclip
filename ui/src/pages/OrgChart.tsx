@@ -21,6 +21,7 @@ const GAP_Y = 80;
 const PADDING = 60;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2;
+const MIN_INITIAL_READABLE_ZOOM = 0.6;
 const TOUCH_MOVE_THRESHOLD = 6;
 
 // ── Tree layout types ───────────────────────────────────────────────────
@@ -253,16 +254,27 @@ export function OrgChart() {
     const scaleX = (containerW - 40) / bounds.width;
     const scaleY = (containerH - 40) / bounds.height;
     const fitZoom = Math.min(scaleX, scaleY, 1);
+    const initialZoom = Math.max(fitZoom, MIN_INITIAL_READABLE_ZOOM);
 
-    const chartW = bounds.width * fitZoom;
-    const chartH = bounds.height * fitZoom;
-
-    setZoom(fitZoom);
-    setPan({
-      x: (containerW - chartW) / 2,
-      y: (containerH - chartH) / 2,
-    });
-  }, [allNodes, bounds]);
+    setZoom(initialZoom);
+    if (fitZoom < MIN_INITIAL_READABLE_ZOOM) {
+      // A wide, flat organization can otherwise shrink every card into an
+      // illegible line. Start at a readable scale and focus the first root;
+      // the explicit fit control remains available for the full overview.
+      const firstRoot = layout[0];
+      setPan({
+        x: 20 - (firstRoot?.x ?? PADDING) * initialZoom,
+        y: 20 - (firstRoot?.y ?? PADDING) * initialZoom,
+      });
+    } else {
+      const chartW = bounds.width * initialZoom;
+      const chartH = bounds.height * initialZoom;
+      setPan({
+        x: (containerW - chartW) / 2,
+        y: (containerH - chartH) / 2,
+      });
+    }
+  }, [allNodes, bounds, layout]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;

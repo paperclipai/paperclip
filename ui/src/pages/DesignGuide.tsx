@@ -159,7 +159,9 @@ function sampleOutput(
   filename: string,
   opts: { byteSize: number; isPrimary?: boolean; createdAt: string },
 ): IssueWorkProduct {
-  const contentPath = `/api/attachments/${attachmentId}/content`;
+  // Design-guide fixtures must remain self-contained: a fake API attachment
+  // produces a real browser 404 and makes this diagnostic page look unhealthy.
+  const contentPath = `data:${contentType};base64,`;
   return {
     id,
     companyId: "demo-company",
@@ -186,7 +188,7 @@ function sampleOutput(
       byteSize: opts.byteSize,
       contentPath,
       openPath: contentPath,
-      downloadPath: `${contentPath}?download=1`,
+      downloadPath: contentPath,
       originalFilename: filename,
     },
   } as IssueWorkProduct;

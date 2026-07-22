@@ -230,6 +230,10 @@ export async function loadDynamicParser(adapterType: string): Promise<DynamicPar
   const loadPromise = (async (): Promise<DynamicParserModule | null> => {
     try {
       const response = await fetch(`/api/adapters/${encodeURIComponent(adapterType)}/ui-parser.js`);
+      if (response.status === 204) {
+        failedLoads.add(adapterType);
+        return null;
+      }
       if (!response.ok) {
         failedLoads.add(adapterType);
         return null;

@@ -1241,6 +1241,7 @@ const heartbeatRunSqlAsciiSafeColumns = {
 const heartbeatRunLogAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
+  status: heartbeatRuns.status,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
 } as const;
@@ -1713,7 +1714,9 @@ function resolveLedgerBiller(result: AdapterExecutionResult): string {
 function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
   if (billingType === "subscription_included") return 0;
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
-  return Math.max(0, Math.round(costUsd * 100));
+  // Keep six decimal places of a cent. Per-run integer rounding turns common
+  // sub-cent API calls into zero before they ever reach an aggregate.
+  return Math.max(0, Math.round(costUsd * 100_000_000) / 1_000_000);
 }
 
 async function resolveLedgerScopeForRun(
@@ -6726,6 +6729,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
+      // When true, this agent gets timer wakes even with an empty inbox (a genuine self-poller).
+      // Default false → the timer work-gate skips a wake that would just be an empty-inbox no-op.
+      alwaysWake: asBoolean(heartbeat.alwaysWake, false),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     };
   }
@@ -7667,6 +7673,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
+    const costBreakdown = (Array.isArray(result.costBreakdown) ? result.costBreakdown : [])
+      .map((entry) => {
+        const entryUsage = normalizeUsageTotals(entry.usage);
+        if (!entry.model || !entryUsage) return null;
+        const entryBillingType = normalizeLedgerBillingType(entry.billingType ?? result.billingType);
+        return {
+          provider: entry.provider ?? provider,
+          biller: entry.biller ?? entry.provider ?? biller,
+          billingType: entryBillingType,
+          model: entry.model,
+          usage: entryUsage,
+          costCents: normalizeBilledCostCents(entry.costUsd, entryBillingType),
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    const breakdownTotals = costBreakdown.reduce(
+      (sum, entry) => ({
+        inputTokens: sum.inputTokens + entry.usage.inputTokens,
+        cachedInputTokens: sum.cachedInputTokens + entry.usage.cachedInputTokens,
+        outputTokens: sum.outputTokens + entry.usage.outputTokens,
+      }),
+      { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+    );
+    const breakdownCostCents = costBreakdown.reduce((sum, entry) => sum + entry.costCents, 0);
+    const useCostBreakdown =
+      costBreakdown.length > 0 &&
+      breakdownTotals.inputTokens === inputTokens &&
+      breakdownTotals.cachedInputTokens === cachedInputTokens &&
+      breakdownTotals.outputTokens === outputTokens &&
+      Math.abs(breakdownCostCents - additionalCostCents) < 0.000002;
 
     await db
       .update(agentRuntimeState)
@@ -7686,21 +7722,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (additionalCostCents > 0 || hasTokenUsage) {
       const costs = costService(db, budgetHooks);
-      await costs.createEvent(agent.companyId, {
-        heartbeatRunId: run.id,
-        agentId: agent.id,
-        issueId: ledgerScope.issueId,
-        projectId: ledgerScope.projectId,
-        provider,
-        biller,
-        billingType,
-        model: result.model ?? "unknown",
-        inputTokens,
-        cachedInputTokens,
-        outputTokens,
-        costCents: additionalCostCents,
-        occurredAt: new Date(),
-      });
+      const ledgerRows = useCostBreakdown
+        ? costBreakdown
+        : [{
+            provider,
+            biller,
+            billingType,
+            model: result.model ?? "unknown",
+            usage: { inputTokens, cachedInputTokens, outputTokens },
+            costCents: additionalCostCents,
+          }];
+      for (const row of ledgerRows) {
+        await costs.createEvent(agent.companyId, {
+          heartbeatRunId: run.id,
+          agentId: agent.id,
+          issueId: ledgerScope.issueId,
+          projectId: ledgerScope.projectId,
+          provider: row.provider,
+          biller: row.biller,
+          billingType: row.billingType,
+          model: row.model,
+          inputTokens: row.usage.inputTokens,
+          cachedInputTokens: row.usage.cachedInputTokens,
+          outputTokens: row.usage.outputTokens,
+          costCents: row.costCents,
+          occurredAt: new Date(),
+        });
+      }
     }
   }
 
@@ -9225,6 +9273,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
+              ...(Array.isArray(adapterResult.costBreakdown) && adapterResult.costBreakdown.length > 0
+                ? { costBreakdown: adapterResult.costBreakdown }
+                : {}),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
             } as Record<string, unknown>)
           : null;
@@ -11563,6 +11614,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .innerJoin(companies, eq(companies.id, agents.companyId))
         .where(eq(companies.status, "active"));
       const agentsByCompany = groupAgentOrgRowsByCompany(allAgents.map(toAgentOrgRow));
+      // WORK-GATE: agents in this deployment work ASSIGNED issues (routines/assignments create + wake
+      // them). A timer wake for an agent with an empty inbox is a guaranteed no-op run — the biggest
+      // slice of the hourly wake tax. Skip it unless the agent has an open assigned issue (or is flagged
+      // alwaysWake, for a genuine self-poller). Assignment/automation/routine wakes are unaffected.
+      const busyRows = await db
+        .selectDistinct({ agentId: issues.assigneeAgentId })
+        .from(issues)
+        // `in_review` is waiting on a reviewer and `blocked` is waiting on an
+        // external dependency. Re-running their assignee on a blind interval
+        // creates churn and spend without changing either state; comments,
+        // monitors, routines and explicit wakes still reactivate them.
+        .where(inArray(issues.status, ["todo", "in_progress"]));
+      const busyAgents = new Set(busyRows.map((r) => r.agentId).filter((x): x is string => !!x));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
@@ -11577,6 +11641,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Skip the empty-inbox no-op wake (see WORK-GATE above).
+        if (!policy.alwaysWake && !busyAgents.has(agent.id)) { skipped += 1; continue; }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

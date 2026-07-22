@@ -242,6 +242,47 @@ describe("JsonSchemaForm secret-ref rendering", () => {
     });
   });
 
+  it("treats obvious credential fields as secrets even without secret-ref format", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={{
+            type: "object",
+            properties: {
+              apiKey: { type: "string", title: "API key", description: "Fallback API key for direct auth." },
+              websiteUrl: { type: "string", title: "Website URL" },
+            },
+          }}
+          values={{ apiKey: "raw-secret", websiteUrl: "https://example.com" }}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    const passwordInputs = container.querySelectorAll('input[type="password"]');
+    expect(passwordInputs.length).toBe(1);
+    const passwordInput = passwordInputs[0] as HTMLInputElement;
+    const apiKeyLabel = Array.from(container.querySelectorAll("label")).find(
+      (label) => label.textContent === "API key",
+    );
+    expect(passwordInput.id).not.toBe("");
+    expect(apiKeyLabel?.htmlFor).toBe(passwordInput.id);
+    expect(passwordInput.autocomplete).toBe("new-password");
+    expect(passwordInput.getAttribute("spellcheck")).toBe("false");
+    expect(
+      container.querySelector('[data-testid="secret-binding-picker"]'),
+    ).toBeNull();
+    expect(container.querySelector('input[type="text"]')).not.toBeNull();
+    expect(container.textContent).toContain("API key");
+    expect(container.textContent).toContain("Website URL");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("hides advanced fields behind a collapsed disclosure with group headings", async () => {
     const root = createRoot(container);
 
@@ -401,6 +442,8 @@ describe("JsonSchemaForm secret-ref rendering", () => {
     );
     expect(input).not.toBeNull();
     expect(input?.value).toBe("raw-value");
+    expect(input?.id).not.toBe("");
+    expect(input?.autocomplete).toBe("new-password");
 
     await act(async () => {
       root.unmount();

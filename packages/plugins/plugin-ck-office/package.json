@@ -1,0 +1,40 @@
+{
+  "name": "@paperclipai/plugin-ck-office",
+  "version": "0.10.0",
+  "type": "module",
+  "private": true,
+  "description": "CK Evaluation Office — runs CK's operating cadence (Daily Huddle, Weekly Tactical/Level-10 with SPC + IDS + Red-Team + golden-case write-back), governance regression/meta-eval, the Founder Brief, and a CK Evaluation UI page as a Paperclip plugin (extend-not-fork, ADR-015).",
+  "files": ["dist"],
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "tsc --noEmit && tsc -p tsconfig.worker.json && node ./scripts/build-ui.mjs && node ./scripts/verify-ui-bundle.mjs",
+    "clean": "rm -rf dist",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
+    "test:ui-bundle": "node --test ./scripts/verify-ui-bundle.test.mjs"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "keywords": ["paperclip", "plugin", "ck", "evaluation", "governance"],
+  "author": "CK IT Solutions",
+  "license": "MIT",
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "postgres": "^3.4.9"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "esbuild": "^0.28.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.3"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}

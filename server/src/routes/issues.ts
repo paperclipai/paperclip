@@ -110,6 +110,7 @@ import { executionWorkspaceService as executionWorkspaceServiceDirect } from "..
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
+import { pendingInteractionTerminalConflict } from "../services/issue-thread-interaction-lifecycle.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
@@ -768,7 +769,14 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  // Do not implicitly reopen a done/cancelled issue on a bare comment. Some
+  // local adapters post their own work-products
+  // under user auth with no agent/run linkage, so an assignee's own scorecard/echo
+  // was misread as a human reopen — producing done->todo->rerun->repost loops
+  // Reopening a COMPLETED issue now requires an explicit action (status change /
+  // resume: true). A `blocked` issue may still resume on a comment — that is a
+  // legitimate "blocker addressed" signal, not an echo. Revert: restore the
+  if (input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -4826,6 +4834,24 @@ export function issueRoutes(
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
+    if (
+      (updateFields.status === "done" || updateFields.status === "cancelled") &&
+      !isClosed
+    ) {
+      const interactions = await issueThreadInteractionsSvc.listForIssue(existing.id);
+      const terminalConflict = pendingInteractionTerminalConflict(
+        existing.status,
+        updateFields.status,
+        interactions,
+      );
+      if (terminalConflict) {
+        res.status(409).json({
+          error: terminalConflict,
+          code: "pending_interaction_blocks_terminal_status",
+        });
+        return;
+      }
+    }
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;

@@ -19,9 +19,11 @@ export function FrontDoor({ onChoose }: FrontDoorProps) {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg w-full">
         <button
+          type="button"
           className={cn(
             "flex flex-col items-center gap-3 rounded-lg border-2 border-border p-6",
             "hover:border-foreground hover:bg-accent/30 transition-all",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
             "text-center group cursor-pointer",
           )}
           onClick={() => onChoose("create")}
@@ -38,9 +40,11 @@ export function FrontDoor({ onChoose }: FrontDoorProps) {
         </button>
 
         <button
+          type="button"
           className={cn(
             "flex flex-col items-center gap-3 rounded-lg border-2 border-border p-6",
             "hover:border-foreground hover:bg-accent/30 transition-all",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
             "text-center group cursor-pointer",
           )}
           onClick={() => onChoose("grow")}
@@ -49,9 +53,9 @@ export function FrontDoor({ onChoose }: FrontDoorProps) {
             <Zap className="h-6 w-6" />
           </div>
           <div>
-            <h3 className="font-semibold text-sm">Add agents to your org</h3>
+            <h3 className="font-semibold text-sm">Automate existing work</h3>
             <p className="text-xs text-muted-foreground mt-1">
-              Bring AI agents into your existing team or workflows.
+              Create an AI team around the workflows and bottlenecks you already have.
             </p>
           </div>
         </button>

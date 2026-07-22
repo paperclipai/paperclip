@@ -9,6 +9,7 @@ import { dashboardApi } from "../api/dashboard";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import {
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
@@ -20,7 +21,12 @@ import {
   READ_ITEMS_KEY,
 } from "../lib/inbox";
 
-const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,blocked,done";
+// Keep the badge source aligned with the "Needs you" tab: completed work stays
+// searchable in Tasks/Recent but must not inflate the current-action count.
+const INBOX_ISSUE_STATUSES = INBOX_MINE_ISSUE_STATUS_FILTER
+  .split(",")
+  .filter((status) => status !== "done")
+  .join(",");
 const INBOX_BADGE_ISSUE_LIMIT = 500;
 const INBOX_BADGE_HEARTBEAT_RUN_LIMIT = 200;
 

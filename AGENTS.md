@@ -11,14 +11,18 @@ The current implementation target is V1 and is defined in `doc/SPEC-implementati
 
 Before making changes, read in this order:
 
-1. `doc/GOAL.md`
-2. `doc/PRODUCT.md`
-3. `doc/SPEC-implementation.md`
-4. `doc/DEVELOPING.md`
-5. `doc/DATABASE.md`
+1. `.ck-agent/CONTINUITY.md` when operating or modifying the live CK/Hetzner instance
+2. `doc/GOAL.md`
+3. `doc/PRODUCT.md`
+4. `doc/SPEC-implementation.md`
+5. `doc/DEVELOPING.md`
+6. `doc/DATABASE.md`
 
 `doc/SPEC.md` is long-horizon product context.
 `doc/SPEC-implementation.md` is the concrete V1 build contract.
+`.ck-agent/CONTINUITY.md` is the security-safe, current handoff for the live
+fork. Keep it current when live architecture, safety constraints, verification
+evidence, or the prioritized operational backlog changes. Never put secrets in it.
 
 ## 3. Repo Map
 
@@ -181,12 +185,20 @@ A change is done when all are true:
 
 ## 11. Fork-Specific: HenkDz/paperclip
 
-This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
+This checkout carries QoL patches from `HenkDz/paperclip` and an
+**external-only** Hermes adapter contract. The historical
+`feat/externalize-hermes-adapter` branch was no longer advertised by that remote
+when last verified on 2026-07-22, so do not assume that remote branch is a safe
+merge target. Preserve the contract below until its replacement is reconciled
+explicitly.
 
 ### Branch Strategy
 
-- `feat/externalize-hermes-adapter` → core has **no** `hermes-paperclip-adapter` dependency and **no** built-in `hermes_local` registration. Install Hermes via the Adapter Plugin manager (`@henkey/hermes-paperclip-adapter` or a `file:` path).
-- Older fork branches may still document built-in Hermes; treat this file as authoritative for the externalize branch.
+- Core has **no** `hermes-paperclip-adapter` dependency and **no** built-in
+  `hermes_local` registration. Install Hermes via the Adapter Plugin manager
+  (`@henkey/hermes-paperclip-adapter` or a `file:` path).
+- Older fork branches may still document built-in Hermes; treat this file as
+  authoritative for this checkout's external-only contract.
 
 ### Hermes (plugin only)
 

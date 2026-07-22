@@ -14,7 +14,7 @@ import {
   type MentionOption,
   placeCaretAfterMentionAnchor,
   shouldAcceptAutocompleteKey,
-} from "./MarkdownEditor";
+} from "./MarkdownEditorImpl";
 
 const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,

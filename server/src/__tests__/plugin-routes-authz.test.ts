@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
+  getConfig: vi.fn(),
   upsertConfig: vi.fn(),
   getCompanySettings: vi.fn(),
   upsertCompanySettings: vi.fn(),
@@ -266,6 +267,105 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.unload).not.toHaveBeenCalled();
     expect(mockLifecycle.enable).not.toHaveBeenCalled();
     expect(mockLifecycle.disable).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("rejects plugin config reads for non-admin board users", async () => {
+    const { app } = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app)
+      .get("/api/plugins/11111111-1111-4111-8111-111111111111/config");
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
+    expect(mockRegistry.getConfig).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("returns exact job reliability windows without truncating to recent runs", async () => {
+    readyPlugin();
+    const now = new Date();
+    const failedRun = {
+      id: "77777777-7777-4777-8777-777777777777",
+      jobId: "88888888-8888-4888-8888-888888888888",
+      pluginId,
+      trigger: "schedule",
+      status: "failed",
+      durationMs: 50,
+      error: "redacted failure",
+      startedAt: now,
+      finishedAt: now,
+      createdAt: now,
+    };
+    const summarizeRunsByPlugin = vi.fn()
+      .mockResolvedValueOnce({
+        total: 431,
+        succeeded: 431,
+        failed: 0,
+        pending: 0,
+        queued: 0,
+        running: 0,
+        cancelled: 0,
+      })
+      .mockResolvedValueOnce({
+        total: 2700,
+        succeeded: 2666,
+        failed: 34,
+        pending: 0,
+        queued: 0,
+        running: 0,
+        cancelled: 0,
+      });
+    const listRunsByPlugin = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([failedRun]);
+
+    const { app } = await createApp(
+      boardActor(),
+      {},
+      {
+        jobDeps: {
+          jobStore: {
+            listRunsByPlugin,
+            listJobs: vi.fn().mockResolvedValue([
+              {
+                id: failedRun.jobId,
+                jobKey: "ck.b2b-mail-sync",
+                schedule: "3,18,33,48 * * * *",
+                status: "active",
+                lastRunAt: now,
+                nextRunAt: new Date(now.getTime() + 15 * 60 * 1000),
+              },
+            ]),
+            summarizeRunsByPlugin,
+          },
+        },
+      },
+    );
+
+    const res = await request(app).get(`/api/plugins/${pluginId}/dashboard`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.jobRunHealth).toMatchObject({
+      last24Hours: { succeeded: 431, failed: 0 },
+      last7Days: { succeeded: 2666, failed: 34 },
+      latestFailure: { jobKey: "ck.b2b-mail-sync", error: "redacted failure" },
+    });
+    expect(res.body.scheduledJobs).toEqual([
+      expect.objectContaining({
+        id: failedRun.jobId,
+        jobKey: "ck.b2b-mail-sync",
+        schedule: "3,18,33,48 * * * *",
+        status: "active",
+      }),
+    ]);
+    expect(summarizeRunsByPlugin).toHaveBeenCalledTimes(2);
+    expect(listRunsByPlugin).toHaveBeenNthCalledWith(1, pluginId, undefined, 10);
+    expect(listRunsByPlugin).toHaveBeenNthCalledWith(2, pluginId, "failed", 1);
   }, 20_000);
 
   it("resolves plugin keys without probing the UUID id column for core plugin actions", async () => {

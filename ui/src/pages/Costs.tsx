@@ -9,7 +9,7 @@ import type {
   FinanceEvent,
   QuotaWindow,
 } from "@paperclipai/shared";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
+import { AlertTriangle, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
 import { BillerSpendCard } from "../components/BillerSpendCard";
@@ -28,7 +28,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
-import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
+import { billingTypeDisplayName, cn, formatCents, formatTokenBreakdown, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -232,13 +232,14 @@ export function Costs() {
   const { data: spendData, isLoading: spendLoading, error: spendError } = useQuery({
     queryKey: queryKeys.costs(companyId, from || undefined, to || undefined),
     queryFn: async () => {
-      const [summary, byAgent, byProject, byAgentModel] = await Promise.all([
+      const [summary, byAgent, byProject, byAgentModel, byProvider] = await Promise.all([
         costsApi.summary(companyId, from || undefined, to || undefined),
         costsApi.byAgent(companyId, from || undefined, to || undefined),
         costsApi.byProject(companyId, from || undefined, to || undefined),
         costsApi.byAgentModel(companyId, from || undefined, to || undefined),
+        costsApi.byProvider(companyId, from || undefined, to || undefined),
       ]);
-      return { summary, byAgent, byProject, byAgentModel };
+      return { summary, byAgent, byProject, byAgentModel, byProvider };
     },
     enabled: !!selectedCompanyId && customReady,
   });
@@ -513,11 +514,14 @@ export function Costs() {
     ];
   }, [byBiller]);
 
-  const inferenceTokenTotal =
-    (spendData?.byAgent ?? []).reduce(
-      (sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens,
-      0,
-    );
+  const unpricedTokenTotal = (spendData?.byProvider ?? []).reduce((sum, row) => {
+    const tokens = row.inputTokens + row.cachedInputTokens + row.outputTokens;
+    return tokens > 0 && row.costCents === 0 && row.billingType === "unknown" ? sum + tokens : sum;
+  }, 0);
+  const meteredTokenTotal = (spendData?.byProvider ?? []).reduce((sum, row) => {
+    const tokens = row.inputTokens + row.cachedInputTokens + row.outputTokens;
+    return row.billingType === "metered_api" ? sum + tokens : sum;
+  }, 0);
 
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
@@ -583,7 +587,7 @@ export function Costs() {
             <MetricTile
               label="Inference spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              subtitle={`${formatTokens(meteredTokenTotal)} metered tokens · subscription usage tracked separately`}
               icon={DollarSign}
             />
             <MetricTile
@@ -615,6 +619,24 @@ export function Costs() {
               icon={ArrowUpRight}
             />
           </div>
+
+          {unpricedTokenTotal > 0 ? (
+            <div className="flex flex-col gap-3 border border-amber-500/40 bg-amber-500/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-start gap-3">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <div>
+                  <div className="text-sm font-medium">Some usage is unpriced</div>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    {formatTokens(unpricedTokenTotal)} legacy reported tokens lack billing metadata and are excluded from priced usage.
+                    New metered runs are priced; these older token counts cannot be verified or reconstructed safely.
+                  </p>
+                </div>
+              </div>
+              <Button variant="outline" size="sm" className="shrink-0 self-start sm:self-auto" onClick={() => setMainTab("providers")}>
+                Review providers
+              </Button>
+            </div>
+          ) : null}
       </div>
 
       <Tabs value={mainTab} onValueChange={(value) => setMainTab(value as typeof mainTab)}>
@@ -675,9 +697,9 @@ export function Costs() {
                         </div>
                       </div>
                       <div className="border border-border px-4 py-3 text-right">
-                        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">usage</div>
+                        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">metered usage</div>
                         <div className="mt-1 text-lg font-medium tabular-nums">
-                          {formatTokens(inferenceTokenTotal)}
+                          {formatTokens(meteredTokenTotal)}
                         </div>
                       </div>
                     </div>
@@ -786,7 +808,7 @@ export function Costs() {
                                           <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
                                         </div>
                                         <div className="text-muted-foreground">
-                                          {formatTokens(modelRow.inputTokens + modelRow.cachedInputTokens + modelRow.outputTokens)} tok
+                                          {formatTokenBreakdown(modelRow.inputTokens, modelRow.cachedInputTokens, modelRow.outputTokens)}
                                         </div>
                                       </div>
                                     </div>

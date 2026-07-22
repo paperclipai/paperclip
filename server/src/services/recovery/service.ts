@@ -2399,6 +2399,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: "todo" | "in_progress";
     latestRun: LatestIssueRun;
   }) {
+    // CK patch: re-read live status — if the issue completed (done/cancelled) during the
+    // recovery scan, do NOT clobber it back to blocked (the input snapshot is stale).
+    const [liveRec] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, input.issue.id)).limit(1);
+    if (liveRec && isTerminalIssueStatus(liveRec.status)) return null;
     const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
     if (!updated) return null;
 
@@ -2500,6 +2504,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    // CK patch: re-read live status — don't un-complete an issue that finished during the scan.
+    const [liveAssigned] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, input.issue.id)).limit(1);
+    if (liveAssigned && isTerminalIssueStatus(liveAssigned.status)) return null;
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
@@ -2628,6 +2635,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(1);
       if (
         currentIssue &&
+        // CK patch: never re-block an issue that COMPLETED (done/cancelled) during the scan —
+        // the recovery snapshot is stale and would silently un-complete finished work.
+        !isTerminalIssueStatus(currentIssue.status) &&
         (currentIssue.status !== "blocked" ||
           currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
       ) {
@@ -2693,6 +2703,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // Recovery dispatches must obey the same dependency gate as ordinary
+      // heartbeat scheduling. Otherwise an assigned todo can be woken by the
+      // liveness sweep before its blockers finish, bypassing the issue graph.
+      const dependencyReadiness = await issuesSvc.getDependencyReadiness(issue.id);
+      if (!dependencyReadiness.isDependencyReady) {
         result.skipped += 1;
         continue;
       }
@@ -3531,10 +3550,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     finding: IssueLivenessFinding;
     runId?: string | null;
   }) {
+    // CK patch: re-read live status — if the issue completed (done/cancelled) during the scan,
+    // do NOT block it (that would un-complete finished work).
+    const [liveEsc] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, input.issue.id)).limit(1);
+    if (liveEsc && isTerminalIssueStatus(liveEsc.status)) return input.issue;
     const blockerIds = await existingBlockerIssueIds(input.issue.companyId, input.issue.id);
     const nextBlockerIds = [...new Set([...blockerIds, input.escalationIssueId])];
     const isAlreadyBlockedByEscalation = blockerIds.includes(input.escalationIssueId);
-    const isAlreadyBlocked = input.issue.status === "blocked";
+    const isAlreadyBlocked = (liveEsc?.status ?? input.issue.status) === "blocked";
     if (isAlreadyBlockedByEscalation && isAlreadyBlocked) {
       return input.issue;
     }

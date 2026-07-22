@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, numeric, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { issues } from "./issues.js";
@@ -24,7 +25,9 @@ export const costEvents = pgTable(
     inputTokens: integer("input_tokens").notNull().default(0),
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
-    costCents: integer("cost_cents").notNull(),
+    // Fractional cents matter for inexpensive API calls. Rounding each event to
+    // an integer made valid DeepSeek runs disappear from every spend aggregate.
+    costCents: numeric("cost_cents", { precision: 20, scale: 6, mode: "number" }).notNull(),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -49,5 +52,8 @@ export const costEvents = pgTable(
       table.companyId,
       table.heartbeatRunId,
     ),
+    heartbeatRunModelUniqueIdx: uniqueIndex("cost_events_heartbeat_run_model_unique_idx")
+      .on(table.heartbeatRunId, table.provider, table.biller, table.billingType, table.model)
+      .where(sql`${table.heartbeatRunId} is not null`),
   }),
 );

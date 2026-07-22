@@ -41,7 +41,8 @@ export function MembershipAction({
   return (
     <span
       className={cn(
-        "flex w-[66px] shrink-0 justify-end",
+        "flex shrink-0 justify-end",
+        compact ? "w-8" : "w-[66px]",
         !isLeft && !compact
           ? "opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
           : "opacity-100",
@@ -55,10 +56,10 @@ export function MembershipAction({
         aria-busy={pending ? "true" : undefined}
         disabled={pending}
         onClick={handleClick}
-        className="w-[66px]"
+        className={cn(compact ? "w-8 px-0" : "w-[66px]")}
       >
         <Icon className={cn("h-3 w-3", pending && "motion-safe:animate-spin")} />
-        <span>{label}</span>
+        <span className={cn(compact && "sr-only")}>{label}</span>
       </Button>
     </span>
   );

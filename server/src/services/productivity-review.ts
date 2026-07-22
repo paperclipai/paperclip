@@ -461,7 +461,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         .limit(5)
         .then((rows) => rows.map((row) => row.comment)),
       db
-        .select({ costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int` })
+        .select({ costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision` })
         .from(costEvents)
         .where(and(eq(costEvents.companyId, sourceIssue.companyId), eq(costEvents.issueId, sourceIssue.id)))
         .then((rows) => rows[0] ?? { costCents: 0 }),

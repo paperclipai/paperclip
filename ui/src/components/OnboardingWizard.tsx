@@ -181,12 +181,17 @@ export function OnboardingWizard() {
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
     // If explicit options are provided, they take precedence over saved state
-    if (effectiveOnboardingOptions.initialStep) {
-      setStep(effectiveOnboardingOptions.initialStep);
-    }
     if (effectiveOnboardingOptions.companyId) {
+      // The shared route contract uses step 2 for "add an agent" because
+      // step 2 is agent setup in the classic wizard. In this capsule flow,
+      // step 2 is still company mission setup, so an existing company must
+      // enter at step 3 instead. Otherwise the user lands on a required
+      // company-name field that is blank and cannot continue.
+      setStep(3);
       setCreatedCompanyId(effectiveOnboardingOptions.companyId);
       setCreatedCompanyPrefix(null);
+    } else if (effectiveOnboardingOptions.initialStep) {
+      setStep(effectiveOnboardingOptions.initialStep);
     }
   }, [
     effectiveOnboardingOpen,
@@ -198,8 +203,40 @@ export function OnboardingWizard() {
   useEffect(() => {
     if (!effectiveOnboardingOpen || !createdCompanyId || createdCompanyPrefix) return;
     const company = companies.find((c) => c.id === createdCompanyId);
-    if (company) setCreatedCompanyPrefix(company.issuePrefix);
-  }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
+    if (!company) return;
+
+    setCreatedCompanyPrefix(company.issuePrefix);
+    setCompanyName(company.name);
+
+    // The mission is used to seed the new lead's instructions. Existing
+    // company onboarding skips mission entry, so recover its active goal
+    // instead of silently generating context with an empty mission.
+    if (!companyGoal.trim()) {
+      void goalsApi
+        .list(company.id)
+        .then((goals) => {
+          const mission =
+            goals.find((goal) => goal.level === "company" && goal.status === "active") ??
+            goals.find((goal) => goal.level === "company");
+          if (!mission) return;
+          setCompanyGoal(
+            mission.description
+              ? `${mission.title}\n\n${mission.description}`
+              : mission.title
+          );
+        })
+        .catch(() => {
+          // The company name is sufficient to keep agent creation usable;
+          // the API error will remain visible on the normal goals surface.
+        });
+    }
+  }, [
+    effectiveOnboardingOpen,
+    createdCompanyId,
+    createdCompanyPrefix,
+    companies,
+    companyGoal,
+  ]);
 
   // Persist wizard state to localStorage on every change
   useEffect(() => {

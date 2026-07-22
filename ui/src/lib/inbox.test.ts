@@ -18,6 +18,7 @@ import {
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
   filterInboxIssues,
+  filterSupersededInboxMailIssues,
   getArchivedInboxSearchIssues,
   getAvailableInboxIssueColumns,
   getInboxWorkItemKey,
@@ -174,7 +175,7 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
   };
 }
 
-function makeIssue(id: string, isUnreadForMe: boolean): Issue {
+function makeIssue(id: string, isUnreadForMe: boolean, overrides: Partial<Issue> = {}): Issue {
   return {
     id,
     companyId: "company-1",
@@ -215,6 +216,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     lastExternalCommentAt: new Date("2026-03-11T01:00:00.000Z"),
     lastActivityAt: new Date("2026-03-11T01:00:00.000Z"),
     isUnreadForMe,
+    ...overrides,
   };
 }
 
@@ -360,6 +362,38 @@ describe("inbox helpers", () => {
     });
   });
 
+  it("drops failed runs whose linked task is already terminal", () => {
+    const doneIssue = { ...makeIssue("done", false), status: "done" as const };
+    const cancelledIssue = { ...makeIssue("cancelled", false), status: "cancelled" as const };
+    const blockedIssue = { ...makeIssue("blocked", false), status: "blocked" as const };
+    const linkedRun = (
+      id: string,
+      issueId: string,
+      agentId: string,
+    ) => ({
+      ...makeRun(id, "failed", "2026-03-11T01:00:00.000Z", agentId),
+      contextSnapshot: { issueId },
+    });
+
+    const result = computeInboxBadgeData({
+      approvals: [],
+      joinRequests: [],
+      dashboard,
+      heartbeatRuns: [
+        linkedRun("run-done", doneIssue.id, "agent-done"),
+        linkedRun("run-cancelled", cancelledIssue.id, "agent-cancelled"),
+        linkedRun("run-blocked", blockedIssue.id, "agent-blocked"),
+      ],
+      mineIssues: [doneIssue, cancelledIssue, blockedIssue],
+      dismissedAlerts: new Set<string>(),
+      dismissedAtByKey: new Map(),
+      currentUserId: "user-1",
+    });
+
+    expect(result.failedRuns).toBe(1);
+    expect(result.inbox).toBe(1);
+  });
+
   it("excludes read mine issues from the inbox badge count", () => {
     const result = computeInboxBadgeData({
       approvals: [],
@@ -375,6 +409,46 @@ describe("inbox helpers", () => {
     expect(result.mineIssues).toBe(1);
     expect(result.inbox).toBe(1);
     expect(result.alerts).toBe(2);
+  });
+
+  it("does not count unread completed work as current inbox action", () => {
+    const result = computeInboxBadgeData({
+      approvals: [],
+      joinRequests: [],
+      dashboard,
+      heartbeatRuns: [],
+      mineIssues: [
+        { ...makeIssue("done", true), status: "done" },
+        { ...makeIssue("cancelled", true), status: "cancelled" },
+        { ...makeIssue("review", true), status: "in_review" },
+      ],
+      dismissedAlerts: new Set<string>(),
+      dismissedAtByKey: new Map(),
+      currentUserId: "user-1",
+    });
+
+    expect(result.mineIssues).toBe(1);
+    expect(result.inbox).toBe(1);
+  });
+
+  it("counts review work even after it has been read", () => {
+    const result = computeInboxBadgeData({
+      approvals: [],
+      joinRequests: [],
+      dashboard,
+      heartbeatRuns: [],
+      mineIssues: [
+        { ...makeIssue("review-read", false), status: "in_review" },
+        { ...makeIssue("review-unread", true), status: "in_review" },
+        { ...makeIssue("todo-read", false), status: "todo" },
+      ],
+      dismissedAlerts: new Set<string>(),
+      dismissedAtByKey: new Map(),
+      currentUserId: "user-1",
+    });
+
+    expect(result.mineIssues).toBe(2);
+    expect(result.inbox).toBe(2);
   });
 
   it("resurfaces non-issue items when they change after dismissal", () => {
@@ -1261,6 +1335,25 @@ describe("inbox helpers", () => {
 
     expect(filterInboxIssues([manualIssue, routineIssue], false)).toEqual([manualIssue, routineIssue]);
     expect(filterInboxIssues([manualIssue, routineIssue], true)).toEqual([manualIssue]);
+  });
+
+  it("suppresses older mail-thread siblings when a newer reply issue exists", () => {
+    const older = makeIssue("older", true, {
+      identifier: "CK-283",
+      title: "📬 Inbound mail: Benteley x Tres Hermanos / 27.07.2026",
+      description: "A new email arrived in the CRM. Subject: Benteley x Tres Hermanos / 27.07.2026 Espo email id: 111",
+      createdAt: new Date("2026-07-11T21:18:00.000Z"),
+      updatedAt: new Date("2026-07-11T21:18:08.500Z"),
+    });
+    const newer = makeIssue("newer", true, {
+      identifier: "CK-284",
+      title: "📬 Inbound mail: Re: Benteley x Tres Hermanos / 27.07.2026",
+      description: "A reply arrived in the CRM. Subject: Re: Benteley x Tres Hermanos / 27.07.2026 Espo email id: 222",
+      createdAt: new Date("2026-07-11T23:13:01.000Z"),
+      updatedAt: new Date("2026-07-11T23:13:11.205Z"),
+    });
+
+    expect(filterSupersededInboxMailIssues([older, newer])).toEqual([newer]);
   });
 
   it("groups mixed inbox items by type while preserving item order within each group", () => {

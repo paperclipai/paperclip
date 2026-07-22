@@ -1,0 +1,13 @@
+import pw from "/work/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js";
+const { chromium } = pw;
+const browser = await chromium.launch({ args: ["--no-sandbox"] });
+const page = await browser.newPage({ viewport: { width: 900, height: 1000 } });
+const log = [];
+page.on("pageerror", (e) => log.push("pageerr:" + String(e).slice(0, 160)));
+await page.goto("http://127.0.0.1:3100/CK/ck-approvals", { waitUntil: "networkidle", timeout: 40000 }).catch((e)=>log.push("goto:"+e));
+await page.waitForTimeout(2500);
+await page.screenshot({ path: "/work/.ckshots/approvals-desktop.png", fullPage: false });
+const t = (await page.locator("body").innerText().catch(()=>"")) || "";
+log.push("markers:" + ["Approvals","Test Venue Lounge","Approve & Send","Cancel","Betreff","Nachricht","Pending"].filter(k=>t.includes(k)).join(","));
+console.log(JSON.stringify(log));
+await browser.close();

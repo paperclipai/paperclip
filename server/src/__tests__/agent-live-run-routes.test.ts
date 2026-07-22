@@ -212,6 +212,7 @@ describe("agent live run routes", () => {
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
+      status: "running",
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     });
@@ -314,6 +315,7 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.readLog).toHaveBeenCalledWith({
       id: "run-1",
       companyId: "company-1",
+      status: "running",
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     }, {
@@ -326,6 +328,31 @@ describe("agent live run routes", () => {
       logRef: "logs/run-1.ndjson",
       content: "chunk",
       nextOffset: 5,
+    });
+  });
+
+  it("returns an empty pending log while an active run is starting", async () => {
+    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      status: "queued",
+      logStore: null,
+      logRef: null,
+    });
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+    expect(res.body).toEqual({
+      runId: "run-1",
+      store: null,
+      logRef: null,
+      content: "",
+      nextOffset: 12,
     });
   });
 

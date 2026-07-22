@@ -4,6 +4,7 @@ import {
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
   countSuggestedTaskNodes,
+  getLatestPendingDecisionInteraction,
   getCheckboxConfirmationSelectedLabels,
   getRequestConfirmationTargetHref,
   getQuestionAnswerLabels,
@@ -254,5 +255,82 @@ describe("issue thread interaction helpers", () => {
     });
 
     expect(labels).toEqual(["Option 2", "Option 1", "Other: A written answer"]);
+  });
+
+  it("selects the newest pending decision interaction", () => {
+    const interactions = [
+      {
+        id: "old-request",
+        companyId: "company-1",
+        issueId: "issue-1",
+        kind: "request_confirmation" as const,
+        status: "pending" as const,
+        continuationPolicy: "wake_assignee" as const,
+        createdAt: "2026-04-06T12:00:00.000Z",
+        updatedAt: "2026-04-06T12:00:00.000Z",
+        payload: {
+          version: 1 as const,
+          prompt: "Send to bar?",
+          target: { type: "custom" as const, key: "bar", label: "Bar" },
+        },
+      },
+      {
+        id: "older-note",
+        companyId: "company-1",
+        issueId: "issue-1",
+        kind: "ask_user_questions" as const,
+        status: "pending" as const,
+        continuationPolicy: "wake_assignee" as const,
+        createdAt: "2026-04-06T12:01:00.000Z",
+        updatedAt: "2026-04-06T12:01:00.000Z",
+        payload: {
+          version: 1 as const,
+          questions: [
+            {
+              id: "question-1",
+              prompt: "What now?",
+              selectionMode: "single" as const,
+              options: [{ id: "option-1", label: "Option 1" }],
+            },
+          ],
+        },
+      },
+      {
+        id: "new-request",
+        companyId: "company-1",
+        issueId: "issue-1",
+        kind: "request_checkbox_confirmation" as const,
+        status: "pending" as const,
+        continuationPolicy: "wake_assignee" as const,
+        createdAt: "2026-04-06T12:02:00.000Z",
+        updatedAt: "2026-04-06T12:02:00.000Z",
+        payload: {
+          version: 1 as const,
+          prompt: "Confirm items",
+          options: [{ id: "a", label: "Alpha" }],
+        },
+      },
+      {
+        id: "resolved-request",
+        companyId: "company-1",
+        issueId: "issue-1",
+        kind: "request_confirmation" as const,
+        status: "accepted" as const,
+        continuationPolicy: "wake_assignee" as const,
+        createdAt: "2026-04-06T12:03:00.000Z",
+        updatedAt: "2026-04-06T12:03:00.000Z",
+        payload: {
+          version: 1 as const,
+          prompt: "Already handled",
+          target: { type: "custom" as const, key: "done", label: "Done" },
+        },
+      },
+    ];
+
+    expect(getLatestPendingDecisionInteraction(interactions)?.id).toBe("new-request");
+    expect(getLatestPendingDecisionInteraction([
+      { ...interactions[1]!, status: "answered" },
+      { ...interactions[3]!, status: "accepted" },
+    ])).toBeNull();
   });
 });

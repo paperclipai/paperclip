@@ -73,7 +73,9 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   general: "General",
 };
 
-export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
+// Agents are single-threaded by default so concurrent wakes cannot race the
+// same assignment. Operators can opt into parallelism per agent.
+export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;

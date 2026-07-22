@@ -190,7 +190,29 @@ describe("IssueThreadInteractionCard", () => {
       },
     });
 
+    expect(host.textContent).not.toContain("No reason provided.");
+    act(() => {
+      (host.querySelector('button[aria-expanded="false"]') as HTMLButtonElement).click();
+    });
     expect(host.textContent).toContain("No reason provided.");
+  });
+
+  it("collapses resolved decisions by default and keeps their audit details expandable", () => {
+    const host = renderCard({
+      interaction: rejectedSuggestedTasksInteraction,
+    });
+
+    const summary = host.querySelector('button[aria-expanded="false"]') as HTMLButtonElement | null;
+    expect(summary).toBeTruthy();
+    expect(host.textContent).toContain("Rejected");
+    expect(host.textContent).not.toContain("No reason provided.");
+
+    act(() => {
+      summary?.click();
+    });
+
+    expect(host.querySelector('button[aria-expanded="true"]')).toBeTruthy();
+    expect(host.textContent).toContain("Hide history");
   });
 
   it("requires a decline reason when the request confirmation payload asks for one", async () => {
@@ -282,6 +304,9 @@ describe("IssueThreadInteractionCard", () => {
     const host = renderCard({
       interaction: staleTargetRequestConfirmationInteraction,
     });
+    act(() => {
+      (host.querySelector('button[aria-expanded="false"]') as HTMLButtonElement).click();
+    });
 
     const targetLinks = host.querySelectorAll("a");
     expect(host.textContent).toContain("Expired by target change");
@@ -295,6 +320,9 @@ describe("IssueThreadInteractionCard", () => {
   it("renders a jump link for confirmations expired by comment", () => {
     const host = renderCard({
       interaction: commentExpiredRequestConfirmationInteraction,
+    });
+    act(() => {
+      (host.querySelector('button[aria-expanded="false"]') as HTMLButtonElement).click();
     });
 
     const jumpLink = Array.from(host.querySelectorAll("a")).find((link) =>
@@ -332,6 +360,9 @@ describe("IssueThreadInteractionCard", () => {
   it("renders explicit copy for failed request confirmations", () => {
     const host = renderCard({
       interaction: failedRequestConfirmationInteraction,
+    });
+    act(() => {
+      (host.querySelector('button[aria-expanded="false"]') as HTMLButtonElement).click();
     });
 
     expect(host.textContent).toContain(

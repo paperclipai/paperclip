@@ -20,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { AlertTriangle, Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -214,10 +214,51 @@ export function Dashboard() {
         </div>
       )}
 
-      <ActiveAgentsPanel companyId={selectedCompanyId!} />
-
       {data && (
         <>
+          {data.agents.error > 0 || data.tasks.blocked > 0 ? (
+            <section
+              aria-labelledby="dashboard-attention-heading"
+              className="rounded-xl border border-amber-500/30 bg-amber-500/[0.06] px-4 py-3"
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="mt-0.5 rounded-md bg-amber-500/15 p-1.5 text-amber-700 dark:text-amber-300">
+                    <AlertTriangle className="h-4 w-4" aria-hidden />
+                  </span>
+                  <div>
+                    <h2 id="dashboard-attention-heading" className="text-sm font-semibold">
+                      Operations need attention
+                    </h2>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Resolve failed agents and blocked work before increasing autonomy.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 pl-10 sm:pl-0">
+                  {data.agents.error > 0 ? (
+                    <Link
+                      to="/agents"
+                      className="rounded-md border border-amber-500/30 bg-background px-3 py-1.5 text-xs font-medium hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {data.agents.error} agent error{data.agents.error === 1 ? "" : "s"}
+                    </Link>
+                  ) : null}
+                  {data.tasks.blocked > 0 ? (
+                    <Link
+                      to="/issues"
+                      className="rounded-md border border-amber-500/30 bg-background px-3 py-1.5 text-xs font-medium hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {data.tasks.blocked} blocked task{data.tasks.blocked === 1 ? "" : "s"}
+                    </Link>
+                  ) : null}
+                </div>
+              </div>
+            </section>
+          ) : null}
+
+          <ActiveAgentsPanel companyId={selectedCompanyId!} />
+
           {data.budgets.activeIncidents > 0 ? (
             <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-[linear-gradient(180deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02))] px-4 py-3">
               <div className="flex items-start gap-2.5">

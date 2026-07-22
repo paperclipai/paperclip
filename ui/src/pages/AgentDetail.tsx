@@ -48,7 +48,14 @@ import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallo
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
-import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import {
+  formatCents,
+  formatDate,
+  formatModelDisplayName,
+  relativeTime,
+  formatTokens,
+  visibleRunCostUsd,
+} from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { Button } from "@/components/ui/button";
@@ -878,8 +885,8 @@ export function AgentDetail() {
         crumbs.push({ label: "Instructions" });
       } else if (activeView === "configuration") {
         crumbs.push({ label: "Configuration" });
-      // } else if (activeView === "skills") { // TODO: bring back later
-      //   crumbs.push({ label: "Skills" });
+      } else if (activeView === "skills") {
+        crumbs.push({ label: "Skills" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
       } else if (activeView === "budget") {
@@ -1355,7 +1362,14 @@ function AgentOverview({
 
       {/* Costs */}
       <div className="space-y-3">
-        <h3 className="text-sm font-medium">Costs</h3>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-medium">Costs</h3>
+          <span className="rounded-full bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground">
+            {asNonEmptyString(agent.adapterConfig.model)
+              ? formatModelDisplayName(asNonEmptyString(agent.adapterConfig.model))
+              : "adapter default"}
+          </span>
+        </div>
         <CostsSection runtimeState={runtimeState} runs={runs} />
       </div>
     </div>
@@ -1408,7 +1422,7 @@ function CostsSection({
             <thead>
               <tr className="border-b border-border bg-accent/20">
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Run / model</th>
                 <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
                 <th className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
                 <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
@@ -1420,7 +1434,12 @@ function CostsSection({
                 return (
                   <tr key={run.id} className="border-b border-border last:border-b-0">
                     <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
-                    <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
+                    <td className="px-3 py-2">
+                      <span className="block font-mono">{run.id.slice(0, 8)}</span>
+                      <span className="block max-w-28 truncate font-mono text-[10px] text-muted-foreground">
+                        {formatModelDisplayName(metrics.model)}
+                      </span>
+                    </td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">
@@ -2907,17 +2926,40 @@ export function AgentSkillsTab({
 
             return (
               <>
+                <section className="grid gap-2 rounded-xl border border-border bg-muted/20 px-4 py-3 text-xs sm:grid-cols-2 xl:grid-cols-4">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Company-library</div>
+                    <div className="mt-1 text-sm font-medium text-foreground">{installedSkillRows.length}</div>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">skills managed by Paperclip</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Required</div>
+                    <div className="mt-1 text-sm font-medium text-foreground">{requiredSkillRows.length}</div>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">forced by the adapter or Paperclip</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">User-installed</div>
+                    <div className="mt-1 text-sm font-medium text-foreground">{unmanagedSkillRows.length}</div>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">managed outside Paperclip</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Missing from library</div>
+                    <div className="mt-1 text-sm font-medium text-foreground">{desiredOnlyMissingSkills.length}</div>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">desired by the agent but not available</div>
+                  </div>
+                </section>
+
                 {optionalSkillRows.length > 0
                   ? renderSkillSection(
-                      "Installed skills",
+                      `Installed skills (${installedSkillRows.length})`,
                       installedSkillRows,
                       "No company-library skills installed on this agent.",
                     )
                   : null}
 
-                {renderSkillSection("Other skills", otherSkillRows)}
+                {renderSkillSection(`Available skills (${otherSkillRows.length})`, otherSkillRows)}
 
-                {renderSkillSection("Required by Paperclip", requiredSkillRows)}
+                {renderSkillSection(`Required by Paperclip (${requiredSkillRows.length})`, requiredSkillRows)}
 
                 {unmanagedSkillRows.length > 0 && (
                   <section className="border-y border-border">
@@ -2929,7 +2971,7 @@ export function AgentSkillsTab({
                       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setUnmanagedOpen((v) => !v); } }}
                     >
                       <span className="text-xs font-medium text-muted-foreground">
-                        ({unmanagedSkillRows.length}) User-installed skills, not managed by Paperclip
+                        User-installed skills, not managed by Paperclip ({unmanagedSkillRows.length})
                       </span>
                       {unmanagedOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                     </div>

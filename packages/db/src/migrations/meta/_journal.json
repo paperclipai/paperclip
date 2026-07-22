@@ -722,6 +722,48 @@
       "when": 1781490100000,
       "tag": "0102_managed_sandbox_dedup_index",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1784239155000,
+      "tag": "0103_fractional_cost_cents",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1784241000000,
+      "tag": "0104_backfill_fractional_run_costs",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1784242700000,
+      "tag": "0105_fractional_runtime_cost_cents",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1784243000000,
+      "tag": "0106_fractional_spend_totals_and_run_cost_idempotency",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1784245500000,
+      "tag": "0107_normalize_issue_priorities",
+      "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1784440200000,
+      "tag": "0108_multi_model_run_cost_breakdown",
+      "breakpoints": true
     }
   ]
 }

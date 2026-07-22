@@ -449,6 +449,18 @@ export const pluginLauncherDeclarationSchema = z.object({
   exportName: z.string().min(1).optional(),
   entityTypes: z.array(z.enum(PLUGIN_UI_SLOT_ENTITY_TYPES)).optional(),
   order: z.number().int().optional(),
+  badge: z.object({
+    dataKey: z.string().min(1),
+    valuePath: z.string()
+      .regex(/^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$/)
+      .refine(
+        (value) => !value.split(".").some((segment) =>
+          segment === "__proto__" || segment === "prototype" || segment === "constructor"),
+        { message: "badge valuePath contains a reserved segment" },
+      ),
+    label: z.string().min(1).optional(),
+    refreshIntervalMs: z.number().int().min(1000).max(60_000).optional(),
+  }).optional(),
   action: pluginLauncherActionDeclarationSchema,
   render: pluginLauncherRenderDeclarationSchema.optional(),
 }).superRefine((value, ctx) => {

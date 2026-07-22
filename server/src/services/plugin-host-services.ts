@@ -26,6 +26,7 @@ import type {
   PluginIssueOrchestrationSummary,
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
+
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
@@ -68,6 +69,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
+
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
@@ -75,6 +77,16 @@ import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { sanitizeRecord } from "../redaction.js";
+
+export async function listPluginIssuesPage<T>(
+  list: (companyId: string, params: unknown) => Promise<T[]>,
+  companyId: string,
+  params: { limit?: number; offset?: number },
+): Promise<T[]> {
+  // The issue service owns SQL pagination. This boundary must not slice the
+  // already-windowed result a second time.
+  return list(companyId, params);
+}
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -1533,7 +1545,14 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         assertReadableOriginFilter(params.originKind);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        // issueService.list already applies limit/offset in SQL. Applying the
+        // host window again made every page after offset 0 empty (for example,
+        // offset 200 was sliced a second time from a 200-row page).
+        return listPluginIssuesPage(
+          (scopedCompanyId, scopedParams) => issues.list(scopedCompanyId, scopedParams as any),
+          companyId,
+          params,
+        ) as Promise<Issue[]>;
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);

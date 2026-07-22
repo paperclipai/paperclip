@@ -173,6 +173,7 @@ export function PluginManager() {
   const bundledPlugins = bundledQuery.data ?? [];
   const installedByPackageName = new Map(installedPlugins.map((plugin) => [plugin.packageName, plugin]));
   const bundledByPackageName = new Map(bundledPlugins.map((plugin) => [plugin.packageName, plugin]));
+  const availableBundledPlugins = bundledPlugins.filter((bundledPlugin) => !installedByPackageName.has(bundledPlugin.packageName));
   // Scope the in-section banner to bundled (local-path) installs so an npm-dialog
   // install failure does not surface its error in the bundled-plugins section.
   const installErrorMessage = installMutation.variables?.isLocalPath
@@ -190,7 +191,7 @@ export function PluginManager() {
   if (error) return <div className="p-4 text-sm text-destructive">Failed to load plugins.</div>;
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="flex max-w-5xl flex-col gap-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
@@ -246,109 +247,6 @@ export function PluginManager() {
           </div>
         </div>
       </div>
-
-      <section className="space-y-3">
-        <div className="flex items-center gap-2">
-          <FlaskConical className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Available Plugins</h2>
-          <Badge variant="outline">Bundled</Badge>
-        </div>
-
-        {installErrorMessage && (
-          <div className="rounded-md border border-destructive/25 bg-destructive/[0.06] px-4 py-3 text-sm text-destructive whitespace-pre-wrap break-words">
-            {installErrorMessage}
-          </div>
-        )}
-
-        {bundledQuery.isLoading ? (
-          <div className="text-sm text-muted-foreground">Loading bundled plugins...</div>
-        ) : bundledQuery.error ? (
-          <div className="text-sm text-destructive">Failed to load bundled plugins.</div>
-        ) : bundledPlugins.length === 0 ? (
-          <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
-            No bundled plugins were found in this checkout.
-          </div>
-        ) : (
-          <ul className="divide-y rounded-md border bg-card">
-            {bundledPlugins.map((bundledPlugin) => {
-              const installedPlugin = installedByPackageName.get(bundledPlugin.packageName);
-              const installPending =
-                installMutation.isPending &&
-                installMutation.variables?.isLocalPath &&
-                installMutation.variables.packageName === bundledPlugin.localPath;
-
-              return (
-                <li key={bundledPlugin.packageName}>
-                  <div className="flex items-center gap-4 px-4 py-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{bundledPlugin.displayName}</span>
-                        <Badge variant="outline">
-                          {bundledPlugin.tag === "first-party" ? "First-party" : "Example"}
-                        </Badge>
-                        {isExperimentalPluginIdentity({
-                          packageName: bundledPlugin.packageName,
-                          packagePath: bundledPlugin.localPath,
-                          bundledExperimental: bundledPlugin.experimental,
-                        }) && <ExperimentalBadge />}
-                        {installedPlugin ? (
-                          <Badge
-                            variant={installedPlugin.status === "ready" ? "default" : "secondary"}
-                            className={installedPlugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""}
-                          >
-                            {installedPlugin.status}
-                          </Badge>
-                        ) : (
-                          <Badge variant="secondary">Not installed</Badge>
-                        )}
-                      </div>
-                      <p className="mt-1 text-sm text-muted-foreground">{bundledPlugin.description}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">{bundledPlugin.packageName}</p>
-                      {installPending && !bundledPlugin.hasBuiltEntrypoints && (
-                        <p className="mt-2 text-xs text-muted-foreground">Building plugin...</p>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {installedPlugin ? (
-                        <>
-                          {installedPlugin.status !== "ready" && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled={enableMutation.isPending}
-                              onClick={() => enableMutation.mutate(installedPlugin.id)}
-                            >
-                              Enable
-                            </Button>
-                          )}
-                          <Button variant="outline" size="sm" asChild>
-                            <Link to={`/company/settings/instance/plugins/${installedPlugin.id}`}>
-                              {installedPlugin.status === "ready" ? "Open Settings" : "Review"}
-                            </Link>
-                          </Button>
-                        </>
-                      ) : (
-                        <Button
-                          size="sm"
-                          disabled={installPending || installMutation.isPending}
-                          onClick={() =>
-                            installMutation.mutate({
-                              packageName: bundledPlugin.localPath,
-                              isLocalPath: true,
-                            })
-                          }
-                        >
-                          {installPending ? "Installing..." : "Install"}
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
 
       <section className="space-y-3">
         <div className="flex items-center gap-2">
@@ -452,6 +350,7 @@ export function PluginManager() {
                           size="icon-sm"
                           className="h-8 w-8"
                           title={plugin.status === "ready" ? "Disable" : "Enable"}
+                          aria-label={`${plugin.status === "ready" ? "Disable" : "Enable"} ${plugin.manifestJson.displayName ?? plugin.packageName}`}
                           onClick={() => {
                             if (plugin.status === "ready") {
                               disableMutation.mutate(plugin.id);
@@ -468,6 +367,7 @@ export function PluginManager() {
                           size="icon-sm"
                           className="h-8 w-8 text-destructive hover:text-destructive"
                           title="Uninstall"
+                          aria-label={`Uninstall ${plugin.manifestJson.displayName ?? plugin.packageName}`}
                           onClick={() => {
                             setUninstallPluginId(plugin.id);
                             setUninstallPluginName(plugin.manifestJson.displayName ?? plugin.packageName);
@@ -488,6 +388,83 @@ export function PluginManager() {
                 </div>
               </li>
             ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <FlaskConical className="h-5 w-5 text-muted-foreground" />
+          <h2 className="text-base font-semibold">Available Plugins</h2>
+          <Badge variant="outline">Bundled</Badge>
+        </div>
+
+        {installErrorMessage && (
+          <div className="rounded-md border border-destructive/25 bg-destructive/[0.06] px-4 py-3 text-sm text-destructive whitespace-pre-wrap break-words">
+            {installErrorMessage}
+          </div>
+        )}
+
+        {bundledQuery.isLoading ? (
+          <div className="text-sm text-muted-foreground">Loading bundled plugins...</div>
+        ) : bundledQuery.error ? (
+          <div className="text-sm text-destructive">Failed to load bundled plugins.</div>
+        ) : bundledPlugins.length === 0 ? (
+          <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
+            No bundled plugins were found in this checkout.
+          </div>
+        ) : availableBundledPlugins.length === 0 ? (
+          <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
+            All bundled plugins in this checkout are already installed above.
+          </div>
+        ) : (
+          <ul className="divide-y rounded-md border bg-card">
+            {availableBundledPlugins.map((bundledPlugin) => {
+              const installPending =
+                installMutation.isPending &&
+                installMutation.variables?.isLocalPath &&
+                installMutation.variables.packageName === bundledPlugin.localPath;
+
+              return (
+                <li key={bundledPlugin.packageName}>
+                  <div className="flex items-center gap-4 px-4 py-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{bundledPlugin.displayName}</span>
+                        <Badge variant="outline">
+                          {bundledPlugin.tag === "first-party" ? "First-party" : "Example"}
+                        </Badge>
+                        {isExperimentalPluginIdentity({
+                          packageName: bundledPlugin.packageName,
+                          packagePath: bundledPlugin.localPath,
+                          bundledExperimental: bundledPlugin.experimental,
+                        }) && <ExperimentalBadge />}
+                        <Badge variant="secondary">Not installed</Badge>
+                      </div>
+                      <p className="mt-1 text-sm text-muted-foreground">{bundledPlugin.description}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{bundledPlugin.packageName}</p>
+                      {installPending && !bundledPlugin.hasBuiltEntrypoints && (
+                        <p className="mt-2 text-xs text-muted-foreground">Building plugin...</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        disabled={installPending || installMutation.isPending}
+                        onClick={() =>
+                          installMutation.mutate({
+                            packageName: bundledPlugin.localPath,
+                            isLocalPath: true,
+                          })
+                        }
+                      >
+                        {installPending ? "Installing..." : "Install"}
+                      </Button>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

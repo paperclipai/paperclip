@@ -25,6 +25,9 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
+const MAIL_THREAD_TITLE_PREFIX = /^📬\s*Inbound mail:\s*/i;
+const MAIL_THREAD_REPLY_PREFIX = /^(?:re|aw|wg|sv|fwd):\s*/i;
+const MAIL_THREAD_MAX_SUPERSEDE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
 export type InboxCategoryFilter =
   | "everything"
@@ -696,10 +699,122 @@ export function getLatestFailedRunsByAgent(runs: HeartbeatRun[]): HeartbeatRun[]
   return Array.from(latestByAgent.values()).filter((run) => FAILED_RUN_STATUSES.has(run.status));
 }
 
+export function readIssueIdFromRun(run: HeartbeatRun): string | null {
+  const context = run.contextSnapshot;
+  if (!context) return null;
+
+  const issueId = context["issueId"];
+  if (typeof issueId === "string" && issueId.length > 0) return issueId;
+
+  const taskId = context["taskId"];
+  if (typeof taskId === "string" && taskId.length > 0) return taskId;
+
+  return null;
+}
+
+export function getActionableLatestFailedRunsByAgent(
+  runs: HeartbeatRun[],
+  issues: Pick<Issue, "id" | "status">[],
+): HeartbeatRun[] {
+  const issueStatusById = new Map(issues.map((issue) => [issue.id, issue.status]));
+
+  return getLatestFailedRunsByAgent(runs).filter((run) => {
+    const issueId = readIssueIdFromRun(run);
+    if (!issueId) return true;
+    const issueStatus = issueStatusById.get(issueId);
+    return issueStatus !== "done" && issueStatus !== "cancelled";
+  });
+}
+
 export function normalizeTimestamp(value: string | Date | null | undefined): number {
   if (!value) return 0;
   const timestamp = new Date(value).getTime();
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function normalizeMailThreadSubject(subject: string): string {
+  let value = subject.trim();
+  value = value.replace(MAIL_THREAD_TITLE_PREFIX, "");
+  let previous = "";
+  while (value !== previous) {
+    previous = value;
+    value = value.replace(MAIL_THREAD_REPLY_PREFIX, "");
+  }
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function extractMailThreadSubject(issue: Pick<Issue, "title" | "description">): string | null {
+  const title = issue.title.trim();
+  if (MAIL_THREAD_TITLE_PREFIX.test(title)) {
+    return title.replace(MAIL_THREAD_TITLE_PREFIX, "");
+  }
+
+  const description = issue.description?.trim() ?? "";
+  const subjectLine = description.match(/(?:^|\n)Subject:\s*(.+)$/im)?.[1]?.trim() ?? null;
+  if (subjectLine) return subjectLine;
+
+  if (description.includes("Espo email id:")) {
+    return title;
+  }
+
+  return null;
+}
+
+export function getInboxMailThreadKey(issue: Pick<Issue, "title" | "description">): string | null {
+  const subject = extractMailThreadSubject(issue);
+  if (!subject) return null;
+  const normalized = normalizeMailThreadSubject(subject);
+  return normalized.length > 0 ? normalized : null;
+}
+
+export function filterSupersededInboxMailIssues(issues: Issue[]): Issue[] {
+  const candidates = issues
+    .map((issue) => {
+      const key = getInboxMailThreadKey(issue);
+      if (!key) return null;
+      return {
+        issue,
+        key,
+        createdAt: normalizeTimestamp(issue.createdAt),
+        updatedAt: normalizeTimestamp(issue.updatedAt),
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+  if (candidates.length === 0) return issues;
+
+  const newestByKey = new Map<string, { issueId: string; createdAt: number }>();
+  for (const candidate of candidates) {
+    const current = newestByKey.get(candidate.key);
+    if (!current) {
+      newestByKey.set(candidate.key, {
+        issueId: candidate.issue.id,
+        createdAt: candidate.createdAt,
+      });
+      continue;
+    }
+    const ageDiff = candidate.createdAt - current.createdAt;
+    if (ageDiff > MAIL_THREAD_MAX_SUPERSEDE_WINDOW_MS) continue;
+    if (ageDiff < 0) continue;
+    if (candidate.createdAt > current.createdAt) {
+      newestByKey.set(candidate.key, {
+        issueId: candidate.issue.id,
+        createdAt: candidate.createdAt,
+      });
+    }
+  }
+
+  const supersededIds = new Set<string>();
+  for (const candidate of candidates) {
+    const newest = newestByKey.get(candidate.key);
+    if (!newest || newest.issueId === candidate.issue.id) continue;
+    const ageDiff = newest.createdAt - candidate.createdAt;
+    if (ageDiff <= MAIL_THREAD_MAX_SUPERSEDE_WINDOW_MS) {
+      supersededIds.add(candidate.issue.id);
+    }
+  }
+
+  return issues.filter((issue) => !supersededIds.has(issue.id));
 }
 
 export function issueLastActivityTimestamp(issue: Issue): number {
@@ -1236,13 +1351,18 @@ export function computeInboxBadgeData({
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
       !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
   ).length;
-  const failedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
+  const failedRuns = getActionableLatestFailedRunsByAgent(heartbeatRuns, mineIssues).filter(
     (run) => !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt),
   ).length;
   const visibleJoinRequests = joinRequests.filter(
     (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
   ).length;
-  const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
+  const visibleMineIssues = mineIssues.filter(
+    (issue) =>
+      issue.status !== "done" &&
+      issue.status !== "cancelled" &&
+      (issue.isUnreadForMe || issue.status === "in_review"),
+  ).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
   const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
   const monthUtilizationPercent = dashboard?.costs.monthUtilizationPercent ?? 0;

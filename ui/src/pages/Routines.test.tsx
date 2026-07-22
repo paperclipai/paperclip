@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Routines, buildRoutineGroups, sortRoutines } from "./Routines";
+import { Routines, buildRoutineGroups, routineScheduleSummary, sortRoutines } from "./Routines";
 
 let currentSearch = "";
 
@@ -424,6 +424,40 @@ describe("Routines page", () => {
       "routine-2",
     ]);
     expect(routines.map((routine) => routine.id)).toEqual(["routine-1", "routine-2"]);
+  });
+
+  it("summarizes the earliest enabled schedule with timezone and cron", () => {
+    const routine = createRoutine({
+      triggers: [
+        {
+          id: "trigger-later",
+          kind: "schedule",
+          label: null,
+          enabled: true,
+          cronExpression: "0 9 * * *",
+          timezone: "Europe/Zurich",
+          nextRunAt: new Date("2026-04-04T07:00:00.000Z"),
+          lastFiredAt: null,
+          lastResult: null,
+        },
+        {
+          id: "trigger-earlier",
+          kind: "schedule",
+          label: null,
+          enabled: true,
+          cronExpression: "30 5 * * *",
+          timezone: "Europe/Zurich",
+          nextRunAt: new Date("2026-04-03T03:30:00.000Z"),
+          lastFiredAt: null,
+          lastResult: null,
+        },
+      ],
+    });
+
+    const summary = routineScheduleSummary(routine);
+    expect(summary).toContain("Europe/Zurich");
+    expect(summary).toContain("30 5 * * *");
+    expect(summary).toContain("+1 schedule");
   });
 
   it("renders the routines sort control before the group control", async () => {

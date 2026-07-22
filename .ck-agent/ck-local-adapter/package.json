@@ -1,0 +1,8 @@
+{
+  "name": "ck-local-paperclip-adapter",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "private": true,
+  "description": "CK first-class local adapter — runs the CK DeepSeek runner as a native Paperclip agent so instructions, skills and session reflect in the GUI."
+}

@@ -8,6 +8,8 @@ import { CodexSubscriptionPanel } from "./CodexSubscriptionPanel";
 import {
   billingTypeDisplayName,
   formatCents,
+  formatModelDisplayName,
+  formatTokenBreakdown,
   formatTokens,
   providerDisplayName,
   quotaSourceDisplayName,
@@ -53,31 +55,36 @@ export function ProviderQuotaCard({
   // card is mounted twice: once in the "all" tab grid and once in its per-provider tab).
   const totals = useMemo(() => {
     let inputTokens = 0, outputTokens = 0, costCents = 0;
-    let apiRunCount = 0, subRunCount = 0, subInputTokens = 0, subOutputTokens = 0;
+    let unpricedTokens = 0;
+    let apiRunCount = 0, subRunCount = 0, subInputTokens = 0, subCachedInputTokens = 0, subOutputTokens = 0;
     for (const r of rows) {
-      inputTokens += r.inputTokens;
+      inputTokens += r.inputTokens + r.cachedInputTokens;
       outputTokens += r.outputTokens;
       costCents += r.costCents;
+      if (r.costCents === 0 && r.billingType === "unknown") {
+        unpricedTokens += r.inputTokens + r.cachedInputTokens + r.outputTokens;
+      }
       apiRunCount += r.apiRunCount;
       subRunCount += r.subscriptionRunCount;
       subInputTokens += r.subscriptionInputTokens;
+      subCachedInputTokens += r.subscriptionCachedInputTokens;
       subOutputTokens += r.subscriptionOutputTokens;
     }
     const totalTokens = inputTokens + outputTokens;
-    const subTokens = subInputTokens + subOutputTokens;
-    // denominator: api-billed tokens (from cost_events) + subscription tokens (from heartbeat_runs)
-    const allTokens = totalTokens + subTokens;
+    const subTokens = subInputTokens + subCachedInputTokens + subOutputTokens;
     return {
       totalInputTokens: inputTokens,
       totalOutputTokens: outputTokens,
       totalTokens,
+      unpricedTokens,
       totalCostCents: costCents,
       totalApiRuns: apiRunCount,
       totalSubRuns: subRunCount,
       totalSubInputTokens: subInputTokens,
+      totalSubCachedInputTokens: subCachedInputTokens,
       totalSubOutputTokens: subOutputTokens,
       totalSubTokens: subTokens,
-      subSharePct: allTokens > 0 ? (subTokens / allTokens) * 100 : 0,
+      subSharePct: totalTokens > 0 ? (subTokens / totalTokens) * 100 : 0,
     };
   }, [rows]);
 
@@ -85,10 +92,12 @@ export function ProviderQuotaCard({
     totalInputTokens,
     totalOutputTokens,
     totalTokens,
+    unpricedTokens,
     totalCostCents,
     totalApiRuns,
     totalSubRuns,
     totalSubInputTokens,
+    totalSubCachedInputTokens,
     totalSubOutputTokens,
     totalSubTokens,
     subSharePct,
@@ -150,6 +159,9 @@ export function ProviderQuotaCard({
                   {" runs"}
                 </span>
               )}
+              {unpricedTokens > 0 ? (
+                <span className="ml-1.5">· includes {formatTokens(unpricedTokens)} legacy unverified</span>
+              ) : null}
             </CardDescription>
           </div>
           <span className="text-xl font-bold tabular-nums shrink-0">
@@ -234,7 +246,9 @@ export function ProviderQuotaCard({
                     {" · "}
                   </>
                 )}
-                <span className="font-mono text-foreground">{formatTokens(totalSubInputTokens)}</span> in
+                <span className="font-mono text-foreground">
+                  {formatTokens(totalSubInputTokens + totalSubCachedInputTokens)}
+                </span> in
                 {" · "}
                 <span className="font-mono text-foreground">{formatTokens(totalSubOutputTokens)}</span> out
               </p>
@@ -261,24 +275,27 @@ export function ProviderQuotaCard({
             <div className="border-t border-border" />
             <div className="space-y-3">
               {rows.map((row) => {
-                const rowTokens = row.inputTokens + row.outputTokens;
+                const rowTokens = row.inputTokens + row.cachedInputTokens + row.outputTokens;
                 const tokenPct = totalTokens > 0 ? (rowTokens / totalTokens) * 100 : 0;
                 const costPct = totalCostCents > 0 ? (row.costCents / totalCostCents) * 100 : 0;
+                const isLegacyUnpriced = row.costCents === 0 && row.billingType === "unknown";
                 return (
                   <div key={`${row.provider}:${row.model}`} className="space-y-1.5">
                     {/* model name and cost */}
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <span className="text-xs text-muted-foreground truncate font-mono block">
-                          {row.model}
+                          {isLegacyUnpriced ? "Legacy unverified usage" : formatModelDisplayName(row.model)}
                         </span>
                         <span className="text-[11px] text-muted-foreground truncate block">
-                          {providerDisplayName(row.biller)} · {billingTypeDisplayName(row.billingType)}
+                          {isLegacyUnpriced
+                            ? "Billing metadata unavailable · excluded from priced usage"
+                            : `${providerDisplayName(row.biller)} · ${billingTypeDisplayName(row.billingType)}`}
                         </span>
                       </div>
                       <div className="flex items-center gap-3 shrink-0 tabular-nums text-xs">
                         <span className="text-muted-foreground">
-                          {formatTokens(rowTokens)} tok
+                          {formatTokenBreakdown(row.inputTokens, row.cachedInputTokens, row.outputTokens)}
                         </span>
                         <span className="font-medium">{formatCents(row.costCents)}</span>
                       </div>

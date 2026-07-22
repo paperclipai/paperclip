@@ -18,7 +18,8 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
+import { AlertTriangle, Bot, Plus, List, GitBranch, Search } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 import {
   resourceMembershipState,
@@ -86,8 +87,9 @@ export function Agents() {
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const tab: FilterTab = (pathSegment === "all" || pathSegment === "active" || pathSegment === "paused" || pathSegment === "error") ? pathSegment : "all";
   const [view, setView] = useState<"list" | "org">("org");
+  const [searchQuery, setSearchQuery] = useState("");
   const forceListView = isMobile;
-  const effectiveView: "list" | "org" = forceListView ? "list" : view;
+  const effectiveView: "list" | "org" = forceListView || searchQuery.trim() ? "list" : view;
 
   const { data: agents, isLoading, error } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -143,7 +145,15 @@ export function Agents() {
     return <PageSkeleton variant="list" />;
   }
 
-  const filtered = filterAgents(agents ?? [], tab);
+  const statusFiltered = filterAgents(agents ?? [], tab);
+  const normalizedSearch = searchQuery.trim().toLocaleLowerCase();
+  const filtered = normalizedSearch
+    ? statusFiltered.filter((agent) => {
+        const ckId = typeof agent.metadata?.ck_id === "string" ? agent.metadata.ck_id : "";
+        return [agent.name, agent.title ?? "", roleLabels[agent.role] ?? agent.role, ckId]
+          .some((value) => value.toLocaleLowerCase().includes(normalizedSearch));
+      })
+    : statusFiltered;
   const filteredOrg = filterOrgTree(orgTree ?? [], tab);
 
   return (
@@ -161,7 +171,17 @@ export function Agents() {
             onValueChange={(v) => navigate(`/agents/${v}`)}
           />
         </Tabs>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <label className="relative block sm:w-64">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Find an agent…"
+              aria-label="Find an agent"
+              className="h-8 pl-8"
+            />
+          </label>
           {/* View toggle */}
           {!forceListView && (
             <div className="flex items-center border border-border">
@@ -193,7 +213,9 @@ export function Agents() {
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="text-xs text-muted-foreground">
+          {normalizedSearch ? `${filtered.length} of ${statusFiltered.length}` : filtered.length} agent{filtered.length !== 1 ? "s" : ""}
+        </p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -220,11 +242,11 @@ export function Agents() {
                 // constant x on every row — that's what makes the model + timestamp
                 // columns line up vertically (PAP-86). Agent names vary in width, so
                 // a content-sized title (`min-w-[7rem]`) shifted meta's start per row.
-                titleClassName="w-56"
+                titleClassName="flex-1 sm:w-56 sm:flex-none"
                 subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
                 className={cn(
-                  "group",
+                  "group max-sm:flex-wrap max-sm:items-start max-sm:gap-y-2",
                   agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
                   resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "text-foreground/55" : "",
                 )}
@@ -239,7 +261,7 @@ export function Agents() {
                   </div>
                 }
                 trailing={
-                  <div className="flex items-center gap-3">
+                  <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end sm:gap-3">
                     <span className="sm:hidden">
                       {liveRunByAgent.has(agent.id) ? (
                         <LiveRunIndicator
@@ -279,6 +301,7 @@ export function Agents() {
                       />
                     </div>
                     <MembershipAction
+                      compact={isMobile}
                       state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
                       pending={
                         membershipMutation.isPending &&
@@ -308,6 +331,7 @@ export function Agents() {
                     />
                   </div>
                 }
+                trailingClassName="max-sm:w-full max-sm:pl-5"
               />
             );
           })}
@@ -316,7 +340,7 @@ export function Agents() {
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          {normalizedSearch ? `No agents match “${searchQuery.trim()}”.` : "No agents match the selected filter."}
         </p>
       )}
 
