@@ -121,6 +121,33 @@ class ApprovalScanTest(unittest.TestCase):
         self.assertEqual(r[0]["file"], "2026-07-22-file-w.schonenbrocher.md")
         self.assertEqual(r[0]["action"], "sent")
 
+    def test_send_success_saves_sent_copy(self):
+        self._write("2026-07-22-copy-w.schonenbrocher.md", MAIL_OKAY)
+        saved = []
+        w.process_approvals(["2026-07-22-copy-w.schonenbrocher.md"], dry_run=False,
+                            send=lambda e, **k: (200, "ok"), make_issue=lambda *a, **k: None,
+                            save_sent=lambda **kw: (saved.append(kw), (True, ""))[1])
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["to"], "k@x.de")
+        self.assertEqual(saved[0]["subject"], "AW: Textkorrektur")
+        self.assertEqual(q.load("A7X3")["status"], "sent")
+
+    def test_sent_copy_failure_is_non_fatal(self):
+        # Scheitert die Sent-Kopie, bleibt der Versand trotzdem 'sent'.
+        self._write("2026-07-22-copyfail-w.schonenbrocher.md", MAIL_OKAY)
+        r = w.process_approvals(["2026-07-22-copyfail-w.schonenbrocher.md"], dry_run=False,
+                                send=lambda e, **k: (200, "ok"), make_issue=lambda *a, **k: None,
+                                save_sent=lambda **kw: (_ for _ in ()).throw(RuntimeError("EWS down")))
+        self.assertEqual(r[0]["action"], "sent")
+        self.assertEqual(q.load("A7X3")["status"], "sent")
+
+    def test_no_save_sent_when_not_provided(self):
+        # Ohne save_sent (z.B. dry-run-frei getestet) wird EWS NICHT berührt.
+        self._write("2026-07-22-nocopy-w.schonenbrocher.md", MAIL_OKAY)
+        r = w.process_approvals(["2026-07-22-nocopy-w.schonenbrocher.md"], dry_run=False,
+                                send=lambda e, **k: (200, "ok"), make_issue=lambda *a, **k: None)
+        self.assertEqual(r[0]["action"], "sent")  # kein Fehler trotz save_sent=None
+
     def test_send_error_stays_retryable_then_succeeds(self):
         # I1-Fix: nach Relay-Fehler bleibt der Eintrag pending UND wird beim
         # nächsten Lauf erneut versucht (Datei wird vom Aufrufer nicht als seen

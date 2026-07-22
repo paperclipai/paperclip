@@ -25,6 +25,7 @@ import paperclip_client as pc  # noqa: E402
 import approval_queue as approval_queue  # noqa: E402
 import approval_parse as approval_parse  # noqa: E402
 import approval_send as approval_send  # noqa: E402
+import ews_sent as ews_sent  # noqa: E402
 
 WALTER_SENDERS = ("w.schonenbrocher", "walter", "ws@whitestag.ai")
 
@@ -155,7 +156,8 @@ def is_approval_reply(path: Path) -> str | None:
         return None
 
 
-def process_approvals(new_files, *, dry_run, send=approval_send.send_approved, make_issue=None):
+def process_approvals(new_files, *, dry_run, send=approval_send.send_approved,
+                      make_issue=None, save_sent=None):
     """Verarbeitet Freigabe-Antworten. Gibt Liste von {file, token, action} zurück.
 
     Terminale Aktionen (sent/correction/skip) dürfen vom Aufrufer als gesehen
@@ -185,6 +187,16 @@ def process_approvals(new_files, *, dry_run, send=approval_send.send_approved, m
                 if code == 200:
                     approval_queue.mark(token, "sent", sent=datetime.now().isoformat())
                     print(f"Freigabe #{token}: gesendet an {entry['to']}")
+                    # Kopie in ws@ „Gesendete Elemente" (nicht-fatal — Mail ist raus).
+                    if save_sent is not None:
+                        try:
+                            ok, resp2 = save_sent(to=entry["to"], subject=entry["subject"],
+                                                  html=entry["rendered_html"])
+                            if not ok:
+                                print(f"WARN Sent-Kopie #{token} fehlgeschlagen: {resp2[:120]}",
+                                      file=sys.stderr)
+                        except Exception as ex:  # noqa: BLE001
+                            print(f"WARN Sent-Kopie #{token}: {ex}", file=sys.stderr)
                     results.append({"file": name, "token": token, "action": "sent"})
                 else:
                     print(f"FEHLER Freigabe #{token}: Relay HTTP {code}: {resp}", file=sys.stderr)
@@ -337,7 +349,8 @@ def main() -> None:
             print(f"Freigabe #{tok} nach TTL verfallen.")
     approval_new = scan_approval_replies(a.window_days, seen)
     if approval_new:
-        results = process_approvals(approval_new, dry_run=a.dry_run)
+        results = process_approvals(approval_new, dry_run=a.dry_run,
+                                    save_sent=ews_sent.save_to_sent)
         print(f"Freigabe-Antworten: {results}")
         if not a.dry_run:
             # Nur terminal erledigte Antworten als gesehen markieren. send-error/error
