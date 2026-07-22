@@ -386,6 +386,11 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
+        // Pin the Test lease to the agent's own adapter so the sandbox boots the
+        // harness image the Test will exec against (matching real agent runs). It
+        // also keeps the lease from being an adapter-less one, which a plugin that
+        // cannot prove a single-adapter environment now rejects.
+        adapterType: input.adapterType,
         // Apply the active custom-image template so the Test boots with the
         // operator's captured sandbox customizations and prepared image state,
         // matching what real agent runs use. Without this the test would

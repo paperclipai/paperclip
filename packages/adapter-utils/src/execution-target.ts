@@ -74,12 +74,55 @@ export interface AdapterSandboxExecutionTarget {
    * set to `false` to explicitly opt out back to batch-at-end delivery.
    */
   streamRunLogs?: boolean | null;
+  /**
+   * The sandbox runs a managed, pre-baked runtime image (plugin-backed
+   * provider) whose adapter CLI is contractually complete. When true, the
+   * runtime-install shim is disabled: a missing CLI means the run landed on the
+   * wrong runtime image (a different harness), so we fail fast with
+   * {@link AdapterRuntimeImageMismatchError} instead of attempting a network
+   * install that a locked/sovereign egress would block until timeout.
+   */
+  prebakedRuntime?: boolean | null;
 }
 
 export type AdapterExecutionTarget =
   | AdapterLocalExecutionTarget
   | AdapterSshExecutionTarget
   | AdapterSandboxExecutionTarget;
+
+/** Stable error code for a wrong-runtime-image sandbox run. */
+export const ADAPTER_RUNTIME_IMAGE_MISMATCH_CODE = "adapter_runtime_image_mismatch" as const;
+
+/**
+ * Thrown when a managed, pre-baked sandbox does not carry the adapter's runtime
+ * CLI on PATH. The run landed on a runtime image for a different harness, so the
+ * image the plugin picked does not match the harness the server exec's. We
+ * surface this immediately instead of attempting a doomed network install
+ * (locked egress) that would otherwise stall until the adapter timeout and
+ * report a confusing `adapter_failed`.
+ */
+export class AdapterRuntimeImageMismatchError extends Error {
+  readonly code = ADAPTER_RUNTIME_IMAGE_MISMATCH_CODE;
+  readonly adapterCommand: string;
+  constructor(command: string, targetDescription: string, detail?: string) {
+    super(
+      `expected the pre-baked runtime image to provide the '${command}' CLI, but it is not present on PATH in the ${targetDescription}. The run landed on the wrong runtime image (a different harness); refusing to attempt a network install for a managed sandbox.${
+        detail ? ` (${detail})` : ""
+      }`,
+    );
+    this.name = "AdapterRuntimeImageMismatchError";
+    this.adapterCommand = command;
+  }
+}
+
+export function isAdapterRuntimeImageMismatchError(
+  value: unknown,
+): value is AdapterRuntimeImageMismatchError {
+  return (
+    value instanceof Error &&
+    (value as { code?: unknown }).code === ADAPTER_RUNTIME_IMAGE_MISMATCH_CODE
+  );
+}
 
 export type AdapterRemoteExecutionSpec = SshRemoteExecutionSpec;
 
@@ -822,12 +865,49 @@ export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input:
   graceSec?: number;
   onLog?: AdapterExecutionTargetShellOptions["onLog"];
 }): Promise<void> {
+  const sandboxTarget =
+    input.target?.kind === "remote" && input.target.transport === "sandbox"
+      ? input.target
+      : null;
+  const isSandbox = sandboxTarget !== null;
+  const detectCommand = input.detectCommand?.trim();
+
+  // Managed, pre-baked sandbox: the runtime CLI is contractually part of the
+  // image. A network install is never appropriate (locked/sovereign egress
+  // blocks it and the run stalls until timeout). Probe once; if the CLI is
+  // missing the run landed on the wrong runtime image (a different harness) and
+  // we fail fast with a typed, actionable error instead of installing.
+  if (sandboxTarget && sandboxTarget.prebakedRuntime === true) {
+    if (!detectCommand) {
+      // Nothing to assert (no probe command); never attempt an install either.
+      return;
+    }
+    const probe = await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.target,
+      `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
+      {
+        cwd: input.cwd,
+        env: input.env,
+        timeoutSec: input.timeoutSec,
+        graceSec: input.graceSec,
+      },
+    );
+    if (!probe.timedOut && probe.exitCode === 0) {
+      return;
+    }
+    throw new AdapterRuntimeImageMismatchError(
+      detectCommand,
+      describeAdapterExecutionTarget(input.target),
+      probe.timedOut ? "detect probe timed out" : `detect probe exited ${probe.exitCode ?? "?"}`,
+    );
+  }
+
   const installCommand = input.installCommand?.trim();
-  if (!installCommand || input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
+  if (!installCommand || !isSandbox) {
     return;
   }
 
-  const detectCommand = input.detectCommand?.trim();
   if (detectCommand) {
     const probe = await runAdapterExecutionTargetShellCommand(
       input.runId,

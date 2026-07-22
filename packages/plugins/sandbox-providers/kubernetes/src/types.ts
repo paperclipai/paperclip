@@ -47,6 +47,21 @@ export const kubernetesProviderConfigSchema = z
       }),
 
     /**
+     * Explicit override to require a per-run adapter type on EVERY lease, even in
+     * a single-adapter environment: a run that does not carry its harness is
+     * rejected instead of falling back to `adapterType` above.
+     *
+     * A mixed-harness pool does NOT need this flag: when the `adapters` registry
+     * below enables more than one adapter, an absent per-run adapter is rejected
+     * automatically (the safe default), so a run can never land on a different
+     * harness's runtime image. Set this only to force the same strictness for a
+     * single-adapter environment. Defaults to false, which preserves
+     * single-adapter environments and connectivity probes (which legitimately
+     * acquire a lease with no per-run adapter).
+     */
+    requireRunAdapterType: z.boolean().default(false),
+
+    /**
      * Optional declarative adapter registry. When present it is authoritative
      * for runtime image / envKeys / allowFqdns / probe / defaultEnv resolution
      * (replace semantics). Absent = built-in defaults.
@@ -90,4 +105,15 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
+  /**
+   * Capability signal surfaced to the server: this plugin's runtime images are
+   * pre-baked / contractually complete — the adapter CLI is already on PATH in
+   * the image, which runs behind a locked (sovereign) egress. The server reads
+   * this specific flag (NOT the generic "plugin-backed" marker) to disable the
+   * in-sandbox network-install shim and instead fail fast with a typed
+   * `adapter_runtime_image_mismatch` when the CLI is missing (the run landed on
+   * the wrong image). A provider plugin that ships a GENERIC sandbox and relies
+   * on runtime installation must NOT set this, so its install path is preserved.
+   */
+  runtimeImagePrebaked: true;
 }

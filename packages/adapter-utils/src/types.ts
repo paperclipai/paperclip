@@ -476,8 +476,26 @@ export interface ServerAdapterModule {
   /**
    * Optional: describe how this adapter's runtime command should be launched
    * and provisioned in fresh remote environments such as sandboxes.
+   *
+   * `options.prebakedRuntime` is set when the run executes on a managed,
+   * pre-baked sandbox image whose runtime CLI is contractually complete (e.g. a
+   * plugin-backed Kubernetes sandbox behind locked egress). Adapters MUST NOT
+   * emit a network `installCommand` for those targets: the image either already
+   * carries the CLI or the run landed on the wrong image, and an install would
+   * hit a blocked egress and stall until timeout.
    */
-  getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
+  getRuntimeCommandSpec?: (
+    config: Record<string, unknown>,
+    options?: AdapterRuntimeCommandSpecOptions,
+  ) => AdapterRuntimeCommandSpec | null;
+}
+
+export interface AdapterRuntimeCommandSpecOptions {
+  /**
+   * The run executes on a managed, pre-baked sandbox image (plugin-backed
+   * provider). When true, no network runtime install may be emitted.
+   */
+  prebakedRuntime?: boolean;
 }
 
 // ---------------------------------------------------------------------------

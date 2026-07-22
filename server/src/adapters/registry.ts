@@ -1,6 +1,7 @@
 import type {
   AdapterModelProfileDefinition,
   AdapterRuntimeCommandSpec,
+  AdapterRuntimeCommandSpecOptions,
   ServerAdapterModule,
 } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
@@ -144,9 +145,16 @@ function buildNpmRuntimeCommandSpec(
   config: Record<string, unknown>,
   fallbackCommand: string,
   packageName: string,
+  options?: AdapterRuntimeCommandSpecOptions,
 ): AdapterRuntimeCommandSpec {
   const command = readConfiguredCommand(config, fallbackCommand);
-  const canSelfInstall = !hasPathSeparator(command) && command === fallbackCommand;
+  // Managed, pre-baked sandbox images (plugin-backed providers behind locked
+  // egress) carry the CLI already. Never emit a network install for them: a
+  // missing CLI means the run landed on the wrong runtime image, and an install
+  // would just stall against a blocked egress until timeout. Fail-fast on the
+  // image mismatch is handled downstream in the execution target.
+  const canSelfInstall =
+    !options?.prebakedRuntime && !hasPathSeparator(command) && command === fallbackCommand;
   const installLine = buildSandboxNpmInstallCommand(packageName);
   return {
     command,
@@ -205,8 +213,8 @@ const claudeLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
-  getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec(config, "claude", "@anthropic-ai/claude-code"),
+  getRuntimeCommandSpec: (config, options) =>
+    buildNpmRuntimeCommandSpec(config, "claude", "@anthropic-ai/claude-code", options),
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getConfigSchema: getClaudeConfigSchema,
   getQuotaWindows: claudeGetQuotaWindows,
@@ -278,7 +286,8 @@ const codexLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
-  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
+  getRuntimeCommandSpec: (config, options) =>
+    buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex", options),
   agentConfigurationDoc: codexAgentConfigurationDoc,
   getConfigSchema: getCodexConfigSchema,
   getQuotaWindows: codexGetQuotaWindows,
@@ -340,8 +349,8 @@ const geminiLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
-  getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec(config, "gemini", "@google/gemini-cli"),
+  getRuntimeCommandSpec: (config, options) =>
+    buildNpmRuntimeCommandSpec(config, "gemini", "@google/gemini-cli", options),
   agentConfigurationDoc: geminiAgentConfigurationDoc,
   getConfigSchema: getGeminiConfigSchema,
 };
@@ -397,7 +406,8 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
-  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "opencode", "opencode-ai"),
+  getRuntimeCommandSpec: (config, options) =>
+    buildNpmRuntimeCommandSpec(config, "opencode", "opencode-ai", options),
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
@@ -416,8 +426,8 @@ const piLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
-  getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec(config, "pi", "@mariozechner/pi-coding-agent"),
+  getRuntimeCommandSpec: (config, options) =>
+    buildNpmRuntimeCommandSpec(config, "pi", "@mariozechner/pi-coding-agent", options),
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 

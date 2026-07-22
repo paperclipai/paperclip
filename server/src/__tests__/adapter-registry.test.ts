@@ -324,6 +324,21 @@ describe("server adapter registry", () => {
     });
   });
 
+  it("emits no network install command for a managed, pre-baked k8s sandbox", () => {
+    // Pre-baked plugin-backed sandbox images carry the CLI already and run
+    // behind a locked egress; a network install would only stall until timeout.
+    // The install command must be suppressed so the wrong-image case fails fast.
+    for (const type of ["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local"]) {
+      const spec = findActiveServerAdapter(type)?.getRuntimeCommandSpec?.({}, { prebakedRuntime: true });
+      expect(spec, type).not.toBeNull();
+      expect(spec?.installCommand, type).toBeNull();
+      // The command + detect probe are still emitted so the pre-flight assertion
+      // can verify the CLI is present.
+      expect(spec?.command, type).toBeTruthy();
+      expect(spec?.detectCommand, type).toBe(spec?.command);
+    }
+  });
+
   it("switches active adapter behavior back to the builtin when an override is paused", async () => {
     const builtIn = findServerAdapter("claude_local");
     expect(builtIn).not.toBeNull();

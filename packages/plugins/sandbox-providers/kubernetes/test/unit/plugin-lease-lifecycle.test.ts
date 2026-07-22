@@ -81,6 +81,10 @@ describe("onEnvironmentResumeLease", () => {
         phase: "Running",
         backend: "sandbox-cr",
         resumedLease: true,
+        // Capability signal the server reads to disable the network-install shim
+        // and fail fast on a wrong runtime image (Finding 2 in PR #9950): the
+        // k8s plugin's runtime images are pre-baked, so it declares it per-lease.
+        runtimeImagePrebaked: true,
       }),
     );
   });

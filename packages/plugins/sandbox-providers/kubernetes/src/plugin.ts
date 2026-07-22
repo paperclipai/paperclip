@@ -212,7 +212,23 @@ const plugin = definePlugin({
     // to the environment's configured default adapter. getAdapterDefaults validates
     // it is a registered adapter (throws otherwise), so a curated-out adapter fails
     // the lease as before.
-    const effectiveAdapterType = resolveRunAdapterType(params.adapterType, config.adapterType);
+    //
+    // Drive the fallback safety off the configured adapter set: the env-default
+    // fallback for an absent per-run adapter is permitted ONLY when the `adapters`
+    // registry positively proves a single-adapter environment (exactly one enabled
+    // adapter). An absent/empty registry proves nothing (the built-in registry
+    // still exposes every harness) and a registry with more than one enabled
+    // adapter is a mixed-harness pool — both reject an adapter-less lease
+    // automatically (a gemini run must never fall back to the opencode image), no
+    // operator flag required. `requireRunAdapterType` remains an explicit override
+    // that also requires the per-run adapter in a single-adapter environment.
+    const configuredAdapterTypes = config.adapters
+      ?.filter((entry) => entry.enabled !== false)
+      .map((entry) => entry.adapterType);
+    const effectiveAdapterType = resolveRunAdapterType(params.adapterType, config.adapterType, {
+      requireRunAdapter: config.requireRunAdapterType,
+      configuredAdapterTypes,
+    });
 
     // Emit a runtime warning if FQDNs are configured but egressMode=standard
     // cannot enforce them. Mirrors the validateConfig warning so operators see
@@ -335,6 +351,10 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
+      // This plugin's per-adapter runtime images ship the adapter CLI and run
+      // behind a locked egress: declare them pre-baked so the server disables
+      // the network-install shim and fails fast on a wrong-image mismatch.
+      runtimeImagePrebaked: true,
     };
 
     return {
@@ -404,6 +424,9 @@ const plugin = definePlugin({
       secretName,
       phase: check.phase,
       backend: leaseBackend,
+      // Pre-baked runtime images (see acquire path); the resumed lease carries
+      // the same capability so the server keeps the network-install shim off.
+      runtimeImagePrebaked: true,
     };
 
     return {

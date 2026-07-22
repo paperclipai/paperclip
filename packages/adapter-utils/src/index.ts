@@ -31,6 +31,7 @@ export type {
   ConfigFieldSchema,
   AdapterConfigSchema,
   AdapterRuntimeCommandSpec,
+  AdapterRuntimeCommandSpecOptions,
   AcpTargetDescriptor,
   ServerAdapterModule,
   QuotaWindow,

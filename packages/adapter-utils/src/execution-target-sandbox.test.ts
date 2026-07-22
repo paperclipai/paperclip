@@ -9,12 +9,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+  AdapterRuntimeImageMismatchError,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetToRemoteSpec,
   adapterExecutionTargetUsesPaperclipBridge,
   ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetRuntimeCommandInstalled,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  isAdapterRuntimeImageMismatchError,
   resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
@@ -689,6 +692,98 @@ describe("sandbox adapter execution targets", () => {
       args: ["-c", "npm install -g opencode"],
       timeoutMs: 1_800_000,
     }));
+  });
+
+  describe("pre-baked (managed) sandbox runtime install", () => {
+    it("fails fast with a runtime-image-mismatch error and never attempts an install when the CLI is missing", async () => {
+      // The detect probe reports the CLI missing (exit 1). On a pre-baked
+      // managed image this means the run landed on the wrong runtime image, so
+      // we must fail immediately, NOT run the network install (blocked egress).
+      const runner = {
+        execute: vi.fn().mockResolvedValue({
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        }),
+      };
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/workspace",
+        timeoutMs: 300_000,
+        prebakedRuntime: true,
+        runner,
+      };
+
+      let thrown: unknown;
+      try {
+        await ensureAdapterExecutionTargetRuntimeCommandInstalled({
+          runId: "run-prebaked",
+          target,
+          detectCommand: "gemini",
+          installCommand:
+            "if ! command -v 'gemini' >/dev/null 2>&1; then npm install -g @google/gemini-cli; fi",
+          cwd: "/local/workspace",
+          env: {},
+        });
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeInstanceOf(AdapterRuntimeImageMismatchError);
+      expect(isAdapterRuntimeImageMismatchError(thrown)).toBe(true);
+      expect((thrown as AdapterRuntimeImageMismatchError).code).toBe(
+        "adapter_runtime_image_mismatch",
+      );
+      expect((thrown as AdapterRuntimeImageMismatchError).adapterCommand).toBe("gemini");
+      expect((thrown as Error).message).toContain("gemini");
+
+      // Exactly one runner call: the detect probe. The install was never run.
+      expect(runner.execute).toHaveBeenCalledTimes(1);
+      const probeArgs = runner.execute.mock.calls[0][0];
+      expect(String(probeArgs.args?.[1] ?? "")).toContain("command -v");
+      expect(String(probeArgs.args?.[1] ?? "")).not.toContain("npm install");
+    });
+
+    it("passes when the pre-baked image already carries the CLI, without installing", async () => {
+      const runner = {
+        execute: vi.fn().mockResolvedValue({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        }),
+      };
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/workspace",
+        timeoutMs: 300_000,
+        prebakedRuntime: true,
+        runner,
+      };
+
+      await expect(
+        ensureAdapterExecutionTargetRuntimeCommandInstalled({
+          runId: "run-prebaked-ok",
+          target,
+          detectCommand: "gemini",
+          installCommand: "npm install -g @google/gemini-cli",
+          cwd: "/local/workspace",
+          env: {},
+        }),
+      ).resolves.toBeUndefined();
+
+      // Only the detect probe ran; no install attempt.
+      expect(runner.execute).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("runs shell commands through the same runner", async () => {

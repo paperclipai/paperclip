@@ -263,6 +263,73 @@ describe("probeEnvironment", () => {
     }));
   });
 
+  it("pins the runtime probe to the environment's default adapter so a mixed-harness pool does not reject it", async () => {
+    // A mixed-harness pool rejects an absent per-run adapter (a real run must
+    // never fall back to a different harness's image). A connectivity probe
+    // carries no harness, so it must pin the env's configured default adapter to
+    // boot one valid image instead of being rejected.
+    mockRuntimeAcquireRunLease.mockResolvedValue({
+      environment: {},
+      leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null },
+      lease: {
+        id: "lease-k8s-1",
+        companyId: "company-1",
+        environmentId: "env-k8s",
+        executionWorkspaceId: null,
+        issueId: null,
+        heartbeatRunId: null,
+        status: "active",
+        leasePolicy: "ephemeral",
+        provider: "kubernetes",
+        providerLeaseId: "pc-probe-1",
+        acquiredAt: new Date(),
+        lastUsedAt: new Date(),
+        expiresAt: null,
+        releasedAt: null,
+        failureReason: null,
+        cleanupStatus: "pending",
+        metadata: { provider: "kubernetes", runtimeImagePrebaked: true, reuseLease: false },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+
+    const environment = {
+      id: "env-k8s",
+      companyId: "company-1",
+      name: "Kubernetes",
+      description: null,
+      driver: "sandbox" as const,
+      status: "active" as const,
+      config: {
+        provider: "kubernetes",
+        adapterType: "claude_local",
+        adapters: [
+          { adapterType: "claude_local", runtimeImage: "img-claude" },
+          { adapterType: "gemini_local", runtimeImage: "img-gemini" },
+        ],
+        reuseLease: true,
+      },
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const result = await probeEnvironment({} as any, environment, {
+      companyId: "company-1",
+      pluginWorkerManager: {} as any,
+      acquireSandboxRuntimeLease: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockRuntimeAcquireRunLease).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      // Pinned to the configured default adapter, NOT null: the mixed pool would
+      // reject a null per-run adapter.
+      adapterType: "claude_local",
+    }));
+  });
+
   it("routes plugin environment probes through the plugin worker host", async () => {
     mockProbePluginEnvironmentDriver.mockResolvedValue({
       ok: true,

@@ -13567,7 +13567,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           runtime: runtimeForAdapter,
           config: runtimeConfig,
           context: adapterContext,
-          runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+          runtimeCommandSpec:
+            adapter.getRuntimeCommandSpec?.(runtimeConfig, {
+              // A managed, pre-baked sandbox image carries the CLI already; never
+              // emit a network install for it (locked egress would stall it until
+              // timeout). The execution target fails fast on an image mismatch.
+              prebakedRuntime:
+                executionTarget?.kind === "remote" &&
+                executionTarget.transport === "sandbox" &&
+                executionTarget.prebakedRuntime === true,
+            }) ?? null,
           executionTarget,
           executionTransport: remoteExecution
             ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
