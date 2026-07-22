@@ -14,6 +14,7 @@ export type OnboardServiceOptions = {
 type OnboardServiceDependencies = {
   detect: (instanceId: string) => Promise<ServiceManagerDetection>;
   confirm: () => Promise<boolean>;
+  confirmLinger: () => Promise<boolean>;
   isInteractive: () => boolean;
   info: (message: string) => void;
   success: (message: string) => void;
@@ -26,6 +27,13 @@ const defaultDependencies: OnboardServiceDependencies = {
     const answer = await p.confirm({
       message: "Install Paperclip as a background service?",
       initialValue: true,
+    });
+    return !p.isCancel(answer) && answer === true;
+  },
+  confirmLinger: async () => {
+    const answer = await p.confirm({
+      message: "Allow Paperclip to keep running after logout? This may request system authorization.",
+      initialValue: false,
     });
     return !p.isCancel(answer) && answer === true;
   },
@@ -61,6 +69,9 @@ export async function handleOnboardService(
   if (!explicitlyRequested && !(await deps.confirm())) return false;
 
   await detection.manager.install({ startNow: true, startOnLogin: true });
+  if (!explicitlyRequested && detection.manager.enableLinger && await deps.confirmLinger()) {
+    await detection.manager.enableLinger();
+  }
   deps.success(`Installed and started ${detection.manager.serviceName}.`);
   return true;
 }

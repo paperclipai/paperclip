@@ -100,7 +100,10 @@ export async function serviceHealthChecks(
         },
   );
 
-  const expectedVersion = readInstallManifest()?.version ?? null;
+  let expectedVersion: string | null = null;
+  try {
+    expectedVersion = readInstallManifest()?.version ?? null;
+  } catch {}
   results.push(
     !health.ok
       ? {
