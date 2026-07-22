@@ -1278,7 +1278,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           routines.set(next.id, next);
           return next;
         },
-        async run(routineKey, companyId) {
+        async run(routineKey, companyId, _overrides) {
           const resolved = await this.get(routineKey, companyId);
           if (!resolved.routine) throw new Error(`Managed routine not found: ${routineKey}`);
           const now = new Date();
@@ -1294,6 +1294,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             triggerPayload: null,
             dispatchFingerprint: null,
             linkedIssueId: null,
+            issueId: null,
             coalescedIntoRunId: null,
             failureReason: null,
             completedAt: null,
