@@ -288,6 +288,20 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "issue_dependencies_blocked",
 ]);
 
+// Run/turn-level terminations reported by the ACP engine (a failed turn or a
+// turn timeout). These strand an assigned `in_progress` issue by making its live
+// execution path disappear, and were the dominant "stranded with no automatic
+// retry" incident class (see REW-29 root-cause: acpx_turn_failed deaths → the
+// issue is escalated to a human after a single attempt with no retry). They are
+// usually transient (a lost child process, a model hiccup, an environment stall),
+// so give them the same bounded retry budget + exponential backoff as
+// transient-infra failures before escalating to `blocked`. The bounded attempt
+// cap still guarantees a deterministic failure escalates instead of looping.
+const RETRYABLE_RUN_FAILURE_CONTINUATION_ERROR_CODES = new Set<string>([
+  "acpx_turn_failed",
+  "acpx_timeout",
+]);
+
 // A continuation cancelled with this code is a *deliberate wait* (the latest run
 // reported it was parked for review/approval), not a lost execution path. When the
 // issue has a real waiting target we convert it into a normal dependency wait rather
@@ -416,7 +430,7 @@ export function classifyAdapterFailureForRecovery(
 }
 
 type ContinuationRetryClassification = {
-  kind: "transient_infra" | "non_retryable" | "default";
+  kind: "transient_infra" | "run_failure" | "non_retryable" | "default";
   maxAttempts: number;
   baseBackoffMs: number;
   errorCode: string | null;
@@ -430,6 +444,14 @@ export function classifyContinuationFailure(latestRun: LatestIssueRun): Continua
   if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return {
       kind: "transient_infra",
+      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
+      baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      errorCode,
+    };
+  }
+  if (errorCode && RETRYABLE_RUN_FAILURE_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    return {
+      kind: "run_failure",
       maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
       baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
       errorCode,
