@@ -15360,6 +15360,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         lastCompleted?.status === "failed" &&
         lastCompleted.errorCode === LLM_BUDGET_ERROR_CODE &&
         lastCompleted.finishedAt &&
+        // A tick at time T only considers state that existed at T: a completed
+        // run that postdates the effective tick (catch-up/simulated ticks)
+        // must not suppress the wake via a negative age.
+        evalNowMs >= lastCompleted.finishedAt.getTime() &&
         evalNowMs - lastCompleted.finishedAt.getTime() < LLM_BUDGET_COOLDOWN_MS
       ) {
         await writeSkippedRequest(LLM_BUDGET_COOLDOWN_SKIP_REASON);

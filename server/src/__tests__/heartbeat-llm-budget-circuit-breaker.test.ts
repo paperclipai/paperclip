@@ -264,6 +264,55 @@ describeEmbeddedPostgres("heartbeat LLM budget circuit-breaker", () => {
     expect(requests[0]!.reason).toBe(LLM_BUDGET_COOLDOWN_SKIP_REASON);
   });
 
+  it("ignores completed runs that postdate the tick clock (no negative-age skip)", async () => {
+    // Greptile #9968 round 2: a catch-up/simulated tick that PREDATES a stored
+    // budget failure would compute a negative age, which passes `< cooldown`
+    // and wrongly suppresses the historical wake. A tick at time T must only
+    // consider state that existed at T — here the failure finishes 10 min
+    // AFTER the tick, so the tick must enqueue.
+    const tickNow = new Date("2026-01-01T00:05:00.000Z");
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Atlas Coordinator",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+      runtimeConfig: {
+        heartbeat: { enabled: true, intervalSec: 60, wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+      permissions: {},
+      lastHeartbeatAt: new Date("2025-12-31T00:00:00.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      status: "failed",
+      error: "Adapter failed",
+      errorCode: LLM_BUDGET_ERROR_CODE,
+      startedAt: new Date("2026-01-01T00:14:00.000Z"),
+      finishedAt: new Date("2026-01-01T00:15:00.000Z"),
+    });
+
+    const result = await heartbeat.tickTimers(tickNow);
+
+    expect(result.enqueued).toBe(1);
+    expect(result.skipped).toBe(0);
+    await waitForHeartbeatIdle();
+  });
+
   it("non-timer wakes bypass the breaker", async () => {
     const now = new Date();
     const { companyId, agentId } = await seedAgent(now);
