@@ -37,6 +37,17 @@ describe("service definition generation", () => {
     expect(unit).not.toContain("API_KEY");
   });
 
+  it("escapes systemd variable and specifier expansion in configured values", () => {
+    const unit = renderSystemdUnit({
+      instanceId: "team-$USER-%i",
+      shimPath: "/home/$USER/%i/paperclipai",
+      homeDir: "/home/$USER/%i/.paperclip",
+    });
+
+    expect(unit).toContain('ExecStart="/home/$$USER/%%i/paperclipai" run --instance "team-$$USER-%%i"');
+    expect(unit).toContain('Environment="PAPERCLIP_HOME=/home/$$USER/%%i/.paperclip"');
+  });
+
   it("generates a launchd agent with keepalive and instance logs", () => {
     const plist = renderLaunchdPlist({ instanceId: "team-a", shimPath: "/Users/alice/.local/bin/paperclipai", homeDir: "/Users/alice/.paperclip", stdoutPath: "/Users/alice/.paperclip/instances/team-a/logs/service.log", stderrPath: "/Users/alice/.paperclip/instances/team-a/logs/service.err.log" });
     expect(plist).toContain("ing.paperclip.paperclipai.team-a");
