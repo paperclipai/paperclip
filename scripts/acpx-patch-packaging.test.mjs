@@ -33,6 +33,7 @@ test("bundled package staging materializes publishConfig entrypoints", () => {
 });
 
 test("bundled package dry runs preview without querying published versions", () => {
-  assert.match(releaseScript, /npm pack --dry-run/);
+  assert.match(releaseScript, /npm pack --pack-destination "\$publish_dir"/);
+  assert.doesNotMatch(releaseScript, /^\s*npm pack --dry-run/m);
   assert.doesNotMatch(releaseScript, /^\s*npm publish --dry-run/m);
 });
