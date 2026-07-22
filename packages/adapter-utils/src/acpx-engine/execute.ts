@@ -43,6 +43,7 @@ import {
   renderTemplate,
   resolvePaperclipInstanceRootForAdapter,
   resolvePaperclipDesiredSkillNames,
+  resolveWindowsCmdShell,
   removeMaintainerOnlySkillSymlinks,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
@@ -269,17 +270,41 @@ function geminiAcpCommandTokens(commandShell: string): string[] | null {
   return tokens;
 }
 
+// Probe `<gemini> --version`. On Windows the Gemini CLI is installed as a `.cmd`
+// shim, which Node's `execFile` cannot launch directly — a bare name fails with
+// ENOENT (PATHEXT is not applied without a shell) and a `.cmd` path fails with
+// EINVAL (Node refuses to run `.cmd`/`.bat` without a shell). Route the probe
+// through cmd.exe on Windows so PATHEXT resolution and `.cmd` execution work,
+// mirroring how the engine launches other Windows commands.
+async function probeGeminiVersionOutput(bin: string, env: NodeJS.ProcessEnv): Promise<string> {
+  const options = {
+    timeout: GEMINI_VERSION_PROBE_TIMEOUT_MS,
+    encoding: "utf8" as const,
+    env,
+    // Avoid flashing a console window for the short-lived probe on Windows.
+    windowsHide: true,
+  };
+  if (process.platform === "win32") {
+    // Pass `bin` as a discrete argument (not interpolated into the command
+    // string) so cmd.exe treats it as data; `geminiAcpCommandTokens` already
+    // constrains it to a whitespace-free path whose basename is `gemini`.
+    const { stdout } = await execFileAsync(
+      resolveWindowsCmdShell(env),
+      ["/d", "/s", "/c", bin, "--version"],
+      options,
+    );
+    return stdout;
+  }
+  const { stdout } = await execFileAsync(bin, ["--version"], options);
+  return stdout;
+}
+
 async function normalizeGeminiAcpCommandShell(commandShell: string, env: NodeJS.ProcessEnv): Promise<string> {
   const tokens = geminiAcpCommandTokens(commandShell);
   if (!tokens) return commandShell;
   let versionParts: number[] | null = null;
   try {
-    const { stdout } = await execFileAsync(tokens[0], ["--version"], {
-      timeout: GEMINI_VERSION_PROBE_TIMEOUT_MS,
-      encoding: "utf8",
-      env,
-    });
-    versionParts = parseGeminiVersionParts(stdout);
+    versionParts = parseGeminiVersionParts(await probeGeminiVersionOutput(tokens[0], env));
   } catch {
     return commandShell;
   }
