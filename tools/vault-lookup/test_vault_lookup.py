@@ -9,7 +9,9 @@ import vault_lookup
 class TestResolveVault(unittest.TestCase):
     def test_clara_resolves_to_clara_path(self):
         cfg = vault_lookup.resolve_vault("clara")
-        self.assertEqual(cfg["path"], "/Volumes/homes/cw/Obsidian/Clara-Vault")
+        # Lokaler Read-only-Mirror (SMB-Netzlaufwerk ist vom launchd-Daemon nicht
+        # lesbar); wissen läuft weiter gegen den Clara-Brain (:7778).
+        self.assertEqual(cfg["path"], os.path.expanduser("~/.paperclip/clara-vault-mirror"))
         self.assertIn("7778", cfg["brain_url"])
 
     def test_whitestag_resolves_to_whitestag_path(self):

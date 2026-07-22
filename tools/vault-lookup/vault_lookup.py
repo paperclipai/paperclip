@@ -29,7 +29,12 @@ VAULTS = {
             "5bc3675e4fc5e83977107dce675e2fde2038fda0b70b818f24aa99dbf90fe764"),
     },
     "clara": {
-        "path": "/Volumes/homes/cw/Obsidian/Clara-Vault",
+        # Lokaler Read-only-Mirror von /Volumes/homes/cw/Obsidian/Clara-Vault
+        # (SMB). Der launchd-Daemon kann das SMB-Netzlaufwerk nicht lesen; die
+        # Datei-Modi (kontakt/termin/mail/dokument) lesen deshalb die lokale
+        # Kopie. `wissen` läuft weiter über den Clara-Brain (:7778, eigener
+        # Index). Sync: sync-clara-mirror.sh (rsync NAS->lokal, nur .md).
+        "path": os.path.expanduser("~/.paperclip/clara-vault-mirror"),
         "brain_url": "http://localhost:7778/",
         "brain_token": _token(
             "BRAIN_TOKEN_CLARA",
