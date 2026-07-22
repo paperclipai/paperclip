@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -22,6 +22,7 @@ import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { RUN_LIVENESS_NO_CONCRETE_ACTION_STATES } from "./run-liveness.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
@@ -905,10 +906,27 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           latestAt: sql<Date | null>`MAX(${issueComments.updatedAt})`,
         })
         .from(issueComments)
+        // Join the run that authored each comment so a no-op heartbeat's
+        // harness-posted run summary can be told apart from deliberate work.
+        .leftJoin(heartbeatRuns, eq(issueComments.createdByRunId, heartbeatRuns.id))
         .where(and(
           eq(issueComments.companyId, companyId),
           inArray(issueComments.issueId, subtreeIssueIds),
           isNull(issueComments.deletedAt),
+          // System-authored comments are housekeeping/notices (handoff notices,
+          // watchdog bookkeeping), not watched-subtree work activity.
+          or(isNull(issueComments.authorType), ne(issueComments.authorType, "system")),
+          // A scheduled-monitor dedup no-op heartbeat posts no deliberate
+          // comment, so the harness auto-posts its run summary as an
+          // `authorType=agent` transcript echo whose creating run produced no
+          // concrete action evidence. Excluding those runs keeps such an echo
+          // from bumping `latestCommentAt` and re-arming a stopped subtree.
+          // User comments (no run) and comments from runs that produced
+          // concrete action evidence still count and re-evaluate as before.
+          or(
+            isNull(heartbeatRuns.livenessState),
+            notInArray(heartbeatRuns.livenessState, [...RUN_LIVENESS_NO_CONCRETE_ACTION_STATES]),
+          ),
         ))
         .groupBy(issueComments.issueId),
       db

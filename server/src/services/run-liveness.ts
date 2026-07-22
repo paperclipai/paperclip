@@ -302,6 +302,19 @@ export function classifyRunActionability(input: RunLivenessClassificationInput):
   return "unknown";
 }
 
+// Succeeded-run liveness states where the run produced NO concrete action
+// evidence (see the `concreteEvidence` branches in `classifyRunLiveness`). A
+// run in one of these states makes no deliberate issue comment, so the harness
+// auto-posts its run summary as an `authorType=agent` comment — a transcript
+// echo of the heartbeat, not real subtree work. Consumers such as the task
+// watchdog must not let that echo count as watched-subtree activity, otherwise
+// a no-op scheduled-monitor heartbeat re-arms a stopped subtree on every wake.
+export const RUN_LIVENESS_NO_CONCRETE_ACTION_STATES: readonly RunLivenessState[] = [
+  "empty_response",
+  "plan_only",
+  "needs_followup",
+];
+
 export function classifyRunLiveness(input: RunLivenessClassificationInput): RunLivenessClassification {
   const evidence = normalizeEvidence(input.evidence);
   const continuationAttempt = normalizeContinuationAttempt(input.continuationAttempt);
