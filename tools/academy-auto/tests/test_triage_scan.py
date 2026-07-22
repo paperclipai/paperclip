@@ -208,3 +208,15 @@ def test_scan_all_dedup_keeps_first(tmp_path, monkeypatch):
     monkeypatch.setattr(scanmod, "scan_issues", lambda runner=None: [])
     out = scanmod.scan_all(tmp_path)
     assert len(out) == 1 and out[0].text == "ERSTER"  # erster gewinnt
+
+
+def test_scan_tsc_passes_timeout():
+    captured = {}
+    def runner(cmd, **kwargs):
+        captured.update(kwargs)
+        class R:
+            stdout = ""; stderr = ""; returncode = 0
+        return R()
+    scan_tsc(None, runner=runner)
+    from academy_auto.triage.scan import SCAN_TIMEOUT
+    assert captured.get("timeout") == SCAN_TIMEOUT

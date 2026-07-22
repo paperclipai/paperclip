@@ -65,3 +65,22 @@ def test_default_ranker_calls_claude(monkeypatch):
     assert out == '{"ok": true}'
     assert captured["cmd"][:len(rankmod.RANK_CMD)] == rankmod.RANK_CMD
     assert "mein prompt" in captured["cmd"]
+
+
+def test_rank_none_on_whitespace_task_prompt():
+    from academy_auto.triage.scan import Candidate
+    cands = [Candidate("todo", "todo:b.ts:1", "b.ts", 1, "x", 10)]
+    assert rank(cands, ranker=lambda p: '{"chosen_key":"todo:b.ts:1","task_prompt":"   ","reason":"y"}') is None
+
+
+def test_default_ranker_passes_timeout(monkeypatch):
+    from academy_auto.triage import rank as rankmod
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        class R:
+            stdout = "{}"; stderr = ""; returncode = 0
+        return R()
+    monkeypatch.setattr(rankmod.subprocess, "run", fake_run)
+    rankmod._default_ranker("p")
+    assert captured.get("timeout") == rankmod.RANK_TIMEOUT

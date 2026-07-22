@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 RANK_CMD = ["claude", "-p", "--tools", "", "--strict-mcp-config"]
 MAX_CANDIDATES = 30
+RANK_TIMEOUT = 180
 
 
 @dataclass
@@ -44,7 +45,7 @@ def _extract_json(raw: str):
 
 
 def _default_ranker(prompt: str) -> str:  # pragma: no cover - echter claude-Aufruf beim Deploy
-    proc = subprocess.run(RANK_CMD + [prompt], capture_output=True, text=True, check=False)
+    proc = subprocess.run(RANK_CMD + [prompt], capture_output=True, text=True, check=False, timeout=RANK_TIMEOUT)
     return getattr(proc, "stdout", "") or ""
 
 
@@ -62,7 +63,7 @@ def rank(candidates, baseline_red: bool = False, ranker=_default_ranker) -> "Pic
     key = data.get("chosen_key")
     if key not in {c.key for c in candidates}:
         return None
-    task_prompt = data.get("task_prompt")
+    task_prompt = (data.get("task_prompt") or "").strip()
     if not task_prompt:
         return None
     return Pick(chosen_key=key, task_prompt=task_prompt, reason=data.get("reason") or "")

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 GITHUB_REPO = "whitestagai/ki-kompass"
+SCAN_TIMEOUT = 180
 
 _EXCLUDE_PARTS = ("node_modules", ".git", "ios/Pods", "android/build", "dist", ".expo")
 _SOURCE_EXTS = (".ts", ".tsx", ".js", ".jsx")
@@ -89,7 +90,7 @@ def scan_tsc(root, runner=subprocess.run) -> list[Candidate]:
         proc = runner(
             ["npx", "tsc", "--noEmit"],
             cwd=str(root) if root is not None else None,
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, check=False, timeout=SCAN_TIMEOUT,
         )
     except Exception:
         return []
@@ -113,7 +114,7 @@ def scan_lint(root, runner=subprocess.run, repo_root=None) -> list[Candidate]:
         proc = runner(
             ["npx", "eslint", ".", "--format", "json"],
             cwd=str(root) if root is not None else None,
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, check=False, timeout=SCAN_TIMEOUT,
         )
     except Exception:
         return []
@@ -142,7 +143,7 @@ def scan_issues(runner=subprocess.run) -> list[Candidate]:
         proc = runner(
             ["gh", "issue", "list", "--repo", GITHUB_REPO, "--state", "open",
              "--json", "number,title,labels,body"],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, check=False, timeout=SCAN_TIMEOUT,
         )
     except Exception:
         return []

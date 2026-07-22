@@ -19,39 +19,40 @@ def run_once(cfg: Config, task_prompt, deps) -> RunReport:
         return RunReport(status="paused")
 
     cwd = deps.prepare_worktree(cfg)
+    quar = deps.quarantined(cfg)
 
     pick = None
     if task_prompt is None:
         pick = deps.triage_and_pick(cfg, cwd)
         if pick is None:
-            deps.send_digest(build_nothing_digest(deps.quarantined(cfg)))
+            deps.send_digest(build_nothing_digest(quar))
             return RunReport(status="nothing_to_do")
         task_prompt = pick.task_prompt
     reason = pick.reason if pick is not None else ""
 
     outcome = deps.implement_task(cfg, cwd, task_prompt)
     if not outcome.ok:
-        deps.send_digest(build_digest(task_prompt, outcome, _empty_gate(), committed=False, reason=reason))
+        deps.send_digest(build_digest(task_prompt, outcome, _empty_gate(), committed=False, reason=reason, quarantined=quar))
         return _finalize(deps, cfg, cwd, pick, "impl_failed")
 
     gate = deps.run_gate(cfg, cwd)
     if not gate.passed:
-        deps.send_digest(build_digest(task_prompt, outcome, gate, committed=False, reason=reason))
+        deps.send_digest(build_digest(task_prompt, outcome, gate, committed=False, reason=reason, quarantined=quar))
         return _finalize(deps, cfg, cwd, pick, "discarded")
 
     changed = deps.list_changed_files(cfg, cwd)
     scope = check_scope(cfg, changed)
     if not scope.ok:
-        deps.send_digest(build_digest(task_prompt, outcome, gate, committed=False, scope_violations=scope.violations, reason=reason))
+        deps.send_digest(build_digest(task_prompt, outcome, gate, committed=False, scope_violations=scope.violations, reason=reason, quarantined=quar))
         return _finalize(deps, cfg, cwd, pick, "discarded")
 
     lines = deps.count_diff_lines(cfg, cwd)
     if lines > cfg.max_diff_lines:
-        deps.send_digest(build_digest(task_prompt, outcome, gate, committed=False, cap_exceeded=True, reason=reason))
+        deps.send_digest(build_digest(task_prompt, outcome, gate, committed=False, cap_exceeded=True, reason=reason, quarantined=quar))
         return _finalize(deps, cfg, cwd, pick, "discarded")
 
     deps.commit_and_pr(cfg, cwd, task_prompt)
-    deps.send_digest(build_digest(task_prompt, outcome, gate, committed=True, reason=reason))
+    deps.send_digest(build_digest(task_prompt, outcome, gate, committed=True, reason=reason, quarantined=quar))
     return _finalize(deps, cfg, cwd, pick, "committed")
 
 
@@ -138,9 +139,10 @@ def _triage_and_pick(cfg, cwd):  # pragma: no cover - echte Triage beim Deploy
 
 
 def _record_triage_outcome(cfg, key, status):
+    from datetime import datetime, timezone
     from .triage.state import load_state, record_outcome, save_state
     state = load_state(cfg.triage_state_path)
-    record_outcome(state, key, status)
+    record_outcome(state, key, status, now=datetime.now(timezone.utc).isoformat())
     save_state(cfg.triage_state_path, state)
 
 

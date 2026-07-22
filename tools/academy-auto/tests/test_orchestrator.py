@@ -177,3 +177,14 @@ def test_run_once_impl_fail_resets_worktree(tmp_path):
     report = run_once(cfg, "manuell", deps)
     assert report.status == "impl_failed"
     assert len(resets) == 1  # auch manueller Fehllauf setzt Worktree zurück
+
+
+def test_run_once_committed_digest_lists_quarantine(tmp_path):
+    global sent, recorded, resets
+    sent, recorded, resets = [], [], []
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    deps = base_deps(quarantined=lambda cfg: ["todo:z.ts:9"])
+    report = run_once(cfg, "manuell", deps)
+    assert report.status == "committed"
+    assert any("todo:z.ts:9" in s for s in sent)  # Quarantäne auch im committed-Digest
