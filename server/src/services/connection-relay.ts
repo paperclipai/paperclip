@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectionTriggerDeliveries, connectionTriggers, issues, pluginCompanySettings, plugins, routines as routinesTable, toolConnections } from "@paperclipai/db";
+import { agentWakeupRequests, connectionTriggerDeliveries, connectionTriggers, issues, pluginCompanySettings, plugins, routines as routinesTable, toolConnections } from "@paperclipai/db";
 import {
   ConnectProtocolError,
   relayEnvelopeSchema,
@@ -108,7 +108,9 @@ export function connectionRelaySecretResolver(db: Db) {
   };
 }
 
-export type ConnectionRelayDispatcher = Record<RelayTrigger["destinationType"], (trigger: RelayTrigger, envelope: RelayEnvelope) => Promise<void>>;
+export type ConnectionRelayDispatchContext = { idempotencyKey: string };
+
+export type ConnectionRelayDispatcher = Record<RelayTrigger["destinationType"], (trigger: RelayTrigger, envelope: RelayEnvelope, context: ConnectionRelayDispatchContext) => Promise<void>>;
 
 function relayTriggerIdempotencyKey(envelope: RelayEnvelope, trigger: RelayTrigger) {
   return `connection-relay:${envelope.deliveryId}:${trigger.id}`;
@@ -116,32 +118,46 @@ function relayTriggerIdempotencyKey(envelope: RelayEnvelope, trigger: RelayTrigg
 
 export function connectionRelayDispatcher(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    heartbeat?: Pick<ReturnType<typeof heartbeatService>, "wakeup">;
+  } = {},
 ): ConnectionRelayDispatcher {
   const routines = routineService(db, { pluginWorkerManager: options.pluginWorkerManager });
-  const heartbeat = heartbeatService(db, { pluginWorkerManager: options.pluginWorkerManager });
+  const heartbeat = options.heartbeat ?? heartbeatService(db, { pluginWorkerManager: options.pluginWorkerManager });
   return {
-    routine: async (trigger, envelope) => {
+    routine: async (trigger, envelope, context) => {
       const routine = await db.select({ id: routinesTable.id }).from(routinesTable).where(and(eq(routinesTable.id, trigger.destinationId), eq(routinesTable.companyId, trigger.companyId))).limit(1).then((rows) => rows[0]);
       if (!routine) throw new Error("Relay routine destination is outside the connection company");
       await routines.runRoutine(trigger.destinationId, {
         source: "api",
         payload: { connectionRelay: envelope },
-        idempotencyKey: relayTriggerIdempotencyKey(envelope, trigger),
+        idempotencyKey: context.idempotencyKey,
       });
     },
-    issue_wake: async (trigger, envelope) => {
+    issue_wake: async (trigger, envelope, context) => {
       const issue = await db
         .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
         .from(issues)
         .where(and(eq(issues.id, trigger.destinationId), eq(issues.companyId, trigger.companyId)))
         .then((rows) => rows[0] ?? null);
       if (!issue?.assigneeAgentId) throw new Error("Relay issue destination has no assigned agent");
+      const existingWake = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, trigger.companyId),
+          eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
+          eq(agentWakeupRequests.idempotencyKey, context.idempotencyKey),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingWake) return;
       await heartbeat.wakeup(issue.assigneeAgentId, {
         source: "automation",
         triggerDetail: "system",
         reason: "connection_trigger",
-        idempotencyKey: relayTriggerIdempotencyKey(envelope, trigger),
+        idempotencyKey: context.idempotencyKey,
         requestedByActorType: "system",
         contextSnapshot: {
           issueId: issue.id,
@@ -151,7 +167,7 @@ export function connectionRelayDispatcher(
         },
       });
     },
-    plugin_worker: async (trigger, envelope) => {
+    plugin_worker: async (trigger, envelope, context) => {
       if (!options.pluginWorkerManager) throw new Error("Plugin worker manager is unavailable");
       const plugin = await db.select({ id: plugins.id }).from(plugins).where(eq(plugins.id, trigger.destinationId)).limit(1).then((rows) => rows[0]);
       const companySetting = await db.select({ enabled: pluginCompanySettings.enabled }).from(pluginCompanySettings).where(and(eq(pluginCompanySettings.pluginId, trigger.destinationId), eq(pluginCompanySettings.companyId, trigger.companyId))).limit(1).then((rows) => rows[0]);
@@ -170,7 +186,7 @@ export function connectionRelayDispatcher(
         headers: envelope.provider.headers,
         rawBody,
         parsedBody,
-        requestId: relayTriggerIdempotencyKey(envelope, trigger),
+        requestId: context.idempotencyKey,
       });
     },
   };
@@ -226,7 +242,9 @@ export async function processAndDispatchConnectionRelay(store: ConnectionRelaySt
   try {
     for (const trigger of result.triggers) {
       if (result.completedTriggerIds.includes(trigger.id)) continue;
-      await dispatcher[trigger.destinationType](trigger, result.envelope);
+      await dispatcher[trigger.destinationType](trigger, result.envelope, {
+        idempotencyKey: relayTriggerIdempotencyKey(result.envelope, trigger),
+      });
       await store.markTriggerCompleted?.({ connectionId: result.connection.id, deliveryId: result.envelope.deliveryId, triggerId: trigger.id, now: input.now });
     }
     await store.updateDelivery?.({ connectionId: result.connection.id, deliveryId: result.envelope.deliveryId, status: "delivered", now: input.now });

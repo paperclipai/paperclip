@@ -2,9 +2,9 @@ import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRelaySignature, type RelayEnvelope } from "@paperclip/connect-protocol";
-import { companies, connectionTriggerDeliveries, connectionTriggers, createDb, toolApplications, toolConnections } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, connectionTriggerDeliveries, connectionTriggers, createDb, issues, toolApplications, toolConnections } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { connectionRelayStore, pollRelayChannel, processAndDispatchConnectionRelay, processConnectionRelay, RELAY_DELIVERY_LEASE_MS, type ConnectionRelayStore, type RelayTrigger } from "./connection-relay.js";
+import { connectionRelayDispatcher, connectionRelayStore, pollRelayChannel, processAndDispatchConnectionRelay, processConnectionRelay, RELAY_DELIVERY_LEASE_MS, type ConnectionRelayStore, type RelayTrigger } from "./connection-relay.js";
 
 function fixture(overrides: Partial<RelayEnvelope> = {}) {
   const envelope: RelayEnvelope = {
@@ -110,6 +110,55 @@ describe("processConnectionRelay", () => {
     expect(fired).toEqual(["routine-1"]);
     expect(relayStore.deliveries).toEqual(new Set(["dl_01K0EXAMPLE"]));
     expect(relayStore.statuses).toEqual(["forwarded", "delivered"]);
+  });
+
+  it("reuses the same destination idempotency key after an incomplete handoff", async () => {
+    const { rawBody, relaySecret } = fixture();
+    const envelope = JSON.parse(rawBody.toString("utf8")) as RelayEnvelope;
+    let markAttempts = 0;
+    const retryStore: ConnectionRelayStore = {
+      async findConnectionByPublicRef() {
+        return { id: "connection-1", companyId: "company-1", enabled: true };
+      },
+      async claimDelivery({ triggerSnapshot }) {
+        return { claimed: true, completedTriggerIds: [], triggerSnapshot };
+      },
+      async listEnabledTriggers() {
+        return [{ id: "trigger-1", companyId: "company-1", destinationType: "routine", destinationId: "routine-1" }];
+      },
+      async updateDelivery() {},
+      async markTriggerCompleted() {
+        markAttempts += 1;
+        if (markAttempts === 1) throw new Error("simulated crash before progress persistence");
+      },
+    };
+    const idempotencyKeys: string[] = [];
+    const dispatcher = {
+      routine: async (_trigger: RelayTrigger, _envelope: RelayEnvelope, context: { idempotencyKey: string }) => {
+        idempotencyKeys.push(context.idempotencyKey);
+      },
+      issue_wake: async () => {},
+      plugin_worker: async () => {},
+    };
+    const input = {
+      rawBody,
+      signature: createRelaySignature({ body: rawBody, relaySecret, timestamp: "1784657045" }),
+      timestamp: "1784657045",
+      relaySecret,
+      now: new Date("2026-07-21T18:04:05.000Z"),
+    };
+
+    await expect(processAndDispatchConnectionRelay(retryStore, dispatcher, input)).resolves.toMatchObject({ status: "failed" });
+    const retryBody = Buffer.from(JSON.stringify({ ...envelope, attempt: 2 }));
+    await expect(processAndDispatchConnectionRelay(retryStore, dispatcher, {
+      ...input,
+      rawBody: retryBody,
+      signature: createRelaySignature({ body: retryBody, relaySecret, timestamp: "1784657045" }),
+    })).resolves.toMatchObject({ status: "delivered" });
+    expect(idempotencyKeys).toEqual([
+      "connection-relay:dl_01K0EXAMPLE:trigger-1",
+      "connection-relay:dl_01K0EXAMPLE:trigger-1",
+    ]);
   });
 
   it("records a dead letter after the final failed attempt", async () => {
@@ -270,6 +319,57 @@ describeEmbeddedPostgres("connection relay persistence", () => {
     expect(fired).toEqual(["11111111-1111-4111-8111-111111111111"]);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ deliveryId: "dl_01K0EXAMPLE", status: "delivered", connectionId: connection.id });
+  });
+
+  it("deduplicates an accepted issue wake when relay progress was not persisted", async () => {
+    const company = await db.insert(companies).values({ name: "Relay Wake", issuePrefix: "RLW" }).returning().then((rows) => rows[0]!);
+    const agent = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Paused Relay Agent",
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    }).returning().then((rows) => rows[0]!);
+    const issue = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Relay wake target",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agent.id,
+    }).returning().then((rows) => rows[0]!);
+    const trigger: RelayTrigger = {
+      id: "55555555-5555-4555-8555-555555555555",
+      companyId: company.id,
+      destinationType: "issue_wake",
+      destinationId: issue.id,
+    };
+    const envelope = JSON.parse(fixture().rawBody.toString("utf8")) as RelayEnvelope;
+    const dispatcher = connectionRelayDispatcher(db, {
+      heartbeat: {
+        wakeup: async (agentId, options) => {
+          await db.insert(agentWakeupRequests).values({
+            companyId: company.id,
+            agentId,
+            source: options?.source ?? "automation",
+            triggerDetail: options?.triggerDetail ?? null,
+            reason: options?.reason ?? null,
+            status: "queued",
+            idempotencyKey: options?.idempotencyKey ?? null,
+          });
+          return null;
+        },
+      },
+    });
+    const context = { idempotencyKey: `connection-relay:${envelope.deliveryId}:${trigger.id}` };
+
+    await dispatcher.issue_wake(trigger, envelope, context);
+    await dispatcher.issue_wake(trigger, envelope, context);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, context.idempotencyKey));
+    expect(wakeups).toHaveLength(1);
   });
 
   it("routes retries to the trigger set captured on the first attempt, not newly enabled triggers", async () => {
