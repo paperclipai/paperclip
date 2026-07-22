@@ -31,9 +31,13 @@ import type {
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
+  PluginEnvironmentSyncResult,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
+import { performSyncIn, performSyncOut } from "./file-sync.js";
 
 interface DaytonaDriverConfig {
   apiKey: string | null;
@@ -666,6 +670,17 @@ function buildLoginShellScript(input: {
   return lines.join(" && ");
 }
 
+// The workspace remote dir is the confinement root for native file sync. It is
+// recorded on the lease metadata at acquire/resume time; require it so a sync can
+// never run without a concrete root to confine every sandbox path against.
+function resolveSyncRemoteDir(lease: { metadata?: Record<string, unknown> | null }): string {
+  const remoteCwd = lease.metadata?.remoteCwd;
+  if (typeof remoteCwd === "string" && remoteCwd.trim().length > 0) {
+    return remoteCwd.trim();
+  }
+  throw new Error("Daytona file sync requires a workspace remote dir on the lease metadata.");
+}
+
 async function createSandbox(
   params: PluginEnvironmentAcquireLeaseParams | PluginEnvironmentProbeParams | PluginEnvironmentStartInteractiveSetupParams,
   config: DaytonaDriverConfig,
@@ -1244,6 +1259,51 @@ const plugin = definePlugin({
     const sandbox = await getSandbox(config, params.lease.providerLeaseId);
     await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
     return await executeOneShot(sandbox, params, config);
+  },
+
+  // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)
+  // makes the worker advertise `environmentSyncIn`/`environmentSyncOut`, so the
+  // host runner routes Daytona workspace/asset transfers through the SDK's batch
+  // `uploadFiles` (plus host-side tarballs for directories) instead of the
+  // base64-over-exec fallback. Providers that do not define these keep the
+  // byte-identical fallback.
+  async onEnvironmentSyncIn(
+    params: PluginEnvironmentSyncInParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    if (!params.lease.providerLeaseId) {
+      throw new Error("Daytona syncIn requires a provider lease ID.");
+    }
+    const config = parseDriverConfig(params.config);
+    const remoteDir = resolveSyncRemoteDir(params.lease);
+    const timeoutSeconds = toTimeoutSeconds(config.timeoutMs);
+    const sandbox = await getSandbox(config, params.lease.providerLeaseId);
+    await ensureSandboxStarted(sandbox, timeoutSeconds);
+    return await performSyncIn({
+      sandbox,
+      operations: params.operations,
+      remoteDir,
+      timeoutSeconds,
+    });
+  },
+
+  // Opt-in native outbound transfer. See onEnvironmentSyncIn.
+  async onEnvironmentSyncOut(
+    params: PluginEnvironmentSyncOutParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    if (!params.lease.providerLeaseId) {
+      throw new Error("Daytona syncOut requires a provider lease ID.");
+    }
+    const config = parseDriverConfig(params.config);
+    const remoteDir = resolveSyncRemoteDir(params.lease);
+    const timeoutSeconds = toTimeoutSeconds(config.timeoutMs);
+    const sandbox = await getSandbox(config, params.lease.providerLeaseId);
+    await ensureSandboxStarted(sandbox, timeoutSeconds);
+    return await performSyncOut({
+      sandbox,
+      operations: params.operations,
+      remoteDir,
+      timeoutSeconds,
+    });
   },
 });
 
