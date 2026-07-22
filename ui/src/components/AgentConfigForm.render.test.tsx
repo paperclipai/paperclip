@@ -65,10 +65,16 @@ vi.mock("../adapters", () => ({
   getUIAdapter: (type: string) => ({
     type,
     label: type === "hermes_gateway" ? "Hermes Gateway" : "Codex",
-    ConfigFields: ({ adapterType }: { adapterType: string }) =>
+    ConfigFields: ({
+      adapterType,
+      configurationSection,
+    }: {
+      adapterType: string;
+      configurationSection?: "runtime" | "danger";
+    }) =>
       adapterType === "hermes_gateway"
         ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
-        : null,
+        : <div data-testid={`adapter-fields-${configurationSection ?? "runtime"}`}>{configurationSection ?? "runtime"} adapter fields</div>,
     buildAdapterConfig: (values: { model?: string }) => ({
       model: values.model || undefined,
     }),
@@ -191,7 +197,11 @@ function setInputValue(input: HTMLInputElement, value: string) {
 async function renderForm(
   environments: Environment[],
   agentOverrides: Partial<Agent> = {},
-  options: { showAdapterTestEnvironmentButton?: boolean } = {},
+  options: {
+    showAdapterTestEnvironmentButton?: boolean;
+    configurationShell?: boolean;
+    visibleConfigurationSections?: ReadonlySet<string>;
+  } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
 
@@ -216,6 +226,9 @@ async function renderForm(
             hidePromptTemplate
             showAdapterTypeField={false}
             showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
+            configurationShell={options.configurationShell}
+            visibleConfigurationSections={options.visibleConfigurationSections}
+            sectionLayout={options.configurationShell ? "cards" : undefined}
           />
         </TooltipProvider>
       </QueryClientProvider>,
@@ -356,6 +369,40 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("E2B · sandbox");
+  });
+
+  it("re-parents environment and danger fields outside Runtime in the configuration shell", async () => {
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({ id: "sandbox-1", name: "E2B", driver: "sandbox", config: { provider: "e2b" } }),
+      ],
+      {
+        adapterConfig: {
+          command: "codex",
+          cwd: "/legacy/path",
+          dangerouslyBypassApprovalsAndSandbox: true,
+          env: { EXAMPLE: "value" },
+        },
+      },
+      {
+        configurationShell: true,
+        visibleConfigurationSections: new Set(["runtime", "environment", "schedule", "danger"]),
+      },
+    );
+    roots.push(result.root);
+
+    const runtime = result.container.querySelector("#config-runtime");
+    const environment = result.container.querySelector("#config-environment");
+    const danger = result.container.querySelector("#config-danger");
+
+    expect(result.container.textContent).toContain("Advanced runtime");
+    expect(result.container.textContent).toContain("runtime adapter fields");
+    expect(runtime?.textContent).not.toContain("Environment variables");
+    expect(runtime?.textContent).not.toContain("Working directory (deprecated)");
+    expect(environment?.parentElement?.textContent).toContain("Environment variables");
+    expect(danger?.textContent).toContain("danger adapter fields");
+    expect(danger?.textContent).toContain("Working directory (deprecated)");
   });
 
   it("keeps an existing non-runnable override visible so it can be cleared", async () => {

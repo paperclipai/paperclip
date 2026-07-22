@@ -30,6 +30,7 @@ export function CodexLocalConfigFields({
   mark,
   models,
   hideInstructionsFile,
+  configurationSection = "runtime",
 }: AdapterConfigFieldsProps) {
   const rawEngine = isCreate
     ? values!.codexEngine ?? "auto"
@@ -52,6 +53,29 @@ export function CodexLocalConfigFields({
     : fastModeSupported
       ? "Fast mode consumes credits/tokens much faster than standard Codex runs."
       : `Fast mode currently only works on ${supportedModelsLabel} or manual model IDs. Paperclip will ignore this toggle until the model is switched.`;
+
+  if (configurationSection === "danger") {
+    return (
+      <ToggleField
+        label="Bypass sandbox"
+        hint={help.dangerouslyBypassSandbox}
+        checked={
+          isCreate
+            ? values!.dangerouslyBypassSandbox
+            : eff(
+                "adapterConfig",
+                "dangerouslyBypassApprovalsAndSandbox",
+                bypassEnabled,
+              )
+        }
+        onChange={(v) =>
+          isCreate
+            ? set!({ dangerouslyBypassSandbox: v })
+            : mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", v)
+        }
+      />
+    );
+  }
 
   return (
     <>
@@ -209,24 +233,6 @@ export function CodexLocalConfigFields({
           </div>
         </Field>
       )}
-      <ToggleField
-        label="Bypass sandbox"
-        hint={help.dangerouslyBypassSandbox}
-        checked={
-          isCreate
-            ? values!.dangerouslyBypassSandbox
-            : eff(
-                "adapterConfig",
-                "dangerouslyBypassApprovalsAndSandbox",
-                bypassEnabled,
-              )
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslyBypassSandbox: v })
-            : mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", v)
-        }
-      />
       <ToggleField
         label="Enable search"
         hint={help.search}

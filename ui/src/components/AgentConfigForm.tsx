@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
@@ -94,6 +94,7 @@ type AgentConfigFormProps = {
   identitySectionTitle?: string;
   configurationShell?: boolean;
   visibleConfigurationSections?: ReadonlySet<string>;
+  configurationShellAfterSchedule?: ReactNode;
   /** Hide the prompt template field from the Identity section (used when it's shown in a separate Prompts tab). */
   hidePromptTemplate?: boolean;
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
@@ -964,6 +965,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const configurationShell = props.configurationShell === true;
   const sectionVisible = (section: string) =>
     !props.identityOnly && (!props.visibleConfigurationSections || props.visibleConfigurationSections.has(section));
+  const advancedRuntimeKeys = [
+    adapterCommandField,
+    "extraArgs",
+    "engine",
+    "agentCommand",
+    "mode",
+    "permissionMode",
+    "stateDir",
+    "warmProcessIdleMs",
+    "timeoutSec",
+    "graceSec",
+    "chrome",
+  ];
+  const hasAdvancedRuntimeOverrides = !isCreate && advancedRuntimeKeys.some(
+    (key) => overlay.adapterConfig[key] !== undefined || config[key] !== undefined,
+  );
+  const [advancedRuntimeOpen, setAdvancedRuntimeOpen] = useState(hasAdvancedRuntimeOverrides);
+  useEffect(() => {
+    if (hasAdvancedRuntimeOverrides) setAdvancedRuntimeOpen(true);
+  }, [hasAdvancedRuntimeOverrides]);
+  const hasAdapterDangerFields =
+    adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local";
 
   function updateMaxTurnContinuation(patch: Record<string, unknown>) {
     mark("heartbeat", "maxTurnContinuation", {
@@ -1131,6 +1154,38 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       ) : null)}
 
+      {configurationShell && sectionVisible("environment") && isLocal && (
+        <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <Field label="Environment variables" hint={help.envVars}>
+            <EnvironmentVariablesEditor
+              ref={environmentVariablesEditorRef}
+              value={
+                isCreate
+                  ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+                  : eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>)
+              }
+              secrets={availableSecrets}
+              userSecretDefinitions={userSecretDefinitions}
+              onCreateSecret={async (name, value) => createSecret.mutateAsync({ name, value })}
+              onChange={(env) =>
+                isCreate
+                  ? set!({ envBindings: env ?? {}, envVars: "" })
+                  : mark("adapterConfig", "env", env)
+              }
+            />
+          </Field>
+          {!isCreate && (
+            <Field label="Secret access" hint={help.secretAccess}>
+              <AgentSecretAccessEditor
+                config={{ ...config, ...overlay.adapterConfig }}
+                secrets={availableSecrets}
+                onChange={applyAccessGrants}
+              />
+            </Field>
+          )}
+        </div>
+      )}
+
       {/* ---- Adapter ---- */}
       {sectionVisible("runtime") && <div id={configurationShell ? "config-runtime" : undefined} className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), configurationShell && "scroll-mt-24")}>
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
@@ -1221,7 +1276,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {/* Working directory */}
-          {showLegacyWorkingDirectoryField && (
+          {showLegacyWorkingDirectoryField && !configurationShell && (
             <Field label="Working directory (deprecated)" hint={help.cwd}>
               <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
                 <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -1256,10 +1311,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {sectionVisible("runtime") && isLocal && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">{configurationShell ? "Advanced runtime" : "Permissions & Configuration"}</h3>
+            ? configurationShell
+              ? (
+                <button
+                  type="button"
+                  className="mb-3 flex w-full items-center justify-between text-sm font-medium"
+                  aria-expanded={advancedRuntimeOpen}
+                  onClick={() => setAdvancedRuntimeOpen((open) => !open)}
+                >
+                  <span>Advanced runtime</span>
+                  <ChevronDown className={cn("h-4 w-4 transition-transform", advancedRuntimeOpen && "rotate-180")} />
+                </button>
+              )
+              : <h3 className="text-sm font-medium mb-3">Permissions & Configuration</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          {(!configurationShell || advancedRuntimeOpen) && <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
               <Field label="Command" hint={help.localCommand}>
                 <DraftInput
                   value={
@@ -1379,7 +1446,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     )}
                 </>
               )}
-              {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
+              {!configurationShell && !isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
                   <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
                     <MarkdownEditor
@@ -1408,7 +1475,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {adapterType === "claude_local" && (
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}
-              <uiAdapter.ConfigFields {...adapterFieldProps} />
+              <uiAdapter.ConfigFields {...adapterFieldProps} configurationSection="runtime" />
 
               <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
                 <DraftInput
@@ -1427,7 +1494,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              <Field label="Environment variables" hint={help.envVars}>
+              {!configurationShell && <Field label="Environment variables" hint={help.envVars}>
                 <EnvironmentVariablesEditor
                   ref={environmentVariablesEditorRef}
                   value={
@@ -1448,9 +1515,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       : mark("adapterConfig", "env", env)
                   }
                 />
-              </Field>
+              </Field>}
 
-              {!isCreate && (
+              {!configurationShell && !isCreate && (
                 <Field label="Secret access" hint={help.secretAccess}>
                   <AgentSecretAccessEditor
                     config={{ ...config, ...overlay.adapterConfig }}
@@ -1489,7 +1556,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   </Field>
                 </>
               )}
-          </div>
+          </div>}
         </div>
       )}
 
@@ -1616,6 +1683,60 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       ) : null)}
+
+      {configurationShell ? props.configurationShellAfterSchedule : null}
+
+      {configurationShell && sectionVisible("danger") && (
+        <div id="config-danger" className="scroll-mt-24">
+          <h3 className="text-sm font-medium mb-3">Danger &amp; Legacy</h3>
+          <div className="border border-border rounded-lg p-4 space-y-3">
+            {hasAdapterDangerFields ? (
+              <uiAdapter.ConfigFields {...adapterFieldProps} configurationSection="danger" />
+            ) : (
+              <p className="text-xs text-muted-foreground">This adapter has no permission or sandbox bypass settings.</p>
+            )}
+            {showLegacyWorkingDirectoryField && (
+              <Field label="Working directory (deprecated)" hint={help.cwd}>
+                <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
+                  <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <DraftInput
+                    value={isCreate ? val!.cwd : eff("adapterConfig", "cwd", String(config.cwd ?? ""))}
+                    onCommit={(value) =>
+                      isCreate ? set!({ cwd: value }) : mark("adapterConfig", "cwd", value || undefined)
+                    }
+                    immediate
+                    className="w-full bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40"
+                    placeholder="/path/to/project"
+                  />
+                  <ChoosePathButton />
+                </div>
+              </Field>
+            )}
+            {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
+              <>
+                <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
+                  <MarkdownEditor
+                    value={eff("adapterConfig", "bootstrapPromptTemplate", config.bootstrapPromptTemplate)}
+                    onChange={(value) => mark("adapterConfig", "bootstrapPromptTemplate", value || undefined)}
+                    placeholder="Optional initial setup prompt for the first run"
+                    contentClassName="min-h-(--sz-44px) text-sm font-mono"
+                    imageUploadHandler={async (file) => {
+                      const asset = await uploadMarkdownImage.mutateAsync({
+                        file,
+                        namespace: `agents/${props.agent.id}/bootstrap-prompt`,
+                      });
+                      return asset.contentPath;
+                    }}
+                  />
+                </Field>
+                <p className="text-xs text-muted-foreground">
+                  Legacy bootstrap content remains supported, but new behavior should live in the prompt template or instructions file.
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
     </div>
   );
