@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
@@ -222,6 +222,11 @@ const claudeThinkingEffortOptions = [
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
 ] as const;
+
+// Present thinking effort as a single-click segmented button group when the
+// option set is small (Recognition-over-Recall, Fitts — all choices visible),
+// and fall back to a dropdown only for adapters whose effort list is long.
+const THINKING_EFFORT_SEGMENTED_MAX_OPTIONS = 5;
 
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
@@ -1331,7 +1336,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
               {showThinkingEffort && (
                 <>
-                  <ThinkingEffortDropdown
+                  <ThinkingEffortControl
                     value={currentThinkingEffort}
                     options={thinkingEffortOptions}
                     onChange={(v) =>
@@ -2237,6 +2242,97 @@ function CheapModelSection({
         </p>
       ) : null}
     </div>
+  );
+}
+
+function ThinkingEffortControl({
+  value,
+  options,
+  onChange,
+  open,
+  onOpenChange,
+}: {
+  value: string;
+  options: ReadonlyArray<{ id: string; label: string }>;
+  onChange: (id: string) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  // Small option sets render as a segmented group (matches the runtime
+  // wireframe); long lists stay a dropdown to avoid overflow.
+  if (options.length <= THINKING_EFFORT_SEGMENTED_MAX_OPTIONS) {
+    return <ThinkingEffortSegmented value={value} options={options} onChange={onChange} />;
+  }
+  return (
+    <ThinkingEffortDropdown
+      value={value}
+      options={options}
+      onChange={onChange}
+      open={open}
+      onOpenChange={onOpenChange}
+    />
+  );
+}
+
+function ThinkingEffortSegmented({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: ReadonlyArray<{ id: string; label: string }>;
+  onChange: (id: string) => void;
+}) {
+  const selected = options.find((option) => option.id === value) ?? options[0];
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const idx = options.findIndex((option) => option.id === selected?.id);
+    if (idx === -1) return;
+    let nextIdx: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIdx = (idx + 1) % options.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIdx = (idx - 1 + options.length) % options.length;
+    }
+    if (nextIdx !== null) {
+      event.preventDefault();
+      onChange(options[nextIdx].id);
+    }
+  };
+
+  return (
+    <Field label="Thinking effort" hint={help.thinkingEffort}>
+      <div
+        role="radiogroup"
+        aria-label="Thinking effort"
+        onKeyDown={handleKeyDown}
+        className="inline-flex w-full items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+      >
+        {options.map((option) => {
+          const isSelected = option.id === selected?.id;
+          return (
+            <button
+              key={option.id || "auto"}
+              type="button"
+              role="radio"
+              aria-checked={isSelected}
+              data-state={isSelected ? "checked" : "unchecked"}
+              tabIndex={isSelected ? 0 : -1}
+              onClick={() => onChange(option.id)}
+              className={cn(
+                "flex-1 rounded-[5px] px-2 py-1 text-sm whitespace-nowrap transition-colors",
+                "focus-visible:outline-1 focus-visible:outline-ring",
+                isSelected
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    </Field>
   );
 }
 
