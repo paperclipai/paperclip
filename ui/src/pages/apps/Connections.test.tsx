@@ -88,7 +88,7 @@ function connection(overrides: Record<string, unknown>) {
     applicationId: "app-x",
     name: "GitHub",
     connectionKind: "managed",
-    transport: "remote_http",
+    transport: "mcp_remote",
     status: "active",
     transportConfig: {},
     config: {},
