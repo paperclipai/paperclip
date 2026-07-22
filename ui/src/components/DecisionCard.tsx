@@ -315,11 +315,11 @@ export function DecisionCard({
         <h3 className="min-w-0 flex-1 text-base font-semibold text-foreground">{decision.title}</h3>
         <div className="flex shrink-0 items-center gap-1.5">
           {open && hasCancelTree && (
-            <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide", BADGE.destructive)}>
+            <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-wide", BADGE.destructive)}>
               <ShieldAlert className="h-3 w-3" aria-hidden /> Destructive
             </span>
           )}
-          <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide", BADGE[tone])}>
+          <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-wide", BADGE[tone])}>
             {badgeLabel}
           </span>
         </div>
@@ -432,7 +432,7 @@ export function DecisionCard({
                       {option.label}
                     </span>
                     {blockedStale && (
-                      <span className="shrink-0 rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-200">
+                      <span className="shrink-0 rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium text-amber-800 dark:text-amber-200">
                         Blocked · stale
                       </span>
                     )}
