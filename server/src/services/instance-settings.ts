@@ -67,6 +67,105 @@ function stripServerManagedExperimentalPatchFields(
   return patchable as PatchInstanceExperimentalSettings;
 }
 
+const OVERRIDES_ENV_VAR = "PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES";
+
+export interface InstanceSettingsOverrides {
+  general: Record<string, unknown>;
+  experimental: Record<string, unknown>;
+}
+
+function emptyOverrides(): InstanceSettingsOverrides {
+  return { general: {}, experimental: {} };
+}
+
+const warnedOverrideInputs = new Set<string>();
+
+function warnOverridesOnce(cacheKey: string, message: string) {
+  if (warnedOverrideInputs.has(cacheKey)) return;
+  warnedOverrideInputs.add(cacheKey);
+  console.warn(message);
+}
+
+/**
+ * Parses PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES (a JSON object with optional
+ * "general" / "experimental" sections). Overridden keys win over the stored
+ * instance settings at read time, letting operators pin settings declaratively
+ * from deployment config. Invalid JSON or an invalid section is warned about
+ * once and ignored (the stored settings apply).
+ */
+export function parseInstanceSettingsOverrides(
+  env: Record<string, string | undefined> = process.env,
+): InstanceSettingsOverrides {
+  const raw = env[OVERRIDES_ENV_VAR]?.trim();
+  if (!raw) return emptyOverrides();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    warnOverridesOnce(raw, `${OVERRIDES_ENV_VAR} is not valid JSON; ignoring overrides`);
+    return emptyOverrides();
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    warnOverridesOnce(raw, `${OVERRIDES_ENV_VAR} must be a JSON object; ignoring overrides`);
+    return emptyOverrides();
+  }
+
+  const sections = parsed as Record<string, unknown>;
+  const sectionSchemas = {
+    general: instanceGeneralSettingsSchema.partial().strip(),
+    experimental: instanceExperimentalSettingsSchema.partial().strip(),
+  } as const;
+
+  const result = emptyOverrides();
+  for (const key of ["general", "experimental"] as const) {
+    if (sections[key] === undefined) continue;
+    const sectionParsed = sectionSchemas[key].safeParse(sections[key]);
+    if (!sectionParsed.success) {
+      warnOverridesOnce(
+        `${raw}:${key}`,
+        `${OVERRIDES_ENV_VAR}.${key} failed validation; ignoring this section`,
+      );
+      continue;
+    }
+    result[key] = sectionParsed.data as Record<string, unknown>;
+  }
+  result.experimental = stripServerManagedExperimentalPatchFields(
+    result.experimental,
+  ) as Record<string, unknown>;
+  return result;
+}
+
+/**
+ * Override-aware resolution: normalize the stored value, spread the env
+ * overrides on top, and re-normalize. Nested objects (backupRetention) are
+ * overridden whole, matching the existing shallow patch semantics.
+ */
+export function resolveGeneralSettings(
+  raw: unknown,
+  overrides: Record<string, unknown> = {},
+): InstanceGeneralSettings {
+  return normalizeGeneralSettings({ ...normalizeGeneralSettings(raw), ...overrides });
+}
+
+export function resolveExperimentalSettings(
+  raw: unknown,
+  overrides: Record<string, unknown> = {},
+): InstanceExperimentalSettings {
+  return normalizeExperimentalSettings({ ...normalizeExperimentalSettings(raw), ...overrides });
+}
+
+/** Env-overridden keys are read-time-forced and must never persist via a patch. */
+export function stripOverriddenPatchKeys<T extends Record<string, unknown>>(
+  patch: T,
+  overrideKeys: string[],
+): T {
+  if (overrideKeys.length === 0) return patch;
+  const next: Record<string, unknown> = { ...patch };
+  for (const key of overrideKeys) delete next[key];
+  return next as T;
+}
+
 export function applyExperimentalSettingsPatch(
   current: unknown,
   patch: PatchInstanceExperimentalSettings | Record<string, unknown>,
@@ -264,18 +363,23 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   };
 }
 
-function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
+function toInstanceSettings(
+  row: typeof instanceSettings.$inferSelect,
+  overrides: InstanceSettingsOverrides = emptyOverrides(),
+): InstanceSettings {
   return {
     id: row.id,
     defaultEnvironmentId: row.defaultEnvironmentId ?? null,
-    general: normalizeGeneralSettings(row.general),
-    experimental: normalizeExperimentalSettings(row.experimental),
+    general: resolveGeneralSettings(row.general, overrides.general),
+    experimental: resolveExperimentalSettings(row.experimental, overrides.experimental),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   } as InstanceSettings;
 }
 
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
+  const overrides = parseInstanceSettingsOverrides(options.runtimeEnv ?? process.env);
+
   async function getOrCreateRow() {
     const existing = await db
       .select()
@@ -315,7 +419,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   return {
-    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
+    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow(), overrides),
 
     update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
@@ -330,24 +434,28 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current);
+      return toInstanceSettings(updated ?? current, overrides);
     },
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
       const row = await getOrCreateRow();
-      return normalizeGeneralSettings(row.general);
+      return resolveGeneralSettings(row.general, overrides.general);
     },
 
     getExperimental: async (): Promise<InstanceExperimentalSettings> => {
       const row = await getOrCreateRow();
-      return normalizeExperimentalSettings(row.experimental);
+      return resolveExperimentalSettings(row.experimental, overrides.experimental);
     },
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
+      const effectivePatch = stripOverriddenPatchKeys(
+        patch as Record<string, unknown>,
+        Object.keys(overrides.general),
+      );
       const nextGeneral = normalizeGeneralSettings({
         ...normalizeGeneralSettings(current.general),
-        ...patch,
+        ...effectivePatch,
       });
       const now = new Date();
       const [updated] = await db
@@ -358,12 +466,16 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current);
+      return toInstanceSettings(updated ?? current, overrides);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, patch, options);
+      const effectivePatch = stripOverriddenPatchKeys(
+        patch as Record<string, unknown>,
+        Object.keys(overrides.experimental),
+      ) as PatchInstanceExperimentalSettings;
+      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, effectivePatch, options);
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)
@@ -373,7 +485,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current);
+      return toInstanceSettings(updated ?? current, overrides);
     },
 
     listCompanyIds: async (): Promise<string[]> =>

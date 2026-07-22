@@ -2,8 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { InstanceExperimentalSettings } from "@paperclipai/shared";
 import {
   applyExperimentalSettingsPatch,
+  instanceSettingsService,
   normalizeExperimentalSettings,
   resolveWorktreeRunExecutionActivationState,
+  parseInstanceSettingsOverrides,
+  resolveExperimentalSettings,
+  resolveGeneralSettings,
+  stripOverriddenPatchKeys,
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
@@ -352,5 +357,128 @@ describe("instance settings service", () => {
     });
     expect(getExperimental).not.toHaveBeenCalled();
   });
+});
 
+describe("parseInstanceSettingsOverrides", () => {
+  it("returns empty overrides when the env var is unset or blank", () => {
+    expect(parseInstanceSettingsOverrides({})).toEqual({ general: {}, experimental: {} });
+    expect(parseInstanceSettingsOverrides({ PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: "  " })).toEqual({
+      general: {}, experimental: {},
+    });
+  });
+
+  it("parses experimental boolean overrides", () => {
+    const overrides = parseInstanceSettingsOverrides({
+      PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"experimental":{"enableApps":true,"enablePipelines":true}}',
+    });
+    expect(overrides.experimental).toEqual({ enableApps: true, enablePipelines: true });
+    expect(overrides.general).toEqual({});
+  });
+
+  it("ignores invalid JSON entirely", () => {
+    expect(parseInstanceSettingsOverrides({ PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: "{nope" })).toEqual({
+      general: {}, experimental: {},
+    });
+  });
+
+  it("strips unknown keys within a section", () => {
+    const overrides = parseInstanceSettingsOverrides({
+      PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"experimental":{"enableApps":true,"notAFlag":true}}',
+    });
+    expect(overrides.experimental).toEqual({ enableApps: true });
+  });
+
+  it("drops a section that fails validation", () => {
+    const overrides = parseInstanceSettingsOverrides({
+      PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"experimental":{"enableApps":"yes"},"general":{"keyboardShortcuts":true}}',
+    });
+    expect(overrides.experimental).toEqual({});
+    expect(overrides.general).toEqual({ keyboardShortcuts: true });
+  });
+
+  it("strips server-managed worktree activation fields from experimental overrides", () => {
+    const overrides = parseInstanceSettingsOverrides({
+      PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES:
+        '{"experimental":{"enableApps":true,"worktreeRunExecutionActivatedAt":"2026-01-01T00:00:00Z"}}',
+    });
+    expect(overrides.experimental).toEqual({ enableApps: true });
+  });
+});
+
+describe("override resolution", () => {
+  it("env overrides win over stored values", () => {
+    expect(resolveExperimentalSettings({ enableApps: false }, { enableApps: true }).enableApps).toBe(true);
+  });
+
+  it("stored values survive when not overridden", () => {
+    const resolved = resolveExperimentalSettings({ enablePipelines: true }, { enableApps: true });
+    expect(resolved.enablePipelines).toBe(true);
+    expect(resolved.enableApps).toBe(true);
+    expect(resolved.enableCases).toBe(false);
+  });
+
+  it("general overrides merge over stored general settings", () => {
+    const resolved = resolveGeneralSettings({ keyboardShortcuts: true }, { censorUsernameInLogs: true });
+    expect(resolved.keyboardShortcuts).toBe(true);
+    expect(resolved.censorUsernameInLogs).toBe(true);
+  });
+});
+
+describe("stripOverriddenPatchKeys", () => {
+  it("removes keys that are env-overridden so patches cannot persist forced values", () => {
+    expect(stripOverriddenPatchKeys({ enableApps: false, enableCases: true }, ["enableApps"])).toEqual({
+      enableCases: true,
+    });
+  });
+
+  it("returns the patch unchanged when nothing is overridden", () => {
+    const patch = { enableCases: true };
+    expect(stripOverriddenPatchKeys(patch, [])).toEqual(patch);
+  });
+});
+
+function makeSettingsRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "row-1",
+    singletonKey: "default",
+    defaultEnvironmentId: null,
+    general: {},
+    experimental: {},
+    visibility: {},
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
+  };
+}
+
+function makeReadOnlyDb(row: unknown) {
+  return {
+    select: () => ({ from: () => ({ where: () => Promise.resolve([row]) }) }),
+  } as never;
+}
+
+describe("instanceSettingsService with env overrides", () => {
+  it("get() returns override-merged experimental settings", async () => {
+    const svc = instanceSettingsService(makeReadOnlyDb(makeSettingsRow()), {
+      runtimeEnv: { PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"experimental":{"enableApps":true}}' },
+    });
+    const settings = await svc.get();
+    expect(settings.experimental.enableApps).toBe(true);
+  });
+
+  it("getExperimental() applies overrides over stored values", async () => {
+    const svc = instanceSettingsService(
+      makeReadOnlyDb(makeSettingsRow({ experimental: { enableApps: false, enableCases: true } })),
+      { runtimeEnv: { PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"experimental":{"enableApps":true}}' } },
+    );
+    const experimental = await svc.getExperimental();
+    expect(experimental.enableApps).toBe(true);
+    expect(experimental.enableCases).toBe(true);
+  });
+
+  it("getExperimental() without the env var behaves exactly as before", async () => {
+    const svc = instanceSettingsService(makeReadOnlyDb(makeSettingsRow()), { runtimeEnv: {} });
+    const experimental = await svc.getExperimental();
+    expect(experimental.enableApps).toBe(false);
+  });
 });

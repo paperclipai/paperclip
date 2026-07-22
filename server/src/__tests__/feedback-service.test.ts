@@ -519,6 +519,57 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     });
   });
 
+  it("does not persist an env-overridden censorUsernameInLogs value on the sharing-preference write-back", async () => {
+    const { issueId, commentId } = await seedIssueWithAgentComment();
+
+    await db.insert(instanceSettings).values({
+      singletonKey: "default",
+      general: {
+        censorUsernameInLogs: true,
+        feedbackDataSharingPreference: "prompt",
+      },
+      experimental: {},
+    });
+
+    const previousOverrides = process.env.PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES;
+    process.env.PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES = JSON.stringify({
+      general: { censorUsernameInLogs: false },
+    });
+
+    try {
+      const result = await svc.saveIssueVote({
+        issueId,
+        targetType: "issue_comment",
+        targetId: commentId,
+        vote: "up",
+        authorUserId: "user-1",
+        allowSharing: true,
+      });
+
+      expect(result.persistedSharingPreference).toBe("allowed");
+
+      const settings = await db
+        .select()
+        .from(instanceSettings)
+        .where(eq(instanceSettings.singletonKey, "default"))
+        .then((rows) => rows[0] ?? null);
+
+      // The env override forces censorUsernameInLogs=false at read time, but
+      // the write-back must persist the raw stored value (true), never the
+      // override.
+      expect(settings?.general).toMatchObject({
+        censorUsernameInLogs: true,
+        feedbackDataSharingPreference: "allowed",
+      });
+    } finally {
+      if (previousOverrides === undefined) {
+        delete process.env.PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES;
+      } else {
+        process.env.PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES = previousOverrides;
+      }
+    }
+  });
+
   it("stores a trace record for document revision feedback targets", async () => {
     const { issueId, revisionId } = await seedIssueWithAgentDocument();
 
