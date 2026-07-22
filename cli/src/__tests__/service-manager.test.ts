@@ -130,6 +130,23 @@ describe("launchd lifecycle", () => {
     expect(calls).not.toContain(`launchctl enable gui/${process.getuid?.() ?? 0}/ing.paperclip.paperclipai.team-a`);
   });
 
+  it("preserves disabled state when the service name contains regex metacharacters", async () => {
+    const userHome = await temporaryDirectory();
+    const calls: string[] = [];
+    const serviceName = "ing.paperclip.paperclipai.team[qa]+";
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (args[0] === "print-disabled") return { stdout: `"${serviceName}" => true`, stderr: "" };
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new LaunchdServiceManager("team[qa]+", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome);
+
+    await manager.start();
+
+    expect(calls).toContain(`launchctl disable gui/${process.getuid?.() ?? 0}/${serviceName}`);
+    expect(calls).not.toContain(`launchctl enable gui/${process.getuid?.() ?? 0}/${serviceName}`);
+  });
+
   it("disables login startup and unloads the keepalive job when stopped", async () => {
     const userHome = await temporaryDirectory();
     const calls: string[] = [];

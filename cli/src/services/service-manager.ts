@@ -64,6 +64,10 @@ function escapeXml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function resolveServiceShimPath(homeDir = os.homedir()): string {
   return process.env.PAPERCLIP_SHIM_PATH?.trim() || path.join(homeDir, ".local", "bin", "paperclipai");
 }
@@ -258,7 +262,7 @@ export class LaunchdServiceManager implements ServiceManager {
   private async isEnabled(): Promise<boolean> {
     try {
       const result = await this.runner("launchctl", ["print-disabled", this.domain]);
-      return !new RegExp(`"${this.serviceName.replaceAll(".", "\\.")}"\\s*=>\\s*true`).test(result.stdout);
+      return !new RegExp(`"${escapeRegExp(this.serviceName)}"\\s*=>\\s*true`).test(result.stdout);
     } catch { return true; }
   }
 
