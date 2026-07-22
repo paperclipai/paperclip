@@ -26,6 +26,7 @@ def build_payload(entry: dict, secret: str) -> dict:
         "from": FROM, "to": entry["to"], "subject": entry["subject"],
         "text": entry.get("body_md", ""), "html": entry["rendered_html"],
         "replyTo": REPLY_TO, "inReplyTo": entry.get("in_reply_to", ""),
+        "attachments": entry.get("attachments", []),  # Inline-Logos (cid)
         "approval": secret,
     }
 

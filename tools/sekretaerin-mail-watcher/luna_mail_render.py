@@ -47,11 +47,40 @@ def load_sig(area: str) -> str:
     return p.read_text(encoding="utf-8")
 
 
-def render_customer_html(area: str, body_md: str) -> str:
+# base64-eingebettete <img> in der Signatur. Outlook/Exchange entfernt data:-URIs,
+# darum ersetzen wir sie durch cid:-Referenzen + Inline-Anhänge (der Relay setzt
+# via contentId das passende Content-ID-Header, dann rendert auch Outlook das Logo).
+_IMG_DATA_RE = re.compile(
+    r'<img([^>]*?)src="data:(image/[a-zA-Z0-9.+-]+);base64,([^"]+)"([^>]*)>')
+
+
+def _sig_with_cid(sig_html: str) -> tuple[str, list[dict]]:
+    """Ersetzt base64-<img> durch cid-Referenzen; gibt (html, inline-attachments)."""
+    attachments: list[dict] = []
+
+    def repl(m: re.Match) -> str:
+        idx = len(attachments)
+        cid = f"sig-logo-{idx}"
+        mime = m.group(2)
+        ext = mime.split("/")[-1]
+        attachments.append({
+            "filename": f"logo-{idx}.{ext}",
+            "content": m.group(3),
+            "mimeType": mime,
+            "cid": cid,
+        })
+        return f'<img{m.group(1)}src="cid:{cid}"{m.group(4)}>'
+
+    return _IMG_DATA_RE.sub(repl, sig_html), attachments
+
+
+def render_customer_html(area: str, body_md: str) -> tuple[str, list[dict]]:
+    """Gibt (finales Kunden-HTML, Inline-Anhänge für Logos) zurück."""
     answer = md_to_html(strip_self_signoff(body_md))
-    sig = load_sig(area)
-    return (
+    sig, attachments = _sig_with_cid(load_sig(area))
+    html = (
         '<!DOCTYPE html><html><head><meta charset="utf-8"></head>'
         '<body style="font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:0;padding:20px;text-align:left;">'
         f'<div style="margin:0 0 24px 0;text-align:left;">{answer}</div>{sig}</body></html>'
     )
+    return html, attachments

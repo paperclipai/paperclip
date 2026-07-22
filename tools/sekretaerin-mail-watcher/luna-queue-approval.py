@@ -18,7 +18,8 @@ FROM = "office@whitestag.ai"
 WALTER = "ws@whitestag.ai"
 
 
-def _send_approval_mail(token: str, to: str, subject: str, approval_subject: str, rendered_html: str) -> None:
+def _send_approval_mail(token: str, to: str, subject: str, approval_subject: str,
+                        rendered_html: str, attachments: list | None = None) -> None:
     banner = (
         '<div style="background:#fff8e1;border:1px solid #ffe082;border-radius:6px;'
         'padding:10px 14px;margin:0 0 20px 0;font-family:Arial,sans-serif;font-size:12px;color:#7a5c00;">'
@@ -26,9 +27,10 @@ def _send_approval_mail(token: str, to: str, subject: str, approval_subject: str
         f'<strong>{to}</strong> zu senden. Jede andere Antwort = Korrektur (ich überarbeite).'
         '</div>')
     html = rendered_html.replace('padding:20px;">', 'padding:20px;">' + banner, 1)
+    # Inline-Logos auch in der Freigabe-Vorschau mitschicken, damit Walter sie sieht.
     payload = json.dumps({"from": FROM, "to": WALTER, "subject": approval_subject,
                           "text": f"Freigabe #{token}: Antwort an {to} zum Betreff: {subject}",
-                          "html": html}).encode()
+                          "html": html, "attachments": attachments or []}).encode()
     req = urllib.request.Request(WEBHOOK, data=payload, method="POST",
                                  headers={"Content-Type": "application/json",
                                           "X-Mailhub-Secret": SECRET})
@@ -48,18 +50,19 @@ def main() -> None:
     a = ap.parse_args()
 
     body_md = Path(a.body).read_text(encoding="utf-8")
-    rendered_html = render.render_customer_html(a.area, body_md)
+    rendered_html, attachments = render.render_customer_html(a.area, body_md)
     token = q.gen_token()
     approval_subject = f"[Freigabe #{token}] AW: {a.subject} → an {a.to}"
     # Queue-Eintrag zuerst (Versand-Quelle), dann Freigabe-Mail.
     q.save({
         "token": token, "status": "pending", "to": a.to, "area": a.area,
         "subject": a.subject, "body_md": body_md, "rendered_html": rendered_html,
+        "attachments": attachments,
         "in_reply_to": a.in_reply_to, "original_mail_file": a.original_file,
         "approval_subject": approval_subject,
         "created": __import__("datetime").datetime.now().isoformat(), "sent": None,
     })
-    _send_approval_mail(token, a.to, a.subject, approval_subject, rendered_html)
+    _send_approval_mail(token, a.to, a.subject, approval_subject, rendered_html, attachments)
     print(f"OK Freigabe #{token} → Walter (Kunde: {a.to})")
 
 

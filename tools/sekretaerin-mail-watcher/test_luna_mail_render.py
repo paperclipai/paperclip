@@ -19,10 +19,29 @@ class RenderTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         r.SIGDIR = Path(tmp.name)
         (Path(tmp.name) / "signatur-ai.html").write_text("<div>SIG-AI</div>", encoding="utf-8")
-        out = r.render_customer_html("AI", "Hallo Welt")
+        out, atts = r.render_customer_html("AI", "Hallo Welt")
         self.assertIn("Hallo Welt", out)
         self.assertIn("SIG-AI", out)
         self.assertNotIn("Entwurf-Vorschau", out)  # kein Banner
+        self.assertEqual(atts, [])  # keine Logos in diesem Stub
+        self.assertIn("text-align:left", out)  # linksbündig
+        tmp.cleanup()
+
+    def test_base64_logo_becomes_cid_attachment(self):
+        # base64-<img> in der Signatur → cid-Referenz + Inline-Anhang.
+        tmp = tempfile.TemporaryDirectory()
+        r.SIGDIR = Path(tmp.name)
+        sig = ('<table><tr><td>'
+               '<img src="data:image/png;base64,QUJDREVG" alt="Logo" width="120">'
+               '</td></tr></table>')
+        (Path(tmp.name) / "signatur-film.html").write_text(sig, encoding="utf-8")
+        out, atts = r.render_customer_html("FILM", "Text")
+        self.assertNotIn("data:image/png;base64", out)   # kein base64 mehr im HTML
+        self.assertIn('src="cid:sig-logo-0"', out)        # cid-Referenz
+        self.assertEqual(len(atts), 1)
+        self.assertEqual(atts[0]["cid"], "sig-logo-0")
+        self.assertEqual(atts[0]["content"], "QUJDREVG")
+        self.assertEqual(atts[0]["mimeType"], "image/png")
         tmp.cleanup()
 
 
