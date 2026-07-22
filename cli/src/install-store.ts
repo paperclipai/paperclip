@@ -381,8 +381,8 @@ export function writeManagedShim(paths = resolveInstallStorePaths()): void {
   const homeDir = path.dirname(path.dirname(path.dirname(paths.shimPath)));
   const localDir = path.dirname(path.dirname(paths.shimPath));
   fs.mkdirSync(homeDir, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(localDir, { mode: 0o755 });
-  fs.mkdirSync(path.dirname(paths.shimPath), { mode: 0o755 });
+  fs.mkdirSync(localDir, { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true, mode: 0o755 });
   assertManagedShimWritable(paths);
   const entrypoint = path.join(paths.currentPath, "node_modules", "paperclipai", "dist", "index.js");
   const contents = `#!/bin/sh\n# ${MANAGED_SHIM_MARKER}\nset -eu\nexec ${shellQuote(process.execPath)} ${shellQuote(entrypoint)} "\$@"\n`;

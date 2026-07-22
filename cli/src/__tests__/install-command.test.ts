@@ -85,6 +85,27 @@ describe("managed install commands", () => {
     expect(runCommand.mock.calls[0]?.[0]).toBe(process.execPath);
   });
 
+  it("installs a GitHub branch through codeload and reuses the resolved SHA", async () => {
+    const sha = "c".repeat(40);
+    const runCommand = vi.fn(async (file: string, args: string[]) => {
+      if (file === "curl" && !args.includes("--output")) return { stdout: JSON.stringify({ sha }), stderr: "" };
+      if (file === "curl") { fs.writeFileSync(args[args.indexOf("--output") + 1], "archive"); return { stdout: "", stderr: "" }; }
+      if (file === "tar") { const checkout = args[args.indexOf("-C") + 1]; fs.mkdirSync(path.join(checkout, "cli"), { recursive: true }); fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1" })); return { stdout: "", stderr: "" }; }
+      if (file === "corepack" || file === "bash") return { stdout: "", stderr: "" };
+      if (file === "npm" && args[0] === "pack") { fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], "paperclipai-0.3.1.tgz"), "package"); return { stdout: "", stderr: "" }; }
+      if (file === "npm" && args[0] === "install") { const prefix = args[args.indexOf("--prefix") + 1]; const packageRoot = path.join(prefix, "node_modules", "paperclipai"); fs.mkdirSync(path.join(packageRoot, "dist"), { recursive: true }); fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ version: "0.3.1" })); fs.writeFileSync(path.join(packageRoot, "dist", "index.js"), "#!/usr/bin/env node\n"); return { stdout: "", stderr: "" }; }
+      if (file === process.execPath) return { stdout: "0.3.1\n", stderr: "" };
+      throw new Error(`Unexpected command: ${file} ${args.join(" ")}`);
+    });
+    await installCommand({ ref: "master", repo: "HenkDz/paperclip" }, { runCommand });
+    await installCommand({ ref: "master", repo: "HenkDz/paperclip" }, { runCommand });
+    const manifest = readInstallManifest(resolveInstallStorePaths());
+    expect(manifest).toMatchObject({ source: "git", repo: "HenkDz/paperclip", ref: "master", sha });
+    expect(manifest?.payloadPath).toContain(path.join("git", sha.slice(0, 12)));
+    expect(runCommand.mock.calls.filter(([command, args]) => command === "curl" && args.includes("--output"))).toHaveLength(1);
+    expect(runCommand.mock.calls.filter(([command]) => command === "corepack")).toHaveLength(1);
+  });
+
   it("installs through the shim, reports provenance, and uninstalls without deleting user data", async () => {
     const version = "2026.720.0";
     const runCommand = vi.fn(async (file: string, args: string[], _options?: unknown) => {
