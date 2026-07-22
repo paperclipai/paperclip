@@ -1769,6 +1769,12 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       PAPERCLIP_API_KEY: bridgeToken,
       PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
       PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
+      ...(server.curlPath
+        ? {
+          PAPERCLIP_BRIDGE_CURL_PATH: server.curlPath,
+          PATH: [path.posix.dirname(server.curlPath), process.env.PATH].filter(Boolean).join(":"),
+        }
+        : {}),
     },
     runLogTail,
     stop: async () => {
@@ -1781,4 +1787,42 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       ]);
     },
   };
+}
+
+function joinAdapterExecutionTargetPathEntries(...paths: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  const entries: string[] = [];
+  for (const value of paths) {
+    for (const entry of value?.split(":") ?? []) {
+      if (!entry || seen.has(entry)) continue;
+      seen.add(entry);
+      entries.push(entry);
+    }
+  }
+  return entries.join(":");
+}
+
+/**
+ * Applies bridge variables without moving adapter command directories behind the curl shim.
+ * The shim must still precede inherited system paths so nested sandbox curl calls use the queue.
+ */
+export function mergeAdapterExecutionTargetPaperclipBridgeEnv(
+  env: Record<string, string>,
+  bridgeEnv: Record<string, string>,
+) {
+  const adapterPath = env.PATH;
+  Object.assign(env, bridgeEnv);
+
+  const bridgeCurlPath = bridgeEnv.PAPERCLIP_BRIDGE_CURL_PATH;
+  if (!adapterPath || !bridgeCurlPath) return;
+
+  const curlDirectory = path.posix.dirname(bridgeCurlPath);
+  const inheritedPath = process.env.PATH;
+  if (inheritedPath && adapterPath.endsWith(inheritedPath)) {
+    const adapterPrefix = adapterPath.slice(0, -inheritedPath.length).replace(/:$/, "");
+    env.PATH = joinAdapterExecutionTargetPathEntries(adapterPrefix, curlDirectory, inheritedPath);
+    return;
+  }
+
+  env.PATH = joinAdapterExecutionTargetPathEntries(adapterPath, curlDirectory);
 }

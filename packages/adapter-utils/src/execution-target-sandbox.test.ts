@@ -15,6 +15,7 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  mergeAdapterExecutionTargetPaperclipBridgeEnv,
   resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
@@ -39,6 +40,18 @@ describe("sandbox adapter execution targets", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("keeps adapter command paths ahead of the queue curl shim and inherited system paths", () => {
+    vi.stubEnv("PATH", "/usr/local/bin:/usr/bin");
+    const env = { PATH: "/adapter/bin:/usr/local/bin:/usr/bin" };
+
+    mergeAdapterExecutionTargetPaperclipBridgeEnv(env, {
+      PAPERCLIP_BRIDGE_CURL_PATH: "/runtime/paperclip-bridge/curl",
+      PATH: "/runtime/paperclip-bridge:/usr/local/bin:/usr/bin",
+    });
+
+    expect(env.PATH).toBe("/adapter/bin:/runtime/paperclip-bridge:/usr/local/bin:/usr/bin");
   });
 
   function createLocalSandboxRunner() {
@@ -1422,6 +1435,98 @@ describe("sandbox adapter execution targets", () => {
         url: "/api/agents/me",
         auth: "Bearer real-run-jwt",
         runId: "run-bridge-limit",
+      }]);
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+
+  it("routes nested Codex curl through the queue when its injected loopback URL is unreachable", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-nested-curl-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const requests: Array<{ method: string; url: string; auth: string | null; runId: string | null; body: string }> = [];
+    const apiServer = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      requests.push({
+        method: req.method ?? "GET",
+        url: req.url ?? "/",
+        auth: req.headers.authorization ?? null,
+        runId: typeof req.headers["x-paperclip-run-id"] === "string" ? req.headers["x-paperclip-run-id"] : null,
+        body: Buffer.concat(chunks).toString("utf8"),
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the nested bridge test API server to listen on a TCP port.");
+    }
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-nested-curl",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      expect(bridge).not.toBeNull();
+      expect(bridge!.env.PAPERCLIP_BRIDGE_CURL_PATH).toEqual(expect.any(String));
+      expect(bridge!.env.PATH).toContain(path.dirname(bridge!.env.PAPERCLIP_BRIDGE_CURL_PATH));
+
+      const result = await runAdapterExecutionTargetShellCommand(
+        "run-bridge-nested-curl",
+        target,
+        [
+          "curl -sSfX PATCH http://localhost:1/api/issues/issue-1",
+          "  -H 'content-type: application/json'",
+          "  --data-binary '{\"status\":\"in_progress\"}'",
+        ].join(" "),
+        {
+          cwd: remoteCwd,
+          env: {
+            ...bridge!.env,
+            // This is intentionally unreachable. A passing request proves the
+            // nested command used the filesystem queue instead of loopback TCP.
+            PAPERCLIP_API_URL: "http://127.0.0.1:1",
+          },
+          timeoutSec: 15,
+          graceSec: 5,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toEqual({ ok: true });
+      expect(requests).toEqual([{
+        method: "PATCH",
+        url: "/api/issues/issue-1",
+        auth: "Bearer real-run-jwt",
+        runId: "run-bridge-nested-curl",
+        body: JSON.stringify({ status: "in_progress" }),
       }]);
     } finally {
       await bridge?.stop();

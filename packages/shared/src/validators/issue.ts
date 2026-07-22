@@ -204,6 +204,9 @@ export const issueExecutionPolicySchema = z.object({
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  oneShot: z.object({
+    enabled: z.boolean().default(false),
+  }).optional(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({

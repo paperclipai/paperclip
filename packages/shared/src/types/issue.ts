@@ -615,6 +615,14 @@ export interface IssueExecutionMonitorPolicy {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
 }
 
+export interface IssueExecutionOneShotPolicy {
+  /**
+   * Allows exactly one initial assignment/issue_assigned wake for each assigned agent.
+   * Every later wake source is recorded as an auditable skipped request.
+   */
+  enabled: boolean;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
@@ -622,6 +630,7 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  oneShot?: IssueExecutionOneShotPolicy;
 }
 
 export interface IssueExecutionMonitorState {
