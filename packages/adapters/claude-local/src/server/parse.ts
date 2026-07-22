@@ -445,6 +445,18 @@ function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: 
   return retryAt;
 }
 
+export function nextDailyResetUtc(now: Date, resetHourUtc = 22): Date {
+  const candidate = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), resetHourUtc, 0, 0, 0),
+  );
+  if (candidate.getTime() <= now.getTime()) {
+    return new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, resetHourUtc, 0, 0, 0),
+    );
+  }
+  return candidate;
+}
+
 export function extractClaudeRetryNotBefore(
   input: {
     parsed?: Record<string, unknown> | null;
@@ -453,11 +465,18 @@ export function extractClaudeRetryNotBefore(
     errorMessage?: string | null;
   },
   now = new Date(),
+  opts?: { sessionExhaustionFallbackResetHourUtc?: number },
 ): Date | null {
   const haystack = buildClaudeTransientHaystack(input);
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
-  if (!match) return null;
-  return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+  if (match) return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+  if (
+    opts?.sessionExhaustionFallbackResetHourUtc !== undefined &&
+    isClaudeProviderQuotaError(input)
+  ) {
+    return nextDailyResetUtc(now, opts.sessionExhaustionFallbackResetHourUtc);
+  }
+  return null;
 }
 
 export function isClaudeTransientUpstreamError(input: {
@@ -505,3 +524,6 @@ export function isClaudeProviderQuotaError(input: {
   if (!haystack) return false;
   return CLAUDE_PROVIDER_QUOTA_RE.test(haystack);
 }
+
+/** Alias for {@link isClaudeProviderQuotaError} — session/daily-limit exhaustion check. */
+export const isClaudeSessionExhaustionError = isClaudeProviderQuotaError;
