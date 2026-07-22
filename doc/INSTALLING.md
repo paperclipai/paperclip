@@ -162,8 +162,6 @@ Select a different release source explicitly:
 paperclipai update --latest
 paperclipai update --canary
 paperclipai update --version 2026.720.0
-paperclipai update --ref master
-paperclipai update --repo your-org/paperclip --ref your-branch
 ```
 
 Managed updates create a database backup before switching payloads, verify the
