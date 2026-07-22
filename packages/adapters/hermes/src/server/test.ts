@@ -17,7 +17,7 @@ import { promisify } from "node:util";
 
 import { HERMES_CLI, DEFAULT_MODEL, ADAPTER_TYPE, VALID_PROVIDERS } from "../shared/constants.js";
 import { detectModel, resolveProvider, inferProviderFromModel } from "./detect-model.js";
-import { resolveHermesCommand } from "./execute.js";
+import { buildHermesChildEnv, resolveHermesCommand } from "./execute.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -31,10 +31,11 @@ function asString(v: unknown): string | undefined {
 
 async function checkCliInstalled(
   command: string,
+  env: Record<string, string>,
 ): Promise<AdapterEnvironmentCheck | null> {
   try {
     // Try to run the command to see if it exists
-    await execFileAsync(command, ["--version"], { timeout: 10_000 });
+    await execFileAsync(command, ["--version"], { timeout: 10_000, env });
     return null; // OK — it ran successfully
   } catch (err: unknown) {
     const e = err as NodeJS.ErrnoException;
@@ -54,10 +55,12 @@ async function checkCliInstalled(
 
 async function checkCliVersion(
   command: string,
+  env: Record<string, string>,
 ): Promise<AdapterEnvironmentCheck | null> {
   try {
     const { stdout } = await execFileAsync(command, ["--version"], {
       timeout: 10_000,
+      env,
     });
     const version = stdout.trim();
     if (version) {
@@ -83,10 +86,11 @@ async function checkCliVersion(
   }
 }
 
-async function checkPython(): Promise<AdapterEnvironmentCheck | null> {
+async function checkPython(env: Record<string, string>): Promise<AdapterEnvironmentCheck | null> {
   try {
     const { stdout } = await execFileAsync("python3", ["--version"], {
       timeout: 5_000,
+      env,
     });
     const version = stdout.trim();
     const match = version.match(/(\d+)\.(\d+)/);
@@ -135,10 +139,12 @@ function checkModel(
 async function checkApiKeys(
   config: Record<string, unknown>,
   detectedConfig: Awaited<ReturnType<typeof detectModel>> | null,
+  childEnv: Record<string, string>,
 ): Promise<AdapterEnvironmentCheck | null> {
   // The server resolves secret refs into config.env before calling testEnvironment,
-  // so we check config.env first (adapter-configured secrets), then fall back to
-  // process.env (server/host environment), then ~/.hermes/.env (Hermes local config).
+  // so we check the isolated child environment first, then ~/.hermes/.env.
+  // Server-only provider keys are intentionally excluded because execution
+  // cannot inherit them unless the agent config explicitly opts them in.
   const envConfig = (config.env ?? {}) as Record<string, unknown>;
   const resolvedEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(envConfig)) {
@@ -151,7 +157,7 @@ async function checkApiKeys(
   // accurate results for keys that Hermes already knows about.
   const hermesEnvKeys: Record<string, string> = {};
   try {
-    const homeDir = process.env.HOME || process.env.USERPROFILE || "/root";
+    const homeDir = childEnv.HOME || childEnv.USERPROFILE || "/root";
     const hermesEnvPath = `${homeDir}/.hermes/.env`;
     const content = readFileSync(hermesEnvPath, "utf-8");
     for (const line of content.split("\n")) {
@@ -168,8 +174,7 @@ async function checkApiKeys(
     // ~/.hermes/.env may not exist — that's fine
   }
 
-  const has = (key: string): boolean =>
-    !!(resolvedEnv[key] ?? process.env[key] ?? hermesEnvKeys[key]);
+  const has = (key: string): boolean => !!(resolvedEnv[key] ?? childEnv[key] ?? hermesEnvKeys[key]);
 
   const hasAnthropic = has("ANTHROPIC_API_KEY");
   const hasOpenRouter = has("OPENROUTER_API_KEY");
@@ -330,10 +335,11 @@ export async function testEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const config = (ctx.config ?? {}) as Record<string, unknown>;
   const command = resolveHermesCommand(config);
+  const childEnv = buildHermesChildEnv(config);
   const checks: AdapterEnvironmentCheck[] = [];
 
   // 1. CLI installed?
-  const cliCheck = await checkCliInstalled(command);
+  const cliCheck = await checkCliInstalled(command, childEnv);
   if (cliCheck) {
     checks.push(cliCheck);
     if (cliCheck.level === "error") {
@@ -347,11 +353,11 @@ export async function testEnvironment(
   }
 
   // 2. CLI version
-  const versionCheck = await checkCliVersion(command);
+  const versionCheck = await checkCliVersion(command, childEnv);
   if (versionCheck) checks.push(versionCheck);
 
   // 3. Python available?
-  const pythonCheck = await checkPython();
+  const pythonCheck = await checkPython(childEnv);
   if (pythonCheck) checks.push(pythonCheck);
 
   // 4. Model config
@@ -367,7 +373,7 @@ export async function testEnvironment(
   }
 
   // 6. API keys (check config.env — server resolves secrets before calling us)
-  const apiKeyCheck = await checkApiKeys(config, detectedConfig);
+  const apiKeyCheck = await checkApiKeys(config, detectedConfig, childEnv);
   if (apiKeyCheck) checks.push(apiKeyCheck);
 
   // 7. Provider/model consistency
