@@ -972,7 +972,7 @@ describe.sequential("agent permission routes", () => {
       .send({
         name: "Builder",
         role: "engineer",
-        adapterType: "process",
+        adapterType: "codex_local",
         adapterConfig: {},
         runtimeConfig: {
           heartbeat: {
@@ -990,6 +990,9 @@ describe.sequential("agent permission routes", () => {
             enabled: false,
             intervalSec: 3600,
             maxConcurrentRuns: 20,
+          },
+          modelProfiles: {
+            cheap: { enabled: false },
           },
         },
       }),
@@ -1082,7 +1085,7 @@ describe.sequential("agent permission routes", () => {
       .send({
         name: "Builder",
         role: "engineer",
-        adapterType: "process",
+        adapterType: "codex_local",
         adapterConfig: {},
         runtimeConfig: {
           heartbeat: {
@@ -1100,6 +1103,9 @@ describe.sequential("agent permission routes", () => {
             enabled: false,
             intervalSec: 3600,
             maxConcurrentRuns: 20,
+          },
+          modelProfiles: {
+            cheap: { enabled: false },
           },
         },
       }),
