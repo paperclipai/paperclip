@@ -283,6 +283,68 @@ describeEmbeddedPostgres("status card routes", () => {
     expect((await request(createApp(db, agentActor(company.id, summarizer.id, randomUUID()))).put(`/api/status-cards/${created.body.id}/query`).send(payload)).status).toBe(403);
   });
 
+  it("rejects status-card writes after the generation issue is cancelled", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const created = await request(createApp(db, localBoardActor()))
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Blocked launch tasks" });
+    const generationIssueId = created.body.generatingIssueId as string;
+    const run = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ checkoutRunId: run.id, status: "cancelled" }).where(eq(issues.id, generationIssueId));
+    const writerApp = createApp(db, agentActor(company.id, summarizer.id, run.id));
+
+    const queryWrite = await request(writerApp).put(`/api/status-cards/${created.body.id}/query`).send({
+      queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }],
+      title: "Recent launch blockers",
+      changeSummary: "Compiled one bounded blocker query.",
+      generationIssueId,
+    });
+    const summaryWrite = await request(writerApp).put(`/api/status-cards/${created.body.id}/summary`).send({
+      markdown: "No summary should be written.",
+      title: "Recent launch blockers",
+      changeSummary: "Attempted a cancelled generation write.",
+      generationIssueId,
+    });
+
+    expect(queryWrite.status).toBe(403);
+    expect(summaryWrite.status).toBe(403);
+    expect(await db.select().from(statusCardUpdates)).toEqual([]);
+    expect(await db.select().from(documentRevisions)).toEqual([]);
+    expect(await db.select().from(statusCards).then((rows) => rows[0])).toMatchObject({ queryVersion: 0, documentId: null });
+  });
+
+  it("returns 404 for cross-company query and summary write probes", async () => {
+    const company = await seedCompany();
+    const foreignCompany = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    const foreignSummarizer = await seedSummarizer(foreignCompany.id);
+    const created = await request(createApp(db, localBoardActor()))
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Blocked launch tasks" });
+    const generationIssueId = created.body.generatingIssueId as string;
+    const foreignRun = await seedRun(foreignCompany.id, foreignSummarizer.id);
+    const foreignApp = createApp(db, agentActor(foreignCompany.id, foreignSummarizer.id, foreignRun.id));
+
+    const queryWrite = await request(foreignApp).put(`/api/status-cards/${created.body.id}/query`).send({
+      queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }],
+      title: "Recent launch blockers",
+      changeSummary: "Cross-company query probe.",
+      generationIssueId,
+    });
+    const summaryWrite = await request(foreignApp).put(`/api/status-cards/${created.body.id}/summary`).send({
+      markdown: "Cross-company summary probe.",
+      title: "Recent launch blockers",
+      changeSummary: "Cross-company summary probe.",
+      generationIssueId,
+    });
+
+    expect(queryWrite.status).toBe(404);
+    expect(summaryWrite.status).toBe(404);
+  });
+
   it("writes a compiled query and first summary, dry-runs live rows, and bumps the version after recompile", async () => {
     const company = await seedCompany();
     await enableStatusCards();

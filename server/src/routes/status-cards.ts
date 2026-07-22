@@ -175,8 +175,8 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
 
   router.put("/status-cards/:id/query", validate(writeStatusCardQuerySchema), async (req, res) => {
     await assertStatusCardsEnabled();
-    const card = await service.getById(req.params.id as string);
-    if (!card) throw notFound("Status card not found");
+    const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
+    if (!card) return;
     assertCompanyAccess(req, card.companyId);
     const actor = getActorInfo(req);
     const updated = await service.writeQuery(card.id, req.body, {
@@ -193,8 +193,8 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
 
   router.put("/status-cards/:id/summary", validate(writeStatusCardSummarySchema), async (req, res) => {
     await assertStatusCardsEnabled();
-    const card = await service.getById(req.params.id as string);
-    if (!card) throw notFound("Status card not found");
+    const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
+    if (!card) return;
     assertCompanyAccess(req, card.companyId);
     const actor = getActorInfo(req);
     const result = await service.writeSummary(card.id, req.body, {

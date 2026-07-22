@@ -208,6 +208,9 @@ export function statusCardService(db: Db) {
     if (!issue || issue.companyId !== card.companyId || issue.assigneeAgentId !== actor.agentId) {
       throw forbidden("Generation task is not assigned to this agent");
     }
+    if (TERMINAL_ISSUE_STATUSES.has(issue.status)) {
+      throw forbidden("Generation task is no longer active");
+    }
     const payload = parseCompilePayload(issue.description);
     if (payload?.statusCardId !== card.id || payload?.companyId !== card.companyId || payload?.generationIssueId !== generationIssueId) {
       throw forbidden("Generation task does not target this status card");
@@ -226,6 +229,10 @@ export function statusCardService(db: Db) {
       const current = await tx.select().from(statusCards).where(eq(statusCards.id, card.id)).then((rows) => rows[0] ?? null);
       if (!current || current.generatingIssueId !== input.generationIssueId) {
         throw conflict("Status-card compilation was superseded by a newer task");
+      }
+      const generationIssue = await tx.select().from(issues).where(eq(issues.id, input.generationIssueId)).then((rows) => rows[0] ?? null);
+      if (!generationIssue || TERMINAL_ISSUE_STATUSES.has(generationIssue.status)) {
+        throw forbidden("Generation task is no longer active");
       }
       const queryVersion = current.queryVersion + 1;
       const [next] = await tx
@@ -268,6 +275,10 @@ export function statusCardService(db: Db) {
       const current = await tx.select().from(statusCards).where(eq(statusCards.id, card.id)).then((rows) => rows[0] ?? null);
       if (!current || current.generatingIssueId !== input.generationIssueId) {
         throw conflict("Status-card generation was superseded by a newer task");
+      }
+      const generationIssue = await tx.select().from(issues).where(eq(issues.id, input.generationIssueId)).then((rows) => rows[0] ?? null);
+      if (!generationIssue || TERMINAL_ISSUE_STATUSES.has(generationIssue.status)) {
+        throw forbidden("Generation task is no longer active");
       }
       const existing = current.documentId
         ? await tx.select().from(documents).where(and(eq(documents.id, current.documentId), eq(documents.companyId, current.companyId))).then((rows) => rows[0] ?? null)
