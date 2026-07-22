@@ -1,5 +1,10 @@
 import { execFileSync } from "node:child_process";
-import type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "@paperclipai/shared";
+import type {
+  ServerGitInfo,
+  ServerGitLocalChanges,
+  ServerInfoSnapshot,
+  ServerRuntimeInfo,
+} from "@paperclipai/shared";
 import { parseBuildCommit, readBuildCommit } from "./build-commit.js";
 
 export type { ServerGitInfo, ServerInfoSnapshot };
@@ -150,6 +155,7 @@ export function createServerInfoSnapshot(
     gitStatusCommand?: GitCommand;
     gitBranchCommand?: GitCommand;
     buildCommitCommand?: BuildCommitCommand;
+    runtimeInfo?: ServerRuntimeInfo;
   } = {},
 ): ServerInfoSnapshot {
   return {
@@ -160,6 +166,7 @@ export function createServerInfoSnapshot(
       opts.gitBranchCommand,
       opts.buildCommitCommand,
     ),
+    ...(opts.runtimeInfo ? { runtime: opts.runtimeInfo } : {}),
   };
 }
 
@@ -179,6 +186,7 @@ export function getServerInfoSnapshot(
     gitStatusCommand?: GitCommand;
     gitBranchCommand?: GitCommand;
     buildCommitCommand?: BuildCommitCommand;
+    runtimeInfo?: ServerRuntimeInfo;
   } = {},
 ): ServerInfoSnapshot {
   const now = opts.now ?? Date.now();
@@ -193,7 +201,11 @@ export function getServerInfoSnapshot(
       expiresAt: now + GIT_INFO_CACHE_TTL_MS,
     };
   }
-  return { processStartedAt, git: gitInfoCache.value };
+  return {
+    processStartedAt,
+    git: gitInfoCache.value,
+    ...(opts.runtimeInfo ? { runtime: opts.runtimeInfo } : {}),
+  };
 }
 
 export function resetServerInfoCacheForTests(): void {

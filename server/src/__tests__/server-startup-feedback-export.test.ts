@@ -7,6 +7,8 @@ const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 
 const {
+  backfillLegacyToolOAuthTokensMock,
+  backfillPrincipalAccessCompatibilityMock,
   createAppMock,
   createBetterAuthInstanceMock,
   createDbMock,
@@ -24,6 +26,19 @@ const {
   routineServiceFactoryMock,
   routineServiceMock,
 } = vi.hoisted(() => {
+  const backfillLegacyToolOAuthTokensMock = vi.fn(async () => ({
+    scannedConnections: 0,
+    migratedConnections: 0,
+    sanitizedConnections: 0,
+    createdSecrets: 0,
+    rotatedSecrets: 0,
+    accessTokensBackfilled: 0,
+    refreshTokensBackfilled: 0,
+  }));
+  const backfillPrincipalAccessCompatibilityMock = vi.fn(async () => ({
+    agentMembershipsInserted: 0,
+    humanGrantsInserted: 0,
+  }));
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({}) as never);
@@ -84,6 +99,8 @@ const {
   const loadConfigMock = vi.fn();
 
   return {
+    backfillLegacyToolOAuthTokensMock,
+    backfillPrincipalAccessCompatibilityMock,
     createAppMock,
     createBetterAuthInstanceMock,
     createDbMock,
@@ -139,6 +156,7 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     feedbackExportBackendToken: "telemetry-token",
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
+    shadowDevSourceApi: undefined,
     companyDeletionEnabled: false,
     ...overrides,
   };
@@ -191,19 +209,8 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
-  backfillLegacyToolOAuthTokens: vi.fn(async () => ({
-    scannedConnections: 0,
-    migratedConnections: 0,
-    sanitizedConnections: 0,
-    createdSecrets: 0,
-    rotatedSecrets: 0,
-    accessTokensBackfilled: 0,
-    refreshTokensBackfilled: 0,
-  })),
-  backfillPrincipalAccessCompatibility: vi.fn(async () => ({
-    agentMembershipsInserted: 0,
-    humanGrantsInserted: 0,
-  })),
+  backfillLegacyToolOAuthTokens: backfillLegacyToolOAuthTokensMock,
+  backfillPrincipalAccessCompatibility: backfillPrincipalAccessCompatibilityMock,
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
@@ -302,6 +309,17 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("skips database-writing startup backfills in shadow mode", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      shadowDevSourceApi: "http://127.0.0.1:3100",
+    }));
+
+    await startServer();
+
+    expect(backfillPrincipalAccessCompatibilityMock).not.toHaveBeenCalled();
+    expect(backfillLegacyToolOAuthTokensMock).not.toHaveBeenCalled();
   });
 
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {

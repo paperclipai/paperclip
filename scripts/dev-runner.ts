@@ -8,6 +8,8 @@ import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
+import { shouldBlockMigrationPreflight } from "./dev-runner-migration-policy.mjs";
+import { pluginSdkPreparationArgs } from "./dev-runner-plugin-sdk.mjs";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
 import {
   findAdoptableLocalService,
@@ -183,11 +185,13 @@ if (tailscaleAuth || bindMode) {
 }
 
 const serverPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3100", 10) || 3100;
+const shadowSourceApi = env.PAPERCLIP_SHADOW_DEV_SOURCE_API?.trim() || undefined;
 const devService = createDevServiceIdentity({
   mode,
   forwardedArgs,
   networkProfile: tailscaleAuth ? `legacy:${bindMode ?? "lan"}` : (bindMode ?? "default"),
   port: serverPort,
+  shadowSourceApi,
 });
 
 const existingRunner = await findAdoptableLocalService({
@@ -327,6 +331,7 @@ async function updateDevServiceRecord(extra?: Record<string, unknown>) {
     metadata: {
       repoRoot,
       mode,
+      shadowSourceApi: shadowSourceApi ?? null,
       childPid: child?.pid ?? null,
       url: `http://127.0.0.1:${serverPort}`,
       ...extra,
@@ -420,6 +425,15 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
   if (payload.status !== "needsMigrations" || pendingMigrations.length === 0) {
     return;
   }
+  if (shouldBlockMigrationPreflight({
+    disableMigrations: env.PAPERCLIP_DEV_RUNNER_DISABLE_MIGRATIONS === "true",
+    pendingMigrations,
+  })) {
+    process.stderr.write(
+      `[paperclip] Pending migrations detected (${formatPendingMigrationSummary(pendingMigrations)}). This dev runner is configured not to apply migrations. Update the source database owner first, then retry.\n`,
+    );
+    process.exit(1);
+  }
 
   let shouldApply = autoApply;
 
@@ -470,9 +484,9 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
 }
 
 async function buildPluginSdk() {
-  console.log("[paperclip] building plugin sdk...");
+  console.log("[paperclip] ensuring plugin sdk build dependencies...");
   const result = await runPnpm(
-    ["--filter", "@paperclipai/plugin-sdk", "build"],
+    pluginSdkPreparationArgs(),
     { stdio: "inherit" },
   );
   if (result.signal) {
@@ -480,7 +494,7 @@ async function buildPluginSdk() {
     return;
   }
   if (result.code !== 0) {
-    console.error("[paperclip] plugin sdk build failed");
+    console.error("[paperclip] plugin sdk build dependency check failed");
     process.exit(result.code);
   }
 }
@@ -549,7 +563,11 @@ async function stopChildForRestart() {
 async function startServerChild() {
   await buildPluginSdk();
 
-  const serverScript = mode === "watch" ? "dev:watch" : "dev";
+  const serverScript = mode === "watch"
+    ? shadowSourceApi
+      ? "dev:watch:shadow"
+      : "dev:watch"
+    : "dev";
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
@@ -567,6 +585,7 @@ async function startServerChild() {
         metadata: {
           repoRoot,
           mode,
+          shadowSourceApi: shadowSourceApi ?? null,
           childPid: null,
           url: `http://127.0.0.1:${serverPort}`,
         },

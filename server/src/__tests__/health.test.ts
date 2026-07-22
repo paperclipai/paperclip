@@ -44,17 +44,20 @@ function createApp(
   db?: Db,
   serverInfo = testServerInfo,
   databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
+  devDatabaseSourceUrl?: string,
+  deploymentMode: Parameters<typeof healthRoutes>[1]["deploymentMode"] = "local_trusted",
 ) {
   const app = express();
   app.use(
     "/health",
     healthRoutes(db, {
-      deploymentMode: "local_trusted",
+      deploymentMode,
       deploymentExposure: "private",
       authReady: true,
       companyDeletionEnabled: true,
       serverInfo,
       databaseBackupHealth,
+      devDatabaseSourceUrl,
     }),
   );
   return app;
@@ -112,6 +115,37 @@ describe("GET /health", () => {
     });
   });
 
+  it("exposes the active dev database only to loopback local-trusted callers", async () => {
+    const app = createApp(
+      createHealthyDb(),
+      testServerInfo,
+      undefined,
+      "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+    );
+
+    const res = await request(app).get("/health/dev-database-source");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      databaseUrl: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+    });
+  });
+
+  it("does not expose the active dev database outside local-trusted mode", async () => {
+    const app = createApp(
+      createHealthyDb(),
+      testServerInfo,
+      undefined,
+      "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+      "authenticated",
+    );
+
+    const res = await request(app).get("/health/dev-database-source");
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "dev_database_source_unavailable" });
+  });
+
   it("returns safe server info fallbacks when git metadata is unavailable", async () => {
     const app = createApp(undefined, {
       processStartedAt: "2026-06-26T00:00:00.000Z",
@@ -129,6 +163,44 @@ describe("GET /health", () => {
       git: {
         available: false,
         unavailableReason: "git_unavailable",
+      },
+    });
+  });
+
+  it("surfaces shadow runtime ownership metadata in full health details", async () => {
+    const app = createApp(undefined, {
+      ...testServerInfo,
+      runtime: {
+        role: "shadow",
+        shadowSourceApi: "http://127.0.0.1:3100",
+        shadowSourcePort: 3100,
+        targetPort: 3101,
+        scheduler: {
+          enabled: false,
+          owner: "source_api",
+        },
+        backups: {
+          enabled: false,
+          owner: "source_api",
+        },
+      },
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.serverInfo.runtime).toEqual({
+      role: "shadow",
+      shadowSourceApi: "http://127.0.0.1:3100",
+      shadowSourcePort: 3100,
+      targetPort: 3101,
+      scheduler: {
+        enabled: false,
+        owner: "source_api",
+      },
+      backups: {
+        enabled: false,
+        owner: "source_api",
       },
     });
   });
