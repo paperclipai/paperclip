@@ -43,6 +43,7 @@ import { registerAdapterCommands } from "./commands/client/adapter.js";
 import { registerAssetCommands } from "./commands/client/asset.js";
 import { registerSkillCommands } from "./commands/client/skill.js";
 import { cliVersion } from "./version.js";
+import { registerServiceCommands } from "./commands/service.js";
 
 const program = new Command();
 const DATA_DIR_OPTION_HELP =
@@ -131,9 +132,11 @@ const run = program
   .option("--bind <mode>", "On first run, use onboarding reachability preset (loopback, lan, tailnet)")
   .option("--repair", "Attempt automatic repairs during doctor", true)
   .option("--no-repair", "Disable automatic repairs during doctor")
+  .option("--force", "Run even when the same instance is active under the service manager")
   .action(runCommand);
 
 registerRunCommands(run);
+registerServiceCommands(program);
 
 const heartbeat = program.command("heartbeat").description("Heartbeat utilities");
 
