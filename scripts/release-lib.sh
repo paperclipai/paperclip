@@ -311,14 +311,14 @@ package_publish_tool() {
 }
 
 BUNDLED_NPM_PACK_VERSION="10.9.7"
-BUNDLED_NPM_PUBLISH_VERSION="11.16.0"
+BUNDLED_NPM_PUBLISH_VERSION="11.18.0"
 
 run_bundled_npm_pack() {
   npx --yes "npm@$BUNDLED_NPM_PACK_VERSION" "$@"
 }
 
 run_bundled_npm_publish() {
-  npx --yes "npm@$BUNDLED_NPM_PUBLISH_VERSION" "$@"
+  npx --yes "npm@$BUNDLED_NPM_PUBLISH_VERSION" "$@" --loglevel verbose
 }
 
 run_package_publish() {
