@@ -262,7 +262,7 @@ if [ "$dry_run" = true ]; then
       publish_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-package.XXXXXX")"
       node "$REPO_ROOT/scripts/prepare-bundled-package.mjs" "$REPO_ROOT/$pkg_dir" "$publish_dir"
       cd "$publish_dir"
-      run_bundled_npm pack --pack-destination "$publish_dir" 2>&1 | tail -3
+      run_bundled_npm_pack pack --pack-destination "$publish_dir" 2>&1 | tail -3
       rm -rf "$publish_dir"
     else
       pnpm publish --dry-run --no-git-checks --tag "$DIST_TAG" 2>&1 | tail -3
