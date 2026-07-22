@@ -21,6 +21,8 @@ The bootstrap script:
 4. starts interactive onboarding when stdin and stdout are terminals.
 
 The script prints and confirms any command that requires elevated privileges.
+Third-party Node.js bootstrap scripts are pinned and SHA-256 verified before
+execution; the installer stops if a published script changes unexpectedly.
 Use `--no-prompt` for automation and `--no-onboard` to stop after installing:
 
 ```sh
