@@ -335,12 +335,7 @@ fi
 INSTALL_ARGS=(install)
 [ "$CANARY" = "1" ] && INSTALL_ARGS+=(--canary)
 [ -n "$VERSION" ] && INSTALL_ARGS+=(--version "$VERSION")
-[ -n "$REF" ] && INSTALL_ARGS+=(--ref "$REF")
-[ -n "$REPO" ] && INSTALL_ARGS+=(--repo "$REPO")
-[ "$NO_PROMPT" = "1" ] && INSTALL_ARGS+=(--no-prompt)
-[ "$INSTALL_SERVICE" = "1" ] && INSTALL_ARGS+=(--install-service)
-[ "$DRY_RUN" = "1" ] && INSTALL_ARGS+=(--dry-run)
-[ "$VERBOSE" = "1" ] && INSTALL_ARGS+=(--verbose)
+[ "$NO_PROMPT" = "1" ] && INSTALL_ARGS+=(--yes)
 
 log "Delegating to the Paperclip CLI"
 print_command npx --yes "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}"

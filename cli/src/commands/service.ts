@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import type { Command } from "commander";
-import { cliVersion } from "../version.js";
+import { packageVersion } from "../version.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 import { resolvePaperclipHomeDir, resolvePaperclipInstanceId } from "../config/home.js";
 import { detectServiceManager, type ServiceManager, type ServiceStatus } from "../services/service-manager.js";
@@ -53,6 +53,10 @@ async function waitForHealth(instanceId: string, expectedVersion: string | null,
   throw new Error(`Paperclip service did not become healthy${expectedVersion ? ` at version ${expectedVersion}` : ""}: ${last.error ?? `reported ${last.serverVersion ?? "no version"}`}`);
 }
 
+export function resolveRestartExpectedVersion(serverVersion: string | null): string {
+  return serverVersion ?? packageVersion;
+}
+
 async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, drainRequired: boolean): Promise<{ requestedAt: string; previousVersion: string }> {
   if (!status.pid) throw new Error(`Cannot restart ${status.serviceName}: supervisor did not report a server pid.`);
   const health = await probeHealth(instanceId);
@@ -68,7 +72,7 @@ async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, 
     drainRequired,
     requestedByRunId: process.env.PAPERCLIP_RUN_ID?.trim() || null,
   }, null, 2)}\n`, "utf8");
-  return { requestedAt, previousVersion: health.serverVersion ?? cliVersion };
+  return { requestedAt, previousVersion: resolveRestartExpectedVersion(health.serverVersion) };
 }
 
 async function waitForRestartReport(requestedAt: string, timeoutMs = 10_000): Promise<unknown | null> {

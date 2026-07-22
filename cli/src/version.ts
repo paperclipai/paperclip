@@ -12,7 +12,7 @@ type PackageJson = {
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json") as PackageJson;
 
-const packageVersion = pkg.version ?? "0.0.0";
+export const packageVersion = pkg.version ?? "0.0.0";
 
 export function resolveCliVersion(executablePath = process.argv[1]): string {
   try {
