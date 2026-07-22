@@ -20,8 +20,8 @@ export const agentConfigurationSections: ReadonlyArray<{
   instant?: boolean;
   fields: string[];
 }> = [
-  { id: "environment", label: "Environment", fields: ["execution environment", "environment override", "variables", "secrets"] },
   { id: "runtime", label: "Runtime", fields: ["adapter", "model", "effort", "turns", "command", "arguments", "engine", "timeout", "chrome"] },
+  { id: "environment", label: "Environment", fields: ["execution environment", "environment override", "variables", "secrets"] },
   { id: "schedule", label: "Schedule & Runs", fields: ["heartbeat", "wake on demand", "cooldown", "concurrent runs", "continuation"] },
   { id: "access", label: "Access & Governance", instant: true, fields: ["trust preset", "boundary", "create agents", "create skills", "assign tasks"] },
   { id: "keys", label: "API Keys", instant: true, fields: ["credentials", "create key", "revoke key"] },
