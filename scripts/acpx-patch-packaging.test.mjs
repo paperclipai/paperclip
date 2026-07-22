@@ -10,6 +10,7 @@ const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.
 const adapterUtilsPackage = JSON.parse(
   await readFile(new URL("../packages/adapter-utils/package.json", import.meta.url), "utf8"),
 );
+const releaseScript = await readFile(new URL("./release.sh", import.meta.url), "utf8");
 
 test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(
@@ -29,4 +30,9 @@ test("bundled package staging materializes publishConfig entrypoints", () => {
   assert.equal(staged.main, "./dist/index.js");
   assert.equal(staged.types, "./dist/index.d.ts");
   assert.deepEqual(staged.exports, adapterUtilsPackage.publishConfig.exports);
+});
+
+test("bundled package dry runs preview without querying published versions", () => {
+  assert.match(releaseScript, /npm pack --dry-run/);
+  assert.doesNotMatch(releaseScript, /^\s*npm publish --dry-run/m);
 });
