@@ -1660,11 +1660,18 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     typeof input.maxBodyBytes === "number" && Number.isFinite(input.maxBodyBytes) && input.maxBodyBytes > 0
       ? Math.trunc(input.maxBodyBytes)
       : DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
-  const hostApiUrl =
-    input.hostApiUrl?.trim() ||
-    process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||
-    process.env.PAPERCLIP_API_URL?.trim() ||
-    resolveDefaultPaperclipApiUrl();
+  // The bridge worker runs inside the same process that serves the Paperclip
+  // API, so forwarded sandbox calls must target the LOCAL listen origin. The
+  // PAPERCLIP_RUNTIME_API_URL / PAPERCLIP_API_URL exports now prefer a
+  // configured public base URL, which is the origin browsers and external
+  // agents use; routing this in-process loopback hop through the network edge
+  // breaks deployments whose public origin sits behind a session-gated proxy
+  // (every forwarded agent API call is rejected at the edge). Server boot
+  // exports PAPERCLIP_LISTEN_HOST / PAPERCLIP_LISTEN_PORT before any run
+  // executes, and resolveDefaultPaperclipApiUrl() maps wildcard listen hosts
+  // (0.0.0.0 / ::) to localhost, so the fallback is always loopback-reachable.
+  // input.hostApiUrl stays available as an explicit override seam.
+  const hostApiUrl = input.hostApiUrl?.trim() || resolveDefaultPaperclipApiUrl();
   const shellCommand = adapterExecutionTargetShellCommand(target);
   const runner = adapterExecutionTargetCommandRunner(target);
   const bridgeTimeoutMs =
