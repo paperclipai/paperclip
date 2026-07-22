@@ -310,7 +310,7 @@ package_publish_tool() {
   '
 }
 
-BUNDLED_NPM_VERSION="10.9.7"
+BUNDLED_NPM_VERSION="11.16.0"
 
 run_bundled_npm() {
   npx --yes "npm@$BUNDLED_NPM_VERSION" "$@"
