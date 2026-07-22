@@ -1758,14 +1758,9 @@ function AgentConfigurePage({
     queryKey: queryKeys.agents.keys(agentId),
     queryFn: () => agentsApi.listKeys(agentId, companyId),
   });
-  const { data: adapterModels = [] } = useQuery({
-    queryKey: companyId ? queryKeys.agents.adapterModels(companyId, agent.adapterType) : ["agents", "none", "adapter-models", agent.adapterType],
-    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType),
-    enabled: Boolean(companyId),
-  });
   const effectiveConfig = useMemo(
-    () => resolveEffectiveConfiguration(agent, adapterModels, keys.filter((key) => !key.revokedAt).length),
-    [adapterModels, agent, keys],
+    () => resolveEffectiveConfiguration(agent, keys.filter((key) => !key.revokedAt).length),
+    [agent, keys],
   );
   const handleDirtyDetailsChange = useCallback((details: { count: number; sections: string[] }) => {
     setDirtyDetails(details);
@@ -1817,20 +1812,6 @@ function AgentConfigurePage({
         hideInstructionsFile
         visibleSections={visibleSections}
       />
-      {visibleSections.has("keys") ? (
-        <ConfigurationSection id="keys" title="API Keys" instant>
-          <p className="text-xs text-muted-foreground">Long-lived keys for external processes acting as this agent. Runs receive short-lived tokens automatically.</p>
-          <KeysTab agentId={agentId} companyId={companyId} />
-        </ConfigurationSection>
-      ) : null}
-      {visibleSections.has("danger") ? (
-        <ConfigurationSection id="danger" title="Danger & Legacy">
-          <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
-            Adapter-specific sandbox bypass, permission skipping, and deprecated values remain draftable in the runtime form. They are grouped here for navigation while the field internals stay unchanged in P1.
-          </div>
-        </ConfigurationSection>
-      ) : null}
-
       {/* Configuration Revisions — collapsible at the bottom */}
       {visibleSections.has("history") ? <ConfigurationSection id="history" title="History" instant>
         <button
@@ -2000,6 +1981,108 @@ function ConfigurationTab({
             ? "Enabled by simple company-wide task assignment defaults."
             : "Disabled unless explicitly granted.";
 
+  const configurationShellAfterSchedule = (
+    <>
+      {visibleSections.has("access") ? (
+        <ConfigurationSection id="access" title="Access & Governance" instant>
+          <TrustPresetSection
+            permissions={agent.permissions}
+            disabled={updatePermissions.isPending}
+            companyId={companyId}
+            projectCandidates={(boundaryProjects ?? []).map((project) => ({
+              id: project.id,
+              label: project.name,
+            }))}
+            issueCandidates={(boundaryIssues ?? []).map((issue) => ({
+              id: issue.id,
+              label: `${issue.identifier ?? issue.id.slice(0, 8)} · ${issue.title}`,
+            }))}
+            candidatesLoading={boundaryProjectsLoading || boundaryIssuesLoading}
+            onChange={(nextPermissions) =>
+              updatePermissions.mutate({
+                canCreateAgents,
+                canCreateSkills,
+                canAssignTasks,
+                ...buildPermissionsForTrustPreset(
+                  nextPermissions,
+                  nextPermissions.trustPreset === "low_trust_review" ? "low_trust_review" : "standard",
+                ),
+              })
+            }
+          />
+          <div>
+            <h3 className="text-sm font-medium mb-3">Permissions</h3>
+            <div className="border border-border rounded-lg p-4 space-y-4">
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <div className="space-y-1">
+                  <div>Can create new agents</div>
+                  <p className="text-xs text-muted-foreground">
+                    Lets this agent create or hire agents. This also grants task assignment authority.
+                  </p>
+                </div>
+                <ToggleSwitch
+                  checked={canCreateAgents}
+                  onCheckedChange={() =>
+                    updatePermissions.mutate({
+                      canCreateAgents: !canCreateAgents,
+                      canCreateSkills,
+                      canAssignTasks: !canCreateAgents ? true : canAssignTasks,
+                    })
+                  }
+                  disabled={updatePermissions.isPending}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <div className="space-y-1">
+                  <div>Can create/import skills</div>
+                  <p className="text-xs text-muted-foreground">
+                    Lets this agent install, import, create, and scan company skills without creating agents.
+                  </p>
+                </div>
+                <ToggleSwitch
+                  checked={canCreateSkills}
+                  onCheckedChange={() =>
+                    updatePermissions.mutate({
+                      canCreateAgents,
+                      canCreateSkills: !canCreateSkills,
+                      canAssignTasks,
+                    })
+                  }
+                  disabled={updatePermissions.isPending}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <div className="space-y-1">
+                  <div>Can assign tasks</div>
+                  <p className="text-xs text-muted-foreground">{taskAssignHint}</p>
+                </div>
+                <ToggleSwitch
+                  checked={canAssignTasks}
+                  onCheckedChange={() =>
+                    updatePermissions.mutate({
+                      canCreateAgents,
+                      canCreateSkills,
+                      canAssignTasks: !canAssignTasks,
+                    })
+                  }
+                  disabled={updatePermissions.isPending || taskAssignLocked}
+                />
+              </div>
+            </div>
+          </div>
+        </ConfigurationSection>
+      ) : null}
+      {visibleSections.has("keys") ? (
+        <ConfigurationSection id="keys" title="API Keys" instant>
+          <p className="text-xs text-muted-foreground">
+            Long-lived keys for external processes acting as this agent. Runs receive short-lived tokens automatically.
+          </p>
+          <KeysTab agentId={agent.id} companyId={companyId} />
+        </ConfigurationSection>
+      ) : null}
+    </>
+  );
+
   return (
     <div className="space-y-6">
       <AgentConfigForm
@@ -2018,99 +2101,12 @@ function ConfigurationTab({
         hideIdentity
         configurationShell
         visibleConfigurationSections={visibleSections}
+        configurationShellAfterSchedule={configurationShellAfterSchedule}
         sectionLayout="cards"
       />
       <p className="text-xs text-muted-foreground">
         Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
       </p>
-
-      {visibleSections.has("access") ? <ConfigurationSection id="access" title="Access & Governance" instant>
-      <TrustPresetSection
-        permissions={agent.permissions}
-        disabled={updatePermissions.isPending}
-        companyId={companyId}
-        projectCandidates={(boundaryProjects ?? []).map((project) => ({
-          id: project.id,
-          label: project.name,
-        }))}
-        issueCandidates={(boundaryIssues ?? []).map((issue) => ({
-          id: issue.id,
-          label: `${issue.identifier ?? issue.id.slice(0, 8)} · ${issue.title}`,
-        }))}
-        candidatesLoading={boundaryProjectsLoading || boundaryIssuesLoading}
-        onChange={(nextPermissions) =>
-          updatePermissions.mutate({
-            canCreateAgents,
-            canCreateSkills,
-            canAssignTasks,
-            ...buildPermissionsForTrustPreset(nextPermissions, nextPermissions.trustPreset === "low_trust_review" ? "low_trust_review" : "standard"),
-          })
-        }
-      />
-
-      <div>
-        <h3 className="text-sm font-medium mb-3">Permissions</h3>
-        <div className="border border-border rounded-lg p-4 space-y-4">
-          <div className="flex items-center justify-between gap-4 text-sm">
-            <div className="space-y-1">
-              <div>Can create new agents</div>
-              <p className="text-xs text-muted-foreground">
-                Lets this agent create or hire agents. This also grants task assignment authority.
-              </p>
-            </div>
-            <ToggleSwitch
-              checked={canCreateAgents}
-              onCheckedChange={() =>
-                updatePermissions.mutate({
-                  canCreateAgents: !canCreateAgents,
-                  canCreateSkills,
-                  canAssignTasks: !canCreateAgents ? true : canAssignTasks,
-                })
-              }
-              disabled={updatePermissions.isPending}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-4 text-sm">
-            <div className="space-y-1">
-              <div>Can create/import skills</div>
-              <p className="text-xs text-muted-foreground">
-                Lets this agent install, import, create, and scan company skills without creating agents.
-              </p>
-            </div>
-            <ToggleSwitch
-              checked={canCreateSkills}
-              onCheckedChange={() =>
-                updatePermissions.mutate({
-                  canCreateAgents,
-                  canCreateSkills: !canCreateSkills,
-                  canAssignTasks,
-                })
-              }
-              disabled={updatePermissions.isPending}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-4 text-sm">
-            <div className="space-y-1">
-              <div>Can assign tasks</div>
-              <p className="text-xs text-muted-foreground">
-                {taskAssignHint}
-              </p>
-            </div>
-            <ToggleSwitch
-              checked={canAssignTasks}
-              onCheckedChange={() =>
-                updatePermissions.mutate({
-                  canCreateAgents,
-                  canCreateSkills,
-                  canAssignTasks: !canAssignTasks,
-                })
-              }
-              disabled={updatePermissions.isPending || taskAssignLocked}
-            />
-          </div>
-        </div>
-      </div>
-      </ConfigurationSection> : null}
     </div>
   );
 }

@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { Search, Zap } from "lucide-react";
 import type { Agent, AgentEnvConfig } from "@paperclipai/shared";
-import type { AdapterModel } from "../api/agents";
 import { adapterLabels } from "./agent-config-primitives";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "../lib/utils";
@@ -44,7 +43,7 @@ function readString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-export function resolveEffectiveConfiguration(agent: Agent, adapterModels: AdapterModel[] = [], apiKeyCount = 0) {
+export function resolveEffectiveConfiguration(agent: Agent, apiKeyCount = 0) {
   const adapterConfig = (agent.adapterConfig ?? {}) as Record<string, unknown>;
   const runtimeConfig = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
   const heartbeat = (runtimeConfig.heartbeat ?? {}) as Record<string, unknown>;
@@ -52,7 +51,7 @@ export function resolveEffectiveConfiguration(agent: Agent, adapterModels: Adapt
   const cheap = (profiles.cheap ?? {}) as Record<string, unknown>;
   const cheapConfig = (cheap.adapterConfig ?? {}) as Record<string, unknown>;
   const explicitModel = readString(adapterConfig.model);
-  const resolvedModel = explicitModel || adapterModels[0]?.label || adapterModels[0]?.id || "Adapter default";
+  const resolvedModel = explicitModel || "Adapter default";
   const effort = readString(adapterConfig.modelReasoningEffort || adapterConfig.reasoningEffort || adapterConfig.effort || adapterConfig.variant || adapterConfig.mode);
   const env = (adapterConfig.env ?? {}) as AgentEnvConfig;
   return {
