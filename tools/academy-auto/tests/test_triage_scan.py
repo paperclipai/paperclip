@@ -168,3 +168,43 @@ def test_scan_all_dedups_and_sorts(tmp_path, monkeypatch):
     out = scanmod.scan_all(tmp_path)
     keys = [c.key for c in out]
     assert keys == ["tsc:a.ts:5:TS1", "issue:9", "todo:a.ts:1"]  # nach Priorität, Dup entfernt
+
+
+def test_scan_lint_fail_soft_on_non_list_json():
+    assert scan_lint(None, runner=lambda *a, **k: _proc(stdout='{"error":"boom"}', returncode=1), repo_root="/repo") == []
+
+
+def test_scan_issues_fail_soft_on_non_list_json():
+    assert scan_issues(runner=lambda *a, **k: _proc(stdout='{"message":"not found"}', returncode=1)) == []
+
+
+def test_scan_issues_bad_json_and_missing_number():
+    assert scan_issues(runner=lambda *a, **k: _proc(stdout="not json", returncode=0)) == []
+    cands = scan_issues(runner=lambda *a, **k: _proc(stdout='[{"title":"kein number"},{"number":5,"title":"ok"}]', returncode=0))
+    assert {c.key for c in cands} == {"issue:5"}
+
+
+def test_scan_all_isolates_a_throwing_source(tmp_path, monkeypatch):
+    from academy_auto.triage.scan import Candidate
+    from academy_auto.triage import scan as scanmod
+    monkeypatch.setattr(scanmod, "scan_todos", lambda root: [Candidate("todo","todo:a.ts:1","a.ts",1,"x",10)])
+    monkeypatch.setattr(scanmod, "scan_skipped_tests", lambda root: [])
+    def boom(*a, **k):
+        raise RuntimeError("Quelle kaputt")
+    monkeypatch.setattr(scanmod, "scan_tsc", boom)
+    monkeypatch.setattr(scanmod, "scan_lint", lambda root, runner=None: [])
+    monkeypatch.setattr(scanmod, "scan_issues", lambda runner=None: [])
+    out = scanmod.scan_all(tmp_path)
+    assert [c.key for c in out] == ["todo:a.ts:1"]  # kaputte tsc-Quelle reißt den Scan nicht mit
+
+
+def test_scan_all_dedup_keeps_first(tmp_path, monkeypatch):
+    from academy_auto.triage.scan import Candidate
+    from academy_auto.triage import scan as scanmod
+    monkeypatch.setattr(scanmod, "scan_todos", lambda root: [Candidate("todo","dup:1","a.ts",1,"ERSTER",10)])
+    monkeypatch.setattr(scanmod, "scan_skipped_tests", lambda root: [Candidate("todo","dup:1","a.ts",1,"zweiter",10)])
+    monkeypatch.setattr(scanmod, "scan_tsc", lambda root, runner=None: [])
+    monkeypatch.setattr(scanmod, "scan_lint", lambda root, runner=None: [])
+    monkeypatch.setattr(scanmod, "scan_issues", lambda runner=None: [])
+    out = scanmod.scan_all(tmp_path)
+    assert len(out) == 1 and out[0].text == "ERSTER"  # erster gewinnt

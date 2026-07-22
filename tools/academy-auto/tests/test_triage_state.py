@@ -53,3 +53,10 @@ def test_quarantined_keys_lists_them():
         "b": {"attempts": 1, "last_status": "discarded"},
     }
     assert quarantined_keys(state) == ["a"]
+
+
+def test_save_state_creates_missing_parent_dirs(tmp_path):
+    from academy_auto.triage.state import save_state, load_state
+    p = tmp_path / "neu" / "tief" / "state.json"
+    save_state(p, {"k": {"attempts": 1, "last_status": "committed", "last_run": None}})
+    assert load_state(p) == {"k": {"attempts": 1, "last_status": "committed", "last_run": None}}

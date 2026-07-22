@@ -17,7 +17,9 @@ def load_state(path) -> dict:
 
 
 def save_state(path, state) -> None:
-    Path(path).write_text(json.dumps(state, indent=2, ensure_ascii=False))
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state, indent=2, ensure_ascii=False))
 
 
 def record_outcome(state, key, status, now=None) -> None:

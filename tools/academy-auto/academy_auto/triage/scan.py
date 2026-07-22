@@ -121,6 +121,8 @@ def scan_lint(root, runner=subprocess.run, repo_root=None) -> list[Candidate]:
         data = json.loads(getattr(proc, "stdout", "") or "")
     except (ValueError, TypeError):
         return []
+    if not isinstance(data, list):
+        return []
     cands: list[Candidate] = []
     for entry in data:
         abs_path = entry.get("filePath", "")
@@ -148,6 +150,8 @@ def scan_issues(runner=subprocess.run) -> list[Candidate]:
         data = json.loads(getattr(proc, "stdout", "") or "")
     except (ValueError, TypeError):
         return []
+    if not isinstance(data, list):
+        return []
     cands: list[Candidate] = []
     for issue in data:
         number = issue.get("number")
@@ -162,11 +166,17 @@ def scan_issues(runner=subprocess.run) -> list[Candidate]:
 
 def scan_all(root, runner=subprocess.run) -> list[Candidate]:
     collected: list[Candidate] = []
-    collected += scan_todos(root)
-    collected += scan_skipped_tests(root)
-    collected += scan_tsc(root, runner=runner)
-    collected += scan_lint(root, runner=runner)
-    collected += scan_issues(runner=runner)
+    for fn in (
+        lambda: scan_todos(root),
+        lambda: scan_skipped_tests(root),
+        lambda: scan_tsc(root, runner=runner),
+        lambda: scan_lint(root, runner=runner),
+        lambda: scan_issues(runner=runner),
+    ):
+        try:
+            collected += fn()
+        except Exception:
+            continue
     seen: set[str] = set()
     unique: list[Candidate] = []
     for c in collected:
