@@ -102,7 +102,7 @@ export function AgentConfigurationRail({
   const shown = agentConfigurationSections.filter((section) => visibleSections.has(section.id));
   return (
     <>
-      <div className="sticky top-0 z-20 bg-background py-2 md:hidden">
+      <div className="sticky top-0 z-20 min-w-0 max-w-full bg-background py-2 md:hidden">
         <label className="mb-2 flex items-center gap-2 rounded-md border border-border px-2.5 py-2">
           <Search className="h-3.5 w-3.5 text-muted-foreground" />
           <input
@@ -120,7 +120,7 @@ export function AgentConfigurationRail({
           {shown.map((section) => <option key={section.id} value={section.id}>{section.label}</option>)}
         </select>
       </div>
-      <aside className="sticky top-4 hidden self-start md:block">
+      <aside className="sticky top-4 hidden min-w-0 self-start md:block">
         <label className="flex items-center gap-2 rounded-md border border-border px-2.5 py-2">
           <Search className="h-3.5 w-3.5 text-muted-foreground" />
           <input
