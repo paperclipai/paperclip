@@ -23,6 +23,16 @@ class Candidate:
     raw_priority: int
 
 
+def _is_excluded(rel: str) -> bool:
+    segs = rel.split("/")
+    for part in _EXCLUDE_PARTS:
+        pseg = part.split("/")
+        for i in range(len(segs) - len(pseg) + 1):
+            if segs[i:i + len(pseg)] == pseg:
+                return True
+    return False
+
+
 def iter_source_files(root: Path) -> list[str]:
     """Repo-relative Pfade aller Quelldateien, Vendor-/Build-Verzeichnisse ausgeschlossen."""
     out: list[str] = []
@@ -30,7 +40,7 @@ def iter_source_files(root: Path) -> list[str]:
         if not path.is_file() or path.suffix not in _SOURCE_EXTS:
             continue
         rel = path.relative_to(root).as_posix()
-        if any(part in rel for part in _EXCLUDE_PARTS):
+        if _is_excluded(rel):
             continue
         out.append(rel)
     return out

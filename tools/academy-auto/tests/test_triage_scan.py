@@ -40,3 +40,25 @@ def test_scan_skipped_tests_finds_skip_markers(tmp_path):
     assert "skip:src/a.test.ts:2" in keys
     assert "skip:src/a.test.ts:3" in keys
     assert all(c.source == "skip" and c.raw_priority == 30 for c in cands)
+
+
+def test_iter_source_files_keeps_paths_with_substring_of_excludes(tmp_path):
+    # "distance.ts" enthält "dist", darf aber NICHT ausgeschlossen werden
+    _write(tmp_path, "src/distance.ts", "// TODO fix\n")
+    _write(tmp_path, "src/distribution/index.ts", "// TODO fix\n")
+    _write(tmp_path, "dist/bundle.js", "// TODO ignored\n")  # echtes dist-Segment -> raus
+    files = iter_source_files(tmp_path)
+    assert "src/distance.ts" in files
+    assert "src/distribution/index.ts" in files
+    assert all(not f.startswith("dist/") for f in files)
+
+
+def test_scan_todos_in_substring_path_is_found(tmp_path):
+    _write(tmp_path, "src/distance.ts", "const x=1; // TODO wichtig\n")
+    cands = scan_todos(tmp_path)
+    assert "todo:src/distance.ts:1" in {c.key for c in cands}
+
+
+def test_scan_skipped_tests_ignores_non_test_files(tmp_path):
+    _write(tmp_path, "src/app.ts", "it.skip('x', () => {});\nxit('y', () => {});\n")
+    assert scan_skipped_tests(tmp_path) == []
