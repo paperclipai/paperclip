@@ -267,13 +267,26 @@ async function assertSandboxPathsConfined(input: {
 /**
  * Validate every outbound source AND capture a protected snapshot of it in one
  * atomic sandbox-side step, then hand the snapshot paths to `downloadFiles`. This
- * closes the TOCTOU window between validation and download: the guard resolves
- * each source's realpath, confirms it is inside the remote dir, and `cp`s those
- * exact bytes to a reserved temp inside the root — all in a single `sh -c`
- * invocation. Even if the sandbox repoints the original path to a symlink after
- * the check, the host reads the immutable snapshot, never the mutable source.
- * Returns the reserved snapshot paths, index-aligned with `sources`; the caller
- * downloads and then removes them.
+ * shrinks the TOCTOU window between validation and download to near zero: the
+ * guard resolves each source's realpath, confirms it is inside the remote dir,
+ * re-checks the resolved path is still a (non-symlink) regular file, then `cp`s
+ * those exact bytes to a reserved snapshot — all in a single `sh -c` invocation.
+ *
+ * Two windows are closed here:
+ *  - validation→copy: `_pc_real` is a canonical path, so a `[ -L ]`/`[ -f ]`
+ *    re-check immediately before `cp` refuses a source the sandbox swapped for a
+ *    symlink (or non-regular file) after `realpath` resolved, rather than letting
+ *    `cp` follow the swap.
+ *  - copy→download: the privileged `downloadFiles` reads the reserved snapshot,
+ *    which is an unguessable random name that is a DIRECT child of the resolved
+ *    workspace root — no sandbox-swappable intermediate directory sits on the
+ *    read path, and the sandbox cannot pre-plant a symlink at the leaf name.
+ *
+ * The sandbox-side `cp` runs at sandbox-user privilege, so its residual race
+ * cannot read anything that user could not already read; the confinement is
+ * defense-in-depth for the privileged host-mediated download. Returns the
+ * reserved snapshot paths, index-aligned with `sources`; the caller downloads
+ * and then removes them.
  */
 async function snapshotOutboundFileSources(input: {
   sandbox: Sandbox;
@@ -282,6 +295,8 @@ async function snapshotOutboundFileSources(input: {
   timeoutSeconds: number;
 }): Promise<string[]> {
   const { sandbox, remoteDir, sources, timeoutSeconds } = input;
+  // Reserved snapshot names are a DIRECT child of remoteDir (the confinement
+  // root), so the privileged download leg carries no swappable intermediate dir.
   const snapshots = sources.map(() => path.posix.join(remoteDir, scratchName()));
   if (sources.length === 0) return snapshots;
   const lines = [...canonicalizerPreamble(shellQuote(remoteDir))];
@@ -291,8 +306,13 @@ async function snapshotOutboundFileSources(input: {
     lines.push(
       `_pc_real=$(_pc_resolve ${quotedSource}) || { echo "ESCAPE"; exit 42; };`,
       `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
-      // Copy the resolved bytes (already confined) into the reserved snapshot so
-      // the subsequent download reads an immutable file, not the live source.
+      // Close the validation→copy window: refuse a canonical path the sandbox has
+      // repointed to a symlink or a non-regular file since `realpath` resolved,
+      // so `cp` never follows a post-validation swap.
+      `[ -L "$_pc_real" ] && { echo "REPLACED"; exit 44; };`,
+      `[ -f "$_pc_real" ] || { echo "NOTREG"; exit 45; };`,
+      // Copy the confined canonical bytes into the reserved snapshot so the
+      // subsequent download reads this immutable copy, not the live source.
       `cp -- "$_pc_real" ${quotedSnapshot} || { echo "snapshot copy failed"; exit 43; };`,
     );
   });
@@ -346,10 +366,16 @@ async function syncInFileMappings(input: {
     assertConfinedSandboxPath(remoteDir, mapping.targetPath, "target");
     const dir = path.posix.dirname(mapping.targetPath);
     parentDirs.add(dir);
-    // Stage each file to a reserved temp SIBLING of its target (same directory =
-    // same filesystem) so the closing `mv -f` is an atomic rename and an
-    // interrupted upload never leaves a truncated file at targetPath.
-    const temp = path.posix.join(dir, scratchName());
+    // Stage each upload to a reserved temp that is a DIRECT child of the workspace
+    // root (`remoteDir`), never a sibling of the target. The target's parent dir is
+    // sandbox-writable and can be swapped for a symlink to `/etc` (or any host path)
+    // after validation but before `uploadFiles` opens the destination — rooting the
+    // privileged write directly under `remoteDir` removes that swappable intermediate
+    // component, so the upload cannot be redirected outside the root by a parent
+    // swap. `remoteDir` and the target dir share the workspace filesystem, so the
+    // closing `mv -f` is still an atomic same-fs rename and an interrupted upload
+    // never leaves a truncated file at targetPath.
+    const temp = path.posix.join(remoteDir, scratchName());
     // A string `source` streams from the local path via the SDK's read stream
     // (batched, flat per-file memory) rather than buffering the whole file.
     uploads.push({ source: mapping.sourcePath, destination: temp });
@@ -441,11 +467,27 @@ async function syncInDirectoryMapping(input: {
       label: "inbound symlink-escape guard",
     });
     await sandbox.fs.uploadFiles([{ source: archivePath, destination: remoteTar }], timeoutSeconds);
-    const extractCommand = [
-      `tar -xf ${shellQuote(remoteTar)} -C ${shellQuote(mapping.targetPath)}`,
-      `rm -f ${shellQuote(remoteTar)}`,
-    ].join(" && ");
-    await assertSandboxCommandOk(sandbox, extractCommand, timeoutSeconds, "syncIn extract");
+    // Bind validation and extraction into ONE sandbox invocation: re-canonicalize
+    // the target and confirm it is confined, then `tar -x` into that resolved path
+    // (`$_pc_real`), all in the same `sh -c`. The earlier standalone guard fails
+    // closed before the tarball is even uploaded; this re-check closes the window
+    // between that guard and the extract, so a sandbox symlink swap of the target
+    // (or an ancestor) cannot redirect extraction outside the workspace root after
+    // validation. Extracting into `$_pc_real` (the canonical path) rather than the
+    // literal target avoids re-following any ancestor symlink at extract time.
+    const extractScript = [
+      ...canonicalizerPreamble(shellQuote(remoteDir)),
+      `_pc_real=$(_pc_resolve ${shellQuote(mapping.targetPath)}) || { echo "ESCAPE"; exit 42; };`,
+      `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
+      `tar -xf ${shellQuote(remoteTar)} -C "$_pc_real" || { echo "extract failed"; exit 43; };`,
+      `rm -f ${shellQuote(remoteTar)};`,
+    ].join("\n");
+    await assertSandboxCommandOk(
+      sandbox,
+      `sh -c ${shellQuote(extractScript)}`,
+      timeoutSeconds,
+      "syncIn extract",
+    );
     const filesTransferred = await countHostFiles(mapping.sourcePath, mapping.exclude);
     return { filesTransferred, bytesTransferred };
   });

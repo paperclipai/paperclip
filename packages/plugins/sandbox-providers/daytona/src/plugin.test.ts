@@ -1310,6 +1310,10 @@ describe("daytona native file-sync hooks", () => {
     for (const upload of uploads) {
       expect(path.posix.basename(upload.destination)).toMatch(/^\.paperclip-upload-/);
       expect(upload.destination).not.toBe(`${REMOTE_DIR}/.secret/auth.json`);
+      // TOCTOU-hardened: the privileged upload destination is a DIRECT child of the
+      // workspace root, never a sibling under the target's (sandbox-swappable)
+      // parent dir, so a parent symlink swap cannot redirect the write out of root.
+      expect(path.posix.dirname(upload.destination)).toBe(REMOTE_DIR);
     }
 
     // Secret mode applied on the TEMP path (before the rename) so the target
@@ -1402,8 +1406,14 @@ describe("daytona native file-sync hooks", () => {
     const extractCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("tar -xf"));
     expect(extractCall).toBeDefined();
     const extractCommand = String(extractCall?.[0]);
-    expect(extractCommand).toContain(`-C '${REMOTE_DIR}/.paperclip-runtime/assets'`);
-    expect(extractCommand).toMatch(/rm -f '.*\.paperclip-upload-.*\.tar'/);
+    // The extract binds validation and extraction into one sandbox invocation: it
+    // re-canonicalizes the target and extracts into the RESOLVED path ($_pc_real),
+    // closing the window between the earlier guard and the extract.
+    expect(extractCommand).toContain("_pc_resolve");
+    expect(extractCommand).toContain(".paperclip-runtime/assets");
+    expect(extractCommand).toContain("tar -xf");
+    expect(extractCommand).toContain('-C "$_pc_real"');
+    expect(extractCommand).toMatch(/rm -f .*\.paperclip-upload-.*\.tar/);
   });
 
   it("syncIn dereferences symlinks to bytes when followSymlinks is true (tar -h)", async () => {
@@ -1497,6 +1507,49 @@ describe("daytona native file-sync hooks", () => {
         { operationId: "sync-op-out", filesTransferred: 2, bytesTransferred: "result-bytes".length + "secret-bytes".length },
       ],
     });
+  });
+
+  it("syncOut snapshot guard re-checks the resolved source is a non-symlink regular file immediately before copying (validation→copy TOCTOU)", async () => {
+    const hostDir = await makeHostDir();
+    const sandbox = createMockSandbox();
+    sandbox.fs.downloadFiles.mockImplementation(async (requests: Array<{ source: string; destination?: string }>) => {
+      return Promise.all(
+        requests.map(async (req) => {
+          await fs.writeFile(req.destination!, "bytes");
+          return { source: req.source, result: req.destination };
+        }),
+      );
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentSyncOut?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "sync-op-out-nofollow",
+          files: [{ sourcePath: `${REMOTE_DIR}/out/data.txt`, targetPath: path.join(hostDir, "data.txt"), kind: "file" }],
+        },
+      ],
+    });
+
+    // The snapshot guard runs realpath → confine → no-follow re-check → cp, all in
+    // one `sh -c`. The `[ -L ]`/`[ -f ]` re-check must precede the `cp` so a source
+    // the sandbox repointed to a symlink after realpath is refused, not followed.
+    const guardCall = sandbox.process.executeCommand.mock.calls.find(
+      ([cmd]) => String(cmd).includes("_pc_resolve") && String(cmd).includes("cp --"),
+    );
+    expect(guardCall).toBeDefined();
+    const guardCommand = String(guardCall?.[0]);
+    expect(guardCommand).toContain('[ -L "$_pc_real" ]');
+    expect(guardCommand).toContain('[ -f "$_pc_real" ]');
+    const noFollowIdx = guardCommand.indexOf('[ -L "$_pc_real" ]');
+    const copyIdx = guardCommand.indexOf('cp -- "$_pc_real"');
+    expect(noFollowIdx).toBeGreaterThan(-1);
+    expect(copyIdx).toBeGreaterThan(noFollowIdx);
   });
 
   it("syncOut fails loud when any per-file download reports an error, and leaves no target file", async () => {
