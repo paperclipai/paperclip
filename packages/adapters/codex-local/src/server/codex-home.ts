@@ -343,43 +343,135 @@ export interface StageCodexHomeForSyncOptions {
 }
 
 /**
- * Recursively copies `sourceDir` into `targetDir`, dereferencing all symlinks to
- * bytes (so the sandbox receives real file content, not host-relative links) and
- * normalizing every copied regular file to mode `0600`. Dangling or circular
- * symlinks are silently skipped. Created directories get mode `0700`.
- *
- * This replaces `fs.cp({ dereference: true })` which preserves source file modes,
- * leaving `0644` documents and `0755` scripts group/other-readable in the staged
- * asset; here all regular files are normalized to `0600` regardless of source mode.
- *
- * Note: Paperclip `skills/` entries are intentionally symlinks into a shared skill
- * store outside `CODEX_HOME/skills/`, so we do not restrict symlink targets to
- * a fixed root. The `0700` staged directory and per-file `0600` mode together
- * ensure that even externally-sourced skill content is not group/world-readable.
+ * True when `candidate` is `root` itself or a descendant of it. Both arguments
+ * must be absolute, already-resolved (symlink-free) paths — callers pass
+ * `fs.realpath` output — so `path.relative` is a reliable containment test that
+ * is not fooled by `..` segments or a trailing-separator prefix collision
+ * (`/a/skills` vs `/a/skills-evil`).
  */
-async function stageDirectorySecure(
+function isResolvedPathInside(candidate: string, root: string): boolean {
+  if (candidate === root) return true;
+  const rel = path.relative(root, candidate);
+  return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/**
+ * Recursively copies one skill subtree — rooted at its real directory
+ * `containmentRoot` — into `targetDir`, dereferencing symlinks to bytes (so the
+ * sandbox receives real file content, not host-relative links) and normalizing
+ * every copied regular file to mode `0600`. Created directories get mode `0700`.
+ *
+ * Two containment guards protect the staged upload:
+ *
+ * - **Allowlist escape (finding 2).** After dereferencing, a symlink whose real
+ *   target falls *outside* `containmentRoot` is skipped. A malformed or
+ *   compromised skill could otherwise smuggle host files that are not in
+ *   `CODEX_SYNC_ALLOWLIST` (e.g. `~/.ssh/id_rsa`) into the upload by pointing a
+ *   nested link at them. The skill's own top-level link into the shared skill
+ *   store is still honoured — it is what establishes `containmentRoot` in
+ *   {@link stageDirectorySecure}; only links that escape *that* root are cut.
+ * - **Directory cycles (finding 1).** A directory symlink such as `back -> .` or
+ *   `back -> ..` resolves to an ancestor directory instead of raising `ELOOP`;
+ *   recursing into it would traverse the same tree forever until disk/memory is
+ *   exhausted. A resolved directory already on the active traversal path
+ *   (`activePath`) is therefore skipped.
+ *
+ * Dangling symlinks (`ENOENT`) and self-referential links that do trip `ELOOP`
+ * are silently skipped, as are non-file/dir entries (sockets, devices).
+ */
+async function stageContainedSubtree(
   sourceDir: string,
   targetDir: string,
+  containmentRoot: string,
+  activePath: Set<string>,
 ): Promise<void> {
   await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
   const entries = await fs.readdir(sourceDir, { withFileTypes: true });
   for (const entry of entries) {
     const entrySource = path.join(sourceDir, entry.name);
     const entryTarget = path.join(targetDir, entry.name);
-    // Resolve the real path; dangling or circular symlinks are silently skipped.
+    // Resolve the real path; dangling or self-referential (`ELOOP`) links skip.
     const resolved = await fs.realpath(entrySource).catch((error) => {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT" || code === "ELOOP") return null;
       throw error;
     });
     if (!resolved) continue;
+    // Allowlist containment: never dereference a link that escapes this skill's
+    // real root (host files outside CODEX_SYNC_ALLOWLIST) into the upload.
+    if (!isResolvedPathInside(resolved, containmentRoot)) continue;
     const entryStat = await fs.stat(resolved).catch((error) => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
     });
     if (!entryStat) continue;
     if (entryStat.isDirectory()) {
-      await stageDirectorySecure(resolved, entryTarget);
+      // Cycle guard: a directory already open on the active path (reached via a
+      // `back -> .`-style link) would otherwise recurse forever.
+      if (activePath.has(resolved)) continue;
+      activePath.add(resolved);
+      await stageContainedSubtree(resolved, entryTarget, containmentRoot, activePath);
+      activePath.delete(resolved);
+    } else if (entryStat.isFile()) {
+      const bytes = await fs.readFile(resolved);
+      await fs.writeFile(entryTarget, bytes, { mode: 0o600 });
+      await fs.chmod(entryTarget, 0o600);
+    }
+    // Other types (sockets, devices) are silently skipped.
+  }
+}
+
+/**
+ * Recursively copies `sourceDir` (a directory allowlist entry — currently only
+ * `skills/`) into `targetDir`, dereferencing symlinks to bytes and normalizing
+ * every copied regular file to mode `0600`. Created directories get mode `0700`.
+ *
+ * This replaces `fs.cp({ dereference: true })` which preserves source file modes,
+ * leaving `0644` documents and `0755` scripts group/other-readable in the staged
+ * asset; here all regular files are normalized to `0600` regardless of source mode.
+ *
+ * `sourceDir`'s *direct* children are the Paperclip-injected skill symlinks that
+ * intentionally point into a shared skill store *outside* `CODEX_HOME/skills/`,
+ * so each child is allowed to resolve anywhere — and when it resolves to a
+ * directory it becomes the containment root for its own subtree. Everything
+ * *below* that root is copied via {@link stageContainedSubtree}, which refuses to
+ * follow a nested symlink out of the skill (finding 2) and detects directory
+ * cycles (finding 1). A direct child that resolves to `sourceDir` itself or to
+ * an ancestor of it (a degenerate `-> .` / `-> ..` link at the top level) is
+ * skipped rather than used as a root, so it can never drag the wider home into
+ * the staged skills asset. The `0700` staged directory and per-file `0600` mode
+ * together ensure even externally-sourced skill content is not group/world-readable.
+ */
+async function stageDirectorySecure(
+  sourceDir: string,
+  targetDir: string,
+): Promise<void> {
+  await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
+  const realSourceDir = await fs.realpath(sourceDir);
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const entrySource = path.join(sourceDir, entry.name);
+    const entryTarget = path.join(targetDir, entry.name);
+    // Resolve the real path; dangling or self-referential (`ELOOP`) links skip.
+    const resolved = await fs.realpath(entrySource).catch((error) => {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ELOOP") return null;
+      throw error;
+    });
+    if (!resolved) continue;
+    // A top-level child that resolves to the skills dir itself or an ancestor
+    // of it (`back -> .` / `back -> ..`) is degenerate: using it as a root would
+    // re-stage the whole home under `skills/`. Skip it.
+    if (isResolvedPathInside(realSourceDir, resolved)) continue;
+    const entryStat = await fs.stat(resolved).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!entryStat) continue;
+    if (entryStat.isDirectory()) {
+      // This child skill establishes its own containment root: nested links may
+      // not escape it, and the root seeds the cycle-detection active path.
+      await stageContainedSubtree(resolved, entryTarget, resolved, new Set([resolved]));
     } else if (entryStat.isFile()) {
       const bytes = await fs.readFile(resolved);
       await fs.writeFile(entryTarget, bytes, { mode: 0o600 });

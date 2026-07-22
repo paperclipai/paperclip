@@ -1030,4 +1030,101 @@ describe("stageCodexHomeForSync", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  // Finding 1 (Greptile): a directory symlink such as `back -> .` inside a skill
+  // resolves to an ancestor directory (it does NOT raise ELOOP), so naive
+  // recursion would traverse the same tree forever until disk/memory is
+  // exhausted. Cycle detection must let staging finish while still copying the
+  // real content and skipping the self-referential link.
+  it("does not infinitely traverse an ancestor directory link (back -> .) inside a skill", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-cycle-"));
+    let staged: string | null = null;
+    try {
+      const home = path.join(root, "codex-home");
+      const skillDir = path.join(home, "skills", "my-skill");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), "# skill\n", "utf8");
+      // Directory symlink pointing at the skill's own dir — resolves to a
+      // directory already on the active traversal path; must be skipped.
+      await fs.symlink(".", path.join(skillDir, "back"));
+
+      staged = await stageCodexHomeForSync(home, { runId: "run-cycle" });
+
+      // Completed without hanging; the real file is staged and the cyclic link
+      // produced no runaway nested `back/back/…` chain (it is skipped entirely).
+      expect(await fs.readdir(path.join(staged, "skills", "my-skill"))).toEqual(["SKILL.md"]);
+      expect(await fs.readFile(path.join(staged, "skills", "my-skill", "SKILL.md"), "utf8")).toBe(
+        "# skill\n",
+      );
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // Finding 2 (Greptile): a symlink *inside* a skill that points to a host file
+  // or directory OUTSIDE that skill (e.g. `~/.ssh/id_rsa`) must NOT be
+  // dereferenced into the staged asset — otherwise a malformed/compromised skill
+  // could smuggle host secrets past CODEX_SYNC_ALLOWLIST.
+  it("does not stage a nested skill symlink that escapes the skill root", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-escape-"));
+    let staged: string | null = null;
+    try {
+      const home = path.join(root, "codex-home");
+      const skillDir = path.join(home, "skills", "my-skill");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), "# skill\n", "utf8");
+
+      // A host "secret" file and directory living OUTSIDE the skill dir.
+      const secretFile = path.join(root, "host-secret.txt");
+      await fs.writeFile(secretFile, "TOP SECRET\n", "utf8");
+      const secretDir = path.join(root, "host-secret-dir");
+      await fs.mkdir(secretDir, { recursive: true });
+      await fs.writeFile(path.join(secretDir, "creds"), "creds\n", "utf8");
+
+      // Nested symlinks inside the skill escaping to those host paths.
+      await fs.symlink(secretFile, path.join(skillDir, "stolen.txt"));
+      await fs.symlink(secretDir, path.join(skillDir, "stolen-dir"));
+
+      staged = await stageCodexHomeForSync(home, { runId: "run-escape" });
+
+      const stagedEntries = await fs.readdir(path.join(staged, "skills", "my-skill"));
+      // The legit in-skill file is staged…
+      expect(stagedEntries).toContain("SKILL.md");
+      // …but neither escaping link is followed into the staged asset.
+      expect(stagedEntries).not.toContain("stolen.txt");
+      expect(stagedEntries).not.toContain("stolen-dir");
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // Defense-in-depth for finding 1: a degenerate top-level `skills/<x> -> ..`
+  // link resolves to an ancestor of `skills/` (the home). It must be skipped,
+  // never adopted as a containment root — otherwise the whole home
+  // (`sessions/`, `*.sqlite`, …) would be dragged into the staged skills asset.
+  it("skips a top-level skills entry that resolves to an ancestor of skills/", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-ancestor-"));
+    let staged: string | null = null;
+    try {
+      const home = path.join(root, "codex-home");
+      await fs.mkdir(path.join(home, "skills"), { recursive: true });
+      await fs.writeFile(path.join(home, "skills", "legit.md"), "# ok\n", "utf8");
+      // Runtime state in the home that must never reach the staged asset.
+      await fs.writeFile(path.join(home, "logs.sqlite"), "x", "utf8");
+      // `up -> ..` resolves to the home dir (an ancestor of skills/).
+      await fs.symlink("..", path.join(home, "skills", "up"));
+
+      staged = await stageCodexHomeForSync(home, { runId: "run-ancestor" });
+
+      const stagedSkillEntries = await fs.readdir(path.join(staged, "skills"));
+      expect(stagedSkillEntries).toContain("legit.md");
+      // The ancestor link is skipped, so the home's runtime state is not dragged in.
+      expect(stagedSkillEntries).not.toContain("up");
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
