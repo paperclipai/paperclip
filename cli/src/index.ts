@@ -45,6 +45,7 @@ import { registerSkillCommands } from "./commands/client/skill.js";
 import { cliVersion } from "./version.js";
 import { installCommand } from "./commands/install.js";
 import { uninstallCommand } from "./commands/uninstall.js";
+import { updateCommand } from "./commands/update.js";
 import { registerServiceCommands } from "./commands/service.js";
 
 const program = new Command();
@@ -70,6 +71,21 @@ program
   .command("uninstall")
   .description("Remove the managed CLI install while preserving user data")
   .action(uninstallCommand);
+
+program
+  .command("update")
+  .alias("upgrade")
+  .description("Check, update, or roll back the Paperclip CLI")
+  .option("--latest", "Switch to the latest stable channel")
+  .option("--canary", "Switch to the canary channel")
+  .option("--version <version>", "Install an exact published version")
+  .option("--rollback", "Flip back to the retained previous managed payload")
+  .option("--check", "Check for an available update without applying it")
+  .option("--dry-run", "Print the action without changing anything")
+  .option("--json", "Print machine-readable output")
+  .option("-y, --yes", "Confirm an explicit downgrade")
+  .option("--no-backup", "Skip the pre-update database backup")
+  .action(updateCommand);
 
 program.hook("preAction", (_thisCommand, actionCommand) => {
   const options = actionCommand.optsWithGlobals() as DataDirOptionLike;
