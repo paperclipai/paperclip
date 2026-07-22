@@ -2849,23 +2849,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (input.recoveryCause === "provider_quota" && !input.action.ownerAgentId) return;
     if (input.recoveryCause === "configuration_incomplete") return;
     if (!input.action.ownerAgentId) return;
-    const idempotencyKey = `source_scoped_recovery_action:${input.action.id}:${input.action.attemptCount}`;
-    const existingWake = await db
-      .select({ id: agentWakeupRequests.id })
-      .from(agentWakeupRequests)
-      .where(and(
-        eq(agentWakeupRequests.companyId, input.issue.companyId),
-        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-      ))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (existingWake) return;
-
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",
       reason: "source_scoped_recovery_action",
-      idempotencyKey,
+      idempotencyKey: `source_scoped_recovery_action:${input.action.id}:${input.action.attemptCount}`,
       payload: withRecoveryModelProfileHint({
         issueId: input.issue.id,
         sourceIssueId: input.issue.id,
