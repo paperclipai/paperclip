@@ -1096,6 +1096,27 @@ export async function startServer(): Promise<StartedServer> {
               logger.error({ err }, "periodic heartbeat recovery failed");
             }));
         }
+
+        if (heartbeatSchedulerStopped) return;
+        if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
+          // Serving-tree drift sweep (LOOA-412). Runs on its own so a failure
+          // here never disturbs heartbeat recovery. Self-throttled to ~10min: a
+          // clean tree costs a cheap in-process git read at most, files nothing,
+          // and warms the drift cache /api/health reads. It only ever *detects* —
+          // the deploy is performed by the filed issue's own run, never in this
+          // process (LOOA-403). Gated by scheduling suppression so preview
+          // worktrees / restore windows never file deploy issues.
+          trackHeartbeatSchedulerWork(heartbeat
+            .sweepServingTreeDrift()
+            .then((result) => {
+              if (result.action === "issue_created") {
+                logger.warn({ ...result }, "serving-tree drift sweep filed a deploy issue");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "serving-tree drift sweep failed");
+            }));
+        }
       })();
     }, config.heartbeatSchedulerIntervalMs);
   }

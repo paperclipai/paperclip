@@ -69,6 +69,12 @@ import {
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  computeServingDrift,
+  setCachedServingDrift,
+  SERVING_TREE_DRIFT_SWEEP_ENABLED,
+  SERVING_TREE_DRIFT_SWEEP_INTERVAL_MS,
+} from "../serving-drift.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -5394,6 +5400,40 @@ export function resolveHeartbeatSchedulingSuppression(
   return { suppressed: false, reason: null };
 }
 
+/** Origin kind stamped on serving-tree drift issues so the sweep can find its own open issue (LOOA-412). */
+const SERVING_TREE_DRIFT_ORIGIN_KIND = "serving_tree_drift";
+const SERVING_TREE_DRIFT_ACTOR_ID = "serving-tree-drift-sweep";
+
+/** Human-actionable body for an auto-filed serving-tree drift issue. */
+function buildServingTreeDriftIssueBody(
+  drift: { head: string | null; baseHead: string | null; behindBy: number; driftAgeMs: number | null },
+  fingerprint: string,
+): string {
+  const ageMin = drift.driftAgeMs != null ? Math.floor(drift.driftAgeMs / 60_000) : null;
+  return [
+    "## Serving tree is stale — deploy needed",
+    "",
+    `The live control-plane tree is **${drift.behindBy} commit(s) behind \`master\`**` +
+      (ageMin != null ? ` (oldest undeployed ~${ageMin}m ago)` : "") +
+      ".",
+    "",
+    `- Served head: \`${drift.head ?? "unknown"}\``,
+    `- Master head: \`${drift.baseHead ?? "unknown"}\``,
+    "",
+    "Reviewed code is merged but not serving. Deploy it (FF-only of reviewed `origin/master`):",
+    "",
+    "```",
+    "pnpm live:where   # confirm the drift + which tree is live",
+    "pnpm deploy:live  # fast-forward the serving tree; tsx watch reloads",
+    "```",
+    "",
+    "Then confirm `pnpm live:where` is clean (or `/api/health` `servingTree.behindBy` is 0) and close this issue.",
+    "",
+    "> Auto-filed by the server-side drift sweep (LOOA-412). At most one such issue is open at a time; " +
+      `fingerprint \`${fingerprint}\`. The deploy runs in this issue's own run — never in the server process (LOOA-403).`,
+  ].join("\n");
+}
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -5694,6 +5734,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
+  // Throttle for the serving-tree drift sweep (LOOA-412): the periodic timer
+  // ticks every ~30s but a `git fetch` per tick would be wasteful, so the sweep
+  // only recomputes every SERVING_TREE_DRIFT_SWEEP_INTERVAL_MS.
+  let lastServingTreeDriftSweepAtMs = 0;
 
   async function completeSkillTestRunForHeartbeatOutcome(input: {
     run: typeof heartbeatRuns.$inferSelect;
@@ -11559,6 +11603,150 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.sweepStaleIssueLocks();
   }
 
+  /**
+   * Serving-tree drift sweep (LOOA-412) — the zero-cost-when-clean replacement
+   * for the polling drift-watch routine.
+   *
+   * Runs in the periodic heartbeat chain but throttles itself to
+   * SERVING_TREE_DRIFT_SWEEP_INTERVAL_MS, so a clean tree costs a cheap
+   * in-process `git rev-list` at most every ~10 min and files nothing. When the
+   * live tree is *stale* (reviewed code merged past the grace window but not
+   * deployed) it either WARN-logs (OSS default) or files a single idempotent
+   * issue for the configured agent — whose *separate* run performs `deploy:live`
+   * (the server must never deploy in-process; it would SIGTERM itself, LOOA-403).
+   *
+   * The result is always written to the drift cache so `/api/health` can expose
+   * `servingTree.behindBy` without the request path fetching.
+   */
+  async function sweepServingTreeDrift(opts: { now?: number; force?: boolean } = {}): Promise<{
+    swept: boolean;
+    available: boolean;
+    behindBy: number;
+    stale: boolean;
+    action: "none" | "log" | "issue_created" | "issue_exists" | "misconfigured" | "create_failed";
+    issueId?: string;
+  }> {
+    const idle = { swept: false, available: false, behindBy: 0, stale: false, action: "none" as const };
+    if (!SERVING_TREE_DRIFT_SWEEP_ENABLED) return idle;
+
+    const now = opts.now ?? Date.now();
+    if (!opts.force && now - lastServingTreeDriftSweepAtMs < SERVING_TREE_DRIFT_SWEEP_INTERVAL_MS) {
+      return idle;
+    }
+    lastServingTreeDriftSweepAtMs = now;
+
+    // The sweep runs inside the serving process, so process.cwd() is the live
+    // tree (the same tree serving-commit.ts reads). Fetch happens here, never on
+    // the request path.
+    const drift = await computeServingDrift(process.cwd(), { fetch: true, now });
+    setCachedServingDrift({
+      head: drift.head,
+      branch: drift.branch,
+      behindBy: drift.behindBy,
+      stale: drift.stale,
+      driftAgeMs: drift.driftAgeMs,
+      checkedAtMs: now,
+    });
+
+    if (!drift.available || !drift.stale) {
+      return { swept: true, available: drift.available, behindBy: drift.behindBy, stale: drift.stale, action: "none" };
+    }
+
+    const fingerprint = `${drift.head ?? "unknown"}..${drift.baseHead ?? "unknown"}`;
+    const experimental = await instanceSettings.getExperimental();
+    const mode = experimental.serverSideDriftSweepMode;
+    const alertAgentId = experimental.serverSideDriftAlertAgentId;
+
+    const logStale = (extra: Record<string, unknown> = {}) =>
+      logger.warn(
+        {
+          servedHead: drift.head,
+          masterHead: drift.baseHead,
+          behindBy: drift.behindBy,
+          driftAgeMs: drift.driftAgeMs,
+          graceMs: drift.graceMs,
+          ...extra,
+        },
+        "serving tree is stale: reviewed code is merged but not deployed. Deploy it with `pnpm deploy:live`.",
+      );
+
+    if (mode !== "create_issue" || !alertAgentId) {
+      logStale({ mode });
+      return { swept: true, available: true, behindBy: drift.behindBy, stale: true, action: "log" };
+    }
+
+    // create_issue mode: the alert agent's company owns the issue. A missing
+    // agent is a misconfiguration, not a reason to crash the sweep — degrade to
+    // a WARN log.
+    const alertAgent = await db
+      .select({ id: agents.id, companyId: agents.companyId })
+      .from(agents)
+      .where(eq(agents.id, alertAgentId))
+      .then((rows) => rows[0] ?? null);
+    if (!alertAgent) {
+      logStale({ mode, misconfigured: `alert agent ${alertAgentId} not found` });
+      return { swept: true, available: true, behindBy: drift.behindBy, stale: true, action: "misconfigured" };
+    }
+
+    // At most one open drift issue at a time — the "single idempotent issue" the
+    // sweep promises. Match on the origin kind (not the exact fingerprint) so a
+    // second merge landing while the first issue is still open does not stack a
+    // duplicate; originId carries the served..master fingerprint for the trail.
+    const existingOpen = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, alertAgent.companyId),
+          eq(issues.originKind, SERVING_TREE_DRIFT_ORIGIN_KIND),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existingOpen) {
+      return { swept: true, available: true, behindBy: drift.behindBy, stale: true, action: "issue_exists", issueId: existingOpen.id };
+    }
+
+    // A configured agent can still be unassignable (paused/terminated/pending),
+    // in which case issuesSvc.create throws. That must not swallow the stale
+    // signal: fall back to the actionable WARN log rather than a bare error.
+    let created;
+    try {
+      created = await issuesSvc.create(alertAgent.companyId, {
+        title: `Deploy live: serving tree is ${drift.behindBy} commit(s) behind master`,
+        description: buildServingTreeDriftIssueBody(drift, fingerprint),
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: alertAgentId,
+        originKind: SERVING_TREE_DRIFT_ORIGIN_KIND,
+        originId: fingerprint,
+        originFingerprint: fingerprint,
+      });
+    } catch (err) {
+      logStale({ mode, createFailed: err instanceof Error ? err.message : String(err) });
+      return { swept: true, available: true, behindBy: drift.behindBy, stale: true, action: "create_failed" };
+    }
+
+    await logActivity(db, {
+      companyId: alertAgent.companyId,
+      actorType: "system",
+      actorId: SERVING_TREE_DRIFT_ACTOR_ID,
+      action: "issue.serving_tree_drift_detected",
+      entityType: "issue",
+      entityId: created.id,
+      details: {
+        servedHead: drift.head,
+        masterHead: drift.baseHead,
+        behindBy: drift.behindBy,
+        driftAgeMs: drift.driftAgeMs,
+      },
+    });
+
+    logStale({ mode, issueId: created.id, issueIdentifier: created.identifier });
+    return { swept: true, available: true, behindBy: drift.behindBy, stale: true, action: "issue_created", issueId: created.id };
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -16939,6 +17127,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileStrandedAssignedIssues,
 
     sweepStaleIssueLocks,
+
+    sweepServingTreeDrift,
 
     buildIssueGraphLivenessAutoRecoveryPreview,
 

@@ -52,6 +52,8 @@ describe("instance settings service", () => {
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
+      serverSideDriftSweepMode: "log",
+      serverSideDriftAlertAgentId: null,
     });
   });
 
@@ -351,6 +353,32 @@ describe("instance settings service", () => {
       reason: "not_worktree_runtime",
     });
     expect(getExperimental).not.toHaveBeenCalled();
+  });
+
+  it("defaults the server-side drift sweep to log with no alert agent", () => {
+    const s = normalizeExperimentalSettings({});
+    expect(s.serverSideDriftSweepMode).toBe("log");
+    expect(s.serverSideDriftAlertAgentId).toBeNull();
+  });
+
+  it("round-trips a create_issue drift config with an alert agent", () => {
+    const agentId = "4840b55d-7ed4-4d64-8a56-5961e001a494";
+    const s = normalizeExperimentalSettings({
+      serverSideDriftSweepMode: "create_issue",
+      serverSideDriftAlertAgentId: agentId,
+    });
+    expect(s.serverSideDriftSweepMode).toBe("create_issue");
+    expect(s.serverSideDriftAlertAgentId).toBe(agentId);
+  });
+
+  it("falls back to log for an invalid drift mode and rejects a non-uuid alert agent", () => {
+    const s = normalizeExperimentalSettings({
+      serverSideDriftSweepMode: "deploy_now",
+      serverSideDriftAlertAgentId: "not-a-uuid",
+    });
+    // safeParse fails on the bad enum/uuid, so the whole object normalizes to defaults.
+    expect(s.serverSideDriftSweepMode).toBe("log");
+    expect(s.serverSideDriftAlertAgentId).toBeNull();
   });
 
 });
