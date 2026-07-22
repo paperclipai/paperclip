@@ -30,6 +30,7 @@ import type {
  */
 export const INLINE_RESOLVABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = new Set<AttentionSourceKind>([
   "approval",
+  "decision",
   "issue_thread_interaction",
   "join_request",
 ]);
@@ -140,6 +141,10 @@ const TONE_STYLE: Record<AttentionTone, AttentionToneStyle> = {
 export function attentionTone(item: AttentionItem): AttentionTone {
   if (item.detail?.kind === "plan_approval") return "violet";
   switch (item.sourceKind) {
+    case "decision":
+      // Decisions reuse the `in_review` violet hue so the type reads
+      // pre-attentively as distinct from blue interactions / amber approvals.
+      return "violet";
     case "failed_run":
     case "agent_error_alert":
       return "rose";

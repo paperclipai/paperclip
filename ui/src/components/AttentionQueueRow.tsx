@@ -42,6 +42,7 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
+import { DecisionResolver } from "./DecisionResolver";
 import { ProjectTile } from "./ProjectTile";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -695,6 +696,17 @@ function InlineResolver({
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
 }) {
+  if (item.sourceKind === "decision") {
+    return (
+      <DecisionResolver
+        companyId={companyId}
+        decisionId={item.subject.id}
+        originIssue={item.relatedIssue}
+        agentMap={agentMap}
+      />
+    );
+  }
+
   if (item.sourceKind === "issue_thread_interaction") {
     const issueId = (item.subject.metadata?.issueId as string | undefined) ?? item.relatedIssue?.id;
     if (!issueId) {
