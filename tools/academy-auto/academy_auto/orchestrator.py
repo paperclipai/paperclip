@@ -77,7 +77,7 @@ def _build_default_deps(worktree, gate, runner, report):  # pragma: no cover
     )
 
 
-def _count_diff_lines(cfg, cwd):  # pragma: no cover - echte Git-Messung beim Deploy
+def _count_diff_lines(cfg, cwd):
     import subprocess
     subprocess.run(["git", "-C", str(cwd), "add", "-A"], check=True)
     proc = subprocess.run(
@@ -94,7 +94,7 @@ def _count_diff_lines(cfg, cwd):  # pragma: no cover - echte Git-Messung beim De
     return total
 
 
-def _list_changed_files(cfg, cwd):  # pragma: no cover - in Task 3 getestet
+def _list_changed_files(cfg, cwd):
     import subprocess
     subprocess.run(["git", "-C", str(cwd), "add", "-A"], check=True)
     proc = subprocess.run(
@@ -104,7 +104,7 @@ def _list_changed_files(cfg, cwd):  # pragma: no cover - in Task 3 getestet
     return [line for line in proc.stdout.splitlines() if line]
 
 
-def _commit_and_pr(cfg, cwd, prompt):  # pragma: no cover - echte Git-/gh-Anbindung beim Deploy
+def _commit_and_pr(cfg, cwd, prompt):
     import subprocess
     subprocess.run(["git", "-C", str(cwd), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(cwd), "commit", "-m", f"feat(academy-auto): {prompt}"], check=True)
