@@ -131,6 +131,68 @@ def save_processed(uids: set[str]) -> None:
     tmp.replace(STATE)
 
 
+UNBLOCK_STATE = Path.home() / ".paperclip" / "state" / "office-unblock-uids.json"
+_ADDR_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
+
+def load_processed_unblock() -> set[str]:
+    if not UNBLOCK_STATE.exists():
+        return set()
+    try:
+        return set(json.loads(UNBLOCK_STATE.read_text(encoding="utf-8")).get("uids", []))
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+
+def save_processed_unblock(uids: set[str]) -> None:
+    UNBLOCK_STATE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = UNBLOCK_STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"uids": sorted(uids)[-500:]}, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(UNBLOCK_STATE)
+
+
+def _parse_unblock(subject: str, body: str) -> str | None:
+    """Adresse aus einem 'Entsperren <adresse>'-Kommando (Betreff ODER erste Body-Zeile)."""
+    first_line = (body or "").split("\n", 1)[0]
+    for src in (subject or "", first_line):
+        s = src.strip()
+        if s.lower().startswith("entsperren"):
+            m = _ADDR_RE.search(s)
+            if m:
+                return m.group(0).lower()
+    return None
+
+
+def fetch_unblock_commands(processed: set[str], *, imap=None) -> list[dict]:
+    """Walters 'Entsperren <adresse>'-Mails aus office@-INBOX, noch nicht bearbeitet.
+    Liefert [{uid, addr}]. `imap` injizierbar für Tests."""
+    host, user, pw = load_creds()
+    M = imap or imaplib.IMAP4_SSL(host, 993)
+    if imap is None:
+        M.login(user, pw)
+    M.select("INBOX")
+    typ, data = M.uid("search", None, '(TEXT "Entsperren")')
+    out: list[dict] = []
+    for uid in data[0].split():
+        uid_s = uid.decode() if isinstance(uid, bytes) else str(uid)
+        if uid_s in processed:
+            continue
+        typ, dd = M.uid("fetch", uid, "(RFC822)")
+        if not dd or not dd[0]:
+            continue
+        msg = message_from_bytes(dd[0][1])
+        frm = _decode(msg.get("From", "")).lower()
+        if not any(m in frm for m in WALTER_MARKERS):
+            continue
+        addr = _parse_unblock(_decode(msg.get("Subject", "")), _body_text(msg))
+        if not addr:
+            continue
+        out.append({"uid": uid_s, "addr": addr})
+    if imap is None:
+        M.logout()
+    return out
+
+
 def fetch_approval_replies(processed: set[str], *, imap=None) -> list[dict]:
     """Freigabe-Antworten von Walter aus office@-INBOX, die noch nicht bearbeitet
     wurden. Liefert [{uid, token, body, subject}]. `imap` injizierbar für Tests."""

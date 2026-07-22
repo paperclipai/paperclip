@@ -78,5 +78,30 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(res[0]["body"], "Okay")
 
 
+class UnblockTest(unittest.TestCase):
+    def test_parse_from_subject(self):
+        self.assertEqual(oi._parse_unblock("Entsperren Kunde@X.de", ""), "kunde@x.de")
+
+    def test_parse_from_first_body_line(self):
+        self.assertEqual(oi._parse_unblock("RE: irgendwas", "Entsperren a@b.de\nrest"),
+                         "a@b.de")
+
+    def test_parse_none_without_keyword(self):
+        self.assertIsNone(oi._parse_unblock("Normale Mail", "Hallo a@b.de wie geht's"))
+
+    def test_parse_none_without_address(self):
+        self.assertIsNone(oi._parse_unblock("Entsperren bitte", ""))
+
+    def test_fetch_filters_walter_and_command_and_processed(self):
+        msgs = {
+            "20": _raw("Walter <w.schonenbrocher@oubifb>", "Entsperren k@x.de", ""),
+            "21": _raw("Fremd <x@y.de>", "Entsperren k@x.de", ""),          # nicht Walter
+            "22": _raw("Walter <w.schonenbrocher@oubifb>", "RE: Hallo", "kein Kommando"),
+            "23": _raw("Walter <w.schonenbrocher@oubifb>", "Entsperren alt@x.de", ""),  # processed
+        }
+        res = oi.fetch_unblock_commands({"23"}, imap=FakeImap(msgs))
+        self.assertEqual([(r["uid"], r["addr"]) for r in res], [("20", "k@x.de")])
+
+
 if __name__ == "__main__":
     unittest.main()
