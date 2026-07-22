@@ -54,3 +54,21 @@ def test_config_default_has_sandbox_fields():
     assert isinstance(cfg.secret_read_paths, tuple)
     assert isinstance(cfg.sandbox_write_paths, tuple)
     assert any(".ssh" in p for p in cfg.secret_read_paths)
+
+
+def test_default_config_worktree_reallow_after_paperclip_deny():
+    # Worktree liegt real unter ~/.paperclip (read-denied) -> muss per last-match-wins wieder lesbar sein
+    cfg = Config.default()
+    prof = build_profile(cfg)
+    wt_real = os.path.realpath(str(cfg.worktree_path))
+    pp_real = os.path.realpath(str(Path.home() / ".paperclip"))
+    assert pp_real in prof                                  # ~/.paperclip ist in der Deny-Liste
+    assert wt_real.startswith(pp_real)                      # Worktree liegt tatsächlich darunter
+    assert prof.index("deny file-read*") < prof.rindex(f'(subpath "{wt_real}")')  # Worktree-Reallow NACH dem Deny
+
+
+def test_each_sandbox_write_path_appears_in_profile():
+    cfg = Config.default()
+    prof = build_profile(cfg)
+    for w in cfg.sandbox_write_paths:
+        assert os.path.realpath(w) in prof

@@ -41,5 +41,5 @@ def write_profile(cfg: Config) -> Path:
     return Path(path)
 
 
-def wrap_command(cfg: Config, cmd, profile_path) -> list:
+def wrap_command(cfg: Config, cmd, profile_path) -> list[str]:
     return ["sandbox-exec", "-f", str(profile_path), *cmd]
