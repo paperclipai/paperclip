@@ -33,7 +33,10 @@ import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
-import { getManagedInstanceConfig } from "./services/managed-config.js";
+import {
+  getManagedInstanceConfig,
+  type ManagedInstanceConfig,
+} from "./services/managed-config.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
@@ -595,8 +598,9 @@ export async function startServer(): Promise<StartedServer> {
   // overlays it per read. This MUST run before any instanceSettingsService(db)
   // construction — that constructor parses the same env, and it would otherwise
   // throw first, bypassing this fail-closed log path.
+  let managedConfig: ManagedInstanceConfig | null;
   try {
-    const managedConfig = getManagedInstanceConfig();
+    managedConfig = getManagedInstanceConfig();
     if (managedConfig) {
       logger.warn(
         {
@@ -691,6 +695,10 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  // Managed instances drive bundled plugin auto-install from the managed-config
+  // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
+  // self-hosted: createApp falls back to its built-in kubernetes-only default.
+  const managedPluginAutoInstall = managedConfig?.plugins.autoInstall ?? null;
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -724,6 +732,7 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,
+    managedPluginAutoInstall,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
