@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, count, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { decisionBundles, decisionEffectExecutions, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import type { DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
@@ -39,6 +39,15 @@ function interpolate(text: string, values: Record<string, string>) {
   return text.replace(/\{\{input\.([A-Za-z0-9_-]+)\}\}/g, (_all, id: string) => values[id] ?? "");
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function boardCanActDirectly(actor: AuthorizationActor, companyId: string) {
   if (actor.type !== "board") return false;
   if (actor.source === "local_implicit" || actor.isInstanceAdmin) return true;
@@ -48,6 +57,7 @@ function boardCanActDirectly(actor: AuthorizationActor, companyId: string) {
 
 export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}) {
   const authz = authorizationService(db);
+  let targetSweepCursor: string | null = null;
 
   async function origin(companyId: string, agentId: string, runId: string) {
     const run = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)))
@@ -58,6 +68,17 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
     return { run, issueId };
   }
 
+  async function descendantCount(companyId: string, rootId: string, dbOrTx: Db) {
+    const queue = [rootId]; let count = 0;
+    while (queue.length) {
+      const parentId = queue.shift()!;
+      const children = await dbOrTx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.parentId, parentId)));
+      count += children.length;
+      queue.push(...children.map((child) => child.id));
+    }
+    return count;
+  }
+
   async function snapshots(companyId: string, ids: string[], actor: AuthorizationActor, dbOrTx: Db) {
     const rows = ids.length ? await dbOrTx.select().from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids))) : [];
     if (rows.length !== ids.length) throw unprocessable("All referenced issues must exist in the company");
@@ -65,9 +86,8 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
     for (const issue of rows) {
       const access = await authz.decide({ actor, action: "issue:read", resource: resource(issue) });
       if (!access.allowed) throw forbidden("Decision target is outside the origin visibility boundary");
-      const children = await dbOrTx.select({ value: count() }).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.parentId, issue.id)));
       result[issue.id] = { status: issue.status, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
-        updatedAt: issue.updatedAt.toISOString(), childCount: Number(children[0]?.value ?? 0) };
+        updatedAt: issue.updatedAt.toISOString(), childCount: await descendantCount(companyId, issue.id, dbOrTx) };
     }
     return result;
   }
@@ -81,7 +101,7 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
         .then((rows) => rows[0] ?? null);
       if (existing) {
         const equivalent = existing.title === input.title && existing.body === input.body &&
-          JSON.stringify(existing.options) === JSON.stringify(input.options) && JSON.stringify(existing.inputs ?? null) === JSON.stringify(input.inputs ?? null);
+          canonicalJson(existing.options) === canonicalJson(input.options) && canonicalJson(existing.inputs ?? null) === canonicalJson(input.inputs ?? null);
         if (!equivalent) throw conflict("Decision idempotency key already used with a different payload");
         return existing;
       }
@@ -98,7 +118,16 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
       originAgentId: input.agentId, originIssueId: provenance.issueId, originRunId: input.runId, ruleKey: input.ruleKey ?? null,
       title: input.title, body: input.body, options: input.options, inputs: input.inputs ?? null, expiresAt,
       idempotencyKey: input.idempotencyKey ?? null, signedSpec: signDecisionSpec(spec({ id, options: input.options, targetSnapshots })),
-      targetSnapshots, continuationPolicy: input.continuationPolicy ?? "none", metadata: input.metadata ?? {} }).returning();
+      targetSnapshots, continuationPolicy: input.continuationPolicy ?? "none", metadata: input.metadata ?? {} }).onConflictDoNothing().returning();
+    if (!created) {
+      const existing = input.idempotencyKey
+        ? await dbOrTx.select().from(decisions).where(and(eq(decisions.companyId, input.companyId), eq(decisions.idempotencyKey, input.idempotencyKey))).then((rows) => rows[0] ?? null)
+        : null;
+      const equivalent = existing && existing.title === input.title && existing.body === input.body &&
+        canonicalJson(existing.options) === canonicalJson(input.options) && canonicalJson(existing.inputs ?? null) === canonicalJson(input.inputs ?? null);
+      if (equivalent) return existing;
+      throw conflict("Decision idempotency key already used with a different payload");
+    }
     if (ids.length) await dbOrTx.insert(decisionTargetIssues).values(ids.map((issueId) => ({ decisionId: id, issueId, companyId: input.companyId })));
     await logActivity(dbOrTx, { companyId: input.companyId, actorType: "agent", actorId: input.agentId, agentId: input.agentId,
       runId: input.runId, action: "decision.created", entityType: "decision", entityId: id,
@@ -237,7 +266,8 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
         const target = referencedIssues.find((item) => item.id === effect.targetIssueId)!;
         const originActor: AuthorizationActor = { type: "agent", agentId: decision.originAgentId, companyId: decision.companyId,
           runId: decision.originRunId, onBehalfOfUserId: originResponsibleUserId, source: "agent_jwt" };
-        const originAccess = await Promise.all(referencedIssues.map((item) => authz.decide({ actor: originActor, action: "issue:read", resource: resource(item) })));
+        const originAction = effect.type === "comment_on_issue" ? "issue:comment" : "issue:mutate";
+        const originAccess = await Promise.all(referencedIssues.map((item) => authz.decide({ actor: originActor, action: originAction, resource: resource(item) })));
         let userAccess: { allowed: boolean; reason: string };
         if (effect.type === "assign_issue" || (effect.type === "create_issue" && (effect.draft.assigneeAgentId || effect.draft.assigneeUserId))) {
           const assigneeAgentId = effect.type === "assign_issue" ? effect.assigneeAgentId : effect.draft.assigneeAgentId;
@@ -254,8 +284,13 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
         const deniedOrigin = originAccess.find((access) => !access.allowed);
         if (!userAccess.allowed || deniedOrigin) return finish("failed", "deny_decision_intersection",
           { reason: "deny_decision_intersection", userReason: userAccess.reason, originReason: deniedOrigin?.reason ?? null });
-        const snapshot = (decision.targetSnapshots as Record<string, Snapshot>)[target.id];
-        if (effect.staleness === "strict" && (!snapshot || snapshot.updatedAt !== target.updatedAt.toISOString())) return finish("skipped", "target_changed", { reason: "target_changed" });
+        if (effect.staleness === "strict") {
+          const snapshots = decision.targetSnapshots as Record<string, Snapshot>;
+          const staleReference = referencedIssues.some((item) => snapshots[item.id]?.updatedAt !== item.updatedAt.toISOString());
+          const expandedTree = effect.type === "cancel_issue_tree" &&
+            snapshots[target.id]?.childCount !== await descendantCount(decision.companyId, target.id, tx as unknown as Db);
+          if (staleReference || expandedTree) return finish("skipped", "target_changed", { reason: "target_changed" });
+        }
         const svc = issueService(tx as unknown as Db);
         const values = decision.inputValues ?? {};
         let result: Record<string, unknown>;
@@ -320,6 +355,17 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
       return current.executionStatus === "running" ? runEffects(current, input.userActor) : outcome(current.id);
     }
     if (current.status !== "open") throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
+    if (current.expiresAt <= new Date()) {
+      const [expired] = await db.update(decisions).set({ status: "expired", updatedAt: new Date(), metadata: { ...metadata, expiredReason: "ttl" } })
+        .where(and(eq(decisions.id, current.id), eq(decisions.status, "open"), lte(decisions.expiresAt, new Date()))).returning();
+      if (expired) {
+        await logActivity(db, { companyId: expired.companyId, actorType: "system", actorId: "decision-expiry-sweeper", agentId: expired.originAgentId,
+          runId: expired.originRunId, action: "decision.expired", entityType: "decision", entityId: expired.id, details: { expiredReason: "ttl" } });
+        if (expired.continuationPolicy === "wake_origin_agent") await options.wakeOriginAgent?.({ companyId: expired.companyId, agentId: expired.originAgentId,
+          issueId: expired.originIssueId, decisionId: expired.id, outcome: "expired" });
+      }
+      throw conflict("decision_expired", { code: "decision_expired" });
+    }
     if (!current.options.some((option) => option.id === input.optionId)) throw unprocessable("Unknown optionId");
     const values = input.inputValues ?? {};
     for (const field of current.inputs ?? []) { const value = values[field.id] ?? ""; if (field.required && !value.trim()) throw unprocessable(`Input ${field.id} is required`); if (field.maxLength && value.length > field.maxLength) throw unprocessable(`Input ${field.id} is too long`); }
@@ -369,7 +415,18 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
   }
 
   async function sweepExpired(now = new Date()) {
-    const rows = await db.select().from(decisions).where(eq(decisions.status, "open")); let expired = 0;
+    const batchSize = Math.max(1, Number(process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE ?? 100));
+    const ttlRows = await db.select().from(decisions)
+      .where(and(eq(decisions.status, "open"), lte(decisions.expiresAt, now)))
+      .orderBy(asc(decisions.expiresAt)).limit(batchSize);
+    const remaining = batchSize - ttlRows.length;
+    const targetRows = remaining > 0
+      ? await db.select().from(decisions)
+        .where(and(eq(decisions.status, "open"), ...(targetSweepCursor ? [gt(decisions.id, targetSweepCursor)] : [])))
+        .orderBy(asc(decisions.id)).limit(remaining)
+      : [];
+    targetSweepCursor = targetRows.length === remaining && targetRows.length > 0 ? targetRows[targetRows.length - 1]!.id : null;
+    const rows = [...new Map([...ttlRows, ...targetRows].map((row) => [row.id, row])).values()]; let expired = 0;
     for (const decision of rows) { const strictTargetIds = new Set(decision.options.flatMap((option) => option.effects.filter((effect) => effect.staleness === "strict").map((effect) => effect.targetIssueId)));
       const targets = strictTargetIds.size > 0
         ? await db.select({ id: issues.id, status: issues.status }).from(issues).where(and(eq(issues.companyId, decision.companyId), inArray(issues.id, [...strictTargetIds])))

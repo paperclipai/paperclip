@@ -211,6 +211,7 @@ describe("DecisionCard", () => {
     });
     expect(el.textContent).toContain("Partial");
     expect(el.textContent).toContain("permission boundary");
+    expect(el.textContent).toContain("may already have been applied");
     expect(el.textContent).toContain("re-propose");
   });
 

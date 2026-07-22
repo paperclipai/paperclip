@@ -62,6 +62,7 @@ describePg("decisionService", () => {
   });
 
   afterEach(async () => {
+    delete process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE;
     await db.delete(decisionEffectExecutions); await db.delete(decisionTargetIssues); await db.delete(decisions); await db.delete(activityLog);
     await db.delete(issueComments); await db.delete(heartbeatRuns); await db.delete(issues); await db.delete(agents); await db.delete(companyMemberships); await db.delete(authUsers); await db.delete(companies);
   });
@@ -76,6 +77,16 @@ describePg("decisionService", () => {
     companyId, actor: agentActor(), agentId, runId, title: "Comment?", body: "Body", continuationPolicy: "wake_origin_agent",
     options: [{ id: "yes", label: "Yes", effects: [{ type: "comment_on_issue", targetIssueId, staleness, bodyMarkdown: "hello" }] }],
     ...extra,
+  });
+
+  it("returns the existing decision for concurrent idempotent creates", async () => {
+    const input = {
+      companyId, actor: agentActor(), agentId, runId, title: "Same?", body: "Body", idempotencyKey: "concurrent-create",
+      options: [{ id: "yes", label: "Yes", effects: [{ type: "comment_on_issue" as const, targetIssueId, staleness: "lenient" as const, bodyMarkdown: "hello" }] }],
+    };
+    const [first, second] = await Promise.all([service().create(input), service().create(input)]);
+    expect(second.id).toBe(first.id);
+    expect(await db.select().from(decisions).where(eq(decisions.idempotencyKey, "concurrent-create"))).toHaveLength(1);
   });
 
   it("executes once, replays stored outcome, and attributes executor audit to the decider", async () => {
@@ -113,6 +124,47 @@ describePg("decisionService", () => {
     expect(deniedResult.executions[0]).toMatchObject({ status: "failed", error: "deny_decision_intersection" });
     const failedAudit = await db.select().from(activityLog).where(eq(activityLog.action, "decision.effect_failed"));
     expect(failedAudit.at(-1)?.details).toMatchObject({ reason: "deny_decision_intersection" });
+  });
+
+  it("fails closed when the origin actor retains read access but loses mutation access", async () => {
+    const created = await service().create({
+      companyId, actor: agentActor(), agentId, runId, title: "Update?", body: "Body",
+      options: [{ id: "yes", label: "Yes", effects: [{ type: "update_issue_status", targetIssueId, staleness: "lenient", status: "in_progress" }] }],
+    });
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(eq(companyMemberships.principalId, originResponsibleUserId));
+    const result = await service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
+    expect(result.executions[0]).toMatchObject({ status: "failed", error: "deny_decision_intersection" });
+  });
+
+  it("expires a decision atomically instead of executing after its deadline", async () => {
+    const created = await createCommentDecision("lenient", { expiresAt: new Date(Date.now() + 5) });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await expect(service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() }))
+      .rejects.toThrow("decision_expired");
+    expect((await service().get(created.id))?.status).toBe("expired");
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(0);
+  });
+
+  it("rejects strict effects when secondary targets or cancellation scope change", async () => {
+    const blockerId = randomUUID();
+    await db.insert(issues).values({ id: blockerId, companyId, title: "Blocker", status: "todo", priority: "medium", responsibleUserId: decidedByUserId });
+    const createDecision = await service().create({
+      companyId, actor: agentActor(), agentId, runId, title: "Create?", body: "Body",
+      options: [{ id: "yes", label: "Yes", effects: [{ type: "create_issue", targetIssueId, staleness: "strict", draft: { title: "Follow-up", blockedByIssueIds: [blockerId] } }] }],
+    });
+    await db.update(issues).set({ updatedAt: new Date(Date.now() + 1_000) }).where(eq(issues.id, blockerId));
+    const createResult = await service().decide({ id: createDecision.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
+    expect(createResult.executions[0]).toMatchObject({ status: "skipped", error: "target_changed" });
+
+    const cancelDecision = await service().create({
+      companyId, actor: agentActor(), agentId, runId, title: "Cancel?", body: "Body",
+      options: [{ id: "yes", label: "Yes", effects: [{ type: "cancel_issue_tree", targetIssueId, staleness: "strict", reasonComment: "cleanup" }] }],
+    });
+    const childId = randomUUID();
+    await db.insert(issues).values({ id: childId, companyId, title: "New child", status: "todo", priority: "medium", parentId: targetIssueId, responsibleUserId: decidedByUserId });
+    const cancelResult = await service().decide({ id: cancelDecision.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
+    expect(cancelResult.executions[0]).toMatchObject({ status: "skipped", error: "target_changed" });
+    expect((await db.select().from(issues).where(eq(issues.id, childId)))[0]?.status).toBe("todo");
   });
 
   it("fails closed when the deciding user lacks assignment capability", async () => {
@@ -178,6 +230,15 @@ describePg("decisionService", () => {
       sourceKind: "decision",
       subject: expect.objectContaining({ id: created.id, kind: "decision" }),
     })]));
+  });
+
+  it("bounds expiration work to the configured batch size", async () => {
+    process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE = "1";
+    await createCommentDecision("lenient", { idempotencyKey: "batch-1", expiresAt: new Date(Date.now() + 5) });
+    await createCommentDecision("lenient", { idempotencyKey: "batch-2", expiresAt: new Date(Date.now() + 5) });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect((await service().sweepExpired()).expired).toBe(1);
+    expect((await service().sweepExpired()).expired).toBe(1);
   });
 
   it("expires TTL and target-gone decisions and wakes the origin agent", async () => {

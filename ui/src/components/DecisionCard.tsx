@@ -579,7 +579,7 @@ export function DecisionCard({
               </ul>
               {decision.executionStatus !== "succeeded" && (
                 <p className="text-xs text-muted-foreground">
-                  Effects are fail-closed — nothing was partially applied. To retry, ask the proposer to re-propose.
+                  Some effects may already have been applied. Review the results before asking the proposer to re-propose.
                 </p>
               )}
             </>
