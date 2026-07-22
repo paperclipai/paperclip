@@ -1135,6 +1135,7 @@ export type {
   ToolConnectionInstallSnapshot,
   ToolConnectionInstallTargetType,
   ConnectionGrant,
+  ConnectionGrantsResponse,
   ConnectionGrantKind,
   ConnectionGrantStatus,
   ConnectionTokenScope,

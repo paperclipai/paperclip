@@ -52,6 +52,7 @@ import type {
   UpdateToolMcpGateway,
   CreateToolTrustRuleFromActionRequest,
   ConnectionGrant,
+  ConnectionGrantsResponse,
   ConnectionUsageResponse,
   StartConnectionAuthorizationRequest,
   StartConnectionAuthorizationResponse,
@@ -369,8 +370,17 @@ export const toolsApi = {
   // --- Grants / installations (Connections v3 P2, PAP-14830) ---
   // Grants are the layer between a connection (config) and credential material:
   // workspace grants = provider-tenant installations; user grants = per-user OAuth.
-  listConnectionGrants: (connectionId: string) =>
-    api.get<ConnectionGrant[]>(`/tool-connections/${connectionId}/grants`),
+  // The route returns a wrapper (`{ connection, grants }`), not a bare array, so
+  // we unwrap `.grants` here. Fall back gracefully if the server ever returns a
+  // bare array or an unexpected shape, to keep the Grants tab from hard-crashing
+  // on `grants.filter is not a function`. See PAP-14922.
+  listConnectionGrants: async (connectionId: string): Promise<ConnectionGrant[]> => {
+    const res = await api.get<ConnectionGrantsResponse | ConnectionGrant[]>(
+      `/tool-connections/${connectionId}/grants`,
+    );
+    if (Array.isArray(res)) return res;
+    return Array.isArray(res?.grants) ? res.grants : [];
+  },
   addConnectionInstallation: (
     connectionId: string,
     input: {

@@ -116,7 +116,9 @@ export function GrantsPanel({ connectionId }: { connectionId: string }) {
     },
   });
 
-  const grants = grantsQuery.data ?? [];
+  // Defensive: the query client normalizes to an array, but guard here too so a
+  // shape regression can never hard-crash the Grants tab (PAP-14922).
+  const grants = Array.isArray(grantsQuery.data) ? grantsQuery.data : [];
   const activeGrants = grants.filter((g) => g.status !== "revoked");
   const revokedGrants = grants.filter((g) => g.status === "revoked");
 
@@ -146,6 +148,20 @@ export function GrantsPanel({ connectionId }: { connectionId: string }) {
           {grantsQuery.isLoading ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : grantsQuery.isError ? (
+            <div className="py-6 text-center">
+              <p className="text-sm text-muted-foreground">Couldn't load grants.</p>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mt-2"
+                onClick={() => grantsQuery.refetch()}
+                disabled={grantsQuery.isFetching}
+              >
+                <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", grantsQuery.isFetching && "animate-spin")} />
+                Retry
+              </Button>
             </div>
           ) : activeGrants.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">
