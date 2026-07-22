@@ -77,24 +77,44 @@ if [ "$1" = "view" ] && [ "$NPM_VERSION_EXISTS" = "true" ]; then
   echo "1.2.3"
   exit 0
 fi
-if [ "$1" = "publish" ]; then
-  echo "published"
-  exit 0
-fi
 if [ "$1" = "pack" ]; then
-  shift
-  destination="."
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--pack-destination" ]; then
-      destination="$2"
-      shift 2
-      continue
-    fi
-    shift
-  done
-  touch "$destination/paperclipai-example-1.2.3.tgz"
+  if [ "$PNPM_MODE" = "pack-failure" ]; then
+    echo "npm error pack failed" >&2
+    exit 1
+  fi
   echo "paperclipai-example-1.2.3.tgz"
   exit 0
+fi
+if [ "$1" = "publish" ]; then
+  case "$PNPM_MODE" in
+    success)
+      echo "published"
+      exit 0
+      ;;
+    tlog-then-success)
+      if [ ! -f "$FAKE_STATE_DIR/npm-called" ]; then
+        touch "$FAKE_STATE_DIR/npm-called"
+        echo "npm error code TLOG_CREATE_ENTRY_ERROR"
+        echo "npm error error creating tlog entry - (409) an equivalent entry already exists in the transparency log with UUID abc"
+        exit 1
+      fi
+      case " $* " in
+        *" --provenance=false "*)
+          echo "published without provenance"
+          exit 0
+          ;;
+      esac
+      ;;
+    tlog-always-fails)
+      echo "npm error code TLOG_CREATE_ENTRY_ERROR"
+      echo "npm error error creating tlog entry - (409) an equivalent entry already exists in the transparency log with UUID abc"
+      exit 1
+      ;;
+    non-tlog-failure)
+      echo "npm error code E500"
+      exit 1
+      ;;
+  esac
 fi
 exit 1
 `,
@@ -106,7 +126,9 @@ exit 1
 set -euo pipefail
 printf 'npx %s\n' "$*" >> "$FAKE_CALL_LOG"
 [ "$1" = "--yes" ] && shift
-case "$1" in npm@*) shift ;; esac
+case "$1" in
+  npm@10.9.7|npm@11.18.0) shift ;;
+esac
 exec npm "$@"
 `,
   );
@@ -156,11 +178,12 @@ test("publish_package_to_npm returns after a successful pnpm publish", () => {
   assert.doesNotMatch(result.calls, /--provenance=false/);
 });
 
-test("publish_package_to_npm uses trusted-publishing-capable npm for bundled dependencies", () => {
+test("publish_package_to_npm packs bundled dependencies before trusted publishing", () => {
   const result = runPublishHelper({ pnpmMode: "success", publishTool: "npm" });
 
   assert.equal(result.status, 0);
-  assert.match(result.calls, /^npx --yes npm@10\.9\.7 pack --pack-destination \S+$/m);
+  assert.match(result.calls, /^npx --yes npm@10\.9\.7 pack --pack-destination \.$/m);
+  assert.match(result.calls, /^npm pack --pack-destination \.$/m);
   assert.match(
     result.calls,
     /^npx --yes npm@11\.18\.0 publish \.\/paperclipai-example-1\.2\.3\.tgz --tag canary --access public --loglevel verbose$/m,
@@ -170,6 +193,28 @@ test("publish_package_to_npm uses trusted-publishing-capable npm for bundled dep
     /^npm publish \.\/paperclipai-example-1\.2\.3\.tgz --tag canary --access public --loglevel verbose$/m,
   );
   assert.doesNotMatch(result.calls, /^pnpm publish/m);
+});
+
+test("publish_package_to_npm retries bundled tarball tlog failures without provenance", () => {
+  const result = runPublishHelper({ pnpmMode: "tlog-then-success", publishTool: "npm" });
+
+  assert.equal(result.status, 0);
+  assert.match(result.calls, /^npm view @paperclipai\/example@1\.2\.3 version$/m);
+  assert.match(
+    result.calls,
+    /^npm publish \.\/paperclipai-example-1\.2\.3\.tgz --tag canary --access public --provenance=false --loglevel verbose$/m,
+  );
+});
+
+test("publish_package_to_npm does not mask bundled pack failures without caller pipefail", () => {
+  const result = runPublishHelper({
+    pnpmMode: "pack-failure",
+    publishTool: "npm",
+    callerPipefail: false,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.calls, / publish /);
 });
 
 test("publish_package_to_npm retries duplicate tlog failures without provenance", () => {

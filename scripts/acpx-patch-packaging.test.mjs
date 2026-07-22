@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +16,7 @@ import test from "node:test";
 
 import cliEsbuildConfig from "../cli/esbuild.config.mjs";
 import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
-import { materializeBundledNodeModules, materializePublishManifest } from "./prepare-bundled-package.mjs";
+import { materializePublishManifest } from "./prepare-bundled-package.mjs";
 
 const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const adapterUtilsPackage = JSON.parse(
@@ -36,41 +45,85 @@ test("bundled package staging materializes publishConfig entrypoints", () => {
   assert.deepEqual(staged.exports, adapterUtilsPackage.publishConfig.exports);
 });
 
-test("bundled package staging replaces pnpm symlinks with a physical bundled tree", () => {
-  const stagingDir = mkdtempSync(join(tmpdir(), "paperclip-bundled-staging-"));
-  const storeModulesDir = join(
-    stagingDir,
-    "node_modules",
-    ".pnpm",
-    "acpx@0.12.0_patch_hash=abc",
-    "node_modules",
-  );
-  const storePackageDir = join(
-    storeModulesDir,
-    "acpx",
-  );
-  mkdirSync(storePackageDir, { recursive: true });
-  writeFileSync(
-    join(storePackageDir, "package.json"),
-    '{"name":"acpx","version":"0.12.0","dependencies":{"commander":"15.0.0"},"optionalDependencies":{"tsx":"4.23.0"}}\n',
-  );
-  symlinkSync(storePackageDir, join(stagingDir, "node_modules", "acpx"), "dir");
+test("bundled package staging rebuilds npm dependencies and applies the acpx patch", (t) => {
+  const fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-bundled-stage-"));
+  const sourceDir = join(fixtureDir, "source");
+  const destinationDir = join(fixtureDir, "destination");
+  const binDir = join(fixtureDir, "bin");
+  const callLog = join(fixtureDir, "calls.log");
+  mkdirSync(sourceDir);
+  mkdirSync(destinationDir);
+  mkdirSync(binDir);
+  writeFileSync(join(sourceDir, "package.json"), JSON.stringify(adapterUtilsPackage));
+  writeFileSync(callLog, "");
+  t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
 
-  const runtimeDependencies = materializeBundledNodeModules(stagingDir, ["acpx"]);
+  const writeExecutable = (name, body) => {
+    writeFileSync(join(binDir, name), body, { mode: 0o755 });
+  };
+  writeExecutable(
+    "pnpm",
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf 'pnpm %s\\n' "$*" >> "$FAKE_CALL_LOG"
+destination="\${!#}"
+cp "$FAKE_SOURCE_PACKAGE" "$destination/package.json"
+mkdir -p "$destination/node_modules/.pnpm"
+`,
+  );
+  writeExecutable(
+    "npm",
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf 'npm %s\\n' "$*" >> "$FAKE_CALL_LOG"
+[ "$*" = "install --omit=dev --ignore-scripts --no-audit --no-fund" ]
+mkdir -p node_modules/acpx/dist
+printf 'unpatched runtime\\n' > node_modules/acpx/dist/runtime.js
+`,
+  );
+  writeExecutable(
+    "patch",
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf 'patch %s\\n' "$*" >> "$FAKE_CALL_LOG"
+target=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-d" ]; then
+    target="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+patch_input="$(cat)"
+grep -q onAgentStderr <<< "$patch_input"
+printf 'patched onAgentStderr runtime\\n' > "$target/dist/runtime.js"
+`,
+  );
 
-  const stagedAcpx = join(stagingDir, "node_modules", "acpx");
-  assert.equal(lstatSync(stagedAcpx).isSymbolicLink(), false);
-  assert.equal(lstatSync(stagedAcpx).isDirectory(), true);
-  assert.equal(existsSync(join(stagedAcpx, "package.json")), true);
-  assert.equal(existsSync(join(stagedAcpx, "node_modules")), false);
-  assert.deepEqual(runtimeDependencies.dependencies, { commander: "15.0.0" });
-  assert.deepEqual(runtimeDependencies.optionalDependencies, { tsx: "4.23.0" });
-  assert.equal(existsSync(join(stagingDir, "node_modules", ".pnpm")), false);
-});
+  execFileSync(
+    process.execPath,
+    [new URL("./prepare-bundled-package.mjs", import.meta.url).pathname, sourceDir, destinationDir],
+    {
+      env: {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH}`,
+        FAKE_CALL_LOG: callLog,
+        FAKE_SOURCE_PACKAGE: join(sourceDir, "package.json"),
+      },
+      stdio: "pipe",
+    },
+  );
 
-test("bundled package publishes the packed tarball instead of the staged directory", () => {
-  assert.match(releaseLib, /run_bundled_npm_pack pack --pack-destination "\$PWD"/);
-  assert.match(releaseLib, /run_bundled_npm_publish publish "\.\/\$tarball"/);
+  const stagedAcpxDir = join(destinationDir, "node_modules/acpx");
+  assert.equal(lstatSync(stagedAcpxDir).isDirectory(), true);
+  assert.equal(lstatSync(stagedAcpxDir).isSymbolicLink(), false);
+  assert.equal(existsSync(join(destinationDir, "node_modules/.pnpm")), false);
+  assert.match(readFileSync(join(stagedAcpxDir, "dist/runtime.js"), "utf8"), /onAgentStderr/);
+  assert.match(
+    readFileSync(callLog, "utf8"),
+    /patch -p1 --forward -d .*node_modules\/acpx/,
+  );
 });
 
 test("bundled package dry runs preview without querying published versions", () => {
@@ -80,4 +133,5 @@ test("bundled package dry runs preview without querying published versions", () 
   assert.match(releaseLib, /npx --yes "npm@\$BUNDLED_NPM_PACK_VERSION"/);
   assert.match(releaseLib, /npx --yes "npm@\$BUNDLED_NPM_PUBLISH_VERSION"/);
   assert.match(releaseLib, /"\$@" --loglevel verbose/);
+  assert.match(releaseLib, /publish "\.\/\$tarball" --tag "\$dist_tag"/);
 });

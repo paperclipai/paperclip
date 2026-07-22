@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -17,6 +17,31 @@ export function materializePublishManifest(pkg) {
 
   delete publishManifest.publishConfig;
   return publishManifest;
+}
+
+function patchedDependencyPackageName(specifier) {
+  const versionSeparator = specifier.lastIndexOf("@");
+  return versionSeparator > 0 ? specifier.slice(0, versionSeparator) : specifier;
+}
+
+export function applyBundledDependencyPatches(destinationDir, bundledDependencies) {
+  const rootPackage = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
+  const patchedDependencies = rootPackage.pnpm?.patchedDependencies ?? {};
+  const bundledDependencyNames = new Set(bundledDependencies);
+
+  for (const [specifier, patchPath] of Object.entries(patchedDependencies)) {
+    const packageName = patchedDependencyPackageName(specifier);
+    if (!bundledDependencyNames.has(packageName)) continue;
+
+    execFileSync(
+      "patch",
+      ["-p1", "--forward", "-d", resolve(destinationDir, "node_modules", packageName)],
+      {
+        input: readFileSync(resolve(repoRoot, patchPath)),
+        stdio: ["pipe", "inherit", "inherit"],
+      },
+    );
+  }
 }
 
 export function prepareBundledPackage(sourceDir, destinationDir) {
@@ -34,58 +59,29 @@ export function prepareBundledPackage(sourceDir, destinationDir) {
     { cwd: repoRoot, stdio: "inherit" },
   );
 
-  const bundledRuntimeDependencies = materializeBundledNodeModules(
-    resolve(destinationDir),
-    bundledDependencies,
-  );
-
   const deployedPackagePath = resolve(destinationDir, "package.json");
   const deployedPackage = JSON.parse(readFileSync(deployedPackagePath, "utf8"));
-  deployedPackage.dependencies = {
-    ...bundledRuntimeDependencies.dependencies,
-    ...deployedPackage.dependencies,
-  };
-  deployedPackage.optionalDependencies = {
-    ...bundledRuntimeDependencies.optionalDependencies,
-    ...deployedPackage.optionalDependencies,
-  };
   writeFileSync(
     deployedPackagePath,
     `${JSON.stringify(materializePublishManifest(deployedPackage), null, 2)}\n`,
   );
-}
 
-/**
- * pnpm deploy links dependencies through the `.pnpm` virtual store, but npm
- * only bundles physical directories, so a symlinked layout publishes a
- * tarball with zero bundled files and silently drops the patched runtime.
- * Rebuild node_modules as a minimal physical tree holding only the bundled
- * dependencies. Their runtime dependencies are promoted into the staged root
- * manifest so npm installs the normal transitive closure for consumers.
- */
-export function materializeBundledNodeModules(destinationDir, bundledDependencies) {
-  const stagedModules = resolve(destinationDir, "node_modules");
-  const bundledSources = new Map(
-    bundledDependencies.map((name) => [name, realpathSync(resolve(stagedModules, name))]),
+  rmSync(resolve(destinationDir, "node_modules"), { recursive: true, force: true });
+  execFileSync(
+    "npm",
+    ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+    { cwd: destinationDir, stdio: "inherit" },
   );
+  applyBundledDependencyPatches(destinationDir, bundledDependencies);
 
-  const physicalModules = resolve(destinationDir, "node_modules.bundled-tmp");
-  const runtimeDependencies = { dependencies: {}, optionalDependencies: {} };
-  rmSync(physicalModules, { recursive: true, force: true });
-  for (const [name, sourcePath] of bundledSources) {
-    const bundledPackage = JSON.parse(readFileSync(resolve(sourcePath, "package.json"), "utf8"));
-    Object.assign(runtimeDependencies.dependencies, bundledPackage.dependencies);
-    Object.assign(runtimeDependencies.optionalDependencies, bundledPackage.optionalDependencies);
-
-    const target = resolve(physicalModules, name);
-    mkdirSync(dirname(target), { recursive: true });
-    cpSync(sourcePath, target, { recursive: true, dereference: true });
-    rmSync(resolve(target, "node_modules"), { recursive: true, force: true });
+  if (
+    bundledDependencies.includes("acpx") &&
+    !readFileSync(resolve(destinationDir, "node_modules/acpx/dist/runtime.js"), "utf8").includes(
+      "onAgentStderr",
+    )
+  ) {
+    throw new Error("staged acpx runtime is missing the repository patch");
   }
-
-  rmSync(stagedModules, { recursive: true, force: true });
-  renameSync(physicalModules, stagedModules);
-  return runtimeDependencies;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
