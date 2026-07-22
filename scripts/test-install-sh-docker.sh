@@ -101,6 +101,12 @@ fi
   exit 1
 }
 
+echo "==> piped mode requires explicit consent"
+if run_with_node piped-rejected bash -c 'cat /paperclip-scripts/install.sh | bash -s -- --no-onboard'; then
+  echo "Expected piped install without --no-prompt to fail" >&2
+  exit 1
+fi
+
 echo "==> piped --no-prompt"
 run_with_node piped bash -c 'cat /paperclip-scripts/install.sh | bash -s -- --no-prompt --no-onboard'
 assert_line "$RESULTS_DIR/piped.args" "--yes"
