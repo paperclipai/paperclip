@@ -9,8 +9,11 @@ import {
   deploymentAuthCheck,
   llmCheck,
   logCheck,
+  managedInstallChecks,
+  nodeRuntimeCheck,
   portCheck,
   secretsCheck,
+  serviceHealthChecks,
   storageCheck,
   type CheckResult,
 } from "../checks/index.js";
@@ -119,6 +122,21 @@ export async function doctor(opts: {
   const portResult = await portCheck(config);
   results.push(portResult);
   printResult(portResult);
+
+  // 10. Runtime and managed install checks
+  const nodeResult = nodeRuntimeCheck();
+  results.push(nodeResult);
+  printResult(nodeResult);
+  for (const result of managedInstallChecks()) {
+    results.push(result);
+    printResult(result);
+  }
+
+  // 11. Background service checks
+  for (const result of await serviceHealthChecks(config)) {
+    results.push(result);
+    printResult(result);
+  }
 
   // Summary
   return printSummary(results);
