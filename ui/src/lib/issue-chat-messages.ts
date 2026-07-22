@@ -83,7 +83,14 @@ export interface IssueChatTranscriptEntry {
   changeType?: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
 }
 
-const ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES = 30;
+// Verbose backends (e.g. Kimi) interleave long reasoning bursts with many tool
+// calls; because each tool call breaks the merged reasoning/output run into a
+// new transcript entry, a single heartbeat can emit hundreds of entries. Keeping
+// only the last 30 dropped already-rendered reasoning summaries and streamed
+// output off the front mid-run (and, because retraction smoothing compares
+// content parts by index, the resulting index shift could mangle text). Keep a
+// much larger window so completed segments and streamed output stay put.
+const ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES = 400;
 
 type MessageWithOrder = {
   createdAtMs: number;

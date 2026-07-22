@@ -911,14 +911,14 @@ describe("buildIssueChatMessages", () => {
         toolUseId: "tool-keep",
         input: { query: "issue chat virtualization" },
       },
-      ...Array.from({ length: 79 }, (_, index) => ({
+      ...Array.from({ length: 420 }, (_, index) => ({
         kind: "assistant" as const,
         ts: isoAt(baseMs, 10 + index),
         text: `Recent update ${index + 1}`,
       })),
       {
         kind: "tool_result" as const,
-        ts: isoAt(baseMs, 89),
+        ts: isoAt(baseMs, 430),
         toolUseId: "tool-keep",
         content: "search completed",
         isError: false,

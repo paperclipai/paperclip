@@ -155,7 +155,7 @@ export function summarizeToolInput(
 
   const direct =
     summarizeRecord(record, ["path", "filePath", "file_path", "query", "url", "prompt", "message"])
-    ?? summarizeRecord(record, ["pattern", "name", "title", "target", "tool", "command", "cmd"])
+    ?? summarizeRecord(record, ["pattern", "name", "title", "target", "tool", "command", "cmd", "text"])
     ?? null;
   if (direct) return truncate(direct, compactMax);
 

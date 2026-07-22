@@ -2360,7 +2360,9 @@ async function emitAcpxLog(ctx: AdapterExecutionContext, payload: Record<string,
 // acpx substitutes a literal "tool call" title when an ACP tool_call_update
 // omits one, which would persist a generic name over the real one ("Terminal",
 // "Read", …) in the stored run log. Remember each call's real title so update
-// lines keep the name durably.
+// lines keep the name durably. Some ACP backends (Kimi) also stream partial
+// tool arguments as one in-progress update per token under this placeholder;
+// those updates are coalesced until a real title is available.
 const GENERIC_ACP_TOOL_TITLE = "tool call";
 
 async function emitRuntimeEvent(
@@ -2378,6 +2380,18 @@ async function emitRuntimeEvent(
     return;
   }
   if (event.type === "tool_call") {
+    // Coalesce token-by-token argument streaming: skip in-progress updates that
+    // still carry only the unresolved placeholder title. Backends that stream
+    // tool arguments (Kimi) otherwise emit tens of thousands of these per run,
+    // flooding the transcript and pinning the live activity indicator to a
+    // generic "tool call" instead of the real tool. The initial pending event,
+    // the resolved-title in-progress update, and the terminal
+    // completed/failed/cancelled update all still flow through. Backends that do
+    // not stream in-progress updates (Claude, Gemini) are unaffected.
+    const isPlaceholderTitle = (event.title ?? "").trim() === GENERIC_ACP_TOOL_TITLE;
+    if (event.status === "in_progress" && isPlaceholderTitle) {
+      return;
+    }
     const eventRecord = event as Record<string, unknown>;
     const toolInput = eventRecord.input;
     let name = event.title ?? "acp_tool";

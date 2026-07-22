@@ -67,7 +67,13 @@ export function resolveInitialLogOffset(run: RunTranscriptSource, limitBytes: nu
 export function useLiveRunTranscripts({
   runs,
   companyId,
-  maxChunksPerRun = 200,
+  // Each streamed log line is one chunk, and ACPX backends emit one line per
+  // token. Verbose agents (Kimi) produce tens of thousands of chunks per run, so
+  // a small retained window trims the *front* of already-rendered output/
+  // reasoning mid-run — a paragraph gets rebuilt starting mid-sentence as its
+  // early chunks fall out of the window. Keep a large window so streamed text
+  // stays whole. (Claude stays well under this; the cost is memoized parsing.)
+  maxChunksPerRun = 4000,
   logPollIntervalMs = LOG_POLL_INTERVAL_MS,
   logReadLimitBytes = LOG_READ_LIMIT_BYTES,
   enableRealtimeUpdates = true,
