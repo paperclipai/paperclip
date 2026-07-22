@@ -63,6 +63,23 @@ describe("resolveWorkflowByInvocationTarget", () => {
     );
   });
 
+  it("rejects archived workflows from invocation targets", async () => {
+    const db = createMockDb([[
+      {
+        id: "workflow-archived",
+        companyId: "company-1",
+        title: "Archived workflow",
+        status: "archived",
+        workflowKey: "archived-workflow",
+        capabilities: ["briefing"],
+      },
+    ]]);
+
+    await expect(resolveWorkflowByInvocationTarget(db, "company-1", {
+      workflowId: "workflow-archived",
+    })).rejects.toThrow(/archived.*restore/i);
+  });
+
   it("falls back through key and capability selectors when higher-precedence selectors are absent", async () => {
     const db = createMockDb([
       [

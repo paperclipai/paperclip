@@ -199,6 +199,40 @@ describeEmbeddedPostgres("workflowService.update", () => {
     expect(byId?.pipelineDefinition).toMatchObject(normalizedPipelineDefinition);
   });
 
+  it("hides archived workflows by default and includes them when requested", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(workflows).values([
+      {
+        companyId,
+        title: "Active workflow",
+        status: "active",
+        runnerType: "google_adk",
+        runnerConfig: { agentPath: "/tmp/active.py" },
+        pipelineDefinition: normalizedPipelineDefinition,
+        pipelineSourceHash: null,
+      },
+      {
+        companyId,
+        title: "Archived workflow",
+        status: "archived",
+        runnerType: "google_adk",
+        runnerConfig: { agentPath: "/tmp/archived.py" },
+        pipelineDefinition: normalizedPipelineDefinition,
+        pipelineSourceHash: null,
+      },
+    ]);
+
+    const svc = workflowService(db);
+    await expect(svc.list(companyId)).resolves.toHaveLength(1);
+    await expect(svc.list(companyId, { includeArchived: true })).resolves.toHaveLength(2);
+  });
+
   it.each([
     [
       "null-like pipeline fields",

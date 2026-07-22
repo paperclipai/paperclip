@@ -182,4 +182,27 @@ describeEmbeddedPostgres("workflowScheduleService", () => {
     expect(updated?.nextRunAt).toBeInstanceOf(Date);
     expect(updated?.lastFiredAt).toBeNull();
   });
+
+  it("skips scheduled fires when the workflow is archived while retaining schedule", async () => {
+    const { workflowId } = await seedWorkflow("archived");
+    const svc = workflowScheduleService(db);
+    const schedule = await svc.create(workflowId, {
+      title: "Daily brief",
+      cronExpression: "0 9 * * *",
+      templateMarkdown: "Send the morning brief.",
+      status: "active",
+    }, { userId: "board-user" });
+
+    await db.update(workflowSchedules).set({
+      nextRunAt: new Date("2026-06-10T08:59:00.000Z"),
+    }).where(eq(workflowSchedules.id, schedule.id));
+
+    const result = await svc.tickScheduledRuns(new Date("2026-06-10T09:00:00.000Z"));
+
+    expect(result.triggered).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(mockRunManual).not.toHaveBeenCalled();
+    await expect(db.select().from(workflowSchedules).where(eq(workflowSchedules.id, schedule.id)))
+      .resolves.toHaveLength(1);
+  });
 });

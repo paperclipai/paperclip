@@ -83,6 +83,53 @@ describe("workflow routes", () => {
     });
   });
 
+  it("forwards includeArchived list query to workflow service", async () => {
+    mockWorkflowService.list.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .get(`/api/companies/${companyId}/workflows?includeArchived=true`);
+
+    expect(res.status).toBe(200);
+    expect(mockWorkflowService.list).toHaveBeenCalledWith(companyId, { includeArchived: true });
+  });
+
+  it("logs dedicated archive and restore activity actions", async () => {
+    mockWorkflowService.get
+      .mockResolvedValueOnce({
+      id: "workflow-1",
+      companyId,
+      title: "Social",
+      status: "active",
+      })
+      .mockResolvedValueOnce({
+        id: "workflow-1",
+        companyId,
+        title: "Social",
+        status: "archived",
+      });
+    mockWorkflowService.update
+      .mockResolvedValueOnce({ id: "workflow-1", companyId, title: "Social", status: "archived" })
+      .mockResolvedValueOnce({ id: "workflow-1", companyId, title: "Social", status: "active" });
+
+    const archive = await request(createApp())
+      .patch("/api/workflows/workflow-1")
+      .send({ status: "archived" });
+    const restore = await request(createApp())
+      .patch("/api/workflows/workflow-1")
+      .send({ status: "active" });
+
+    expect(archive.status).toBe(200);
+    expect(restore.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenNthCalledWith(1, expect.anything(), expect.objectContaining({
+      action: "workflow.archived",
+      details: expect.objectContaining({ previousStatus: "active", newStatus: "archived" }),
+    }));
+    expect(mockLogActivity).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({
+      action: "workflow.restored",
+      details: expect.objectContaining({ previousStatus: "archived", newStatus: "active" }),
+    }));
+  });
+
   it("cancels a workflow run", async () => {
     mockWorkflowService.getRunDetail.mockResolvedValue({
       id: runId,

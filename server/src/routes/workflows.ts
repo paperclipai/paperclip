@@ -43,7 +43,9 @@ export function workflowRoutes(db: Db) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await svc.list(companyId));
+    res.json(await svc.list(companyId, {
+      includeArchived: req.query.includeArchived === "true",
+    }));
   });
 
   router.post("/companies/:companyId/workflows", validate(createWorkflowSchema), async (req, res) => {
@@ -89,14 +91,27 @@ export function workflowRoutes(db: Db) {
       return;
     }
     const actor = getActorInfo(req);
+    const statusTransitionAction = existing.status !== updated.status
+      ? updated.status === "archived"
+        ? "workflow.archived"
+        : existing.status === "archived" && updated.status === "active"
+          ? "workflow.restored"
+          : "workflow.updated"
+      : "workflow.updated";
     await logActivity(db, {
       companyId: existing.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
-      action: "workflow.updated",
+      action: statusTransitionAction,
       entityType: "workflow",
       entityId: existing.id,
-      details: { title: updated.title },
+      details: {
+        title: updated.title,
+        workflowId: existing.id,
+        ...(existing.status !== updated.status
+          ? { previousStatus: existing.status, newStatus: updated.status }
+          : {}),
+      },
     });
     res.json(updated);
   });

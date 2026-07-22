@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { and, asc, desc, eq, inArray, isNotNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   workflowDeliverables,
@@ -35,7 +35,7 @@ import type {
   WorkflowResourceManifest,
 } from "@paperclipai/shared";
 import { resourceRunOverridesSchema, workflowResourceManifestSchema } from "@paperclipai/shared";
-import { unprocessable } from "../errors.js";
+import { conflict, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getStorageService } from "../storage/index.js";
 import { type StorageService } from "../storage/types.js";
@@ -348,6 +348,12 @@ function formatWorkflowSelectorAttempt(target: WorkflowInvocationTargetSelector)
   return parts.length > 0 ? parts.join(", ") : "no workflow selector";
 }
 
+function assertWorkflowRunnable(workflow: Pick<typeof workflows.$inferSelect, "status" | "title">) {
+  if (workflow.status === "archived") {
+    throw conflict(`Workflow "${workflow.title}" is archived. Restore it before running.`);
+  }
+}
+
 export async function resolveWorkflowByInvocationTarget(
   db: Db,
   companyId: string,
@@ -364,6 +370,7 @@ export async function resolveWorkflowByInvocationTarget(
         `Workflow id not found for this company (attempted ${formatWorkflowSelectorAttempt(target)})`,
       );
     }
+    assertWorkflowRunnable(row);
     return row;
   }
 
@@ -379,6 +386,7 @@ export async function resolveWorkflowByInvocationTarget(
         `Workflow key not found for this company (attempted ${formatWorkflowSelectorAttempt(target)})`,
       );
     }
+    assertWorkflowRunnable(row);
     return row;
   }
 
@@ -396,12 +404,16 @@ export async function resolveWorkflowByInvocationTarget(
         `No workflow matches the requested capability (attempted ${formatWorkflowSelectorAttempt(target)})`,
       );
     }
-    if (rows.length > 1) {
+    const runnableRows = rows.filter((row) => row.status !== "archived");
+    if (runnableRows.length === 0) {
+      assertWorkflowRunnable(rows[0]);
+    }
+    if (runnableRows.length > 1) {
       throw unprocessable(
         `Capability selector is ambiguous; provide a workflow key or workflow id (attempted ${formatWorkflowSelectorAttempt(target)})`,
       );
     }
-    return rows[0] ?? null;
+    return runnableRows[0] ?? null;
   }
 
   throw unprocessable(`Missing workflow selector (attempted ${formatWorkflowSelectorAttempt(target)})`);
@@ -935,8 +947,11 @@ export function workflowService(db: Db) {
       return { failed: rows.length, runIds: failedRunIds };
     },
 
-    list: async (companyId: string): Promise<WorkflowListItem[]> => {
-      const rows = await db.select().from(workflows).where(eq(workflows.companyId, companyId)).orderBy(desc(workflows.updatedAt));
+    list: async (companyId: string, options: { includeArchived?: boolean } = {}): Promise<WorkflowListItem[]> => {
+      const rows = await db.select().from(workflows).where(and(
+        eq(workflows.companyId, companyId),
+        options.includeArchived ? sql`true` : ne(workflows.status, "archived"),
+      )).orderBy(desc(workflows.updatedAt));
       const items = rows.map(toWorkflow);
       const workflowIds = items.map((item) => item.id);
       const latestRunMap = await selectLatestRunMap(db, workflowIds);
@@ -1067,6 +1082,7 @@ export function workflowService(db: Db) {
       if (!workflowRow) {
         throw unprocessable("Workflow not found");
       }
+      assertWorkflowRunnable(workflowRow);
       assertWorkflowRuntimeJwtConfigured();
       const refreshed = await refreshWorkflowAnalysis(workflowRow);
       return launchWorkflowRun(refreshed.workflow, refreshed.analysis, input.inputMarkdown, {
@@ -1083,6 +1099,7 @@ export function workflowService(db: Db) {
       if (!workflowRow) {
         throw unprocessable("Workflow not found");
       }
+      assertWorkflowRunnable(workflowRow);
       assertWorkflowRuntimeJwtConfigured();
       const refreshed = await refreshWorkflowAnalysis(workflowRow);
       const resourceManifest = workflowResourceManifestSchema.safeParse(input.invocationInputJson?.resourceManifest);
