@@ -16,8 +16,8 @@ function labelForKey(key: string): string {
 }
 
 function sectionForKey(key: string): AgentConfigChange["section"] {
-  if (key === "identity.defaultEnvironmentId" || key === "adapterConfig.env") return "Environment";
-  if (key.startsWith("heartbeat.")) return "Schedule & Runs";
+  if (key === "defaultEnvironmentId" || key === "adapterConfig.env") return "Environment";
+  if (key.startsWith("runtimeConfig.heartbeat.")) return "Schedule & Runs";
   if (/cwd|dangerouslySkipPermissions|dangerouslyBypassSandbox|dangerouslyBypassApprovalsAndSandbox/.test(key)) return "Danger & Legacy";
   return "Runtime";
 }
@@ -34,7 +34,13 @@ export function buildAgentConfigChanges(agent: Agent, overlay: AgentConfigOverla
   const changes: AgentConfigChange[] = [];
   const addGroup = (group: OverlayGroup) => {
     for (const [field, after] of Object.entries(overlay[group])) {
-      const key = `${group}.${field}`;
+      const key = group === "identity"
+        ? field
+        : group === "heartbeat"
+          ? `runtimeConfig.heartbeat.${field}`
+          : group === "runtime"
+            ? field
+            : `adapterConfig.${field}`;
       changes.push({ key, label: labelForKey(key), section: sectionForKey(key), before: originalValue(agent, group, field), after });
     }
   };
@@ -45,16 +51,31 @@ export function buildAgentConfigChanges(agent: Agent, overlay: AgentConfigOverla
   addGroup("runtime");
   if (overlay.modelProfiles?.cheap !== undefined) {
     const profiles = ((agent.runtimeConfig ?? {}) as Record<string, unknown>).modelProfiles as Record<string, unknown> | undefined;
-    changes.push({ key: "modelProfiles.cheap", label: "Cost saver model", section: "Runtime", before: profiles?.cheap, after: overlay.modelProfiles.cheap });
+    changes.push({ key: "runtimeConfig.modelProfiles.cheap", label: "Cost saver model", section: "Runtime", before: profiles?.cheap, after: overlay.modelProfiles.cheap });
   }
   return changes;
 }
 
 export function revertAgentConfigChange(overlay: AgentConfigOverlay, key: string): AgentConfigOverlay {
   if (key === "adapterType") return { ...overlay, adapterType: undefined };
-  if (key === "modelProfiles.cheap") return { ...overlay, modelProfiles: undefined };
-  const [group, field] = key.split(".", 2) as [OverlayGroup, string];
-  if (!field || !(group in overlay)) return overlay;
+  if (key === "runtimeConfig.modelProfiles.cheap") return { ...overlay, modelProfiles: undefined };
+  let group: OverlayGroup;
+  let field: string;
+  if (key.startsWith("adapterConfig.")) {
+    group = "adapterConfig";
+    field = key.slice("adapterConfig.".length);
+  } else if (key.startsWith("runtimeConfig.heartbeat.")) {
+    group = "heartbeat";
+    field = key.slice("runtimeConfig.heartbeat.".length);
+  } else if (key in overlay.identity) {
+    group = "identity";
+    field = key;
+  } else if (key in overlay.runtime) {
+    group = "runtime";
+    field = key;
+  } else {
+    return overlay;
+  }
   const nextGroup = { ...overlay[group] };
   delete nextGroup[field];
   return { ...overlay, [group]: nextGroup };

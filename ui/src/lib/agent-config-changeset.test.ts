@@ -10,7 +10,7 @@ describe("agent config changeset", () => {
     expect(changes.map((change) => [change.key, change.before, change.after, change.section])).toEqual([
       ["adapterConfig.model", "gpt-5", "gpt-5.5", "Runtime"],
       ["adapterConfig.cwd", "/old", "/new", "Danger & Legacy"],
-      ["heartbeat.intervalSec", 300, 600, "Schedule & Runs"],
+      ["runtimeConfig.heartbeat.intervalSec", 300, 600, "Schedule & Runs"],
     ]);
   });
 
