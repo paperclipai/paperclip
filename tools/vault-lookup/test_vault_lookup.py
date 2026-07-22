@@ -60,16 +60,21 @@ class TestLookupRouting(unittest.TestCase):
         self.assertEqual(out["treffer"], [])
 
     def test_dokument_searches_tenant_path(self):
-        # schreibt je eine Markdown-Datei mit eindeutigem Begriff in beide Temp-Vaults
+        # Gleicher Dateiname in beiden Vaults, aber unterscheidbarer INHALT-Marker.
+        # Der Test prüft den Marker (nicht nur den vault-agnostischen Pfad), damit
+        # er echt beweist, gegen WELCHEN Vault-Pfad rg gelaufen ist.
         for base, who in ((self.ws, "WHITESTAGDOC"), (self.clara, "CLARADOC")):
             with open(os.path.join(base, "notiz.md"), "w", encoding="utf-8") as fh:
                 fh.write("Stichwort Rechnung {}\n".format(who))
-        out = vault_lookup.lookup("dokument", "Rechnung", vault="clara")
-        quellen = " ".join(t.get("quelle", "") for t in out["treffer"])
-        self.assertIn("notiz.md", quellen)  # Clara-Treffer vorhanden
-        # und Default (whitestag) findet dieselbe Datei im WS-Temp, nicht im Clara-Temp:
-        out2 = vault_lookup.lookup("dokument", "Rechnung")
-        self.assertTrue(out2["treffer"])
+        clara_ausz = " ".join(t.get("auszug", "") for t in
+                              vault_lookup.lookup("dokument", "Rechnung", vault="clara")["treffer"])
+        self.assertIn("CLARADOC", clara_ausz)
+        self.assertNotIn("WHITESTAGDOC", clara_ausz)
+        # Default (whitestag) durchsucht den WS-Pfad, nicht den Clara-Pfad:
+        ws_ausz = " ".join(t.get("auszug", "") for t in
+                           vault_lookup.lookup("dokument", "Rechnung")["treffer"])
+        self.assertIn("WHITESTAGDOC", ws_ausz)
+        self.assertNotIn("CLARADOC", ws_ausz)
 
 
 class TestUnknownVaultFailClosed(unittest.TestCase):
