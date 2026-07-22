@@ -3514,7 +3514,7 @@ rl.on("line", (line) => {
       "mcp-stdio-fixture:increment_counter",
       "mcp-stdio-fixture:runtime_status",
     ]);
-    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 25 } });
+    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 250 } });
     const session = await gateway.createSession({
       companyId: company.id,
       agentId: agent.id,
@@ -3551,7 +3551,7 @@ rl.on("line", (line) => {
       resourceLimits: expect.objectContaining({ memoryCeilingSupported: expect.any(Boolean) }),
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 35));
+    await new Promise((resolve) => setTimeout(resolve, 275));
     await expect(gateway.listRuntimeSlots(company.id)).resolves.toEqual([]);
     const [stoppedSlot] = await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.id, idleSlot.id));
     expect(stoppedSlot).toMatchObject({
