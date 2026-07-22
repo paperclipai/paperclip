@@ -129,3 +129,23 @@ def test_scan_tsc_reads_errors_from_stderr():
         return R()
     cands = scan_tsc(None, runner=runner)
     assert "tsc:src/x.ts:2:TS2531" in {c.key for c in cands}
+
+
+from academy_auto.triage.scan import scan_issues
+
+
+def test_scan_issues_parses_gh_json():
+    gh_json = '[{"number":42,"title":"Login-Flow bricht ab","labels":[{"name":"bug"}],"body":"..."},{"number":7,"title":"Dark Mode","labels":[],"body":""}]'
+    cands = scan_issues(runner=lambda *a, **k: _proc(stdout=gh_json, returncode=0))
+    keys = {c.key for c in cands}
+    assert "issue:42" in keys
+    assert "issue:7" in keys
+    c = next(c for c in cands if c.key == "issue:42")
+    assert c.source == "issue" and c.raw_priority == 20 and c.line == 0 and c.file == ""
+    assert "Login-Flow" in c.text
+
+
+def test_scan_issues_fail_soft_when_gh_missing():
+    def boom(*a, **k):
+        raise FileNotFoundError("gh not found")
+    assert scan_issues(runner=boom) == []

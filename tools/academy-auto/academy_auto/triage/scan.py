@@ -133,3 +133,28 @@ def scan_lint(root, runner=subprocess.run, repo_root=None) -> list[Candidate]:
                 text=(m.get("message") or "").strip(), raw_priority=45,
             ))
     return cands
+
+
+def scan_issues(runner=subprocess.run) -> list[Candidate]:
+    try:
+        proc = runner(
+            ["gh", "issue", "list", "--repo", GITHUB_REPO, "--state", "open",
+             "--json", "number,title,labels,body"],
+            capture_output=True, text=True, check=False,
+        )
+    except Exception:
+        return []
+    try:
+        data = json.loads(getattr(proc, "stdout", "") or "")
+    except (ValueError, TypeError):
+        return []
+    cands: list[Candidate] = []
+    for issue in data:
+        number = issue.get("number")
+        if number is None:
+            continue
+        cands.append(Candidate(
+            source="issue", key=f"issue:{number}", file="", line=0,
+            text=(issue.get("title") or "").strip(), raw_priority=20,
+        ))
+    return cands
