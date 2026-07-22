@@ -26,6 +26,7 @@ import approval_queue as approval_queue  # noqa: E402
 import approval_parse as approval_parse  # noqa: E402
 import approval_send as approval_send  # noqa: E402
 import ews_sent as ews_sent  # noqa: E402
+import office_inbox as office_inbox  # noqa: E402
 
 WALTER_SENDERS = ("w.schonenbrocher", "walter", "ws@whitestag.ai")
 
@@ -156,15 +157,43 @@ def is_approval_reply(path: Path) -> str | None:
         return None
 
 
+def _apply_reply(token, body, *, dry_run, send, make_issue, save_sent):
+    """Kernlogik für EINE Freigabe-Antwort (quellenunabhängig: Vault ODER office@).
+
+    Gibt eine action zurück: skip | would-send | sent | send-error | would-correct
+    | correction. Terminale Aktionen (sent/correction/skip) darf der Aufrufer als
+    erledigt markieren; **send-error bleibt retrybar** (Status bleibt pending)."""
+    entry = approval_queue.load(token)
+    if entry is None or entry.get("status") != "pending":
+        return "skip"
+    if approval_parse.classify(body) == "send":
+        if dry_run:
+            return "would-send"
+        code, resp = send(entry)
+        if code != 200:
+            print(f"FEHLER Freigabe #{token}: Relay HTTP {code}: {resp}", file=sys.stderr)
+            return "send-error"
+        approval_queue.mark(token, "sent", sent=datetime.now().isoformat())
+        print(f"Freigabe #{token}: gesendet an {entry['to']}")
+        if save_sent is not None:  # Kopie in ws@ „Gesendete Elemente" (nicht-fatal)
+            try:
+                ok, resp2 = save_sent(to=entry["to"], subject=entry["subject"],
+                                      html=entry["rendered_html"])
+                if not ok:
+                    print(f"WARN Sent-Kopie #{token} fehlgeschlagen: {resp2[:120]}", file=sys.stderr)
+            except Exception as ex:  # noqa: BLE001
+                print(f"WARN Sent-Kopie #{token}: {ex}", file=sys.stderr)
+        return "sent"
+    if dry_run:
+        return "would-correct"
+    make_issue(token, body, entry)
+    return "correction"
+
+
 def process_approvals(new_files, *, dry_run, send=approval_send.send_approved,
                       make_issue=None, save_sent=None):
-    """Verarbeitet Freigabe-Antworten. Gibt Liste von {file, token, action} zurück.
-
-    Terminale Aktionen (sent/correction/skip) dürfen vom Aufrufer als gesehen
-    markiert werden. **send-error/error bleiben absichtlich ungesehen** → der
-    nächste Lauf versucht die noch `pending` Freigabe erneut; ein Doppelversand ist
-    ausgeschlossen, weil `mark(..,'sent')` den Status auf non-pending zieht und der
-    Status-Guard oben dann `skip` liefert."""
+    """Vault-Pfad (Fallback): Freigabe-Antworten aus den gespiegelten ws@-Sent-Mails.
+    Liste von {file, token, action}."""
     if make_issue is None:
         make_issue = _create_correction_issue
     results = []
@@ -175,40 +204,41 @@ def process_approvals(new_files, *, dry_run, send=approval_send.send_approved,
             if not token:
                 results.append({"file": name, "token": None, "action": "skip"})
                 continue
-            entry = approval_queue.load(token)
-            if entry is None or entry.get("status") != "pending":
-                results.append({"file": name, "token": token, "action": "skip"})
-                continue
-            action = approval_parse.classify(read_body(path))
-            if action == "send":
-                if dry_run:
-                    results.append({"file": name, "token": token, "action": "would-send"}); continue
-                code, resp = send(entry)
-                if code == 200:
-                    approval_queue.mark(token, "sent", sent=datetime.now().isoformat())
-                    print(f"Freigabe #{token}: gesendet an {entry['to']}")
-                    # Kopie in ws@ „Gesendete Elemente" (nicht-fatal — Mail ist raus).
-                    if save_sent is not None:
-                        try:
-                            ok, resp2 = save_sent(to=entry["to"], subject=entry["subject"],
-                                                  html=entry["rendered_html"])
-                            if not ok:
-                                print(f"WARN Sent-Kopie #{token} fehlgeschlagen: {resp2[:120]}",
-                                      file=sys.stderr)
-                        except Exception as ex:  # noqa: BLE001
-                            print(f"WARN Sent-Kopie #{token}: {ex}", file=sys.stderr)
-                    results.append({"file": name, "token": token, "action": "sent"})
-                else:
-                    print(f"FEHLER Freigabe #{token}: Relay HTTP {code}: {resp}", file=sys.stderr)
-                    results.append({"file": name, "token": token, "action": "send-error"})
-            else:
-                if dry_run:
-                    results.append({"file": name, "token": token, "action": "would-correct"}); continue
-                make_issue(token, read_body(path), entry)
-                results.append({"file": name, "token": token, "action": "correction"})
+            action = _apply_reply(token, read_body(path), dry_run=dry_run, send=send,
+                                  make_issue=make_issue, save_sent=save_sent)
+            results.append({"file": name, "token": token, "action": action})
         except Exception as e:  # noqa: BLE001 — ein kaputter Eintrag darf den Tick nicht killen
             print(f"WARN Freigabe {name}: {e}", file=sys.stderr)
             results.append({"file": name, "token": None, "action": "error"})
+    return results
+
+
+def process_office_approvals(*, dry_run, send=approval_send.send_approved,
+                             make_issue=None, save_sent=None):
+    """Primärer, zuverlässiger Pfad: liest Walters Freigabe-Antworten direkt aus
+    dem office@-Posteingang (unabhängig vom ws@-Sent-Sync). Liste von
+    {uid, token, action}. Bearbeitete UIDs werden lokal gemerkt (send-error bleibt
+    retrybar → UID NICHT merken)."""
+    if make_issue is None:
+        make_issue = _create_correction_issue
+    processed = office_inbox.load_processed()
+    try:
+        replies = office_inbox.fetch_approval_replies(processed)
+    except Exception as e:  # noqa: BLE001 — office@ nicht erreichbar darf Tick nicht killen
+        print(f"WARN office@-Abruf fehlgeschlagen: {e}", file=sys.stderr)
+        return []
+    results = []
+    for r in replies:
+        try:
+            action = _apply_reply(r["token"], r["body"], dry_run=dry_run, send=send,
+                                  make_issue=make_issue, save_sent=save_sent)
+            results.append({"uid": r["uid"], "token": r["token"], "action": action})
+            if not dry_run and action != "send-error":  # send-error retrybar
+                processed.add(r["uid"])
+        except Exception as e:  # noqa: BLE001
+            print(f"WARN office@ Freigabe #{r.get('token')}: {e}", file=sys.stderr)
+    if not dry_run:
+        office_inbox.save_processed(processed)
     return results
 
 
@@ -347,6 +377,11 @@ def main() -> None:
     if not a.dry_run:
         for tok in approval_queue.expire_stale(ttl_days=7):
             print(f"Freigabe #{tok} nach TTL verfallen.")
+    # PRIMÄR: office@-Posteingang (dorthin gehen Walters Antworten direkt, zuverlässig).
+    office_results = process_office_approvals(dry_run=a.dry_run, save_sent=ews_sent.save_to_sent)
+    if office_results:
+        print(f"office@-Freigaben: {office_results}")
+    # FALLBACK: ws@-Sent-Spiegelung im Vault (falls office@ mal nicht erreichbar war).
     approval_new = scan_approval_replies(a.window_days, seen)
     if approval_new:
         results = process_approvals(approval_new, dry_run=a.dry_run,
