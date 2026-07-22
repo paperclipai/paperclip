@@ -15,7 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { formatDate } from "../lib/utils";
-import { formatAgentConfigValue } from "../lib/agent-config-changeset";
+import { formatAgentConfigValue, labelForAgentConfigKey } from "../lib/agent-config-changeset";
 
 function valueAt(snapshot: Record<string, unknown>, key: string): unknown {
   if (Object.prototype.hasOwnProperty.call(snapshot, key)) return snapshot[key];
@@ -29,11 +29,27 @@ function valueAt(snapshot: Record<string, unknown>, key: string): unknown {
 }
 
 export function revisionDiff(revision: AgentConfigRevision) {
-  return revision.changedKeys.map((key) => ({
-    key,
-    before: valueAt(revision.beforeConfig, key),
-    after: valueAt(revision.afterConfig, key),
-  }));
+  return revision.changedKeys.flatMap((key) => expandRevisionDiff(key, valueAt(revision.beforeConfig, key), valueAt(revision.afterConfig, key)));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function expandRevisionDiff(key: string, before: unknown, after: unknown): Array<{ key: string; before: unknown; after: unknown }> {
+  if (!isRecord(before) && !isRecord(after)) return [{ key, before, after }];
+  if (before !== undefined && !isRecord(before)) return [{ key, before, after }];
+  if (after !== undefined && !isRecord(after)) return [{ key, before, after }];
+
+  const beforeRecord = isRecord(before) ? before : {};
+  const afterRecord = isRecord(after) ? after : {};
+  const fields = [...new Set([...Object.keys(beforeRecord), ...Object.keys(afterRecord)])].sort();
+  return fields.flatMap((field) => {
+    const fieldBefore = beforeRecord[field];
+    const fieldAfter = afterRecord[field];
+    if (JSON.stringify(fieldBefore) === JSON.stringify(fieldAfter)) return [];
+    return expandRevisionDiff(key + "." + field, fieldBefore, fieldAfter);
+  });
 }
 
 function RevisionDiffRows({ revision }: { revision: AgentConfigRevision }) {
@@ -41,7 +57,7 @@ function RevisionDiffRows({ revision }: { revision: AgentConfigRevision }) {
     <div className="divide-y divide-border">
       {revisionDiff(revision).map((entry) => (
         <div key={entry.key} className="space-y-2 py-3">
-          <div className="font-mono text-xs text-muted-foreground">{entry.key}</div>
+          <div className="text-xs font-medium text-muted-foreground">{labelForAgentConfigKey(entry.key)}</div>
           <div className="grid gap-2 text-xs sm:grid-cols-2">
             <div className="min-w-0 rounded-md bg-muted/40 p-2 font-mono break-words">{formatAgentConfigValue(entry.before)}</div>
             <div className="min-w-0 rounded-md bg-muted/40 p-2 font-mono break-words">{formatAgentConfigValue(entry.after)}</div>
