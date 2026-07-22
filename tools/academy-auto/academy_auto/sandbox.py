@@ -27,6 +27,9 @@ def build_profile(cfg: Config) -> str:
         lines.append(f'(allow file-write* (subpath "{_real(w)}"))')
     dev = " ".join(f'(path "{d}")' for d in _DEVICE_WRITES)
     lines.append(f"(allow file-write-data {dev})")
+    for p in cfg.protected_write_paths:
+        pr = _real(p)
+        lines.append(f'(deny file-write* (subpath "{pr}") (path "{pr}"))')
     if cfg.secret_read_paths:
         denies = " ".join(f'(subpath "{_real(s)}")' for s in cfg.secret_read_paths)
         lines.append(f"(deny file-read* {denies})")
@@ -48,12 +51,19 @@ def wrap_command(cfg: Config, cmd, profile_path) -> list[str]:
 
 def sandbox_available(cfg: Config, runner=subprocess.run) -> bool:
     """True nur wenn sandbox-exec vorhanden UND das Profil sauber kompiliert (Dry-Run)."""
-    profile = write_profile(cfg)
+    profile = None
     try:
+        profile = write_profile(cfg)
         proc = runner(
             ["sandbox-exec", "-f", str(profile), "/usr/bin/true"],
             capture_output=True, text=True, check=False, timeout=30,
         )
+        return getattr(proc, "returncode", 1) == 0
     except Exception:
         return False
-    return getattr(proc, "returncode", 1) == 0
+    finally:
+        if profile is not None:
+            try:
+                os.unlink(profile)
+            except OSError:
+                pass

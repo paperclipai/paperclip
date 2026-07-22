@@ -17,6 +17,7 @@ class Config:
     triage_state_path: Path
     secret_read_paths: tuple[str, ...]
     sandbox_write_paths: tuple[str, ...]
+    protected_write_paths: tuple[str, ...]
 
     @classmethod
     def default(cls) -> "Config":
@@ -51,10 +52,21 @@ class Config:
                 str(home / ".ssh"), str(home / ".aws"), str(home / ".config/gcloud"),
                 str(home / ".whitestag.env"), str(home / ".n8n"), str(home / ".paperclip"),
                 str(home / "Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC"),
+                str(home / ".netrc"), str(home / ".git-credentials"), str(home / ".npmrc"),
+                str(home / ".gnupg"), str(home / ".docker"), str(home / "Library/Keychains"),
+                str(home / ".kube"), str(home / ".azure"), str(home / ".pypirc"),
+                str(home / ".cargo/credentials"),
             ),
             sandbox_write_paths=(
                 "/private/tmp", "/private/var/folders",
                 str(home / ".npm"), str(home / "Library/Caches"),
                 str(home / ".cache"), str(home / ".expo"), str(home / ".claude"),
+            ),
+            protected_write_paths=(
+                str(home / ".claude/settings.json"), str(home / ".claude/settings.local.json"),
+                str(home / ".claude/scripts"), str(home / ".claude/hooks"),
+                str(home / ".claude/CLAUDE.md"), str(home / ".claude/plugins"),
+                str(home / ".claude/commands"), str(home / ".claude/agents"),
+                str(home / ".claude/keybindings.json"),
             ),
         )

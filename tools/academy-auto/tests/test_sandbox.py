@@ -132,3 +132,52 @@ def test_generated_profile_really_isolates(tmp_path):
     r = sb(f'cat "{secret}/token.txt" 2>/dev/null && echo READ || echo DENIED')
     assert "DENIED" in r.stdout
     assert "TOPSECRET" not in r.stdout
+
+
+def test_config_secret_read_paths_include_common_credential_stores():
+    cfg = Config.default()
+    joined = " ".join(cfg.secret_read_paths)
+    for needle in [".netrc", ".git-credentials", ".npmrc", ".gnupg", "Keychains"]:
+        assert needle in joined
+
+
+def test_build_profile_denies_write_to_dangerous_claude_paths():
+    cfg = Config.default()
+    prof = build_profile(cfg)
+    settings_real = os.path.realpath(str(Path.home() / ".claude/settings.json"))
+    scripts_real = os.path.realpath(str(Path.home() / ".claude/scripts"))
+    assert f'deny file-write* (subpath "{scripts_real}")' in prof or f'deny file-write* (subpath "{scripts_real}") (path "{scripts_real}")' in prof
+    assert settings_real in prof.split("deny file-read*")[0]  # als write-deny, vor dem read-Block
+    # der Schutz-Deny steht NACH dem ~/.claude-write-allow (last-match-wins)
+    claude_allow = os.path.realpath(str(Path.home() / ".claude"))
+    assert prof.index(f'allow file-write* (subpath "{claude_allow}")') < prof.rindex(settings_real)
+
+
+def test_sandbox_available_fail_soft_when_write_profile_raises(tmp_path, monkeypatch):
+    from academy_auto import sandbox as sbmod
+    cfg = _cfg(tmp_path)
+    def boom(cfg):
+        raise OSError("tempdir kaputt")
+    monkeypatch.setattr(sbmod, "write_profile", boom)
+    assert sbmod.sandbox_available(cfg, runner=lambda *a, **k: None) is False
+
+
+@pytest.mark.skipif(shutil.which("sandbox-exec") is None, reason="sandbox-exec nicht verfügbar")
+def test_protected_claude_paths_really_write_blocked(tmp_path):
+    claude = tmp_path / "claude"; (claude / "projects").mkdir(parents=True); (claude / "scripts").mkdir()
+    wt = tmp_path / "wt"; wt.mkdir()
+    cfg = Config(**{**Config.default().__dict__,
+                    "worktree_path": wt,
+                    "sandbox_write_paths": (str(claude),),
+                    "protected_write_paths": (str(claude / "settings.json"), str(claude / "scripts")),
+                    "secret_read_paths": ()})
+    profile = write_profile(cfg)
+    def sb(bash):
+        return subprocess.run(wrap_command(cfg, ["/bin/bash", "-c", bash], str(profile)), capture_output=True, text=True)
+    # operativer ~/.claude-Unterpfad schreibbar
+    r = sb(f'echo x > "{claude}/projects/p.txt" && echo OK'); assert "OK" in r.stdout
+    # settings.json (Hook-Config) BLOCKIERT
+    r = sb(f'echo evil > "{claude}/settings.json" 2>/dev/null && echo LEAK || echo BLOCKED'); assert "BLOCKED" in r.stdout
+    assert not (claude / "settings.json").exists()
+    # scripts/ BLOCKIERT
+    r = sb(f'echo evil > "{claude}/scripts/x.sh" 2>/dev/null && echo LEAK || echo BLOCKED'); assert "BLOCKED" in r.stdout
