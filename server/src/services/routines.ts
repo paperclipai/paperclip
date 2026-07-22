@@ -1336,10 +1336,40 @@ export function routineService(
     reason: string;
     nextRunAt?: Date | null;
     details?: Record<string, unknown> | null;
+    idempotencyKey?: string | null;
+    rejectIdempotencyReplay?: boolean;
   }) {
     const triggeredAt = new Date();
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      await tx.execute(
+        sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
+      );
+
+      if (input.idempotencyKey) {
+        const existing = await txDb
+          .select()
+          .from(routineRuns)
+          .where(
+            and(
+              eq(routineRuns.companyId, input.routine.companyId),
+              eq(routineRuns.routineId, input.routine.id),
+              eq(routineRuns.source, input.source),
+              eq(routineRuns.idempotencyKey, input.idempotencyKey),
+              eq(routineRuns.triggerId, input.trigger.id),
+            ),
+          )
+          .orderBy(desc(routineRuns.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          if (input.rejectIdempotencyReplay) {
+            throw conflict("Webhook replay detected");
+          }
+          return existing;
+        }
+      }
+
       const [createdRun] = await txDb
         .insert(routineRuns)
         .values({
@@ -1355,6 +1385,7 @@ export function routineService(
           routineRevisionId: input.routine.latestRevisionId,
           responsibleUserId: input.routine.responsibleUserId ?? null,
           triggerPayload: input.details ?? null,
+          idempotencyKey: input.idempotencyKey ?? null,
         })
         .returning();
       await updateRoutineTouchedState({
@@ -1618,6 +1649,7 @@ export function routineService(
     projectWorkspaceId?: string | null;
     assigneeAgentId?: string | null;
     idempotencyKey?: string | null;
+    rejectIdempotencyReplay?: boolean;
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
@@ -1705,7 +1737,12 @@ export function routineService(
           .orderBy(desc(routineRuns.createdAt))
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (existing) return existing;
+        if (existing) {
+          if (input.rejectIdempotencyReplay) {
+            throw conflict("Webhook replay detected");
+          }
+          return existing;
+        }
       }
 
       const triggeredAt = new Date();
@@ -2788,6 +2825,7 @@ export function routineService(
       if (!routine) throw notFound("Routine not found");
       if (!trigger.enabled || routine.status !== "active") throw conflict("Routine trigger is not active");
 
+      let hmacReplayKey: string | null = null;
       if (trigger.signingMode === "none") {
         // No authentication — the publicId in the URL acts as a shared secret.
       } else if (trigger.signingMode === "github_hmac") {
@@ -2844,6 +2882,10 @@ export function routineService(
           normalizedSignature.length === expectedHmac.length &&
           crypto.timingSafeEqual(Buffer.from(normalizedSignature), Buffer.from(expectedHmac));
         if (!valid) throw unauthorized();
+        hmacReplayKey = `webhook-hmac:${crypto
+          .createHash("sha256")
+          .update(`${trigger.id}:${providedTimestamp}:${expectedHmac}`)
+          .digest("hex")}`;
       }
 
       const eligibility = await getAutomaticRoutineDispatchEligibility(routine);
@@ -2853,6 +2895,8 @@ export function routineService(
           trigger,
           source: "webhook",
           reason: "worktree_execution_cutoff",
+          idempotencyKey: hmacReplayKey ?? input.idempotencyKey,
+          rejectIdempotencyReplay: hmacReplayKey !== null,
         });
       }
 
@@ -2864,7 +2908,8 @@ export function routineService(
         variables: isPlainRecord(input.payload) && isPlainRecord(input.payload.variables)
           ? input.payload.variables
           : null,
-        idempotencyKey: input.idempotencyKey,
+        idempotencyKey: hmacReplayKey ?? input.idempotencyKey,
+        rejectIdempotencyReplay: hmacReplayKey !== null,
       });
     },
 
