@@ -50,6 +50,16 @@ assert_line() {
   }
 }
 
+assert_no_line() {
+  local file="$1"
+  local unexpected="$2"
+  if grep -Fx -- "$unexpected" "$file" >/dev/null; then
+    printf 'Did not expect %q in %s\n' "$unexpected" "$file" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
 echo "==> shellcheck"
 run_shellcheck
 
@@ -57,16 +67,16 @@ echo "==> existing Node"
 run_with_node with-node bash /paperclip-scripts/install.sh --no-onboard
 assert_line "$RESULTS_DIR/with-node.args" "paperclipai@latest"
 assert_line "$RESULTS_DIR/with-node.args" "install"
-assert_line "$RESULTS_DIR/with-node.args" "--no-prompt"
+assert_line "$RESULTS_DIR/with-node.args" "--yes"
 
 echo "==> --ref master"
 run_with_node ref-master bash /paperclip-scripts/install.sh --ref master --no-onboard
-assert_line "$RESULTS_DIR/ref-master.args" "--ref"
-assert_line "$RESULTS_DIR/ref-master.args" "master"
+assert_no_line "$RESULTS_DIR/ref-master.args" "--ref"
+assert_no_line "$RESULTS_DIR/ref-master.args" "master"
 
 echo "==> piped --no-prompt"
 run_with_node piped bash -c 'cat /paperclip-scripts/install.sh | bash -s -- --no-prompt --no-onboard'
-assert_line "$RESULTS_DIR/piped.args" "--no-prompt"
+assert_line "$RESULTS_DIR/piped.args" "--yes"
 
 echo "==> environment twins"
 docker run --rm \
@@ -83,9 +93,9 @@ docker run --rm \
 assert_line "$RESULTS_DIR/env.args" "paperclipai@2026.722.0"
 assert_line "$RESULTS_DIR/env.args" "--version"
 assert_line "$RESULTS_DIR/env.args" "2026.722.0"
-assert_line "$RESULTS_DIR/env.args" "--repo"
-assert_line "$RESULTS_DIR/env.args" "example/paperclip"
-assert_line "$RESULTS_DIR/env.args" "--install-service"
+assert_no_line "$RESULTS_DIR/env.args" "--repo"
+assert_no_line "$RESULTS_DIR/env.args" "example/paperclip"
+assert_no_line "$RESULTS_DIR/env.args" "--install-service"
 
 echo "==> no Node, apt bootstrap"
 docker run --rm \
