@@ -13,11 +13,22 @@ function readPackMetadata(packDestination: string) {
     cwd: packageRoot,
     encoding: "utf8",
   });
-  const metadata = JSON.parse(output);
+  const metadata = normalizePackMetadata(JSON.parse(output));
   if (!Array.isArray(metadata) || metadata.length === 0 || typeof metadata[0]?.filename !== "string") {
     throw new Error(`Unexpected npm pack output from ${packageRoot}: ${output}`);
   }
   return metadata[0] as { filename: string; files: Array<{ path: string }> };
+}
+
+function normalizePackMetadata(metadata: unknown): unknown[] {
+  if (Array.isArray(metadata)) return metadata;
+  if (metadata && typeof metadata === "object") {
+    const entries = Object.values(metadata);
+    if (entries.every((entry) => entry && typeof entry === "object" && "filename" in entry)) {
+      return entries;
+    }
+  }
+  return [];
 }
 
 describe("skills catalog package artifacts", () => {

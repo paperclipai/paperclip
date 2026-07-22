@@ -141,6 +141,13 @@ const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
 
+function canInheritWorkspaceLinkageForProject(
+  targetProjectId: string | null | undefined,
+  sourceProjectId: string | null | undefined,
+) {
+  return targetProjectId == null || sourceProjectId == null || targetProjectId === sourceProjectId;
+}
+
 function wakeRequestTargetsIssue(issueId: string) {
   return sql`(
     ${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}
@@ -5800,7 +5807,7 @@ export function issueService(db: Db) {
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
       const childProjectId = issueData.projectId ?? parent.projectId;
-      const canInheritParentProjectWorkspace = childProjectId == null || childProjectId === parent.projectId;
+      const canInheritParentProjectWorkspace = canInheritWorkspaceLinkageForProject(childProjectId, parent.projectId);
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
@@ -6238,10 +6245,10 @@ export function issueService(db: Db) {
           if (issueData.projectId == null && workspaceSource.projectId) {
             issueData.projectId = workspaceSource.projectId;
           }
-          const canInheritWorkspaceLinkage =
-            issueData.projectId == null ||
-            workspaceSource.projectId == null ||
-            issueData.projectId === workspaceSource.projectId;
+          const canInheritWorkspaceLinkage = canInheritWorkspaceLinkageForProject(
+            issueData.projectId,
+            workspaceSource.projectId,
+          );
           if (canInheritWorkspaceLinkage && projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }

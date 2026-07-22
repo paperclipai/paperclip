@@ -2607,14 +2607,14 @@ describe("realizeExecutionWorkspace", () => {
 
   it.each([
     {
-      identifier: "LP-1083",
-      recordedBranch: "LP-1083-internal-provenance",
-      publicBranch: "fix/public-safe-lp-1083",
+      identifier: "TASK-101",
+      recordedBranch: "task-101-recorded-provenance",
+      publicBranch: "fix/public-safe-task-101",
     },
     {
-      identifier: "LP-1119",
-      recordedBranch: "LP-1119-internal-provenance",
-      publicBranch: "fix/public-safe-lp-1119",
+      identifier: "TASK-202",
+      recordedBranch: "task-202-recorded-provenance",
+      publicBranch: "fix/public-safe-task-202",
     },
   ])("stages pending audited reconciliation for $identifier public-safe branch when it matches the recorded provenance HEAD", async ({
     identifier,
@@ -2726,7 +2726,10 @@ describe("realizeExecutionWorkspace", () => {
             registeredBranchMatchesHead: true,
           }),
           safeRepair: expect.objectContaining({
-            reason: "forward reconciliation adoption requires database access to audit after workspace realization",
+            eligible: false,
+            attempted: false,
+            succeeded: false,
+            reason: "expected branch does not exist",
           }),
         }),
       },
@@ -2936,10 +2939,10 @@ describe("realizeExecutionWorkspace", () => {
             plainLanguageReason: expect.stringContaining("missing a resolvable HEAD commit"),
           }),
           safeRepair: expect.objectContaining({
-            eligible: true,
+            eligible: false,
             attempted: false,
             succeeded: false,
-            reason: "forward reconciliation adoption requires database access to audit after workspace realization",
+            reason: "expected branch does not exist",
           }),
         }),
       },
@@ -4765,7 +4768,7 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
     });
   }
 
-  it("persists review recovery branch adoption when the recorded branch was deleted but the checked-out branch is registered", async () => {
+  it("fails closed when the recorded branch was deleted even if the checked-out branch is registered", async () => {
     const repoRoot = await createTempRepo();
     const recordedBranch = "internal-review-provenance";
     const publicBranch = "fix/review-workspace-recovery";
@@ -4779,12 +4782,11 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
       worktreePath,
       expectedBranch: recordedBranch,
       actualBranch: publicBranch,
-      sourceIdentifier: "PAP-PUBLIC-DELETED",
+      sourceIdentifier: "TASK-PUBLIC-DELETED",
       claimant: "none",
     });
-    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
-    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
       db,
       base: {
         baseCwd: repoRoot,
@@ -4808,7 +4810,7 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
       },
       issue: {
         id: ids.sourceIssueId,
-        identifier: "PAP-PUBLIC-DELETED",
+        identifier: "TASK-PUBLIC-DELETED",
         title: "Review public branch recovery",
       },
       agent: {
@@ -4818,45 +4820,32 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
       },
       heartbeatRunId: ids.runId,
       enableWorkspaceBranchReconcileForward: true,
-      recorder,
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          expectedBranch: recordedBranch,
+          actualBranch: publicBranch,
+          cleanliness: "clean",
+          provenance: expect.objectContaining({
+            expectedBranchExists: false,
+            actualBranchExists: true,
+            registeredPathFound: true,
+            registeredBranchMatchesHead: true,
+            expectedHeadSha: null,
+            sameHead: false,
+            ancestryVerdict: "unknown",
+          }),
+          safeRepair: expect.objectContaining({
+            eligible: false,
+            attempted: false,
+            succeeded: false,
+            reason: "expected branch does not exist",
+          }),
+        }),
+      },
     });
-
-    expect(restored?.branchName).toBe(publicBranch);
-    expect(restored?.pendingForwardBranchReconcile).toMatchObject({
-      recordedBranchName: recordedBranch,
-      adoptedBranchName: publicBranch,
-    });
-
-    await reconcilePendingForwardBranchAfterPersistence({
-      db,
-      executionWorkspaceId: ids.sourceWorkspaceId,
-      pending: restored!.pendingForwardBranchReconcile!,
-      heartbeatRunId: ids.runId,
-      reconcileOperationPhase: "worktree_prepare",
-      recorder,
-    });
-
-    const [workspace] = await db
-      .select({ branchName: executionWorkspaces.branchName })
-      .from(executionWorkspaces)
-      .where(eq(executionWorkspaces.id, ids.sourceWorkspaceId));
-    expect(workspace?.branchName).toBe(publicBranch);
-
-    const comments = await db
-      .select({ body: issueComments.body })
-      .from(issueComments)
-      .where(eq(issueComments.issueId, ids.sourceIssueId));
-    expect(comments.some((comment) =>
-      comment.body.includes("Execution workspace branch reconciled.") &&
-      comment.body.includes(`- From branch: \`${recordedBranch}\``) &&
-      comment.body.includes(`- To branch: \`${publicBranch}\``) &&
-      comment.body.includes("- From SHA: `unknown`")
-    )).toBe(true);
-    expect(operations.some((operation) =>
-      operation.metadata?.reconcileMode === "adopt_for_realize" &&
-      operation.metadata?.expectedBranchName === recordedBranch &&
-      operation.metadata?.actualBranchName === publicBranch
-    )).toBe(true);
   }, 15_000);
 
   it("quarantines dirty foreign-branch work into a rescue branch before restoring the recorded branch", async () => {

@@ -606,7 +606,13 @@ async function expectContainedWorkspaceBranchFailure(input: {
   sourceExecutionWorkspaceId?: string | null;
   expectedBranch: string;
   actualBranch: string;
+  expectedAncestryVerdict?: "diverged" | "unknown";
+  expectedSafeRepairReason?: string;
+  expectedPlainLanguageReason?: string;
 }) {
+  const expectedAncestryVerdict = input.expectedAncestryVerdict ?? "diverged";
+  const expectedSafeRepairReason = input.expectedSafeRepairReason ?? "expected branch and current HEAD differ";
+  const expectedPlainLanguageReason = input.expectedPlainLanguageReason ?? "cannot prove a forward-only reconciliation";
   const finishedRun = await waitForRunToFinish(input.heartbeat, input.runId, 10_000);
   expect(finishedRun).toMatchObject({
     status: "failed",
@@ -625,7 +631,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
       eligible: false,
       attempted: false,
       succeeded: false,
-      reason: "expected branch and current HEAD differ",
+      reason: expectedSafeRepairReason,
     }),
   });
   if (input.sourceExecutionWorkspaceId !== undefined) {
@@ -635,15 +641,19 @@ async function expectContainedWorkspaceBranchFailure(input: {
   expect(provenance).toMatchObject({
     expectedBranchRef: `refs/heads/${input.expectedBranch}`,
     actualBranchRef: `refs/heads/${input.actualBranch}`,
-    expectedBranchExists: true,
+    expectedBranchExists: expectedAncestryVerdict === "unknown" ? false : true,
     actualBranchExists: true,
     sameHead: false,
-    ancestryVerdict: "diverged",
+    ancestryVerdict: expectedAncestryVerdict,
   });
-  expect(provenance.expectedHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
+  if (expectedAncestryVerdict === "unknown") {
+    expect(provenance.expectedHeadSha).toBeNull();
+  } else {
+    expect(provenance.expectedHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
+  }
   expect(provenance.actualHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
   expect(provenance.expectedHeadSha).not.toBe(provenance.actualHeadSha);
-  expect(provenance.plainLanguageReason).toEqual(expect.stringContaining("cannot prove a forward-only reconciliation"));
+  expect(provenance.plainLanguageReason).toEqual(expect.stringContaining(expectedPlainLanguageReason));
 
   const { issueRows, actionRows, comments } = await waitForContainmentSideEffects({
     db: input.db,
@@ -691,7 +701,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
         provenance: expect.objectContaining({
           expectedHeadSha: provenance.expectedHeadSha,
           actualHeadSha: provenance.actualHeadSha,
-          ancestryVerdict: "diverged",
+          ancestryVerdict: expectedAncestryVerdict,
           plainLanguageReason: provenance.plainLanguageReason,
         }),
       }),
@@ -1220,7 +1230,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     expect(adapterExecute).toHaveBeenCalledTimes(1);
   }, 30_000);
 
-  it("reuses a persisted registered worktree branch when the recorded branch was deleted", async () => {
+  it("contains a persisted registered worktree branch when the recorded branch was deleted", async () => {
     const repoRoot = await createGitRepo();
     tempRoots.push(repoRoot);
     const seeded = await seedBranchContainmentRun(db, repoRoot, "persisted_restore", {
@@ -1228,48 +1238,24 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       deleteRecordedBranch: true,
     });
 
-    const expectedWorktreeStateAfterReconcile = {
-      head: await readGit(seeded.worktreePath, ["rev-parse", "HEAD"]),
-      status: await readGit(seeded.worktreePath, ["status", "--porcelain", "--untracked-files=all"]),
-    };
-
-    adapterExecute.mockImplementationOnce(async () => {
-      await db
-        .update(issues)
-        .set({
-          status: "done",
-          completedAt: new Date(),
-          checkoutRunId: null,
-          executionRunId: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(issues.id, seeded.sourceIssueId));
-      return {
-        exitCode: 0,
-        signal: null,
-        timedOut: false,
-        summary: "Adapter completed after registered branch reconciliation.",
-        provider: "test",
-        model: "test-model",
-      };
-    });
-
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
 
-    await expectForwardBranchReconciled({
+    await expectContainedWorkspaceBranchFailure({
       db,
       heartbeat,
       runId: seeded.runId,
+      companyId: seeded.companyId,
       sourceIssueId: seeded.sourceIssueId,
+      sameWorkspaceSiblingId: seeded.sameWorkspaceSiblingId,
+      otherWorkspaceSiblingId: seeded.otherWorkspaceSiblingId,
       sourceExecutionWorkspaceId: seeded.sourceExecutionWorkspaceId,
       expectedBranch: seeded.expectedBranch,
       actualBranch: seeded.actualBranch,
-      expectedWorktreeStateAfterReconcile,
-      worktreePath: seeded.worktreePath,
-      expectsExistingRecordUpdate: true,
-      expectedReconcileAncestryVerdict: "unknown",
+      expectedAncestryVerdict: "unknown",
+      expectedSafeRepairReason: "expected branch does not exist",
+      expectedPlainLanguageReason: "missing a resolvable HEAD commit",
     });
-    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    expect(adapterExecute).not.toHaveBeenCalled();
   }, 30_000);
 });

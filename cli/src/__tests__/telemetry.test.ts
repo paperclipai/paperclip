@@ -6,6 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const ORIGINAL_ENV = { ...process.env };
 const CI_ENV_VARS = ["CI", "CONTINUOUS_INTEGRATION", "BUILD_NUMBER", "GITHUB_ACTIONS", "GITLAB_CI"];
 
+function clearPaperclipEnv() {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("PAPERCLIP_")) {
+      delete process.env[key];
+    }
+  }
+}
+
 function makeConfigPath(root: string, enabled: boolean): string {
   const configPath = path.join(root, ".paperclip", "config.json");
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -71,6 +79,8 @@ function makeConfigPath(root: string, enabled: boolean): string {
 describe("cli telemetry", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
+    clearPaperclipEnv();
+    delete process.env.DO_NOT_TRACK;
     for (const key of CI_ENV_VARS) {
       delete process.env[key];
     }
