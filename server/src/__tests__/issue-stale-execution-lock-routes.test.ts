@@ -414,7 +414,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     });
   });
 
-  it("preserves the live-run safety invariant for same-agent checkout, mutation, and release", async () => {
+  it("blocks checkout and release (but permits same-agent comments) while live owner run holds checkout", async () => {
     const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
     const liveOwnerRunId = randomUUID();
     const successorRunId = randomUUID();
@@ -443,10 +443,11 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       .post(`/api/issues/${issueId}/checkout`)
       .send({ agentId, expectedStatuses: ["in_progress"] })
       .expect(409);
+    // Comments from the same agent are intentionally allowed even without checkout ownership.
     await request(successorApp)
       .post(`/api/issues/${issueId}/comments`)
-      .send({ body: "This must not write while the owner run is live." })
-      .expect(409);
+      .send({ body: "Same-agent comment while live owner run holds checkout." })
+      .expect(201);
     await request(successorApp)
       .post(`/api/issues/${issueId}/release`)
       .send()
