@@ -14,6 +14,7 @@ class Config:
     max_tasks_per_run: int
     max_diff_lines: int
     denied_globs: tuple[str, ...]
+    triage_state_path: Path
 
     @classmethod
     def default(cls) -> "Config":
@@ -43,4 +44,5 @@ class Config:
                 "google-services.json", "GoogleService-Info.plist",
                 "*supabase/migrations/*", ".git/*",
             ),
+            triage_state_path=base / "triage-state.json",
         )

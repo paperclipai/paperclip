@@ -18,3 +18,4 @@ def test_default_config_has_expected_invariants():
     # Academy-Quelle liegt im CloudStorage-Ordner
     assert cfg.academy_repo.name == "WHITESTAG.ACADEMY"
     assert isinstance(cfg.denied_globs, tuple)
+    assert cfg.triage_state_path.name == "triage-state.json"
