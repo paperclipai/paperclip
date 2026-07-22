@@ -4,6 +4,7 @@ import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  DEFAULT_SERVER_SIDE_DRIFT_SWEEP_MODE,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
@@ -231,6 +232,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+      serverSideDriftSweepMode: parsed.data.serverSideDriftSweepMode ?? DEFAULT_SERVER_SIDE_DRIFT_SWEEP_MODE,
+      serverSideDriftAlertAgentId: parsed.data.serverSideDriftAlertAgentId ?? null,
     };
   }
   return {
@@ -261,6 +264,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     worktreeRunExecutionActivationInstanceId: null,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+    serverSideDriftSweepMode: DEFAULT_SERVER_SIDE_DRIFT_SWEEP_MODE,
+    serverSideDriftAlertAgentId: null,
   };
 }
 

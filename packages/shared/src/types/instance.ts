@@ -44,6 +44,18 @@ export interface InstanceGeneralSettings {
   executionMode?: InstanceExecutionMode;
 }
 
+/**
+ * What the server-side serving-tree drift sweep does when it finds the live
+ * tree stale (LOOA-412). `"log"` (the OSS default) only emits a WARN log; it
+ * takes no action a shared/cloud instance did not opt into. `"create_issue"`
+ * files a single idempotent issue assigned to `serverSideDriftAlertAgentId`,
+ * whose run performs the deploy in a separate process (never in-process — the
+ * server would SIGTERM itself, LOOA-403).
+ */
+export type ServerSideDriftSweepMode = "log" | "create_issue";
+
+export const DEFAULT_SERVER_SIDE_DRIFT_SWEEP_MODE: ServerSideDriftSweepMode = "log";
+
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
   enableIsolatedWorkspaces: boolean;
@@ -85,6 +97,18 @@ export interface InstanceExperimentalSettings {
    */
   worktreeRunExecutionActivationInstanceId: string | null;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
+  /**
+   * How the server-side serving-tree drift sweep reacts to a stale live tree.
+   * Default `"log"` (safe for OSS); `"create_issue"` requires
+   * `serverSideDriftAlertAgentId`.
+   */
+  serverSideDriftSweepMode: ServerSideDriftSweepMode;
+  /**
+   * Agent to assign the drift-deploy issue to when
+   * `serverSideDriftSweepMode === "create_issue"`. That agent's run performs the
+   * FF-only `deploy:live` (in its own process). `null` falls back to log.
+   */
+  serverSideDriftAlertAgentId: string | null;
 }
 
 export interface InstanceSettings {
