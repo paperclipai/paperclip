@@ -32,6 +32,21 @@ def test_build_digest_red_gate_mentions_failing_step():
     assert "verworfen" in text.lower()
 
 
+def test_build_digest_cap_exceeded_mentions_cap_not_no_green_gate():
+    text = build_digest(
+        task_prompt="Riesenrefactor",
+        run_outcome=RunOutcome(ok=True, output="done"),
+        gate_result=GateResult(passed=True, steps=[
+            GateStep(["npm", "test"], 0, "ok"),
+        ]),
+        committed=False,
+        cap_exceeded=True,
+    )
+    assert "Cap" in text
+    assert "verworfen" in text.lower()
+    assert "kein grünes Gate" not in text
+
+
 def test_send_digest_uses_sender():
     sent = []
     send_digest("hallo", sender=lambda t: sent.append(t))

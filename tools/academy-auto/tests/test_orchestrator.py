@@ -12,6 +12,7 @@ def base_deps(**over):
         run_gate=lambda cfg, cwd: GateResult(passed=True, steps=[GateStep(["npm", "test"], 0, "ok")]),
         commit_and_pr=lambda cfg, cwd, prompt: True,
         send_digest=lambda text: sent.append(text),
+        count_diff_lines=lambda cfg, cwd: 10,
     )
     d.update(over)
     return SimpleNamespace(**d)
@@ -70,3 +71,18 @@ def test_run_once_impl_failure_skips_gate_and_reports(tmp_path):
     report = run_once(cfg, "x", deps)
     assert report.status == "impl_failed"
     assert len(sent) == 1
+
+
+def test_run_once_diff_cap_exceeded_discards(tmp_path):
+    global sent
+    sent = []
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    deps = base_deps(
+        count_diff_lines=lambda cfg, cwd: 900,
+        commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("darf nicht committen")),
+    )
+    report = run_once(cfg, "Riesenrefactor", deps)
+    assert report.status == "discarded"
+    assert len(sent) == 1
+    assert "Cap" in sent[0]

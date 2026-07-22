@@ -9,6 +9,7 @@ def build_digest(
     run_outcome: RunOutcome,
     gate_result: GateResult,
     committed: bool,
+    cap_exceeded: bool = False,
 ) -> str:
     """Deutschen Tages-Digest für Jarvis/Telegram bauen."""
     lines = ["🎓 Academy-Auto — Tagesstand", ""]
@@ -24,6 +25,8 @@ def build_digest(
 
     if committed:
         lines.append("Ergebnis: auf agents/academy-auto committet")
+    elif cap_exceeded:
+        lines.append("Ergebnis: verworfen (Diff-Cap überschritten)")
     else:
         lines.append("Ergebnis: verworfen (kein grünes Gate)")
 
