@@ -15,18 +15,6 @@ import re
 import urllib.request
 from datetime import date, datetime, timedelta
 
-VAULT = os.path.expanduser("~/Obsidian/WHITESTAG-Vault")
-KONTAKTE = os.path.join(VAULT, "Kontakte")
-TERMINE = os.path.join(VAULT, "Termine")
-EMAILS = os.path.join(VAULT, "E-Mails")
-
-BRAIN_URL = "http://localhost:7777/"
-# Claude-Code-Scope-Token (voller Vault-Lesezugriff); via env überschreibbar.
-BRAIN_TOKEN = os.environ.get(
-    "BRAIN_TOKEN",
-    "5bc3675e4fc5e83977107dce675e2fde2038fda0b70b818f24aa99dbf90fe764",
-)
-
 
 def _token(env_name, default):
     return os.environ.get(env_name, default)
@@ -63,15 +51,17 @@ def _tokens(s: str) -> list[str]:
 
 
 # ---------------------------------------------------------------- Kontakte ---
-def lookup_kontakt(query: str, limit: int = 3) -> list[dict]:
+def lookup_kontakt(query, cfg, limit=3):
     """Findet Kontaktkarten per Namens-/Domain-Match. Gibt vollen Kartentext
     zurück, damit das LLM die konkret gefragte Angabe (Tel/Mail/…) rauszieht."""
-    if not os.path.isdir(KONTAKTE):
+    base = cfg["path"]
+    kontakte = os.path.join(base, "Kontakte")
+    if not os.path.isdir(kontakte):
         return []
     qtoks = [t for t in _tokens(query) if t not in ("kontakt", "nummer", "telefon",
              "telefonnummer", "mail", "email", "adresse", "von", "der", "die", "das")]
     scored = []
-    for path in glob.glob(os.path.join(KONTAKTE, "*.md")):
+    for path in glob.glob(os.path.join(kontakte, "*.md")):
         try:
             text = open(path, encoding="utf-8").read()
         except OSError:
@@ -83,7 +73,7 @@ def lookup_kontakt(query: str, limit: int = 3) -> list[dict]:
     scored.sort(key=lambda x: -x[0])
     out = []
     for score, path, text in scored[:limit]:
-        out.append({"quelle": os.path.relpath(path, VAULT), "score": score,
+        out.append({"quelle": os.path.relpath(path, base), "score": score,
                     "inhalt": text.strip()[:1500]})
     return out
 
@@ -105,12 +95,14 @@ def _parse_datumsfenster(query: str):
     return today, today + timedelta(days=13)  # Default: nächste 2 Wochen
 
 
-def lookup_termine(query: str, limit: int = 15) -> list[dict]:
-    if not os.path.isdir(TERMINE):
+def lookup_termine(query, cfg, limit=15):
+    base = cfg["path"]
+    termine = os.path.join(base, "Termine")
+    if not os.path.isdir(termine):
         return []
     start, end = _parse_datumsfenster(query)
     out = []
-    for path in sorted(glob.glob(os.path.join(TERMINE, "*.md"))):
+    for path in sorted(glob.glob(os.path.join(termine, "*.md"))):
         m = re.search(r"(\d{4}-\d{2}-\d{2})", os.path.basename(path))
         if not m:
             continue
@@ -123,43 +115,46 @@ def lookup_termine(query: str, limit: int = 15) -> list[dict]:
                 text = open(path, encoding="utf-8").read()
             except OSError:
                 continue
-            out.append({"datum": m.group(1), "quelle": os.path.relpath(path, VAULT),
+            out.append({"datum": m.group(1), "quelle": os.path.relpath(path, base),
                         "inhalt": text.strip()[:600]})
     return out[:limit]
 
 
 # ------------------------------------------------------------------- Mails ---
-def lookup_mail(query: str, limit: int = 5) -> list[dict]:
-    if not os.path.isdir(EMAILS):
+def lookup_mail(query, cfg, limit=5):
+    base = cfg["path"]
+    emails = os.path.join(base, "E-Mails")
+    if not os.path.isdir(emails):
         return []
     qtoks = [t for t in _tokens(query) if t not in ("mail", "email", "von", "letzte", "der")]
     scored = []
-    for path in glob.glob(os.path.join(EMAILS, "*.md")):
-        base = os.path.basename(path)
+    for path in glob.glob(os.path.join(emails, "*.md")):
+        base_name = os.path.basename(path)
         try:
             head = open(path, encoding="utf-8").read(700)
         except OSError:
             continue
-        hay = (base + "\n" + head).lower()
+        hay = (base_name + "\n" + head).lower()
         score = sum(1 for t in qtoks if t in hay)
         if score:
-            scored.append((score, base[:10], path, head))
+            scored.append((score, base_name[:10], path, head))
     scored.sort(key=lambda x: (-x[0], x[1]), reverse=False)
     scored.sort(key=lambda x: (x[0], x[1]), reverse=True)  # score desc, dann Datum desc
     out = []
     for score, _d, path, head in scored[:limit]:
-        out.append({"quelle": os.path.relpath(path, VAULT), "score": score,
+        out.append({"quelle": os.path.relpath(path, base), "score": score,
                     "auszug": head.strip()[:500]})
     return out
 
 
 # ------------------------------------------------------------------ Wissen ---
-def search_wissen(query: str, limit: int = 5) -> list[dict]:
+def search_wissen(query, cfg, limit=5):
     """Semantische Brain-Suche für thematische/Wissensfragen."""
     body = json.dumps({"tool": "search_vault",
                        "args": {"query": query, "limit": limit}}).encode()
-    req = urllib.request.Request(BRAIN_URL, data=body, method="POST",
-        headers={"Authorization": "Bearer " + BRAIN_TOKEN, "Content-Type": "application/json"})
+    req = urllib.request.Request(cfg["brain_url"], data=body, method="POST",
+        headers={"Authorization": "Bearer " + cfg["brain_token"],
+                 "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read().decode())
@@ -179,18 +174,19 @@ _DOC_STOP = {"der","die","das","und","von","mit","fuer","für","ist","ein","eine
     "es","du","ich","hast","haben","kannst","bitte"}
 
 
-def lookup_dokument(query, limit=6):
+def lookup_dokument(query, cfg, limit=6):
     """Volltextsuche (ripgrep) ueber den GANZEN Vault — findet exakte Begriffe
     in jedem Dokument, unabhaengig vom Brain-Index."""
     import subprocess
     from collections import Counter
+    base = cfg["path"]
     toks = [t for t in _tokens(query) if len(t) > 2 and t.lower() not in _DOC_STOP]
     if not toks:
         return []
     score = Counter()
     for tok in toks[:6]:
         try:
-            r = subprocess.run([_RG, "-li", "--no-messages", "-g", "*.md", tok, VAULT],
+            r = subprocess.run([_RG, "-li", "--no-messages", "-g", "*.md", tok, base],
                                capture_output=True, text=True, timeout=20)
         except Exception:
             continue
@@ -198,8 +194,8 @@ def lookup_dokument(query, limit=6):
             score[path] += 1
     ranked = []
     for path, s in score.items():
-        base = os.path.basename(path).lower()
-        bonus = sum(1 for t in toks if t.lower() in base)
+        base_name = os.path.basename(path).lower()
+        bonus = sum(1 for t in toks if t.lower() in base_name)
         ranked.append((s + bonus, s, path))
     ranked.sort(reverse=True)
     out = []
@@ -212,23 +208,25 @@ def lookup_dokument(query, limit=6):
             snippet = r.stdout.strip()[:400]
         except Exception:
             pass
-        out.append({"quelle": os.path.relpath(path, VAULT),
+        out.append({"quelle": os.path.relpath(path, base),
                     "treffer_begriffe": s, "auszug": snippet})
     return out
 
 
 # -------------------------------------------------------------- Dispatcher ---
-def lookup(mode: str, query: str) -> dict:
+def lookup(mode, query, vault=DEFAULT_VAULT):
+    cfg = resolve_vault(vault)
     fn = {"kontakt": lookup_kontakt, "termin": lookup_termine,
           "mail": lookup_mail, "wissen": search_wissen,
           "dokument": lookup_dokument}.get(mode)
     if not fn:
         return {"mode": mode, "fehler": "unbekannter Modus (kontakt|termin|mail|wissen|dokument)"}
-    return {"mode": mode, "query": query, "treffer": fn(query)}
+    return {"mode": mode, "query": query, "treffer": fn(query, cfg)}
 
 
 if __name__ == "__main__":
     import sys
     m = sys.argv[1] if len(sys.argv) > 1 else "kontakt"
+    v = os.environ.get("VAULT_SEL", DEFAULT_VAULT)
     q = " ".join(sys.argv[2:]) or "Jana Kostbar"
-    print(json.dumps(lookup(m, q), ensure_ascii=False, indent=1))
+    print(json.dumps(lookup(m, q, v), ensure_ascii=False, indent=1))
