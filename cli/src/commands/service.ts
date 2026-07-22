@@ -54,6 +54,47 @@ export function resolveRestartExpectedVersion(expectedVersion: string | null | u
   return expectedVersion ?? null;
 }
 
+export async function withHotRestartLock<T>(
+  instanceId: string,
+  callback: () => Promise<T>,
+  options: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<T> {
+  const instanceRoot = resolvePaperclipInstanceRoot(instanceId);
+  const lockPath = path.join(instanceRoot, "hot-restart.lock");
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const deadline = Date.now() + (options.timeoutMs ?? 120_000);
+  const pollMs = options.pollMs ?? 100;
+  await fs.mkdir(instanceRoot, { recursive: true });
+
+  while (true) {
+    try {
+      await fs.writeFile(lockPath, `${token}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Another restart for instance ${instanceId} is still running. ` +
+          `If no restart process is active, remove the stale lock at ${lockPath} and retry.`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  }
+
+  try {
+    return await callback();
+  } finally {
+    try {
+      if ((await fs.readFile(lockPath, "utf8")).trim() === token) {
+        await fs.rm(lockPath, { force: true });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+}
+
 async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, drainRequired: boolean): Promise<{ requestedAt: string }> {
   if (!status.pid) throw new Error(`Cannot restart ${status.serviceName}: supervisor did not report a server pid.`);
   const health = await probeHealth(instanceId);
@@ -89,13 +130,15 @@ async function waitForRestartReport(instanceId: string, requestedAt: string, tim
 
 export async function restartManagedService(input: { instanceId?: string; expectedVersion?: string | null; waitForDrain?: boolean } = {}): Promise<{ status: ServiceStatus; health: HealthResult; report: unknown | null }> {
   const instanceId = resolvePaperclipInstanceId(input.instanceId);
-  const detection = await detectServiceManager({ instanceId });
-  if (!detection.supported) throw new Error(detection.reason);
-  const before = await detection.manager.status();
-  const intent = await writeHotRestartIntent(before, instanceId, input.waitForDrain ?? false);
-  await detection.manager.restart();
-  const health = await waitForHealth(instanceId, resolveRestartExpectedVersion(input.expectedVersion));
-  return { status: await detection.manager.status(), health, report: await waitForRestartReport(instanceId, intent.requestedAt) };
+  return withHotRestartLock(instanceId, async () => {
+    const detection = await detectServiceManager({ instanceId });
+    if (!detection.supported) throw new Error(detection.reason);
+    const before = await detection.manager.status();
+    const intent = await writeHotRestartIntent(before, instanceId, input.waitForDrain ?? false);
+    await detection.manager.restart();
+    const health = await waitForHealth(instanceId, resolveRestartExpectedVersion(input.expectedVersion));
+    return { status: await detection.manager.status(), health, report: await waitForRestartReport(instanceId, intent.requestedAt) };
+  });
 }
 
 export function registerServiceCommands(program: Command): void {
