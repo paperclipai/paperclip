@@ -19,10 +19,12 @@ def strip_self_signoff(md: str) -> str:
     cut = None
     for i, line in enumerate(lines):
         if _GREETING_RE.match(line):
-            tail = [l for l in lines[i + 1:] if l.strip()]
-            if len(tail) <= 2:
-                cut = i
-                break
+            # Alles ab der Grußformel abschneiden — die kanonische Signatur (inkl.
+            # Grußformel + „i.A. Luna") hängt das Skript ohnehin an. So bleibt auch
+            # ein langer, selbst geschriebener Signoff samt (ggf. halluziniertem)
+            # Disclaimer weg, statt eine doppelte Signatur zu erzeugen.
+            cut = i
+            break
     if cut is None:
         return md
     return "\n".join(lines[:cut]).rstrip() + "\n"
