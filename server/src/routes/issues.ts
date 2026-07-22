@@ -138,6 +138,7 @@ import {
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   GENERIC_ATTACHMENT_CONTENT_TYPES,
+  isAllowedContentType,
   isInlineAttachmentContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
@@ -5195,11 +5196,17 @@ export function issueRoutes(
         const inlineIds = new Set<string>();
         let inlineBudgetRemaining = ATTACHMENT_INLINE_MAX_BYTES;
         for (const a of attachments) {
-          const isInlineable =
+          // Only inline UTF-8-stringifiable text types, and only when the type
+          // is still permitted by the upstream content-type allowlist
+          // (`PAPERCLIP_ALLOWED_ATTACHMENT_TYPES`). This slots on top of the
+          // allowlist rather than bypassing it: an admin who narrows the
+          // allowlist also narrows what gets inlined here.
+          const isTextInlineType =
             a.contentType === "text/plain" ||
             a.contentType === "text/markdown" ||
             a.contentType === "application/json" ||
             a.contentType === "text/csv";
+          const isInlineable = isTextInlineType && isAllowedContentType(a.contentType);
           const size = a.byteSize ?? null;
           if (isInlineable && size != null && size <= inlineBudgetRemaining) {
             inlineIds.add(a.id);
