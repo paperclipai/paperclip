@@ -12,11 +12,14 @@ import {
 } from "./agent-configuration-shell";
 
 describe("agent configuration shell", () => {
-  it("matches both section names and field labels", () => {
+  it("matches section names, field metadata, help copy, and synonyms", () => {
     expect([...filterAgentConfigurationSections("")].slice(0, 2)).toEqual(["runtime", "environment"]);
-    expect([...filterAgentConfigurationSections("heartbeat")]).toEqual(["schedule"]);
+    expect([...filterAgentConfigurationSections("heartbeat")]).toEqual(["runtime", "schedule"]);
     expect([...filterAgentConfigurationSections("API Keys")]).toEqual(["keys"]);
     expect([...filterAgentConfigurationSections("sandbox")]).toEqual(["danger"]);
+    expect([...filterAgentConfigurationSections("filesystem")]).toEqual(["danger"]);
+    expect([...filterAgentConfigurationSections("cron")]).toEqual(["schedule"]);
+    expect([...filterAgentConfigurationSections("periodic tasks")]).toEqual(["schedule"]);
   });
 
   it("does not guess an inherited adapter model from available choices", () => {
