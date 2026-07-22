@@ -40,6 +40,8 @@ export async function serviceHealthChecks(
   config: PaperclipConfig,
   dependencies: Partial<ServiceCheckDependencies> = {},
 ): Promise<CheckResult[]> {
+  if (process.env.PAPERCLIP_SERVICE_MANAGED === "1") return [];
+
   const deps: ServiceCheckDependencies = {
     detect: (instanceId) => detectServiceManager({ instanceId }),
     probe: probeHealth,
