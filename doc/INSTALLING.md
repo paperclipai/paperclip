@@ -32,7 +32,8 @@ If the vanity installer endpoint is unavailable, fetch the same
 release-controlled source from GitHub raw content:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/paperclipai/paperclip/master/scripts/install.sh | bash
+raw_base=https://raw.githubusercontent.com/paperclipai/paperclip
+curl -fsSL "$raw_base/master/scripts/install.sh" | bash
 ```
 
 For audits or incident response, pin the raw URL to a release tag or commit
@@ -40,7 +41,7 @@ SHA instead of `master`, download it first, and compare it with the published
 checksum at `https://paperclip.ing/install.sh.sha256`.
 
 Each installer flag also has a `PAPERCLIP_INSTALL_*` environment-variable
-equivalent for environments where passing arguments through a pipe is awkward.
+equivalent. This helps where passing arguments through a pipe is awkward.
 
 ## Managed Install Layout
 
