@@ -183,12 +183,23 @@ async function resolveSyncPodExec(
     throw new Error("Kubernetes file sync could not resolve the Sandbox pod name.");
   }
 
-  // Bound host-side stdout accumulation to the same base64 cap the transport
-  // enforces: on syncOut the pod authors the stdout stream and could otherwise
-  // emit unbounded bytes, exhausting the worker (see execInPod's maxStdoutBytes).
-  const maxStdoutBytes = base64CapBytes();
+  // Bound host-side stdout AND stderr accumulation to the same base64 cap the
+  // transport enforces: on syncOut the pod authors both streams and could
+  // otherwise emit unbounded bytes on either channel, exhausting the worker (see
+  // execInPod's maxStdoutBytes/maxStderrBytes).
+  const maxStreamBytes = base64CapBytes();
   const exec: PodExec = (command, stdin, execTimeoutMs) =>
-    execInPod(kc, namespace, podName, "agent", command, stdin, execTimeoutMs ?? timeoutMs, maxStdoutBytes);
+    execInPod(
+      kc,
+      namespace,
+      podName,
+      "agent",
+      command,
+      stdin,
+      execTimeoutMs ?? timeoutMs,
+      maxStreamBytes,
+      maxStreamBytes,
+    );
   return { exec, timeoutMs };
 }
 
@@ -418,6 +429,10 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
+      // Native file sync streams over a pod exec; only the sandbox-cr backend
+      // exposes one. Flag the job backend so the server keeps the base64 fallback
+      // rather than routing its sync to a hook that would reject immediately.
+      nativeFileSyncUnsupported: config.backend !== "sandbox-cr",
     };
 
     return {
@@ -487,6 +502,9 @@ const plugin = definePlugin({
       secretName,
       phase: check.phase,
       backend: leaseBackend,
+      // See acquireLease: only the sandbox-cr backend has a pod-exec channel for
+      // native sync, so a resumed job lease must keep the base64 fallback.
+      nativeFileSyncUnsupported: leaseBackend !== "sandbox-cr",
     };
 
     return {

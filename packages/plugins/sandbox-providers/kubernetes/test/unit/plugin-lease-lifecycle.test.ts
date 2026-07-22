@@ -81,6 +81,40 @@ describe("onEnvironmentResumeLease", () => {
         phase: "Running",
         backend: "sandbox-cr",
         resumedLease: true,
+        // sandbox-cr has a pod-exec channel, so native file sync stays enabled.
+        nativeFileSyncUnsupported: false,
+      }),
+    );
+  });
+
+  it("flags a resumed job-backend lease as native-sync-unsupported so the server keeps the base64 fallback", async () => {
+    h.clients = {
+      batch: {
+        readNamespacedJobStatus: vi.fn().mockResolvedValue({ status: { active: 1 } }),
+      },
+      core: {
+        listNamespacedPod: vi.fn().mockResolvedValue({
+          items: [{ metadata: { name: "pc-job-pod" }, status: { phase: "Running" } }],
+        }),
+      },
+    };
+
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: { inCluster: true, backend: "job" },
+      providerLeaseId: "pc-job",
+      leaseMetadata: leaseMetadata({ jobName: "pc-job", backend: "job", podName: "pc-job-pod" }),
+    });
+
+    expect(lease.providerLeaseId).toBe("pc-job");
+    expect(lease.metadata).toEqual(
+      expect.objectContaining({
+        backend: "job",
+        // The job backend has no exec channel; its native sync hook rejects, so
+        // the lease must fall back to the byte-identical base64 transport.
+        nativeFileSyncUnsupported: true,
       }),
     );
   });

@@ -30,10 +30,11 @@
  * host and the pod, so every transfer is bounded by `MAX_BUFFER_BYTES` and fails
  * closed above it (the orchestrator falls back to the chunked transport).
  * Inbound the host pre-flights the archive it built. Outbound the payload is
- * authored by the untrusted pod, which controls how many bytes it emits, so the
- * bound is enforced host-side DURING stdout accumulation in `execInPod` (bound in
- * `plugin.ts` via `base64CapBytes`) — an in-pod check would be worthless — and
- * this module re-checks the returned stdout length before decoding.
+ * authored by the untrusted pod, which controls how many bytes it emits on BOTH
+ * stdout and stderr, so the bound is enforced host-side DURING accumulation of
+ * each channel in `execInPod` (both bound in `plugin.ts` via `base64CapBytes`) —
+ * an in-pod check would be worthless — and this module re-checks the returned
+ * stdout length before decoding.
  */
 import path from "node:path";
 import os from "node:os";
@@ -135,6 +136,16 @@ async function withHostTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
  * fall back to `readlink -f`; fail closed with exit 40 if neither exists so the
  * host-side lexical check is never the only line of defense) and `_pc_root` =
  * the resolved workspace remote dir. Shared by every in-pod symlink-escape guard.
+ *
+ * Also defines `_pc_confine_ancestor <path>`: it walks up to the DEEPEST already-
+ * existing ancestor of `<path>`, canonicalizes it, and confines it inside
+ * `_pc_root` (exit 42 on escape). `mkdir -p` follows an existing symlink ancestor,
+ * so creating a target directory before confining could materialize a dir OUTSIDE
+ * the root and only reject afterward — the escape has already mutated the host.
+ * Confining the closest existing prefix BEFORE `mkdir` closes that window: any
+ * component `mkdir -p` newly creates is a real directory, so only a pre-existing
+ * symlink ancestor can redirect the write, and that ancestor is exactly what this
+ * check canonicalizes and rejects.
  */
 function canonicalizerPreamble(quotedRoot: string): string[] {
   return [
@@ -142,6 +153,19 @@ function canonicalizerPreamble(quotedRoot: string): string[] {
     'elif command -v readlink >/dev/null 2>&1; then _pc_resolve() { readlink -f -- "$1"; };',
     'else echo "no path canonicalizer available" >&2; exit 40; fi;',
     `_pc_root=$(_pc_resolve ${quotedRoot}) || { echo "cannot resolve root" >&2; exit 41; };`,
+    '_pc_confine_ancestor() {',
+    // Confinement targets are always absolute (asserted host-side), so `dirname`
+    // needs no `--` end-of-options guard — and omitting it keeps the walk correct
+    // on minimal shells (e.g. BusyBox `dirname`, which does not parse `--`).
+    '  _pc_a=$1;',
+    '  while [ ! -e "$_pc_a" ] && [ ! -L "$_pc_a" ]; do',
+    '    _pc_p=$(dirname "$_pc_a");',
+    '    [ "$_pc_p" = "$_pc_a" ] && break;',
+    '    _pc_a=$_pc_p;',
+    '  done;',
+    '  _pc_ar=$(_pc_resolve "$_pc_a") || return 42;',
+    '  case "$_pc_ar/" in "$_pc_root"/*) return 0 ;; *) return 42 ;; esac;',
+    '};',
   ];
 }
 
@@ -365,11 +389,18 @@ async function syncInFileMappings(input: {
     // Sweep the staging dir on ANY exit so a failed transfer leaves no scratch.
     script.push(`trap 'rm -rf ${shQuote(remoteStage)}' EXIT;`);
     script.push(`mkdir -p -m 700 ${shQuote(remoteStage)} || { echo "stage mkdir failed" >&2; exit 46; };`);
+    // Confine the deepest existing ancestor of each target parent BEFORE creating
+    // it: `mkdir -p` follows a sandbox-planted symlink ancestor and would
+    // otherwise materialize the directory OUTSIDE the root before any post-mkdir
+    // check could reject it (P0 escape). Confine-then-create closes that window.
     for (const dir of parentDirs) {
-      script.push(`mkdir -p ${shQuote(dir)} || { echo "mkdir failed" >&2; exit 46; };`);
+      script.push(
+        `_pc_confine_ancestor ${shQuote(dir)} || { echo "ESCAPE" >&2; exit 42; };`,
+        `mkdir -p ${shQuote(dir)} || { echo "mkdir failed" >&2; exit 46; };`,
+      );
     }
-    // Confine every (now-materialized) target parent dir through realpath before
-    // any bytes land: a sandbox-planted symlink parent is caught here.
+    // Re-confine every (now-materialized) target parent dir through realpath before
+    // any bytes land: a sandbox-planted symlink parent is caught here too.
     for (const dir of parentDirs) {
       script.push(
         `_pc_d=$(_pc_resolve ${shQuote(dir)}) || { echo "ESCAPE" >&2; exit 42; };`,
@@ -440,6 +471,10 @@ async function syncInDirectoryMapping(input: {
     const target = mapping.targetPath;
     const script = [
       ...canonicalizerPreamble(shQuote(remoteDir)),
+      // Confine the deepest existing ancestor before `mkdir -p` runs: it follows a
+      // sandbox-planted symlink ancestor and would otherwise create the target dir
+      // OUTSIDE the root before the post-mkdir realpath check below could reject it.
+      `_pc_confine_ancestor ${shQuote(target)} || { echo "ESCAPE" >&2; exit 42; };`,
       `mkdir -p ${shQuote(target)} || { echo "mkdir failed" >&2; exit 46; };`,
       // Open-then-verify the extraction dir: `open()` walks every ancestor, so a
       // post-resolve ancestor swap is caught by re-canonicalizing the pinned fd
@@ -543,11 +578,20 @@ async function syncOutFileMappings(input: {
       script.push(
         `_pc_real=$(_pc_resolve ${shQuote(mapping.sourcePath)}) || { echo "ESCAPE" >&2; exit 42; };`,
         `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
-        // Close the validation→copy window: refuse a canonical path the sandbox
-        // repointed to a symlink or non-regular file since `realpath` resolved.
-        `[ -L "$_pc_real" ] && { echo "REPLACED" >&2; exit 45; };`,
-        `[ -f "$_pc_real" ] || { echo "NOTREG" >&2; exit 45; };`,
-        `cp -- "$_pc_real" ${shQuote(snapshot)} || { echo "snapshot copy failed" >&2; exit 43; };`,
+        // Close the validation→copy TOCTOU by pinning the file to an FD and
+        // snapshotting THROUGH it, never re-opening by name: `open()` captures the
+        // inode, so a source replacement (symlink swap) after this point cannot
+        // redirect the copy. Re-resolving the pinned fd re-confines the TRUE inode
+        // we opened — if the sandbox swapped `$_pc_real` for a symlink between the
+        // resolve above and this open, the fd now points at that target and the
+        // re-confinement (or the regular-file check) rejects it before any byte is
+        // copied. `cp` then reads the fd's inode, immune to any further swap.
+        `exec 7<"$_pc_real" || { echo "REPLACED" >&2; exit 45; };`,
+        `_pc_fd_real=$(_pc_resolve /proc/self/fd/7) || { echo "ESCAPE" >&2; exit 42; };`,
+        `case "$_pc_fd_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
+        `[ -f /proc/self/fd/7 ] || { echo "NOTREG" >&2; exit 45; };`,
+        `cp -- /proc/self/fd/7 ${shQuote(snapshot)} || { echo "snapshot copy failed" >&2; exit 43; };`,
+        `exec 7>&-;`,
       );
     });
     // Tar the immutable snapshots and stream them out as base64 on stdout.

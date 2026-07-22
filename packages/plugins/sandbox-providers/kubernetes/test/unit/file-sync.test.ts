@@ -267,6 +267,68 @@ describe("kubernetes onEnvironmentSyncIn (native single-exec transfer)", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("refuses to create a target dir through a sandbox-planted symlink ancestor, mutating nothing outside the root (confine-before-mkdir)", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const outside = await makeTmp("k8s-outside-");
+    const host = await makeTmp("k8s-host-");
+    const src = path.join(host, "x.txt");
+    await fs.writeFile(src, "payload");
+    // A sandbox process planted `evil` inside the workspace as a symlink to an
+    // out-of-root dir. The target is LEXICALLY confined (no `..`), so only the
+    // in-pod realpath guard can catch it — and it must catch it BEFORE mkdir -p
+    // follows the link and creates the tree outside the root.
+    await fs.symlink(outside, path.join(remoteDir, "evil"));
+
+    const { exec } = makeRealExec();
+    await expect(
+      performSyncIn({
+        exec,
+        remoteDir,
+        timeoutMs: 30_000,
+        operations: [
+          {
+            operationId: "op",
+            files: [
+              { sourcePath: src, targetPath: path.join(remoteDir, "evil", "sub", "f.txt"), kind: "file" },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/ESCAPE|exit 42/);
+    // The escape was rejected before mkdir ran: nothing was created outside root.
+    await expect(fs.stat(path.join(outside, "sub"))).rejects.toThrow();
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
+  it("refuses to extract a directory mapping through a symlink ancestor, mutating nothing outside the root", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const outside = await makeTmp("k8s-outside-");
+    const host = await makeTmp("k8s-host-");
+    const srcDir = path.join(host, "tree");
+    await fs.mkdir(srcDir, { recursive: true });
+    await fs.writeFile(path.join(srcDir, "a.txt"), "aaa");
+    await fs.symlink(outside, path.join(remoteDir, "evil"));
+
+    const { exec } = makeRealExec();
+    await expect(
+      performSyncIn({
+        exec,
+        remoteDir,
+        timeoutMs: 30_000,
+        operations: [
+          {
+            operationId: "op",
+            files: [
+              { sourcePath: srcDir, targetPath: path.join(remoteDir, "evil", "dst"), kind: "directory" },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/ESCAPE|exit 42/);
+    await expect(fs.stat(path.join(outside, "dst"))).rejects.toThrow();
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
   it("fails closed when the transfer exceeds the buffer cap", async () => {
     const remoteDir = await makeTmp("k8s-sandbox-");
     const host = await makeTmp("k8s-host-");
@@ -385,6 +447,62 @@ describe("kubernetes onEnvironmentSyncOut (native single-exec transfer)", () => 
       }),
     ).rejects.toThrow(/escapes|not a confined/);
     expect(calls).toHaveLength(0);
+  });
+
+  it("snapshots the outbound source through a pinned FD (never re-opening by name) so a post-resolve replacement cannot redirect the copy", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const hostOut = await makeTmp("k8s-hostout-");
+    await fs.writeFile(path.join(remoteDir, "result.txt"), "computed output");
+    const target = path.join(hostOut, "result.txt");
+
+    const { exec, calls } = makeRealExec();
+    await performSyncOut({
+      exec,
+      remoteDir,
+      timeoutMs: 30_000,
+      operations: [
+        {
+          operationId: "op",
+          files: [
+            { sourcePath: path.join(remoteDir, "result.txt"), targetPath: target, kind: "file" },
+          ],
+        },
+      ],
+    });
+    // Correct bytes copied — through the FD, not the name.
+    expect(await fs.readFile(target, "utf-8")).toBe("computed output");
+    // The copy reads the pinned FD, and the source is never re-opened by its
+    // resolved name after validation (which is what the TOCTOU exploited).
+    expect(calls[0].script).toContain("exec 7<");
+    expect(calls[0].script).toContain("cp -- /proc/self/fd/7");
+    expect(calls[0].script).not.toMatch(/cp -- "\$_pc_real"/);
+  });
+
+  it("rejects an outbound source that is a symlink resolving outside the root, writing no target", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const outside = await makeTmp("k8s-outside-");
+    const hostOut = await makeTmp("k8s-hostout-");
+    await fs.writeFile(path.join(outside, "secret"), "PRIVATE");
+    // A symlink LEXICALLY inside the root that resolves to an out-of-root file —
+    // only the in-pod realpath/FD guard can reject it.
+    await fs.symlink(path.join(outside, "secret"), path.join(remoteDir, "link"));
+    const target = path.join(hostOut, "leak");
+
+    const { exec } = makeRealExec();
+    await expect(
+      performSyncOut({
+        exec,
+        remoteDir,
+        timeoutMs: 30_000,
+        operations: [
+          {
+            operationId: "op",
+            files: [{ sourcePath: path.join(remoteDir, "link"), targetPath: target, kind: "file" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/ESCAPE|exit 42/);
+    await expect(fs.stat(target)).rejects.toThrow();
   });
 
   it("fails closed when the outbound payload exceeds the buffer cap, writing no target", async () => {
