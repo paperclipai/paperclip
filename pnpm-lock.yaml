@@ -330,6 +330,19 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/connect-protocol:
+    dependencies:
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.21
+        version: 22.19.21
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/db:
     dependencies:
       '@paperclipai/shared':
@@ -725,6 +738,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.1075.0
         version: 3.1075.0
+      '@paperclip/connect-protocol':
+        specifier: workspace:*
+        version: link:../packages/connect-protocol
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
