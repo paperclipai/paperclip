@@ -38,24 +38,33 @@ test("bundled package staging materializes publishConfig entrypoints", () => {
 
 test("bundled package staging replaces pnpm symlinks with a physical bundled tree", () => {
   const stagingDir = mkdtempSync(join(tmpdir(), "paperclip-bundled-staging-"));
-  const storePackageDir = join(
+  const storeModulesDir = join(
     stagingDir,
     "node_modules",
     ".pnpm",
     "acpx@0.12.0_patch_hash=abc",
     "node_modules",
+  );
+  const storePackageDir = join(
+    storeModulesDir,
     "acpx",
   );
   mkdirSync(storePackageDir, { recursive: true });
-  writeFileSync(join(storePackageDir, "package.json"), '{"name":"acpx","version":"0.12.0"}\n');
+  writeFileSync(
+    join(storePackageDir, "package.json"),
+    '{"name":"acpx","version":"0.12.0","dependencies":{"commander":"15.0.0"},"optionalDependencies":{"tsx":"4.23.0"}}\n',
+  );
   symlinkSync(storePackageDir, join(stagingDir, "node_modules", "acpx"), "dir");
 
-  materializeBundledNodeModules(stagingDir, ["acpx"]);
+  const runtimeDependencies = materializeBundledNodeModules(stagingDir, ["acpx"]);
 
   const stagedAcpx = join(stagingDir, "node_modules", "acpx");
   assert.equal(lstatSync(stagedAcpx).isSymbolicLink(), false);
   assert.equal(lstatSync(stagedAcpx).isDirectory(), true);
   assert.equal(existsSync(join(stagedAcpx, "package.json")), true);
+  assert.equal(existsSync(join(stagedAcpx, "node_modules")), false);
+  assert.deepEqual(runtimeDependencies.dependencies, { commander: "15.0.0" });
+  assert.deepEqual(runtimeDependencies.optionalDependencies, { tsx: "4.23.0" });
   assert.equal(existsSync(join(stagingDir, "node_modules", ".pnpm")), false);
 });
 

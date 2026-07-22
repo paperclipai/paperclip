@@ -34,10 +34,21 @@ export function prepareBundledPackage(sourceDir, destinationDir) {
     { cwd: repoRoot, stdio: "inherit" },
   );
 
-  materializeBundledNodeModules(resolve(destinationDir), bundledDependencies);
+  const bundledRuntimeDependencies = materializeBundledNodeModules(
+    resolve(destinationDir),
+    bundledDependencies,
+  );
 
   const deployedPackagePath = resolve(destinationDir, "package.json");
   const deployedPackage = JSON.parse(readFileSync(deployedPackagePath, "utf8"));
+  deployedPackage.dependencies = {
+    ...bundledRuntimeDependencies.dependencies,
+    ...deployedPackage.dependencies,
+  };
+  deployedPackage.optionalDependencies = {
+    ...bundledRuntimeDependencies.optionalDependencies,
+    ...deployedPackage.optionalDependencies,
+  };
   writeFileSync(
     deployedPackagePath,
     `${JSON.stringify(materializePublishManifest(deployedPackage), null, 2)}\n`,
@@ -48,8 +59,9 @@ export function prepareBundledPackage(sourceDir, destinationDir) {
  * pnpm deploy links dependencies through the `.pnpm` virtual store, but npm
  * only bundles physical directories, so a symlinked layout publishes a
  * tarball with zero bundled files and silently drops the patched runtime.
- * Rebuild node_modules as a minimal physical tree holding exactly the
- * bundled dependencies.
+ * Rebuild node_modules as a minimal physical tree holding only the bundled
+ * dependencies. Their runtime dependencies are promoted into the staged root
+ * manifest so npm installs the normal transitive closure for consumers.
  */
 export function materializeBundledNodeModules(destinationDir, bundledDependencies) {
   const stagedModules = resolve(destinationDir, "node_modules");
@@ -58,15 +70,22 @@ export function materializeBundledNodeModules(destinationDir, bundledDependencie
   );
 
   const physicalModules = resolve(destinationDir, "node_modules.bundled-tmp");
+  const runtimeDependencies = { dependencies: {}, optionalDependencies: {} };
   rmSync(physicalModules, { recursive: true, force: true });
   for (const [name, sourcePath] of bundledSources) {
+    const bundledPackage = JSON.parse(readFileSync(resolve(sourcePath, "package.json"), "utf8"));
+    Object.assign(runtimeDependencies.dependencies, bundledPackage.dependencies);
+    Object.assign(runtimeDependencies.optionalDependencies, bundledPackage.optionalDependencies);
+
     const target = resolve(physicalModules, name);
     mkdirSync(dirname(target), { recursive: true });
     cpSync(sourcePath, target, { recursive: true, dereference: true });
+    rmSync(resolve(target, "node_modules"), { recursive: true, force: true });
   }
 
   rmSync(stagedModules, { recursive: true, force: true });
   renameSync(physicalModules, stagedModules);
+  return runtimeDependencies;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
