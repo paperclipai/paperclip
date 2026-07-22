@@ -45,6 +45,7 @@ class StepMeasure:
 class GateMeasure:
     steps: list[StepMeasure]
     total: int
+    ok: bool = True
 
 
 @dataclass
@@ -56,6 +57,9 @@ class DeltaResult:
 
 def delta_decision(baseline: GateMeasure, after: GateMeasure) -> DeltaResult:
     """Absolutes Gate bei grüner Baseline, sonst Delta (weniger Fehler + kein Schritt schlechter)."""
+    if not after.ok:
+        mode = "delta" if baseline.total > 0 else "absolut"
+        return DeltaResult(False, mode, "rot (After-Messung unbrauchbar: Timeout/Crash)")
     if baseline.total == 0:
         if after.total == 0:
             return DeltaResult(True, "absolut", "grün (absolut)")
@@ -73,33 +77,29 @@ def _count_step_errors(cmd, output: str, returncode: int) -> int:
     text = output or ""
     if "tsc" in joined:
         m = re.search(r"Found (\d+) error", text)
-        if m:
-            return int(m.group(1))
-        n = len(re.findall(r"error TS\d+", text))
-        return n if n else (0 if returncode == 0 else 1)
-    if "test" in joined:  # jest
+        parsed = int(m.group(1)) if m else len(re.findall(r"error TS\d+", text))
+    elif "test" in joined:  # jest
         m = re.search(r"(\d+) failed", text)
-        if m:
-            return int(m.group(1))
-        return 0 if returncode == 0 else 1
-    # lint
-    m = re.search(r"(\d+) error", text)
-    if m:
-        return int(m.group(1))
-    return 0 if returncode == 0 else 1
+        parsed = int(m.group(1)) if m else 0
+    else:  # lint
+        m = re.search(r"(\d+) error", text)
+        parsed = int(m.group(1)) if m else 0
+    return max(parsed, 1 if returncode != 0 else 0)
 
 
 def measure_gate(cfg: Config, cwd, runner=subprocess.run) -> GateMeasure:
     """Alle Gate-Schritte ausführen (kein fail-fast) und Fehler je Schritt zählen."""
     steps: list[StepMeasure] = []
+    ok = True
     for cmd in cfg.gate_commands:
         try:
             proc = runner(cmd, cwd=str(cwd), capture_output=True, text=True, check=False, timeout=GATE_TIMEOUT)
         except Exception:
             # Timeout / Crash eines Schritts: als „mindestens ein Fehler" werten (nie grün fälschen)
             steps.append(StepMeasure(cmd=cmd, count=1))
+            ok = False
             continue
         output = (getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or "")
         steps.append(StepMeasure(cmd=cmd, count=_count_step_errors(cmd, output, proc.returncode)))
     total = sum(s.count for s in steps)
-    return GateMeasure(steps=steps, total=total)
+    return GateMeasure(steps=steps, total=total, ok=ok)

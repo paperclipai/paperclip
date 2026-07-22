@@ -145,3 +145,29 @@ def test_delta_fail_when_a_step_got_worse_even_if_total_lower():
     # tsc runter (5->1), aber lint hoch (0->1): ein Schritt schlechter -> kein Delta-Pass
     d = delta_decision(_measure(0, 5, 0), _measure(0, 1, 1))
     assert d.passed is False
+
+
+# Final-Review P3: CRITICAL After-Messung unbrauchbar + IMPORTANT Returncode-Untergrenze
+
+
+def test_measure_gate_exception_sets_ok_false():
+    import subprocess
+    def boom(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 180)
+    m = measure_gate(Config.default(), "/tmp/wt", runner=boom)
+    assert m.ok is False
+
+
+def test_delta_fails_when_after_measurement_unusable():
+    # Baseline rot (5), After scheinbar "besser" (1) ABER unbrauchbar (ok=False) -> KEIN Delta-Pass
+    baseline = GateMeasure(steps=[StepMeasure(["npx", "tsc", "--noEmit"], 5)], total=5, ok=True)
+    after = GateMeasure(steps=[StepMeasure(["npx", "tsc", "--noEmit"], 1)], total=1, ok=False)
+    d = delta_decision(baseline, after)
+    assert d.passed is False
+
+
+def test_count_step_errors_returncode_floor_jest_zero_failed_but_nonzero_exit():
+    # jest: 0 failed, aber Exit 1 (z.B. Coverage-Threshold) -> mind. 1 Fehler
+    assert _count_step_errors(["npm", "test"], "Tests: 0 failed, 100 passed", 1) == 1
+    # gruener Fall bleibt 0
+    assert _count_step_errors(["npm", "test"], "Tests: 0 failed, 100 passed", 0) == 0
