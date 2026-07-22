@@ -19,10 +19,15 @@ def load() -> set[str]:
     if not STATE.exists():
         return set()
     try:
-        raw = json.loads(STATE.read_text(encoding="utf-8")).get("blocked", [])
+        data = json.loads(STATE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return set()  # fail-open: JSON ist nicht Objekt
+        raw = data.get("blocked", [])
+        if not isinstance(raw, list):
+            return set()  # fail-open: "blocked" ist keine Liste
         return {_normalize(a) for a in raw if a and _normalize(a)}
-    except (json.JSONDecodeError, OSError):
-        return set()  # fail-open
+    except Exception:
+        return set()  # fail-open: jede Parse/Shape/Encoding-Fehler → leer
 
 
 def _save(blocked: set[str]) -> None:

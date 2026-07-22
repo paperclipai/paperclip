@@ -48,6 +48,14 @@ class BlocklistTest(unittest.TestCase):
     def test_missing_file_is_empty(self):
         self.assertEqual(bl.load(), set())
 
+    def test_fail_open_on_wrong_shape(self):
+        """Fail-open auch bei struktur-falschem JSON (nicht-Liste, top-level-List, etc.)"""
+        bl.STATE.parent.mkdir(parents=True, exist_ok=True)
+        bl.STATE.write_text('{"blocked": "not-a-list"}', encoding="utf-8")
+        self.assertEqual(bl.load(), set())
+        bl.STATE.write_text('[1, 2, 3]', encoding="utf-8")
+        self.assertEqual(bl.load(), set())
+
 
 if __name__ == "__main__":
     unittest.main()
