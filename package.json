@@ -17,6 +17,8 @@
     "build": "pnpm run preflight:workspace-links && pnpm -r build",
     "build:feature-catalog": "node cli/node_modules/tsx/dist/cli.mjs scripts/generate-feature-catalog.ts",
     "typecheck": "pnpm run preflight:workspace-links && pnpm -r typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "typecheck:build-gaps": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && pnpm --filter @paperclipai/server build && node scripts/run-typecheck-build-gaps.mjs",
     "test": "pnpm run test:run",
     "test:watch": "pnpm run preflight:workspace-links && vitest",
@@ -69,7 +71,12 @@
     "@playwright/test": "^1.61.1",
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.1",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.5",
+    "eslint-plugin-prettier": "^5.5.6",
+    "prettier": "^3.9.6",
     "typescript": "^5.7.3",
+    "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.10"
   },
   "engines": {
