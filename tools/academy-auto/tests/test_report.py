@@ -47,6 +47,22 @@ def test_build_digest_cap_exceeded_mentions_cap_not_no_green_gate():
     assert "kein grünes Gate" not in text
 
 
+def test_build_digest_scope_violation_names_files():
+    from academy_auto.gate import GateResult, GateStep
+    from academy_auto.runner import RunOutcome
+    from academy_auto.report import build_digest
+    text = build_digest(
+        task_prompt="X",
+        run_outcome=RunOutcome(ok=True, output="done"),
+        gate_result=GateResult(passed=True, steps=[GateStep(["npm", "test"], 0, "ok")]),
+        committed=False,
+        scope_violations=[".env", "ios/cert.p12"],
+    )
+    assert "Scope" in text
+    assert ".env" in text
+    assert "verworfen" in text.lower()
+
+
 def test_send_digest_uses_sender():
     sent = []
     send_digest("hallo", sender=lambda t: sent.append(t))

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from .config import Config
 from .report import build_digest
+from .scope import check_scope
 
 
 @dataclass
@@ -27,6 +28,12 @@ def run_once(cfg: Config, task_prompt: str, deps) -> RunReport:
     gate = deps.run_gate(cfg, cwd)
     if not gate.passed:
         deps.send_digest(build_digest(task_prompt, outcome, gate, committed=False))
+        return RunReport(status="discarded")
+
+    changed = deps.list_changed_files(cfg, cwd)
+    scope = check_scope(cfg, changed)
+    if not scope.ok:
+        deps.send_digest(build_digest(task_prompt, outcome, gate, committed=False, scope_violations=scope.violations))
         return RunReport(status="discarded")
 
     lines = deps.count_diff_lines(cfg, cwd)
@@ -66,6 +73,7 @@ def _build_default_deps(worktree, gate, runner, report):  # pragma: no cover
         commit_and_pr=_commit_and_pr,
         send_digest=lambda text: report.send_digest(text, sender=print),
         count_diff_lines=_count_diff_lines,
+        list_changed_files=_list_changed_files,
     )
 
 
@@ -84,6 +92,16 @@ def _count_diff_lines(cfg, cwd):  # pragma: no cover - echte Git-Messung beim De
                 if n.isdigit():
                     total += int(n)
     return total
+
+
+def _list_changed_files(cfg, cwd):  # pragma: no cover - in Task 3 getestet
+    import subprocess
+    subprocess.run(["git", "-C", str(cwd), "add", "-A"], check=True)
+    proc = subprocess.run(
+        ["git", "-C", str(cwd), "diff", "--cached", "--name-only"],
+        cwd=str(cwd), capture_output=True, text=True, check=False,
+    )
+    return [line for line in proc.stdout.splitlines() if line]
 
 
 def _commit_and_pr(cfg, cwd, prompt):  # pragma: no cover - echte Git-/gh-Anbindung beim Deploy

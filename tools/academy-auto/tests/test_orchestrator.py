@@ -13,6 +13,7 @@ def base_deps(**over):
         commit_and_pr=lambda cfg, cwd, prompt: True,
         send_digest=lambda text: sent.append(text),
         count_diff_lines=lambda cfg, cwd: 10,
+        list_changed_files=lambda cfg, cwd: ["src/App.tsx"],
     )
     d.update(over)
     return SimpleNamespace(**d)
@@ -86,3 +87,20 @@ def test_run_once_diff_cap_exceeded_discards(tmp_path):
     assert report.status == "discarded"
     assert len(sent) == 1
     assert "Cap" in sent[0]
+
+
+def test_run_once_scope_violation_discards(tmp_path):
+    global sent
+    sent = []
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    deps = base_deps(
+        list_changed_files=lambda cfg, cwd: ["src/App.tsx", ".env"],
+        count_diff_lines=lambda cfg, cwd: (_ for _ in ()).throw(AssertionError("Cap darf nicht laufen")),
+        commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("darf nicht committen")),
+    )
+    report = run_once(cfg, "Aufgabe", deps)
+    assert report.status == "discarded"
+    assert len(sent) == 1
+    assert "Scope" in sent[0]
+    assert ".env" in sent[0]

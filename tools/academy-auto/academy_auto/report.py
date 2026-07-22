@@ -10,6 +10,7 @@ def build_digest(
     gate_result: GateResult,
     committed: bool,
     cap_exceeded: bool = False,
+    scope_violations: list[str] | None = None,
 ) -> str:
     """Deutschen Tages-Digest für Jarvis/Telegram bauen."""
     lines = ["🎓 Academy-Auto — Tagesstand", ""]
@@ -25,6 +26,8 @@ def build_digest(
 
     if committed:
         lines.append("Ergebnis: auf agents/academy-auto committet")
+    elif scope_violations:
+        lines.append("Ergebnis: verworfen (Scope-Verletzung: " + ", ".join(scope_violations) + ")")
     elif cap_exceeded:
         lines.append("Ergebnis: verworfen (Diff-Cap überschritten)")
     else:
