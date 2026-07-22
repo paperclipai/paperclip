@@ -4,7 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfigRevision } from "@paperclipai/shared";
-import { AgentConfigHistory } from "./AgentConfigHistory";
+import { AgentConfigHistory, revisionDiff } from "./AgentConfigHistory";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -43,5 +43,35 @@ describe("AgentConfigHistory", () => {
     const confirmButton = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Restore configuration");
     flushSync(() => confirmButton?.click());
     expect(onRestore).toHaveBeenCalledWith("revision-1");
+  });
+
+  it("expands legacy whole-object changes into field-level rows", () => {
+    const legacyRevision = {
+      ...revision,
+      changedKeys: ["adapterConfig"],
+      beforeConfig: { adapterConfig: { effort: "high", graceSec: 15, headers: { version: "1" } } },
+      afterConfig: { adapterConfig: { effort: "high", graceSec: 42, headers: { version: "2" } } },
+    } satisfies AgentConfigRevision;
+
+    expect(revisionDiff(legacyRevision)).toEqual([
+      { key: "adapterConfig.graceSec", before: 15, after: 42 },
+      { key: "adapterConfig.headers.version", before: "1", after: "2" },
+    ]);
+  });
+
+  it("uses the same human-readable labels as the review changes popover", () => {
+    const labelRevision = {
+      ...revision,
+      changedKeys: ["adapterConfig.graceSec"],
+      beforeConfig: { adapterConfig: { graceSec: 15 } },
+      afterConfig: { adapterConfig: { graceSec: 42 } },
+    } satisfies AgentConfigRevision;
+    flushSync(() => root.render(<AgentConfigHistory revisions={[labelRevision]} onRestore={vi.fn()} restoring={false} />));
+
+    const viewDiffButton = container.querySelector<HTMLButtonElement>('button[aria-label="View revision diff"]');
+    flushSync(() => viewDiffButton?.click());
+
+    expect(document.body.textContent).toContain("Grace Sec");
+    expect(document.body.textContent).toContain("Grace Sec1542");
   });
 });

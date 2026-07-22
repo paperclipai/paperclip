@@ -11,7 +11,7 @@ export type AgentConfigChange = {
 
 type OverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "runtime";
 
-function labelForKey(key: string): string {
+export function labelForAgentConfigKey(key: string): string {
   return key.replace(/^.*\./, "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (value) => value.toUpperCase());
 }
 
@@ -41,7 +41,7 @@ export function buildAgentConfigChanges(agent: Agent, overlay: AgentConfigOverla
           : group === "runtime"
             ? field
             : `adapterConfig.${field}`;
-      changes.push({ key, label: labelForKey(key), section: sectionForKey(key), before: originalValue(agent, group, field), after });
+      changes.push({ key, label: labelForAgentConfigKey(key), section: sectionForKey(key), before: originalValue(agent, group, field), after });
     }
   };
   addGroup("identity");
