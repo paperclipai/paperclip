@@ -480,9 +480,10 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     // was cleared by releaseIssueExecutionAndPromote, but checkoutRunId stayed
     // pinned to the dead run. The new agent's POST /checkout would 409 forever
     // without the clearCheckoutRunIfTerminal helper in svc.checkout.
-    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const { companyId, agentId, failedRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
     const otherAgentId = randomUUID();
+    const otherAgentRunId = randomUUID();
     await db.insert(agents).values({
       id: otherAgentId,
       companyId,
@@ -493,6 +494,14 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: otherAgentRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
     });
     await db.insert(issues).values({
       id: issueId,
@@ -509,7 +518,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionLockedAt: null,
     });
 
-    const res = await request(createApp(agentActor(companyId, otherAgentId, currentRunId)))
+    const res = await request(createApp(agentActor(companyId, otherAgentId, otherAgentRunId)))
       .post(`/api/issues/${issueId}/checkout`)
       .send({
         agentId: otherAgentId,
@@ -531,8 +540,95 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     expect(row).toEqual({
       status: "in_progress",
       assigneeAgentId: otherAgentId,
-      checkoutRunId: currentRunId,
-      executionRunId: currentRunId,
+      checkoutRunId: otherAgentRunId,
+      executionRunId: otherAgentRunId,
     });
+  });
+
+  it("rejects checkout with an unknown agent run id before persisting the lock (LOOA-135)", async () => {
+    const { companyId, agentId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const unknownRunId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout with unknown run",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, unknownRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.error).toBe("Agent run id is not valid");
+
+    // The lock must never be persisted on rejection — otherwise the unknown
+    // UUID reaches the checkoutRunId FK and surfaces as a 500.
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "todo",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
+  it("rejects checkout with a run id owned by a different agent (LOOA-135)", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout with cross-agent run",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: otherAgentId,
+    });
+
+    // otherAgentId presents agentId's run id — a cross-identity claim.
+    const res = await request(createApp(agentActor(companyId, otherAgentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId: otherAgentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent run id does not belong to this agent");
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ status: "todo", checkoutRunId: null });
   });
 });
