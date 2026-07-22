@@ -2321,7 +2321,7 @@ function ThinkingEffortSegmented({
               tabIndex={isSelected ? 0 : -1}
               onClick={() => onChange(option.id)}
               className={cn(
-                "flex-1 rounded-[5px] px-2 py-1 text-sm whitespace-nowrap transition-colors",
+                "flex-1 rounded-sm px-2 py-1 text-sm whitespace-nowrap transition-colors",
                 "focus-visible:outline-1 focus-visible:outline-ring",
                 isSelected
                   ? "bg-background text-foreground shadow-sm"
