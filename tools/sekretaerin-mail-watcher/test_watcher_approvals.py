@@ -68,6 +68,24 @@ class ApprovalScanTest(unittest.TestCase):
         self.assertEqual(issues[0][0], "A7X3")
         self.assertEqual(q.load("A7X3")["status"], "pending")  # kein Versand
 
+    def test_send_error_keeps_pending(self):
+        self._write("2026-07-22-okay-err-w.schonenbrocher.md", MAIL_OKAY)
+        res = w.process_approvals(["2026-07-22-okay-err-w.schonenbrocher.md"],
+                                  dry_run=False,
+                                  send=lambda entry, **kw: (500, "boom"),
+                                  make_issue=lambda *a, **k: None)
+        # Kein Versand-Erfolg -> Eintrag bleibt pending, wird spaeter erneut versucht.
+        self.assertEqual(q.load("A7X3")["status"], "pending")
+        self.assertTrue(any(r["action"] == "send-error" for r in res))
+
+    def test_scan_separates_approval_replies(self):
+        self._write("2026-07-22-okay-split-w.schonenbrocher.md", MAIL_OKAY)
+        # scan() (Kundenmail-/Entwurfspfad) darf die Freigabe-Antwort NICHT enthalten:
+        self.assertNotIn("2026-07-22-okay-split-w.schonenbrocher.md", w.scan(3))
+        # scan_approval_replies() MUSS sie enthalten (noch nicht in seen):
+        self.assertIn("2026-07-22-okay-split-w.schonenbrocher.md",
+                      w.scan_approval_replies(3, set()))
+
 
 if __name__ == "__main__":
     unittest.main()
