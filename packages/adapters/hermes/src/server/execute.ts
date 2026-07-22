@@ -125,6 +125,18 @@ function buildHermesInheritedEnv(source: NodeJS.ProcessEnv): Record<string, stri
   return env;
 }
 
+export function buildHermesChildEnv(
+  config: Record<string, unknown>,
+  source: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const env = buildHermesInheritedEnv(source);
+  const userEnv = (config.env ?? {}) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(userEnv)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  return env;
+}
+
 export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
 }
@@ -510,10 +522,8 @@ export async function execute(
   }
 
   // ── Build environment ──────────────────────────────────────────────────
-  const userEnv = config.env as Record<string, string> | undefined;
   const env: Record<string, string> = {
-    ...buildHermesInheritedEnv(process.env),
-    ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
+    ...buildHermesChildEnv(config),
     ...buildPaperclipEnv(ctx.agent),
   };
 
