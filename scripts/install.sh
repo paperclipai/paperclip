@@ -354,15 +354,16 @@ INSTALL_ARGS=(install)
 [ "$CANARY" = "1" ] && INSTALL_ARGS+=(--canary)
 [ -n "$VERSION" ] && INSTALL_ARGS+=(--version "$VERSION")
 [ "$NO_PROMPT" = "1" ] && INSTALL_ARGS+=(--yes)
+INSTALL_COMMAND=(npx --yes "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}")
 
 log "Delegating to the Paperclip CLI"
-print_command npx --yes "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}"
-
 if [ "$DRY_RUN" = "1" ]; then
+  print_command "${INSTALL_COMMAND[@]}"
   exit 0
 fi
 
-npx --yes "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}"
+print_command "${INSTALL_COMMAND[@]}"
+"${INSTALL_COMMAND[@]}"
 
 if [ "$INSTALL_SERVICE" = "1" ]; then
   log "Installing the Paperclip service"

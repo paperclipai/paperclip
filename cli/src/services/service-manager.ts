@@ -53,7 +53,11 @@ export const defaultCommandRunner: CommandRunner = async (command, args, options
 };
 
 function escapeSystemd(value: string): string {
-  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("$", () => "$$")
+    .replaceAll("%", "%%");
 }
 
 function escapeXml(value: string): string {
