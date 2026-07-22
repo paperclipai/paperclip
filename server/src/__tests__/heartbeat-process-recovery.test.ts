@@ -1555,6 +1555,97 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("persists codex_local onSpawn metadata before hot-restart adoption", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
+    const processStartedAt = "2026-03-19T00:05:30.000Z";
+    let releaseAdapter: (() => void) | null = null;
+    let markAdapterSpawned: (() => void) | null = null;
+    const adapterSpawned = new Promise<void>((resolve) => {
+      markAdapterSpawned = resolve;
+    });
+    const adapterRelease = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async (ctx: {
+      onSpawn?: (meta: {
+        pid: number;
+        processGroupId: number | null;
+        startedAt: string;
+      }) => Promise<void>;
+    }) => {
+      await ctx.onSpawn?.({
+        pid: child.pid!,
+        processGroupId: null,
+        startedAt: processStartedAt,
+      });
+      markAdapterSpawned?.();
+      await adapterRelease;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Codex run completed after hot-restart adoption.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const { runId } = await seedRunFixture({
+      adapterType: "codex_local",
+      agentStatus: "idle",
+      runStatus: "queued",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await adapterSpawned;
+
+      const running = await heartbeat.getRun(runId);
+      expect(running).toMatchObject({
+        status: "running",
+        processPid: child.pid,
+        processGroupId: null,
+      });
+      expect(running?.processStartedAt?.toISOString()).toBe(processStartedAt);
+
+      await withTempPaperclipHome(async () => {
+        await writeHotRestartIntent({
+          previousServerPid: process.pid,
+          previousServerVersion: "old-version",
+          requestedAt: new Date("2026-03-19T00:05:45.000Z"),
+        });
+        await heartbeat.prepareHotRestartShutdown(
+          "SIGTERM",
+          new Date("2026-03-19T00:06:00.000Z"),
+        );
+
+        const adoption = await heartbeat.reconcileHotRestartAdoption(
+          new Date("2026-03-19T00:07:00.000Z"),
+        );
+        expect(adoption).toMatchObject({
+          mode: "reported",
+          adoptedRunIds: [runId],
+          finalizedWhileDownRunIds: [],
+          lostRunIds: [],
+          skippedRunIds: [],
+        });
+      });
+
+      const adopted = await heartbeat.getRun(runId);
+      expect(adopted?.errorCode).not.toBe("process_lost");
+    } finally {
+      releaseAdapter?.();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+    }
+  });
+
   it.skipIf(process.platform === "win32")("keeps process-group-only hot-restart adoptions out of process_lost reaping", async () => {
     const orphan = await spawnOrphanedProcessGroup();
     cleanupPids.add(orphan.descendantPid);
