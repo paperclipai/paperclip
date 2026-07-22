@@ -18,7 +18,7 @@ def check_scope(cfg: Config, changed_files: list[str]) -> ScopeResult:
     for path in changed_files:
         base = path.rsplit("/", 1)[-1]
         for pattern in cfg.denied_globs:
-            if fnmatch(path, pattern) or fnmatch(base, pattern):
+            if fnmatch(path.lower(), pattern.lower()) or fnmatch(base.lower(), pattern.lower()):
                 violations.append(path)
                 break
     return ScopeResult(ok=(not violations), violations=violations)

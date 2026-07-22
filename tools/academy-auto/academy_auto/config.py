@@ -41,6 +41,6 @@ class Config:
                 "*.pem", "*.key", "*.keystore", "*.jks", "*.p12", "*.p8",
                 "*.mobileprovision",
                 "google-services.json", "GoogleService-Info.plist",
-                "supabase/migrations/*", ".git/*",
+                "*supabase/migrations/*", ".git/*",
             ),
         )

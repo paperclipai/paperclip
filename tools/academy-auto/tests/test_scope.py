@@ -35,5 +35,20 @@ def test_supabase_migration_is_violation():
 def test_config_default_has_denied_globs():
     cfg = Config.default()
     assert ".env" in cfg.denied_globs
-    assert "supabase/migrations/*" in cfg.denied_globs
+    assert "*supabase/migrations/*" in cfg.denied_globs
     assert "*.p12" in cfg.denied_globs
+
+
+def test_case_insensitive_secret_is_violation():
+    cfg = Config.default()
+    res = check_scope(cfg, ["ios/Cert.P12", ".ENV", "android/release.KEYSTORE", "GoogleService-Info.PLIST"])
+    assert res.ok is False
+    for f in ["ios/Cert.P12", ".ENV", "android/release.KEYSTORE", "GoogleService-Info.PLIST"]:
+        assert f in res.violations
+
+
+def test_nested_supabase_migration_is_violation():
+    cfg = Config.default()
+    res = check_scope(cfg, ["packages/db/supabase/migrations/003.sql"])
+    assert res.ok is False
+    assert "packages/db/supabase/migrations/003.sql" in res.violations
