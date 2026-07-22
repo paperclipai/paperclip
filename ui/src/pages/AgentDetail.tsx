@@ -1782,16 +1782,16 @@ function AgentConfigurePage({
   const effectiveChips = buildEffectiveConfigurationChips(effectiveConfig);
 
   return (
-    <div className="space-y-5">
+    <div className="min-w-0 max-w-full space-y-5">
       <EffectiveConfigurationStrip chips={effectiveChips} />
-      <div className="grid gap-6 md:grid-cols-(--gtc-agent-configuration)">
+      <div className="grid min-w-0 max-w-full gap-6 md:grid-cols-(--gtc-agent-configuration)">
         <AgentConfigurationRail
           query={filterQuery}
           onQueryChange={setFilterQuery}
           visibleSections={visibleSections}
           dirtySections={new Set(dirtyDetails.sections)}
         />
-        <div className="max-w-3xl space-y-8">
+        <div className="min-w-0 w-full max-w-3xl space-y-8">
           <ConfigurationTab
         agent={agent}
         onDirtyChange={onDirtyChange}

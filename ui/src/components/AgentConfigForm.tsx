@@ -968,6 +968,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     MAX_TURN_CONTINUATION_MAX_DELAY_SEC,
   );
   const configurationShell = props.configurationShell === true;
+  const CardSectionHeading = configurationShell ? "h2" : "h3";
   const sectionVisible = (section: string) =>
     !props.identityOnly && (!props.visibleConfigurationSections || props.visibleConfigurationSections.has(section));
   const advancedRuntimeKeys = [
@@ -1100,7 +1101,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {sectionVisible("runtime") && <div id={configurationShell ? "config-runtime" : undefined} className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), configurationShell && "scroll-mt-24")}>
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">{configurationShell ? "Runtime" : "Adapter"}</h3>
+            ? <CardSectionHeading className="text-sm font-medium">{configurationShell ? "Runtime" : "Adapter"}</CardSectionHeading>
             : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
           }
           {showInlineAdapterTestEnvironmentButton && (
@@ -1480,7 +1481,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // Render the environment read-only instead of the selectable picker.
         <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            ? <CardSectionHeading className="text-sm font-medium mb-3">Environment</CardSectionHeading>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1505,7 +1506,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : showEnvironmentOverrideControl ? (
         <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            ? <CardSectionHeading className="text-sm font-medium mb-3">Environment</CardSectionHeading>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1572,7 +1573,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {sectionVisible("schedule") && (isCreate && showCreateRunPolicySection ? (
         <div id={configurationShell ? "config-schedule" : undefined} className={cn(!cards && "border-b border-border", configurationShell && "scroll-mt-24")}>
           {cards
-            ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> {configurationShell ? "Schedule & Runs" : "Run Policy"}</h3>
+            ? <CardSectionHeading className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> {configurationShell ? "Schedule & Runs" : "Run Policy"}</CardSectionHeading>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1593,7 +1594,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : !isCreate ? (
         <div id={configurationShell ? "config-schedule" : undefined} className={cn(!cards && "border-b border-border", configurationShell && "scroll-mt-24")}>
           {cards
-            ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> {configurationShell ? "Schedule & Runs" : "Run Policy"}</h3>
+            ? <CardSectionHeading className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> {configurationShell ? "Schedule & Runs" : "Run Policy"}</CardSectionHeading>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg overflow-hidden" : "")}>
@@ -1696,7 +1697,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {configurationShell && sectionVisible("danger") && (
         <div id="config-danger" className="scroll-mt-24">
-          <h3 className="text-sm font-medium mb-3">Danger &amp; Legacy</h3>
+          <CardSectionHeading className="text-sm font-medium mb-3">Danger &amp; Legacy</CardSectionHeading>
           <div className="border border-border rounded-lg p-4 space-y-3">
             {hasAdapterDangerFields ? (
               <uiAdapter.ConfigFields {...adapterFieldProps} configurationSection="danger" />

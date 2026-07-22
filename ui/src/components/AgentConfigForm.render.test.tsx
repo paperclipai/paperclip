@@ -398,12 +398,18 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).toContain("Advanced runtime");
     expect(result.container.textContent).toContain("runtime adapter fields");
-    expect(runtime?.compareDocumentPosition(environment as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect((runtime?.compareDocumentPosition(environment as Node) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(runtime?.textContent).not.toContain("Environment variables");
     expect(runtime?.textContent).not.toContain("Working directory (deprecated)");
     expect(environment?.parentElement?.textContent).toContain("Environment variables");
     expect(danger?.textContent).toContain("danger adapter fields");
     expect(danger?.textContent).toContain("Working directory (deprecated)");
+    expect([...result.container.querySelectorAll("h2")].map((heading) => heading.textContent?.trim())).toEqual([
+      "Runtime",
+      "Environment",
+      "Schedule & Runs",
+      "Danger & Legacy",
+    ]);
   });
 
   it("keeps an existing non-runnable override visible so it can be cleared", async () => {
