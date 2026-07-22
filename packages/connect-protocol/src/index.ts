@@ -52,7 +52,10 @@ export const handshakeResponseSchema = z.object({
   expiresAt: z.string().datetime(),
 });
 
-export const claimRequestSchema = z.object({ claimCode: z.string().min(22) });
+export const claimRequestSchema = z.object({
+  claimCode: z.string().min(22),
+  idempotencyKey: z.string().regex(/^[a-f0-9]{64}$/),
+});
 
 export const tokenMetadataSchema = z.object({
   scopes: z.array(z.string()),

@@ -114,7 +114,7 @@ describe("connect protocol", () => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const store = replayStore();
     const compactJws = signRequestEnvelope({
-      body: { claimCode: "claim-code-with-enough-entropy" },
+      body: { claimCode: "claim-code-with-enough-entropy", idempotencyKey: "a".repeat(64) },
       instanceId: "in_devinstance",
       keyId: "key_1",
       privateKey,
@@ -131,7 +131,7 @@ describe("connect protocol", () => {
       replayStore: store,
       now: new Date("2026-07-21T18:00:01.000Z"),
     };
-    await expect(verifyRequestEnvelope(input)).resolves.toMatchObject({ body: { claimCode: "claim-code-with-enough-entropy" } });
+    await expect(verifyRequestEnvelope(input)).resolves.toMatchObject({ body: { claimCode: "claim-code-with-enough-entropy", idempotencyKey: "a".repeat(64) } });
     await expect(verifyRequestEnvelope(input)).rejects.toMatchObject({ code: "replayed_jti", status: 401 });
   });
 

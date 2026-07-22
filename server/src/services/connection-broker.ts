@@ -28,7 +28,7 @@ export function createSignedConnectBrokerClient(input: { instanceId: string; key
   }
   return {
     createHandshake: async (body: unknown) => handshakeResponseSchema.parse(await request("/v1/handshakes", handshakeRequestSchema.parse(body))),
-    claim: async (claimCode: string) => claimResponseSchema.parse(await request("/v1/claims", claimRequestSchema.parse({ claimCode }))),
+    claim: async (claimCode: string, idempotencyKey: string) => claimResponseSchema.parse(await request("/v1/claims", claimRequestSchema.parse({ claimCode, idempotencyKey }))),
     mintGrantToken: async (grantRef: string, grantWrapKey: string) => grantTokenResponseSchema.parse(await request(`/v1/grants/${encodeURIComponent(grantRef)}/token`, grantTokenRequestSchema.parse({ grantWrapKey }))),
     registerRelay: async (body: unknown) => relayRegistrationResponseSchema.parse(await request("/v1/connections/register", relayRegistrationRequestSchema.parse(body))),
   };
@@ -112,7 +112,7 @@ export function connectionBrokerService(input: { client: ConnectBrokerClient; st
       }
       const claimCodeHash = createHash("sha256").update(params.claimCode).digest("hex");
       const existingState = await input.store.loadClaimState({ companyId: params.companyId, connectionId: params.connectionId, claimCodeHash });
-      const claim = existingState?.claim ?? await input.client.claim(params.claimCode);
+      const claim = existingState?.claim ?? await input.client.claim(params.claimCode, claimCodeHash);
       if (!existingState) await input.store.saveClaimState({ companyId: params.companyId, connectionId: params.connectionId, claimCodeHash, claim });
       if (claim.custodyMode !== "A" && claim.custodyMode !== "B2") throw new ConnectServiceResponseError(403, "mode_not_allowed");
       const serviceGrantRef = claim.custodyMode === "A" ? claim.grantRef : null;

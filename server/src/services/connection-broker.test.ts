@@ -17,7 +17,7 @@ const CONNECTION_ID = "44444444-4444-4444-8444-444444444444";
 function fixture(mode: "A" | "B2" = "A") {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const replay = new Set<string>();
-  const claims = new Map([["claim-code-at-least-22-chars", { owner: INSTANCE_ID, attempts: 0, consumed: false }]]);
+  const claims = new Map([["claim-code-at-least-22-chars", { owner: INSTANCE_ID, attempts: 0, consumed: false, idempotencyKey: "", response: null as Record<string, unknown> | null }]]);
   const saved: Parameters<ConnectionBrokerStore["saveGrant"]>[0][] = [];
   const secrets: Array<{ purpose: string; value: string }> = [];
   const replayStore: ReplayStore = { consume: (_instance, jti) => !replay.has(jti) && Boolean(replay.add(jti)) };
@@ -28,16 +28,22 @@ function fixture(mode: "A" | "B2" = "A") {
       try {
         const envelope = await verifyRequestEnvelope({ compactJws, publicKey, expectedInstanceId: INSTANCE_ID, expectedPath: path, replayStore });
         if (path === "/v1/claims") {
-          const code = (envelope.body as { claimCode: string }).claimCode;
+          const { claimCode: code, idempotencyKey } = envelope.body as { claimCode: string; idempotencyKey: string };
           const claim = claims.get(code);
           if (!claim) return { status: 404, body: { error: "unknown_claim" } };
           if (claim.attempts >= 5) return { status: 404, body: { error: "unknown_claim" } };
           if (claim.owner !== envelope.iss) { claim.attempts += 1; return { status: 403, body: { error: "claim_instance_mismatch" } }; }
-          if (claim.consumed) return { status: 409, body: { error: "claim_already_consumed" } };
+          if (claim.consumed) {
+            return claim.idempotencyKey === idempotencyKey && claim.response
+              ? { status: 200, body: claim.response }
+              : { status: 409, body: { error: "claim_already_consumed" } };
+          }
           claim.consumed = true;
-          return mode === "A"
-            ? { status: 200, body: { custodyMode: "A", grantRef: "gr_testgrant", tokenMeta: { scopes: ["read"], expiresAt: null } } }
-            : { status: 200, body: { custodyMode: "B2", grantSealed: "sealed-refresh", tokenMeta: { scopes: ["read"], expiresAt: null } } };
+          claim.idempotencyKey = idempotencyKey;
+          claim.response = mode === "A"
+            ? { custodyMode: "A", grantRef: "gr_testgrant", tokenMeta: { scopes: ["read"], expiresAt: null } }
+            : { custodyMode: "B2", grantSealed: "sealed-refresh", tokenMeta: { scopes: ["read"], expiresAt: null } };
+          return { status: 200, body: claim.response };
         }
         if (path.endsWith("/token")) return { status: 200, body: { grantSealed: "sealed-access", tokenMeta: { scopes: ["read"], expiresAt: null } } };
         if (path === "/v1/handshakes") return { status: 201, body: { handshakeId: "hs_test", authorizeUrl: "https://connect.example/authorize", expiresAt: new Date(Date.now() + 60_000).toISOString() } };
@@ -74,7 +80,7 @@ describe("connection broker", () => {
   it("surfaces a 409 redemption as an interception alert", async () => {
     const f = fixture();
     await f.service.claimOAuth({ companyId: "company", connectionId: CONNECTION_ID, claimCode: "claim-code-at-least-22-chars", kind: "workspace" });
-    await expect(f.service.claimOAuth({ companyId: "company", connectionId: CONNECTION_ID, claimCode: "claim-code-at-least-22-chars", kind: "workspace" })).rejects.toBeInstanceOf(ConnectClaimInterceptionError);
+    await expect(f.client.claim("claim-code-at-least-22-chars", "b".repeat(64))).rejects.toBeInstanceOf(ConnectClaimInterceptionError);
   });
 
   it("does not consume mismatched claims and locks the service-side double after five attempts", async () => {
@@ -120,6 +126,28 @@ describe("connection broker", () => {
     expect(f.claimStates.size).toBe(1);
     await expect(service.claimOAuth(params)).resolves.toMatchObject({ custodyMode: "B2" });
     expect(f.claimStates.size).toBe(0);
+  });
+
+  it("retries the remote claim idempotently when local recovery persistence fails", async () => {
+    const f = fixture("B2");
+    let failSave = true;
+    const service = connectionBrokerService({
+      client: f.client,
+      store: {
+        ...f.store,
+        saveClaimState: async (input) => {
+          if (failSave) { failSave = false; throw new Error("database unavailable"); }
+          await f.store.saveClaimState(input);
+        },
+      },
+      enabled: true,
+      vault: { put: async (input) => ({ secretId: "secret-grant", versionSelector: "latest", configPath: "broker.grant", required: true, label: input.purpose }) },
+    });
+    const params = { companyId: "company", connectionId: CONNECTION_ID, claimCode: "claim-code-at-least-22-chars", kind: "workspace" as const };
+
+    await expect(service.claimOAuth(params)).rejects.toThrow("database unavailable");
+    expect(f.claims.get(params.claimCode)?.consumed).toBe(true);
+    await expect(service.claimOAuth(params)).resolves.toMatchObject({ custodyMode: "B2" });
   });
 
   it("rejects user grants before consuming a claim when membership is inactive", async () => {
