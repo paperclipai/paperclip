@@ -918,14 +918,19 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           or(isNull(issueComments.authorType), ne(issueComments.authorType, "system")),
           // A scheduled-monitor dedup no-op heartbeat posts no deliberate
           // comment, so the harness auto-posts its run summary as an
-          // `authorType=agent` transcript echo whose creating run produced no
-          // concrete action evidence. Excluding those runs keeps such an echo
-          // from bumping `latestCommentAt` and re-arming a stopped subtree.
-          // User comments (no run) and comments from runs that produced
-          // concrete action evidence still count and re-evaluate as before.
+          // `authorType=agent` transcript echo. Only a *succeeded* run that
+          // produced no concrete action evidence yields that echo; exclude it
+          // so it stops bumping `latestCommentAt` and re-arming a stopped
+          // subtree. The exclusion is gated on `status = "succeeded"` because a
+          // non-succeeded run (e.g. interrupted → `needs_followup`) shares the
+          // same no-concrete liveness bucket yet can carry a deliberate work
+          // comment the agent posted before the run ended; those, along with
+          // user comments (no run) and comments from concrete-action runs, must
+          // still count and re-evaluate the subtree as before.
           or(
             isNull(heartbeatRuns.livenessState),
             notInArray(heartbeatRuns.livenessState, [...RUN_LIVENESS_NO_CONCRETE_ACTION_STATES]),
+            ne(heartbeatRuns.status, "succeeded"),
           ),
         ))
         .groupBy(issueComments.issueId),

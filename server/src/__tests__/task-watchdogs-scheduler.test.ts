@@ -778,6 +778,48 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.triggerCount).toBe(2);
   });
 
+  it("re-arms a reviewed stopped subtree for a meaningful comment from an interrupted run", async () => {
+    const { companyId, sourceId, agentId, service, wakes, reviewedFingerprint } =
+      await armReviewedStoppedWatchdog();
+    expect(wakes).toHaveLength(1);
+
+    // Counterexample to the run-summary exclusion: an agent posts a deliberate
+    // work comment and its run is then interrupted. `classifyRunLiveness` maps
+    // an interrupted run to `needs_followup`, i.e. the same no-concrete liveness
+    // bucket as a no-op auto-summary — but this is real work, not a harness
+    // echo. Because the run did not *succeed*, the comment must still change the
+    // fingerprint and re-arm the watchdog.
+    const [interruptedRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        status: "interrupted",
+        invocationSource: "automation",
+        livenessState: "needs_followup",
+      })
+      .returning();
+    const later = new Date(Date.now() + 60_000);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: sourceId,
+      authorType: "agent",
+      authorAgentId: agentId,
+      createdByRunId: interruptedRun!.id,
+      body: "Reproduced the watched-subtree bug and pushed a partial fix before the run was cut off.",
+      createdAt: later,
+      updatedAt: later,
+    });
+
+    const afterInterrupted = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(afterInterrupted).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(2);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastObservedFingerprint).not.toBe(reviewedFingerprint);
+    expect(watchdog?.triggerCount).toBe(2);
+  });
+
   it("does not re-arm a reviewed stopped subtree for a system housekeeping comment", async () => {
     const { companyId, sourceId, service, wakes, reviewedFingerprint } = await armReviewedStoppedWatchdog();
     expect(wakes).toHaveLength(1);
