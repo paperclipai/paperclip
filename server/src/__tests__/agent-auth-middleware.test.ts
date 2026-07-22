@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentApiKeys,
@@ -32,7 +32,7 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string };
-  agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
+  agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null; lastUsedAt?: Date | null };
   run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null };
 }) {
   const activity: Array<Record<string, unknown>> = [];
@@ -48,6 +48,7 @@ function createDbState(input: {
         companyId: input.agentKey.companyId,
         keyHash: input.agentKey.keyHash,
         responsibleUserId: input.agentKey.responsibleUserId ?? null,
+        lastUsedAt: input.agentKey.lastUsedAt ?? null,
         revokedAt: null,
         scopeConfig: null,
       }
@@ -61,6 +62,7 @@ function createDbState(input: {
       }
     : null;
 
+  const keyUpdates: Array<Record<string, unknown>> = [];
   const db = {
     select: () =>
       createSelectChain((table) => {
@@ -70,10 +72,14 @@ function createDbState(input: {
         if (table === heartbeatRuns) return runRow ? [runRow] : [];
         return [];
       }),
-    update: () => ({
-      set() {
+    update: (table: unknown) => ({
+      set(values: Record<string, unknown>) {
         return {
           where() {
+            if (table === agentApiKeys && keyRow) {
+              keyUpdates.push(values);
+              Object.assign(keyRow, values);
+            }
             return Promise.resolve([]);
           },
         };
@@ -87,7 +93,7 @@ function createDbState(input: {
     }),
   } as any;
 
-  return { db, activity };
+  return { db, activity, keyUpdates };
 }
 
 function createApp(db: any) {
@@ -163,6 +169,7 @@ describe("agent auth middleware", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret;
     if (originalTtl === undefined) delete process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS;
@@ -345,12 +352,44 @@ describe("agent auth middleware", () => {
     });
   });
 
+  it("throttles persisted last-used updates for repeated agent-key authentication", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-22T18:00:00.000Z"));
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_test_throttled_agent_key";
+    const { db, keyUpdates } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+        lastUsedAt: new Date("2026-07-22T17:58:00.000Z"),
+      },
+    });
+    const app = createApp(db);
+
+    const first = await request(app).get("/actor").set("Authorization", `Bearer ${token}`);
+    vi.setSystemTime(new Date("2026-07-22T18:00:30.000Z"));
+    const second = await request(app).get("/actor").set("Authorization", `Bearer ${token}`);
+    vi.setSystemTime(new Date("2026-07-22T18:01:01.000Z"));
+    const third = await request(app).get("/actor").set("Authorization", `Bearer ${token}`);
+
+    expect([first.status, second.status, third.status]).toEqual([200, 200, 200]);
+    expect(keyUpdates).toEqual([
+      { lastUsedAt: new Date("2026-07-22T18:00:00.000Z") },
+      { lastUsedAt: new Date("2026-07-22T18:01:01.000Z") },
+    ]);
+  });
+
   it("rejects agent keys that lack a responsible user binding and audits the denial", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const keyId = randomUUID();
     const token = "pcp_test_agent_key_without_user";
-    const { db, activity } = createDbState({
+    const { db, activity, keyUpdates } = createDbState({
       agent: { id: agentId, companyId },
       agentKey: {
         id: keyId,
@@ -367,6 +406,7 @@ describe("agent auth middleware", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.code).toBe("RESPONSIBLE_USER_UNAVAILABLE");
+    expect(keyUpdates).toHaveLength(0);
     expect(activity).toHaveLength(1);
     expect(activity[0]).toMatchObject({
       companyId,

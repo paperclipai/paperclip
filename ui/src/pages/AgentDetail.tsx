@@ -4278,26 +4278,39 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
           <h3 className="text-xs font-medium text-muted-foreground mb-2">
             Active Keys
           </h3>
-          <div className="border border-border rounded-lg divide-y divide-border">
-            {activeKeys.map((key: AgentKey) => (
-              <div key={key.id} className="flex items-center justify-between px-4 py-2.5">
-                <div>
-                  <span className="text-sm font-medium">{key.name}</span>
-                  <span className="text-xs text-muted-foreground ml-3">
-                    Created {formatDate(key.createdAt)}
-                  </span>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-destructive hover:text-destructive text-xs"
-                  onClick={() => revokeKey.mutate(key.id)}
-                  disabled={revokeKey.isPending}
-                >
-                  Revoke
-                </Button>
-              </div>
-            ))}
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full text-left">
+              <thead className="border-b border-border text-xs font-medium text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2 font-medium">Name</th>
+                  <th className="px-4 py-2 font-medium">Created</th>
+                  <th className="px-4 py-2 font-medium">Last used</th>
+                  <th className="px-4 py-2"><span className="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {activeKeys.map((key: AgentKey) => (
+                  <tr key={key.id}>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-sm font-medium">{key.name}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-xs text-muted-foreground">{formatDate(key.createdAt)}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-xs font-mono text-muted-foreground" title={key.lastUsedAt ? formatDate(key.lastUsedAt) : undefined}>
+                      {key.lastUsedAt ? relativeTime(key.lastUsedAt) : "—"}
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive text-xs"
+                        onClick={() => revokeKey.mutate(key.id)}
+                        disabled={revokeKey.isPending}
+                      >
+                        Revoke
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
