@@ -43,15 +43,32 @@ import { registerAdapterCommands } from "./commands/client/adapter.js";
 import { registerAssetCommands } from "./commands/client/asset.js";
 import { registerSkillCommands } from "./commands/client/skill.js";
 import { cliVersion } from "./version.js";
+import { installCommand } from "./commands/install.js";
+import { uninstallCommand } from "./commands/uninstall.js";
 
 const program = new Command();
 const DATA_DIR_OPTION_HELP =
   "Paperclip data directory root (isolates state from ~/.paperclip)";
 
+program.enablePositionalOptions();
+
 program
   .name("paperclipai")
   .description("Paperclip CLI — setup, diagnose, and configure your instance")
   .version(cliVersion);
+
+program
+  .command("install")
+  .description("Install Paperclip into a managed per-user CLI store")
+  .option("--canary", "Install the npm canary channel")
+  .option("--version <version>", "Install an exact published npm version")
+  .option("-y, --yes", "Consent to the supported shell PATH update without prompting")
+  .action(installCommand);
+
+program
+  .command("uninstall")
+  .description("Remove the managed CLI install while preserving user data")
+  .action(uninstallCommand);
 
 program.hook("preAction", (_thisCommand, actionCommand) => {
   const options = actionCommand.optsWithGlobals() as DataDirOptionLike;
