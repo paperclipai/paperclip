@@ -5,8 +5,10 @@ import unittest
 from unittest import mock
 import bot
 
-TENANTS = {"8311805232": {"name": "Walter / WHITESTAG", "company_id": "comp-1", "ceo_agent_id": "ceo-1"},
-           "1220010628": {"name": "Clara / Clara Sound", "company_id": "comp-2", "ceo_agent_id": "ceo-2"}}
+TENANTS = {"8311805232": {"name": "Walter / WHITESTAG", "company_id": "comp-1", "ceo_agent_id": "ceo-1",
+                          "vault": "whitestag"},
+           "1220010628": {"name": "Clara / Clara Sound", "company_id": "comp-2", "ceo_agent_id": "ceo-2",
+                          "vault": "clara"}}
 
 def make_app(tg, reply_mode_path="/tmp/nope-reply-mode.json"):
     cfg = {"tenants": TENANTS, "paperclip_token": "tok", "whisper_model": "m.bin",
@@ -71,11 +73,21 @@ class TestTenantRouting(unittest.TestCase):
                                              "treffer": [{"inhalt": "Tel: 0170 1234567"}]}) as vl, \
              mock.patch.object(bot, "create_issue") as ci:
             app.handle_update(msg(8311805232, mid=7, text="Was ist Janas Telefonnummer?"))
-        vl.assert_called_once_with("kontakt", "Jana Kostbar")
+        vl.assert_called_once_with("kontakt", "Jana Kostbar", vault="whitestag")
         ci.assert_not_called()
         self.assertEqual(lc.call_count, 2)  # genau eine Lookup-Runde
         texts = [c.args[1] for c in tg.send_message.call_args_list]
         self.assertTrue(any("0170 1234567" in t for t in texts))
+
+    def test_lookup_passes_clara_vault(self):
+        tg = mock.MagicMock(); app = make_app(tg)
+        with mock.patch.object(bot.llm, "chat",
+                               side_effect=["LOOKUP kontakt: Max", "Antwort."]), \
+             mock.patch.object(bot.vault_client, "lookup",
+                               return_value={"mode": "kontakt", "query": "Max", "treffer": []}) as vl, \
+             mock.patch.object(bot, "create_issue"):
+            app.handle_update(msg(1220010628, mid=9, text="Nummer von Max?"))
+        vl.assert_called_once_with("kontakt", "Max", vault="clara")
 
 class TestReplyModeCommands(unittest.TestCase):
     def _app(self):

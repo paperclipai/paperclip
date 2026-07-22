@@ -244,7 +244,7 @@ class BotApp:
     def _do_lookup(self, tenant, messages, mode, query):
         """Eine (und nur eine) Vault-Runde: Treffer holen, LLM final formulieren lassen."""
         try:
-            result = vault_client.lookup(mode, query)
+            result = vault_client.lookup(mode, query, vault=tenant.get("vault"))
         except vault_client.VaultError:
             traceback.print_exc()
             result = {"mode": mode, "query": query, "treffer": [],
