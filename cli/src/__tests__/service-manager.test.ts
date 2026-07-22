@@ -104,6 +104,20 @@ describe("launchd lifecycle", () => {
     expect(calls).toContain(`launchctl bootout gui/${process.getuid?.() ?? 0}/ing.paperclip.paperclipai.team-a`);
     expect(calls.some((call) => call.includes("launchctl kill"))).toBe(false);
   });
+
+  it("disables login startup when uninstalled", async () => {
+    const userHome = await temporaryDirectory();
+    const calls: string[] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome);
+
+    await manager.uninstall();
+
+    expect(calls).toContain(`launchctl disable gui/${process.getuid?.() ?? 0}/ing.paperclip.paperclipai.team-a`);
+  });
 });
 
 describe("single-writer guard", () => {
