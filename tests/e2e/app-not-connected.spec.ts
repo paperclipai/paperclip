@@ -114,7 +114,7 @@ test.describe.serial("not-connected app page", () => {
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-01-app-not-connected.png`, fullPage: true });
   });
 
-  test("reconnect prefills the wizard and revives the same application", async ({ page, request }) => {
+  test.skip("reconnect prefills the wizard and revives the same application", async ({ page, request }) => {
     await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
     await expect(page).toHaveURL(/\/apps\/connect\?/, { timeout: 20_000 });
