@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import type { Command } from "commander";
-import { packageVersion } from "../version.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 import { resolvePaperclipHomeDir, resolvePaperclipInstanceId } from "../config/home.js";
 import { detectServiceManager, type ServiceManager, type ServiceStatus } from "../services/service-manager.js";
@@ -51,8 +50,8 @@ async function waitForHealth(instanceId: string, expectedVersion: string | null,
   throw new Error(`Paperclip service did not become healthy${expectedVersion ? ` at version ${expectedVersion}` : ""}: ${last.error ?? `reported ${last.serverVersion ?? "no version"}`}`);
 }
 
-export function resolveRestartExpectedVersion(expectedVersion: string | null | undefined): string {
-  return expectedVersion ?? packageVersion;
+export function resolveRestartExpectedVersion(expectedVersion: string | null | undefined): string | null {
+  return expectedVersion ?? null;
 }
 
 async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, drainRequired: boolean): Promise<{ requestedAt: string }> {
