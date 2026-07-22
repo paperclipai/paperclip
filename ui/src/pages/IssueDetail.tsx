@@ -85,6 +85,7 @@ import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
+import { IssueReviewDecisionBar } from "../components/IssueReviewDecisionBar";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { IssueRunLedger } from "../components/IssueRunLedger";
@@ -175,6 +176,7 @@ import {
   type WorkspaceFileRef,
   workspaceFileRefSchema,
 } from "@paperclipai/shared";
+import { getLatestPendingDecisionInteraction } from "../lib/issue-thread-interactions";
 
 type StopAndFinalizeRunError = Error & {
   runCancelledBeforeStatusUpdateFailed?: boolean;
@@ -1351,6 +1353,7 @@ export function IssueDetail() {
     }),
     enabled: !!issueId,
   });
+  const canonicalIssueId = issue?.id ?? null;
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const commentComposerDisabledReason = useMemo(() => {
     if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
@@ -1397,10 +1400,11 @@ export function IssueDetail() {
     [comments.length, commentsLoading, commentsLoadingOlder, detailTab, hasOlderComments],
   );
   const { data: interactions = [] } = useQuery({
-    queryKey: queryKeys.issues.interactions(issueId!),
-    queryFn: () => issuesApi.listInteractions(issueId!),
-    enabled: !!issueId,
-    placeholderData: keepPreviousDataForSameQueryTail<IssueThreadInteraction[]>(issueId ?? "pending"),
+    queryKey: queryKeys.issues.interactions(canonicalIssueId ?? "pending"),
+    queryFn: () => issuesApi.listInteractions(canonicalIssueId!),
+    enabled: !!canonicalIssueId,
+    refetchInterval: 5000,
+    placeholderData: keepPreviousDataForSameQueryTail<IssueThreadInteraction[]>(canonicalIssueId ?? "pending"),
   });
 
   const { data: attachments, isLoading: attachmentsLoading } = useQuery({
@@ -1790,7 +1794,7 @@ export function IssueDetail() {
   }, [queryClient, selectedCompanyId]);
   const upsertInteractionInCache = useCallback((interaction: IssueThreadInteraction) => {
     queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
-      queryKeys.issues.interactions(issueId!),
+      queryKeys.issues.interactions(canonicalIssueId!),
       (current) => {
         const existing = current ?? [];
         const next = existing.filter((entry) => entry.id !== interaction.id);
@@ -1803,7 +1807,7 @@ export function IssueDetail() {
         return next;
       },
     );
-  }, [issueId, queryClient]);
+  }, [canonicalIssueId, queryClient]);
 
   const applyOptimisticIssueCacheUpdate = useCallback((refs: Iterable<string>, data: Record<string, unknown>) => {
     queryClient.setQueriesData<Issue>(
@@ -2270,7 +2274,7 @@ export function IssueDetail() {
       interaction: ActionableIssueThreadInteraction;
       selectedClientKeys?: string[];
       selectedOptionIds?: string[];
-    }) => issuesApi.acceptInteraction(issueId!, interaction.id, { selectedClientKeys, selectedOptionIds }),
+    }) => issuesApi.acceptInteraction(canonicalIssueId!, interaction.id, { selectedClientKeys, selectedOptionIds }),
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
       if (interaction.kind === "suggest_tasks" && resolvedCompanyId && issue?.id) {
@@ -2305,7 +2309,7 @@ export function IssueDetail() {
   });
   const rejectInteraction = useMutation({
     mutationFn: ({ interaction, reason }: { interaction: ActionableIssueThreadInteraction; reason?: string }) =>
-      issuesApi.rejectInteraction(issueId!, interaction.id, reason),
+      issuesApi.rejectInteraction(canonicalIssueId!, interaction.id, reason),
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
       invalidateIssueDetail();
@@ -2330,7 +2334,7 @@ export function IssueDetail() {
     }: {
       interaction: IssueThreadInteraction;
       answers: AskUserQuestionsAnswer[];
-    }) => issuesApi.respondToInteraction(issueId!, interaction.id, { answers }),
+    }) => issuesApi.respondToInteraction(canonicalIssueId!, interaction.id, { answers }),
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
       invalidateIssueDetail();
@@ -2351,7 +2355,7 @@ export function IssueDetail() {
 
   const cancelInteraction = useMutation({
     mutationFn: ({ interaction }: { interaction: AskUserQuestionsInteraction }) =>
-      issuesApi.cancelInteraction(issueId!, interaction.id),
+      issuesApi.cancelInteraction(canonicalIssueId!, interaction.id),
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
       invalidateIssueDetail();
@@ -3419,6 +3423,7 @@ export function IssueDetail() {
   const canResumeSubtree = canShowSubtreeControls && activePauseHold?.isRoot === true;
   const canRestoreSubtree = canShowSubtreeControls && activeCancelHolds.length > 0;
   const isTerminalIssue = issue.status === "done" || issue.status === "cancelled";
+  const pendingDecisionInteraction = getLatestPendingDecisionInteraction(interactions);
   const isAgentOwnedNonTerminalIssue = Boolean(issue.assigneeAgentId) && !isTerminalIssue;
   const canPauseLeafWork = canManageTreeControl && childIssues.length === 0 && !activePauseHold && !isTerminalIssue;
   const canResumeLeafWork = canManageTreeControl && childIssues.length === 0 && activePauseHold?.isRoot === true;
@@ -3929,6 +3934,25 @@ export function IssueDetail() {
             await uploadAttachment.mutateAsync(file);
           }}
         />
+
+        {issue.status === "in_review" ? (
+          <IssueReviewDecisionBar
+            pending={updateIssue.isPending}
+            pendingDecisionTitle={pendingDecisionInteraction?.title ?? null}
+            onApprove={() => {
+              updateIssue.mutate({
+                status: "done",
+                comment: "Review outcome: approved by board.",
+              });
+            }}
+            onRequestChanges={(feedback) => {
+              updateIssue.mutate({
+                status: "todo",
+                comment: `Review outcome: changes requested by board.\n\n${feedback}`,
+              });
+            }}
+          />
+        ) : null}
       </div>
 
       <PluginSlotOutlet

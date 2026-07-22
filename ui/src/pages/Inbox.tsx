@@ -2,6 +2,9 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
+// Owner rule 2026-07-06: the inbox shows ACTIVE tasks only — a finished task slides out of the inbox
+// (it stays fully reachable in the Tasks page). No background archiving; just the default view.
+const ACTIVE_INBOX_STATUS_FILTER = INBOX_MINE_ISSUE_STATUS_FILTER.split(",").filter((s) => s !== "done").join(",");
 import { approvalsApi } from "../api/approvals";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
@@ -31,6 +34,7 @@ import {
   type IssueFilterState,
 } from "../lib/issue-filters";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { filterSupersededInboxMailIssues } from "../lib/inbox";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import {
@@ -121,9 +125,10 @@ import {
   getInboxKeyboardSelectionIndex,
   getInboxWorkItems,
   getInboxSearchSupplementIssues,
-  getLatestFailedRunsByAgent,
+  getActionableLatestFailedRunsByAgent,
   matchesInboxIssueSearch,
   getRecentTouchedIssues,
+  readIssueIdFromRun,
   isInboxEntityDismissed,
   isMineInboxTab,
   loadCollapsedInboxGroupKeys,
@@ -184,19 +189,6 @@ function runFailureMessage(run: HeartbeatRun): string {
 
 function approvalStatusLabel(status: Approval["status"]): string {
   return status.replaceAll("_", " ");
-}
-
-function readIssueIdFromRun(run: HeartbeatRun): string | null {
-  const context = run.contextSnapshot;
-  if (!context) return null;
-
-  const issueId = context["issueId"];
-  if (typeof issueId === "string" && issueId.length > 0) return issueId;
-
-  const taskId = context["taskId"];
-  if (typeof taskId === "string" && taskId.length > 0) return taskId;
-
-  return null;
 }
 
 function nonEmptyLabel(value: string | null | undefined): string | null {
@@ -794,10 +786,19 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
+  // Failed-run triage only needs issues that can still require action. Loading
+  // terminal company history here made every Inbox visit download hundreds of
+  // completed/cancelled issue bodies even though search has its own endpoint.
   const { data: issues, isLoading: isIssuesLoading } = useQuery({
-    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "with-routine-executions"],
+    queryKey: [
+      ...queryKeys.issues.list(selectedCompanyId!),
+      "active-company-index",
+      ACTIVE_INBOX_STATUS_FILTER,
+      "with-routine-executions",
+    ],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
+        status: ACTIVE_INBOX_STATUS_FILTER,
         includeRoutineExecutions: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
@@ -812,7 +813,7 @@ export function Inbox() {
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
-        status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        status: ACTIVE_INBOX_STATUS_FILTER,
         includeRoutineExecutions: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
@@ -826,7 +827,7 @@ export function Inbox() {
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
-        status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        status: ACTIVE_INBOX_STATUS_FILTER,
         includeRoutineExecutions: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
@@ -861,8 +862,14 @@ export function Inbox() {
     [companyMembers?.users],
   );
 
-  const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
-  const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
+  const mineIssues = useMemo(
+    () => getRecentTouchedIssues(filterSupersededInboxMailIssues(mineIssuesRaw)),
+    [mineIssuesRaw],
+  );
+  const touchedIssues = useMemo(
+    () => getRecentTouchedIssues(filterSupersededInboxMailIssues(touchedIssuesRaw)),
+    [touchedIssuesRaw],
+  );
   const visibleMineIssues = useMemo(
     () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds),
     [mineIssues, issueFilters, currentUserId, liveIssueIds],
@@ -1035,10 +1042,10 @@ export function Inbox() {
 
   const failedRuns = useMemo(
     () =>
-      getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter(
+      getActionableLatestFailedRunsByAgent(heartbeatRuns ?? [], issues ?? []).filter(
         (r) => !isInboxEntityDismissed(dismissedAtByKey, `run:${r.id}`, r.createdAt),
       ),
-    [heartbeatRuns, dismissedAtByKey],
+    [heartbeatRuns, issues, dismissedAtByKey],
   );
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter, currentUserId);
@@ -1245,18 +1252,22 @@ export function Inbox() {
   }, [selectedCompanyId]);
   const groupedSections = useMemo<InboxGroupedSection[]>(() => [
     ...buildGroupedInboxSections(filteredWorkItems, groupBy, inboxWorkspaceGrouping, { nestingEnabled }),
-    ...buildGroupedInboxSections(
-      getInboxWorkItems({ issues: archivedSearchIssues, approvals: [] }),
-      groupBy,
-      inboxWorkspaceGrouping,
-      { keyPrefix: "archived-search:", searchSection: "archived", nestingEnabled },
-    ),
-    ...buildGroupedInboxSections(
-      getInboxWorkItems({ issues: issueSearchSupplementResults, approvals: [] }),
-      groupBy,
-      inboxWorkspaceGrouping,
-      { keyPrefix: "other-search:", searchSection: "other", nestingEnabled },
-    ),
+    ...(archivedSearchIssues.length > 0
+      ? buildGroupedInboxSections(
+        getInboxWorkItems({ issues: archivedSearchIssues, approvals: [] }),
+        groupBy,
+        inboxWorkspaceGrouping,
+        { keyPrefix: "archived-search:", searchSection: "archived", nestingEnabled },
+      )
+      : []),
+    ...(issueSearchSupplementResults.length > 0
+      ? buildGroupedInboxSections(
+        getInboxWorkItems({ issues: issueSearchSupplementResults, approvals: [] }),
+        groupBy,
+        inboxWorkspaceGrouping,
+        { keyPrefix: "other-search:", searchSection: "other", nestingEnabled },
+      )
+      : []),
   ], [
     archivedSearchIssues,
     filteredWorkItems,
@@ -1954,7 +1965,7 @@ export function Inbox() {
             items={[
               {
                 value: "mine",
-                label: "Mine",
+                label: "Needs you",
               },
               {
                 value: "recent",

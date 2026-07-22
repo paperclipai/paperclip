@@ -63,11 +63,14 @@ import {
 type Step = 1 | 2 | 3 | 4;
 type AdapterType = string;
 
-const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
+const DEFAULT_TASK_TITLE = "Turn the mission into a first operating plan";
 
-- hire a founding engineer
-- write a hiring plan
-- break the roadmap into concrete tasks and start delegating work`;
+const DEFAULT_TASK_DESCRIPTION = `You are the CEO. Turn the company mission into an executable first plan.
+
+- identify the most important near-term outcome and the assumptions behind it
+- propose the smallest team and capabilities needed for that outcome
+- break the work into concrete, goal-linked tasks with clear owners
+- start the highest-leverage task and surface any decisions the board must make`;
 
 /**
  * Classic onboarding wizard — fork-and-freeze of master's `OnboardingWizard`
@@ -138,7 +141,7 @@ export function OnboardingWizardClassic() {
 
   // Step 3
   const [taskTitle, setTaskTitle] = useState(
-    "Hire your first engineer and create a hiring plan"
+    DEFAULT_TASK_TITLE
   );
   const [taskDescription, setTaskDescription] = useState(
     DEFAULT_TASK_DESCRIPTION
@@ -313,7 +316,7 @@ export function OnboardingWizardClassic() {
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
-    setTaskTitle("Hire your first engineer and create a hiring plan");
+    setTaskTitle(DEFAULT_TASK_TITLE);
     setTaskDescription(DEFAULT_TASK_DESCRIPTION);
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
@@ -598,7 +601,7 @@ export function OnboardingWizardClassic() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      if (step === 1 && companyName.trim()) handleStep1Next();
+      if (step === 1 && companyName.trim() && companyGoal.trim()) handleStep1Next();
       else if (step === 2 && agentName.trim()) handleStep2Next();
       else if (step === 3 && taskTitle.trim()) handleStep3Next();
       else if (step === 4) handleLaunch();
@@ -709,13 +712,14 @@ export function OnboardingWizardClassic() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Mission / goal (optional)
+                      Mission / goal
                     </label>
                     <textarea
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
                       placeholder="What is this company trying to achieve?"
                       value={companyGoal}
                       onChange={(e) => setCompanyGoal(e.target.value)}
+                      required
                     />
                   </div>
                 </div>
@@ -1213,7 +1217,7 @@ export function OnboardingWizardClassic() {
                   {step === 1 && (
                     <Button
                       size="sm"
-                      disabled={!companyName.trim() || loading}
+                      disabled={!companyName.trim() || !companyGoal.trim() || loading}
                       onClick={handleStep1Next}
                     >
                       {loading ? (

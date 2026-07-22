@@ -3263,16 +3263,26 @@ export function SkillDetailPage({
           <div className="space-y-5">
             <div className="space-y-1.5">
               <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sharing</label>
+              {detail.sharingScope === "public_link" ? (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+                  This skill still has a legacy public-link scope. Choose Company or Private to migrate it.
+                </div>
+              ) : null}
               <select
-                value={detail.sharingScope === "public_link" ? "company" : detail.sharingScope}
+                value={detail.sharingScope === "public_link" ? "" : detail.sharingScope}
                 onChange={(event) => onUpdateSharingScope(event.target.value as Exclude<CompanySkillSharingScope, "public_link">)}
                 disabled={updateSharingPending}
                 className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground"
               >
+                {detail.sharingScope === "public_link" ? (
+                  <option value="" disabled>
+                    Public link (legacy)
+                  </option>
+                ) : null}
                 <option value="company">Company — visible inside this company</option>
                 <option value="private">Private — only visible in your library</option>
               </select>
-              <p className="text-xs text-muted-foreground">Public link sharing is coming later.</p>
+              <p className="text-xs text-muted-foreground">Public-link sharing is not editable here yet.</p>
             </div>
             {detail.editable ? (
               <div className="rounded-md border border-destructive/40 p-3">

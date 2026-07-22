@@ -168,7 +168,10 @@ function makeDetail(currentVersion: CompanySkillVersion): CompanySkillDetail {
   };
 }
 
-async function renderSkillDetail(versions: CompanySkillVersion[]) {
+async function renderSkillDetail(
+  versions: CompanySkillVersion[],
+  detailOverrides: Partial<CompanySkillDetail> = {},
+) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -176,7 +179,7 @@ async function renderSkillDetail(versions: CompanySkillVersion[]) {
   await act(async () => {
     root?.render(
       <SkillDetailPage
-        detail={makeDetail(versions[0]!)}
+        detail={{ ...makeDetail(versions[0]!), ...detailOverrides }}
         loading={false}
         activeTab="versions"
         onTabChange={vi.fn()}
@@ -272,5 +275,24 @@ describe("SkillDetailPage versions tab", () => {
     expect(dialog.textContent).toContain("Initial");
     expect(dialog.textContent).toContain("First line");
     expect(dialog.textContent).not.toContain("Both sides are the same version");
+  });
+});
+
+describe("SkillDetailPage sharing settings", () => {
+  it("shows legacy public-link scope instead of flattening it to company", async () => {
+    const node = await renderSkillDetail([makeVersion(1, "# Demo Skill")], { sharingScope: "public_link" });
+    const settingsButton = buttonsNamed(node, "Settings")[0] as HTMLButtonElement;
+
+    expect(settingsButton).toBeTruthy();
+
+    await click(settingsButton);
+
+    const dialog = node.querySelector('[role="dialog"]') as HTMLElement;
+    const select = dialog.querySelector("select") as HTMLSelectElement | null;
+
+    expect(dialog.textContent).toContain("legacy public-link scope");
+    expect(dialog.textContent).toContain("Public link (legacy)");
+    expect(select?.value).toBe("");
+    expect(dialog.textContent).not.toContain("coming later");
   });
 });

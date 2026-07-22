@@ -543,6 +543,65 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(Number.isNaN(Date.parse(String((marker as Record<string, unknown>).detectedAt)))).toBe(false);
   });
 
+  it("treats legacy CK_SKILLS env lists as desired skill assignments", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const skillKey = `company/${companyId}/human-writing`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: skillKey,
+      slug: "human-writing",
+      name: "Human Writing",
+      description: null,
+      markdown: "# Human Writing\n",
+      sourceType: "local_path",
+      sourceLocator: null,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [],
+      metadata: { sourceKind: "local_path" },
+    });
+    await db.insert(agents).values({
+      id: randomUUID(),
+      companyId,
+      name: "Content Drafter",
+      role: "engineer",
+      status: "active",
+      adapterType: "ck_local",
+      adapterConfig: {
+        env: {
+          CK_SKILLS: {
+            type: "plain",
+            value: `${skillKey}, disclosure-guard`,
+          },
+        },
+      },
+    });
+
+    const listed = await svc.list(companyId);
+    const listedSkill = listed.find((skill) => skill.id === skillId);
+    const detail = await svc.detail(companyId, skillId);
+
+    expect(listedSkill).toMatchObject({
+      id: skillId,
+      attachedAgentCount: 1,
+    });
+    expect(detail?.usedByAgents).toEqual([
+      expect.objectContaining({
+        name: "Content Drafter",
+        desired: true,
+      }),
+    ]);
+  });
+
   it("continues pruning missing local-path skills that no active agent desires", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();

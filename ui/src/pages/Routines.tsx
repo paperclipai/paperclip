@@ -16,6 +16,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { groupBy } from "../lib/groupBy";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { formatRoutineTime } from "../lib/routine-time";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { EmptyState } from "../components/EmptyState";
@@ -107,6 +108,24 @@ function timestampValue(value: Date | string | null | undefined) {
   if (!value) return Number.NEGATIVE_INFINITY;
   const timestamp = new Date(value).getTime();
   return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+}
+
+export function routineScheduleSummary(routine: RoutineListItem): string | null {
+  const scheduled = routine.triggers
+    .filter((trigger) =>
+      trigger.enabled &&
+      trigger.kind === "schedule" &&
+      trigger.nextRunAt &&
+      trigger.cronExpression &&
+      trigger.timezone
+    )
+    .sort((left, right) => timestampValue(left.nextRunAt) - timestampValue(right.nextRunAt));
+  const next = scheduled[0];
+  if (!next) return null;
+
+  const formatted = formatRoutineTime(next.nextRunAt!, next.timezone);
+  const additional = scheduled.length > 1 ? ` · +${scheduled.length - 1} schedule${scheduled.length > 2 ? "s" : ""}` : "";
+  return `Next ${formatted} · ${next.timezone} · ${next.cronExpression}${additional}`;
 }
 
 function compareNullableText(left: string | null | undefined, right: string | null | undefined) {
@@ -929,6 +948,7 @@ export function Routines() {
                           href={`/routines/${routine.id}`}
                           runNowButton
                           divider={false}
+                          secondaryDetails={routine.status === "active" ? routineScheduleSummary(routine) : null}
                           onRunNow={handleRunNow}
                           onToggleEnabled={handleToggleEnabled}
                           onToggleArchived={handleToggleArchived}

@@ -1,4 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import compression from "compression";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -126,6 +127,20 @@ export function shouldEnablePrivateHostnameGuard(opts: {
   );
 }
 
+export function shouldCompressHttpResponse(
+  req: express.Request,
+  res: express.Response,
+): boolean {
+  const contentType = res.getHeader("Content-Type");
+  if (
+    typeof contentType === "string"
+    && contentType.toLowerCase().startsWith("text/event-stream")
+  ) {
+    return false;
+  }
+  return compression.filter(req, res);
+}
+
 export async function createApp(
   db: Db,
   opts: {
@@ -165,6 +180,13 @@ export async function createApp(
   // Default is unset → Express trusts nothing, which is the only safe choice
   // when the server may be reachable without a known reverse proxy in front.
   applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
+
+  // Large issue lists, activity feeds, and plugin diagnostics are highly
+  // compressible JSON. Keep streaming event routes unbuffered.
+  app.use(compression({
+    threshold: 1_024,
+    filter: shouldCompressHttpResponse,
+  }));
 
   app.use(COMPANY_IMPORT_API_PATH, express.json({
     limit: PORTABLE_JSON_BODY_LIMIT,

@@ -1776,6 +1776,7 @@ export function IssueThreadInteractionCardClassic({
   onSubmitInteractionAnswers,
   onCancelInteraction,
 }: IssueThreadInteractionCardProps) {
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const StatusIcon = statusIcon(interaction.status);
   const styles = statusClasses(interaction.status);
   const createdByLabel = resolveActorLabel({
@@ -1795,6 +1796,34 @@ export function IssueThreadInteractionCardClassic({
           userLabelMap,
         })
       : null;
+
+  if (interaction.status !== "pending" && !historyExpanded) {
+    return (
+      <button
+        type="button"
+        className={cn(
+          "flex w-full items-center gap-3 rounded-sm border px-3 py-2 text-left shadow-none transition-colors hover:bg-accent/30",
+          styles.shell,
+        )}
+        aria-expanded="false"
+        aria-label={`Show resolved decision: ${interaction.title ?? interactionKindLabel(interaction.kind)}`}
+        onClick={() => setHistoryExpanded(true)}
+      >
+        <StatusIcon className="h-4 w-4 shrink-0" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-foreground">
+            {interaction.title ?? interactionKindLabel(interaction.kind)}
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            {statusLabel(interaction.status)}
+            {resolvedByLabel ? ` by ${resolvedByLabel}` : ""}
+            {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
+          </span>
+        </span>
+        <ChevronRight className="h-4 w-4 shrink-0" />
+      </button>
+    );
+  }
 
   return (
     <div className={cn("rounded-sm border p-5 shadow-none", styles.shell)}>
@@ -1817,6 +1846,18 @@ export function IssueThreadInteractionCardClassic({
               </span>
             ) : null}
           </div>
+          {interaction.status !== "pending" ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="mt-2 -ml-2 h-7 text-xs"
+              aria-expanded="true"
+              onClick={() => setHistoryExpanded(false)}
+            >
+              Hide history
+            </Button>
+          ) : null}
 
           <div className="mt-3 text-lg font-bold text-foreground">
             {interaction.title

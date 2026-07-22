@@ -34,7 +34,9 @@ export function asFiniteNumber(value: unknown, fallback: number) {
 }
 
 export function formatCents(cents: number): string {
-  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const dollars = cents / 100;
+  const maximumFractionDigits = dollars > 0 && dollars < 0.01 ? 6 : 2;
+  return `$${dollars.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits })}`;
 }
 
 export function formatNumber(n: number): string {
@@ -96,6 +98,21 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+export function formatTokenBreakdown(inputTokens: number, cachedInputTokens: number, outputTokens: number): string {
+  const input = inputTokens + cachedInputTokens;
+  const cached = cachedInputTokens;
+  const output = outputTokens;
+  return `in ${formatTokens(input)}${cached > 0 ? ` (cached ${formatTokens(cached)})` : ""} · out ${formatTokens(output)}`;
+}
+
+export function formatModelDisplayName(model: string | null | undefined): string {
+  if (!model) return "unreported";
+  const lower = model.toLowerCase();
+  if (lower === "deepseek-v4-flash" || lower === "deepseek-chat" || lower === "deepseek-reasoner") return "Flash";
+  if (lower === "deepseek-v4-pro") return "Pro";
+  return model;
+}
+
 /** Humanize a millisecond duration into a compact `1h 2m`, `45m 12s`, `12s` string. */
 export function formatDurationMs(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "0s";
@@ -119,6 +136,7 @@ export function providerDisplayName(provider: string): string {
   const map: Record<string, string> = {
     anthropic: "Anthropic",
     aws_bedrock: "AWS Bedrock",
+    deepseek: "DeepSeek",
     openai: "OpenAI",
     openrouter: "OpenRouter",
     chatgpt: "ChatGPT",

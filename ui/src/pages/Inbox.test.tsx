@@ -327,6 +327,43 @@ describe("Inbox toolbar", () => {
     });
   });
 
+  it("does not download terminal company history for failed-run triage", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => {
+      expect(apiMocks.issuesList.mock.calls.length).toBeGreaterThanOrEqual(3);
+    });
+    const companyIndexCall = apiMocks.issuesList.mock.calls.find(
+      ([, filters]) =>
+        filters.status === "backlog,todo,in_progress,in_review,blocked"
+        && filters.includeRoutineExecutions === true
+        && !filters.touchedByUserId,
+    );
+    expect(companyIndexCall?.[1]).toMatchObject({
+      status: "backlog,todo,in_progress,in_review,blocked",
+      includeRoutineExecutions: true,
+      limit: 500,
+    });
+    expect(container.textContent).not.toContain("ARCHIVED");
+    expect(container.textContent).not.toContain("OTHER RESULTS");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("syncs hover with j/k selection on inbox rows", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const issueA = createIssue({ id: "issue-a", identifier: "PAP-1001", title: "First inbox row" });

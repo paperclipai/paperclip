@@ -59,6 +59,7 @@ function AnimatedToast({
           {toast.action && (
             <Link
               to={toast.action.href}
+              disableIssueQuicklook
               onClick={() => onDismiss(toast.id)}
               className="mt-2 inline-flex text-xs font-medium underline underline-offset-4 hover:opacity-90"
             >

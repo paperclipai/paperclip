@@ -60,6 +60,21 @@ export function isIssueThreadInteraction(
     );
 }
 
+export function getLatestPendingDecisionInteraction(
+  interactions: readonly IssueThreadInteraction[],
+) {
+  for (let index = interactions.length - 1; index >= 0; index -= 1) {
+    const interaction = interactions[index];
+    if (
+      interaction.status === "pending"
+      && (interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation")
+    ) {
+      return interaction;
+    }
+  }
+  return null;
+}
+
 export function getCheckboxConfirmationSelectedLabels(args: {
   payload: RequestCheckboxConfirmationPayload;
   result?: RequestCheckboxConfirmationResult | null;

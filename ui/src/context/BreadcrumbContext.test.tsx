@@ -75,4 +75,13 @@ describe("BreadcrumbContext", () => {
     expect(buildDocumentTitle([{ label: "Inbox" }], "  ")).toBe("Inbox • Paperclip");
     expect(buildDocumentTitle([], null)).toBe("Paperclip");
   });
+
+  it("does not repeat the selected company when it is already the root breadcrumb", () => {
+    expect(
+      buildDocumentTitle(
+        [{ label: "CK IT Solutions" }, { label: "Settings" }, { label: "Plugins" }],
+        "CK IT Solutions",
+      ),
+    ).toBe("Plugins • Settings • CK IT Solutions • Paperclip");
+  });
 });

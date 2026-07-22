@@ -696,8 +696,12 @@ function invalidateActivityQueries(
             : undefined;
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
-        if (action === "issue.comment_added") {
+        if (
+          action === "issue.comment_added"
+          || (action === "issue.updated" && readString(details?.source) === "comment")
+        ) {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });
         }
         if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
           const documentKey = readString(details?.key);
