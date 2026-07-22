@@ -138,6 +138,15 @@ describe("managed install store", () => {
     expect(fs.existsSync(paths.lockPath)).toBe(false);
   });
 
+  it("fails closed without replacing a stale-looking lock", async () => {
+    const staleToken = "999999:stale";
+    await withInstallStoreLock(async () => undefined, paths);
+    fs.writeFileSync(paths.lockPath, `${staleToken}\n`, { mode: 0o600 });
+
+    await expect(withInstallStoreLock(async () => undefined, paths)).rejects.toThrow("stale lock");
+    expect(fs.readFileSync(paths.lockPath, "utf8")).toBe(`${staleToken}\n`);
+  });
+
   it("reports managed provenance only for the payload selected by current", () => {
     const manifestPayload = payloadPathFor(paths, "npm", "1.0.0");
     const currentPayload = payloadPathFor(paths, "npm", "2.0.0");

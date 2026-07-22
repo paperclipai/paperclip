@@ -144,15 +144,6 @@ export function assertManagedInstallStore(paths = resolveInstallStorePaths()): I
   return manifest;
 }
 
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
 export async function withInstallStoreLock<T>(
   callback: () => Promise<T>,
   paths = resolveInstallStorePaths(),
@@ -172,18 +163,11 @@ export async function withInstallStoreLock<T>(
       }
       const owner = fs.readFileSync(paths.lockPath, "utf8").trim();
       const ownerPid = Number.parseInt(owner.split(":", 1)[0] ?? "", 10);
-      if (Number.isInteger(ownerPid) && ownerPid > 0 && processIsAlive(ownerPid)) {
-        throw new Error(`Another managed install is already running (pid ${ownerPid}).`);
-      }
-      fs.rmSync(paths.lockPath, { force: true });
-      try {
-        fs.linkSync(temporaryPath, paths.lockPath);
-      } catch (retryError) {
-        if ((retryError as NodeJS.ErrnoException).code === "EEXIST") {
-          throw new Error("Another managed install started while recovering a stale lock.");
-        }
-        throw retryError;
-      }
+      const ownerLabel = Number.isInteger(ownerPid) && ownerPid > 0 ? ` (pid ${ownerPid})` : "";
+      throw new Error(
+        `Another managed install is already running${ownerLabel}. ` +
+        `If no install process is active, remove the stale lock at ${paths.lockPath} and retry.`,
+      );
     } finally {
       fs.rmSync(temporaryPath, { force: true });
     }
