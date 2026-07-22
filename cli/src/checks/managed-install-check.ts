@@ -17,9 +17,13 @@ function pathContains(directory: string): boolean {
 }
 
 function hasManagedArtifacts(paths: InstallStorePaths): boolean {
-  return [paths.cliRoot, paths.manifestPath, paths.currentPath, paths.shimPath].some((entry) =>
-    fs.existsSync(entry),
-  );
+  return [
+    paths.installsRoot,
+    paths.manifestPath,
+    paths.markerPath,
+    paths.currentPath,
+    paths.shimPath,
+  ].some((entry) => fs.existsSync(entry));
 }
 
 export function nodeRuntimeCheck(): CheckResult {
