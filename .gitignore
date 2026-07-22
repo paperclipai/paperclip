@@ -60,3 +60,35 @@ tests/release-smoke/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+.brave-api.key
+.pc-master.key
+.route-geocache.json
+
+# Live CK instance state and credentials (never source-controlled)
+.ck-secrets/
+.home/
+.corepack/
+core
+.ck-agent/*.log
+.ck-vault/*.log
+
+# Local API payloads and one-off execution scratch
+tmp_*
+rev06_*.json
+rev06_mem.json
+
+# Keep reusable browser verifier scripts, not generated evidence/data
+.ckshots/*.png
+.ckshots/*.json
+.ckshots/*.tsv
+.ckshots/*.webm
+.ckshots/*.mp4
+.ckshots/**/*.png
+.ckshots/**/*.json
+.ckshots/**/*.tsv
+.ckshots/**/*.webm
+.ckshots/**/*.mp4
+
+# One-off CK Office database/activation scratch; keep product source/tests only
+packages/plugins/plugin-ck-office/.ck*.mjs
+packages/plugins/plugin-ck-office/.q*.sql
