@@ -153,6 +153,7 @@ import {
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { decisionTrainingService } from "../services/decision-training.js";
+import { assertExecutionPolicyParticipantAgentsInvokable } from "../services/agent-assignability.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
@@ -7052,6 +7053,9 @@ export function issueRoutes(
       actor.actorType,
     );
     await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    if (executionPolicy?.stages?.length) {
+      await assertExecutionPolicyParticipantAgentsInvokable(db, companyId, executionPolicy.stages);
+    }
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
@@ -7839,6 +7843,9 @@ export function issueRoutes(
       existing.assigneeAgentId,
       req.body.executionPolicy !== undefined && monitorChanged,
     );
+    if (req.body.executionPolicy !== undefined && nextExecutionPolicy?.stages?.length) {
+      await assertExecutionPolicyParticipantAgentsInvokable(db, existing.companyId, nextExecutionPolicy.stages);
+    }
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents } from "@paperclipai/db";
 import {
   getAgentWorkEligibility,
+  isAgentStatusInvokable,
   type AgentEligibilityAgent,
   type AgentOrgChainHealth,
 } from "@paperclipai/shared";
@@ -168,4 +169,39 @@ export async function assertAssignableAgent(
         ? firstInvalidAncestor.id
         : null,
   }));
+}
+
+// Validates that every agent-type participant in a set of execution policy stages is
+// invokable (i.e. not paused, terminated, or pending_approval). This must be called at
+// write time because the execution-policy participant transition bypasses the authorization
+// layer via workflowControlledAssignment, so assignmentTargetIsInCompany is never reached
+// for stage-driven assignee changes.
+export async function assertExecutionPolicyParticipantAgentsInvokable(
+  db: Db,
+  companyId: string,
+  stages: Array<{ participants: Array<{ type: string; agentId?: string | null }> }>,
+): Promise<void> {
+  const agentIds = new Set<string>(
+    stages
+      .flatMap((s) => s.participants)
+      .filter((p): p is { type: string; agentId: string } => p.type === "agent" && typeof p.agentId === "string")
+      .map((p) => p.agentId),
+  );
+  for (const agentId of agentIds) {
+    const agent = await getAgent(db, agentId);
+    if (!agent || agent.companyId !== companyId) {
+      throw notFound("Execution policy stage participant agent not found in company");
+    }
+    if (!isAgentStatusInvokable(agent.status)) {
+      throw conflict(
+        `Agent with status "${agent.status}" cannot be set as an execution policy stage participant — only active agents can fulfill review stages`,
+        conflictDetails({
+          companyId,
+          assigneeAgentId: agentId,
+          reason: "assignee_unknown_status",
+          chain: [{ id: agent.id, companyId: agent.companyId, name: agent.name, status: agent.status, reportsTo: agent.reportsTo }],
+        }),
+      );
+    }
+  }
 }
