@@ -107,8 +107,6 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
   }
 
   const get = (id: string) => db.select().from(decisions).where(eq(decisions.id, id)).then((rows) => rows[0] ?? null);
-  const listBundles = (companyId: string) =>
-    db.select().from(decisionBundles).where(eq(decisionBundles.companyId, companyId)).orderBy(desc(decisionBundles.createdAt));
   async function outcome(id: string) {
     const decision = await get(id);
     const executions = await db.select().from(decisionEffectExecutions).where(eq(decisionEffectExecutions.decisionId, id)).orderBy(asc(decisionEffectExecutions.effectIndex));
