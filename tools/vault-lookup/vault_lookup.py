@@ -215,6 +215,10 @@ def lookup_dokument(query, cfg, limit=6):
 
 # -------------------------------------------------------------- Dispatcher ---
 def lookup(mode, query, vault=DEFAULT_VAULT):
+    if vault and vault not in VAULTS:
+        return {"mode": mode, "query": query, "treffer": [],
+                "fehler": "unbekannter Vault: {}".format(vault),
+                "vault_unknown": True}
     cfg = resolve_vault(vault)
     fn = {"kontakt": lookup_kontakt, "termin": lookup_termine,
           "mail": lookup_mail, "wissen": search_wissen,

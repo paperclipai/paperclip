@@ -249,6 +249,10 @@ class BotApp:
             traceback.print_exc()
             result = {"mode": mode, "query": query, "treffer": [],
                       "fehler": "Vault-Dienst nicht erreichbar"}
+        if result.get("vault_unknown"):
+            return ("⚠️ Ich kann darauf nicht zugreifen — der für diesen Chat "
+                    "hinterlegte Vault ist unbekannt oder falsch konfiguriert. "
+                    "Bitte an die Administration wenden.")
         context = json.dumps(result, ensure_ascii=False)[:4000]
         followup = messages + [
             {"role": "assistant", "content": "LOOKUP {}: {}".format(mode, query)},

@@ -353,4 +353,16 @@ class TestChatFallback(unittest.TestCase):
         self.assertLessEqual(len(app.history[8311805232]), bot.MAX_HISTORY_MESSAGES)
 
 
+class TestDoLookupUnknownVault(unittest.TestCase):
+    def test_do_lookup_refuses_unknown_vault(self):
+        tg = mock.MagicMock(); app = make_app(tg)
+        with mock.patch.object(bot.vault_client, "lookup",
+                               return_value={"mode": "kontakt", "query": "x",
+                                             "treffer": [], "vault_unknown": True}), \
+             mock.patch.object(bot.llm, "chat") as lc:
+            out = app._do_lookup({"name": "X", "vault": "Clara"}, [], "kontakt", "x")
+        self.assertIn("nicht zugreifen", out)
+        lc.assert_not_called()
+
+
 if __name__ == "__main__": unittest.main()
