@@ -121,6 +121,7 @@ function boardRoutes() {
         <Route path="apps/browse" element={<Browse />} />
         <Route path="apps/connect" element={<AddConnectionWizard />} />
         <Route path="apps/connect/:appKey" element={<AddConnectionWizard />} />
+        <Route path="apps/preview" element={<ConnectPreview />} />
         {/* Legacy staged deep-links collapse into the single accordion wizard. */}
         <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps/browse" replace />} />
         <Route path="apps/review" element={<AppsReview />} />
@@ -270,7 +271,6 @@ function boardRoutes() {
       <Route path="inbox/new" element={<Navigate to="/inbox/mine" replace />} />
       <Route path="u/:userSlug" element={<UserProfile />} />
       <Route path="design-guide" element={<DesignGuide />} />
-      <Route path="apps/preview" element={<ConnectPreview />} />
       <Route path="instance/settings/adapters" element={<AdapterManager />} />
       <Route path=":pluginRoutePath/*" element={<PluginPage />} />
       <Route path="*" element={<NotFoundPage scope="board" />} />
