@@ -26,8 +26,9 @@ usage() {
 Install Paperclip on macOS, Linux, or WSL2.
 
 Usage:
-  curl -fsSL https://paperclip.ing/install.sh | bash
-  curl -fsSL https://paperclip.ing/install.sh | bash -s -- [options]
+  curl -fsSLO https://paperclip.ing/install.sh
+  bash install.sh [options]
+  curl -fsSL https://paperclip.ing/install.sh | bash -s -- --no-prompt [options]
 
 Options:
   --canary                 Install the canary channel
@@ -155,8 +156,8 @@ if [ -n "$REF" ] || [ -n "$REPO" ]; then
   fail "git-ref installs are not available in this installer build; omit --ref and --repo"
 fi
 
-if [ ! -t 0 ] || [ ! -t 1 ]; then
-  NO_PROMPT=1
+if { [ ! -t 0 ] || [ ! -t 1 ]; } && [ "$NO_PROMPT" != "1" ]; then
+  fail "non-interactive installation requires explicit --no-prompt; download the script first for interactive review"
 fi
 
 if [ "$VERBOSE" = "1" ]; then
