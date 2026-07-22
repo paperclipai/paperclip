@@ -75,9 +75,16 @@ def _sig_with_cid(sig_html: str) -> tuple[str, list[dict]]:
 
 
 def render_customer_html(area: str, body_md: str) -> tuple[str, list[dict]]:
-    """Gibt (finales Kunden-HTML, Inline-Anhänge für Logos) zurück."""
+    """Gibt (finales Kunden-HTML, Inline-Anhänge für Logos) zurück.
+
+    Logo-Strategie: Standard ist das base64-Logo direkt aus der Signatur
+    (rendert in Gmail/Apple Mail; Outlook zeigt es nicht — Outlook rendert
+    weder base64 noch webp, und n8n überträgt kein CID). Für zuverlässiges
+    Rendering in Outlook muss die Signatur auf eine gehostete PNG/JPG-URL
+    umgestellt werden. `_sig_with_cid` bleibt für einen künftigen CID-fähigen
+    Sendeweg erhalten, wird hier aber bewusst nicht genutzt."""
     answer = md_to_html(strip_self_signoff(body_md))
-    sig, attachments = _sig_with_cid(load_sig(area))
+    sig, attachments = load_sig(area), []
     html = (
         '<!DOCTYPE html><html><head><meta charset="utf-8"></head>'
         '<body style="font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:0;padding:20px;text-align:left;">'

@@ -27,22 +27,23 @@ class RenderTest(unittest.TestCase):
         self.assertIn("text-align:left", out)  # linksbündig
         tmp.cleanup()
 
-    def test_base64_logo_becomes_cid_attachment(self):
-        # base64-<img> in der Signatur → cid-Referenz + Inline-Anhang.
+    def test_render_keeps_base64_logo_no_attachments(self):
+        # Aktuelle Strategie: base64-Logo bleibt inline (Gmail/Apple Mail),
+        # keine Attachments (CID via n8n unzuverlässig → nicht genutzt).
         tmp = tempfile.TemporaryDirectory()
         r.SIGDIR = Path(tmp.name)
-        sig = ('<table><tr><td>'
-               '<img src="data:image/png;base64,QUJDREVG" alt="Logo" width="120">'
-               '</td></tr></table>')
+        sig = '<table><tr><td><img src="data:image/png;base64,QUJDREVG" alt="Logo"></td></tr></table>'
         (Path(tmp.name) / "signatur-film.html").write_text(sig, encoding="utf-8")
         out, atts = r.render_customer_html("FILM", "Text")
-        self.assertNotIn("data:image/png;base64", out)   # kein base64 mehr im HTML
-        self.assertIn('src="cid:sig-logo-0"', out)        # cid-Referenz
-        self.assertEqual(len(atts), 1)
-        self.assertEqual(atts[0]["cid"], "sig-logo-0")
-        self.assertEqual(atts[0]["content"], "QUJDREVG")
-        self.assertEqual(atts[0]["mimeType"], "image/png")
+        self.assertIn("data:image/png;base64,QUJDREVG", out)  # base64 bleibt erhalten
+        self.assertEqual(atts, [])
         tmp.cleanup()
+
+    def test_sig_with_cid_helper_available(self):
+        # Der CID-Umbau bleibt als Baustein für einen künftigen Sendeweg erhalten.
+        html, atts = r._sig_with_cid('<img src="data:image/png;base64,QUJD" alt="x">')
+        self.assertIn('src="cid:sig-logo-0"', html)
+        self.assertEqual(atts[0]["content"], "QUJD")
 
 
 if __name__ == "__main__":
