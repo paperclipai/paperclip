@@ -73,6 +73,15 @@ describe("managed install commands", () => {
     expect(() => resolveGitInstallRequest({ repo: "HenkDz/paperclip" })).toThrow("requires --ref");
   });
 
+  it("requires explicit non-interactive consent before resolving git refs", async () => {
+    const runCommand = vi.fn();
+
+    await expect(installCommand({ ref: "master", repo: "HenkDz/paperclip" }, { runCommand }))
+      .rejects.toThrow("Re-run with --yes");
+
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
   it("reuses a SHA-keyed git payload without downloading or rebuilding", async () => {
     const sha = "b".repeat(40);
     const paths = resolveInstallStorePaths();
@@ -107,8 +116,8 @@ describe("managed install commands", () => {
       if (file === process.execPath) return { stdout: "0.3.1\n", stderr: "" };
       throw new Error(`Unexpected command: ${file} ${args.join(" ")}`);
     });
-    await installCommand({ ref: "master", repo: "HenkDz/paperclip" }, { runCommand });
-    await installCommand({ ref: "master", repo: "HenkDz/paperclip" }, { runCommand });
+    await installCommand({ ref: "master", repo: "HenkDz/paperclip", yes: true }, { runCommand });
+    await installCommand({ ref: "master", repo: "HenkDz/paperclip", yes: true }, { runCommand });
     const manifest = readInstallManifest(resolveInstallStorePaths());
     expect(manifest).toMatchObject({ source: "git", repo: "HenkDz/paperclip", ref: "master", sha });
     expect(manifest?.payloadPath).toContain(path.join("git", sha.slice(0, 12)));

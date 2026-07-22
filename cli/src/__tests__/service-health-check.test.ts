@@ -93,6 +93,22 @@ describe("service health doctor checks", () => {
     expect(order).toEqual(["first-start", "first-end", "second-start"]);
   });
 
+  it("reclaims restart locks left by terminated processes", async () => {
+    const lockPath = path.join(process.env.PAPERCLIP_HOME!, "instances", "default", "hot-restart.lock");
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, "424242:stale-token\n");
+    const callback = vi.fn(async () => "restarted");
+
+    await expect(withHotRestartLock("default", callback, {
+      pollMs: 1,
+      timeoutMs: 20,
+      isProcessAlive: () => false,
+    })).resolves.toBe("restarted");
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
   it("brackets configured IPv6 hosts in health URLs", () => {
     expect(buildLocalHealthUrl("::1", 3100)).toBe("http://[::1]:3100/api/health");
     expect(buildLocalHealthUrl("::", 3100)).toBe("http://127.0.0.1:3100/api/health");

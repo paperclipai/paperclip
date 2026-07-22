@@ -57,13 +57,21 @@ export function resolveRestartExpectedVersion(expectedVersion: string | null | u
 export async function withHotRestartLock<T>(
   instanceId: string,
   callback: () => Promise<T>,
-  options: { timeoutMs?: number; pollMs?: number } = {},
+  options: { timeoutMs?: number; pollMs?: number; isProcessAlive?: (pid: number) => boolean } = {},
 ): Promise<T> {
   const instanceRoot = resolvePaperclipInstanceRoot(instanceId);
   const lockPath = path.join(instanceRoot, "hot-restart.lock");
   const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
   const deadline = Date.now() + (options.timeoutMs ?? 120_000);
   const pollMs = options.pollMs ?? 100;
+  const isProcessAlive = options.isProcessAlive ?? ((pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+  });
   await fs.mkdir(instanceRoot, { recursive: true });
 
   while (true) {
@@ -72,6 +80,19 @@ export async function withHotRestartLock<T>(
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        const existingToken = (await fs.readFile(lockPath, "utf8")).trim();
+        const ownerPid = Number.parseInt(existingToken.split(":", 1)[0] ?? "", 10);
+        if (Number.isInteger(ownerPid) && ownerPid > 0 && !isProcessAlive(ownerPid)) {
+          if ((await fs.readFile(lockPath, "utf8")).trim() === existingToken) {
+            await fs.rm(lockPath, { force: true });
+            continue;
+          }
+        }
+      } catch (readError) {
+        if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw readError;
+      }
       if (Date.now() >= deadline) {
         throw new Error(
           `Another restart for instance ${instanceId} is still running. ` +
