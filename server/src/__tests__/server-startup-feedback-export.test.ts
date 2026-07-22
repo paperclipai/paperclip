@@ -284,7 +284,8 @@ import { startServer } from "../index.ts";
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "0123456789abcdef0123456789abcdef";
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
     loadConfigMock.mockReturnValue(buildTestConfig());
     resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
       suppressed: false,
@@ -297,7 +298,8 @@ describe("startServer feedback export wiring", () => {
 
   it("refuses startup when the decision signing secret is unavailable", async () => {
     delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
-    await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET is required");
+    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET or PAPERCLIP_AGENT_JWT_SECRET is required");
     expect(loadConfigMock).not.toHaveBeenCalled();
   });
 

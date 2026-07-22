@@ -190,8 +190,9 @@ describePg("decisionService", () => {
   it("refuses execution when the decision signing secret is unavailable", async () => {
     const created = await createCommentDecision();
     delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     await expect(service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() }))
-      .rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET is required");
+      .rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET or PAPERCLIP_AGENT_JWT_SECRET is required");
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(0);
   });
 
