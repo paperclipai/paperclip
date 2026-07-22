@@ -1544,6 +1544,76 @@ describe("daytona native file-sync hooks", () => {
     expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
   });
 
+  it("syncOut rejects an outbound source whose in-sandbox realpath escapes the workspace remote dir, before any download", async () => {
+    const hostDir = await makeHostDir();
+    const sandbox = createMockSandbox();
+    // The in-sandbox realpath guard runs as a single `sh -c` probe; report the
+    // escape exit code (42) for that probe while leaving any other command green,
+    // so the guard is the only thing that can trip this test.
+    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
+      if (command.includes("_pc_resolve")) {
+        return { exitCode: 42, result: `ESCAPE:${REMOTE_DIR}/out/link.txt`, artifacts: { stdout: "" } };
+      }
+      return { exitCode: 0, result: "bash", artifacts: { stdout: "bash" } };
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    const target = path.join(hostDir, "link.txt");
+    await expect(
+      plugin.definition.onEnvironmentSyncOut?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-escape-out",
+            files: [{ sourcePath: `${REMOTE_DIR}/out/link.txt`, targetPath: target, kind: "file" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/outbound symlink-escape guard command failed \(exit 42\)/);
+
+    // Fail-closed: the guard trips before any bytes are read, and no target lands.
+    expect(sandbox.fs.downloadFiles).not.toHaveBeenCalled();
+    await expect(fs.stat(target)).rejects.toThrow();
+  });
+
+  it("syncOut fails closed when the sandbox has no path canonicalizer to resolve the symlink guard", async () => {
+    const hostDir = await makeHostDir();
+    const sandbox = createMockSandbox();
+    // Neither `realpath` nor `readlink` present → the probe exits 40 rather than
+    // silently skipping the guard the host-side string check cannot enforce.
+    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
+      if (command.includes("_pc_resolve")) {
+        return { exitCode: 40, result: "no path canonicalizer available", artifacts: { stdout: "" } };
+      }
+      return { exitCode: 0, result: "bash", artifacts: { stdout: "bash" } };
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    const target = path.join(hostDir, "data.txt");
+    await expect(
+      plugin.definition.onEnvironmentSyncOut?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-no-canon",
+            files: [{ sourcePath: `${REMOTE_DIR}/out/data.txt`, targetPath: target, kind: "file" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/outbound symlink-escape guard command failed \(exit 40\)/);
+
+    expect(sandbox.fs.downloadFiles).not.toHaveBeenCalled();
+    await expect(fs.stat(target)).rejects.toThrow();
+  });
+
   it("round-trips a directory (syncIn then syncOut) preserving contents, a 0600 file, and a preserved symlink", async () => {
     const hostRoot = await makeHostDir();
     const source = path.join(hostRoot, "src");
