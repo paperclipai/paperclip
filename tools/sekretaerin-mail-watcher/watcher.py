@@ -277,6 +277,33 @@ def process_office_approvals(*, dry_run, send=approval_send.send_approved,
     return results
 
 
+def process_unblock_commands(*, dry_run):
+    """Liest Walters 'Entsperren <adresse>'-Mails aus office@ und entfernt die
+    Adresse von der Blockliste (still). Liste von {uid, addr, action}. Bearbeitete
+    UIDs werden gemerkt (eigener State, getrennt von den Freigabe-UIDs)."""
+    processed = office_inbox.load_processed_unblock()
+    try:
+        cmds = office_inbox.fetch_unblock_commands(processed)
+    except Exception as e:  # noqa: BLE001 — office@ nicht erreichbar darf Tick nicht killen
+        print(f"WARN Entsperr-Abruf fehlgeschlagen: {e}", file=sys.stderr)
+        return []
+    results = []
+    for c in cmds:
+        try:
+            if dry_run:
+                results.append({"uid": c["uid"], "addr": c["addr"], "action": "would-unblock"})
+                continue
+            blocklist.remove(c["addr"])
+            print(f"Entsperrt: {c['addr']}")
+            results.append({"uid": c["uid"], "addr": c["addr"], "action": "unblocked"})
+            processed.add(c["uid"])
+        except Exception as e:  # noqa: BLE001
+            print(f"WARN Entsperren {c.get('addr')}: {e}", file=sys.stderr)
+    if not dry_run:
+        office_inbox.save_processed_unblock(processed)
+    return results
+
+
 def _create_correction_issue(token: str, note: str, entry: dict) -> None:
     """Weckt Luna zur Überarbeitung eines Entwurfs nach Walters Korrektur."""
     token_pc = pc.load_token()
@@ -419,6 +446,9 @@ def main() -> None:
     office_results = process_office_approvals(dry_run=a.dry_run, save_sent=ews_sent.save_to_sent)
     if office_results:
         print(f"office@-Freigaben: {office_results}")
+    unblock_results = process_unblock_commands(dry_run=a.dry_run)
+    if unblock_results:
+        print(f"Entsperr-Kommandos: {unblock_results}")
     # FALLBACK: ws@-Sent-Spiegelung im Vault (falls office@ mal nicht erreichbar war).
     approval_new = scan_approval_replies(a.window_days, seen)
     if approval_new:

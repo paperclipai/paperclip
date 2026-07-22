@@ -251,6 +251,33 @@ class ApprovalScanTest(unittest.TestCase):
         self._write("2026-07-22-echt-eingang.md", mail)
         self.assertIn("2026-07-22-echt-eingang.md", w.scan(3))
 
+    def test_process_unblock_removes_from_blocklist(self):
+        import blocklist as bl
+        import office_inbox as oi
+        bl.STATE = self.dir / "luna-blocklist.json"
+        bl.add("weg@x.de")
+        saved = {}
+        oi.fetch_unblock_commands = lambda processed, **kw: [{"uid": "20", "addr": "weg@x.de"}]
+        oi.load_processed_unblock = lambda: set()
+        oi.save_processed_unblock = lambda uids: saved.update({"uids": set(uids)})
+        r = w.process_unblock_commands(dry_run=False)
+        self.assertEqual(r[0]["action"], "unblocked")
+        self.assertEqual(r[0]["addr"], "weg@x.de")
+        self.assertFalse(bl.is_blocked("weg@x.de"))
+        self.assertIn("20", saved["uids"])
+
+    def test_process_unblock_dry_run_keeps_block(self):
+        import blocklist as bl
+        import office_inbox as oi
+        bl.STATE = self.dir / "luna-blocklist.json"
+        bl.add("weg@x.de")
+        oi.fetch_unblock_commands = lambda processed, **kw: [{"uid": "20", "addr": "weg@x.de"}]
+        oi.load_processed_unblock = lambda: set()
+        oi.save_processed_unblock = lambda uids: None
+        r = w.process_unblock_commands(dry_run=True)
+        self.assertEqual(r[0]["action"], "would-unblock")
+        self.assertTrue(bl.is_blocked("weg@x.de"))  # unverändert
+
 
 if __name__ == "__main__":
     unittest.main()
