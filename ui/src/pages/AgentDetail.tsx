@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
+import { useParams, useNavigate, Link, Navigate, useBeforeUnload, useBlocker, type NavigateFunction } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
@@ -27,6 +27,8 @@ import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AgentConfigHistory } from "../components/AgentConfigHistory";
+import { formatAgentConfigValue, type AgentConfigChange } from "../lib/agent-config-changeset";
 import {
   AgentConfigurationRail,
   ConfigurationSection,
@@ -73,6 +75,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   CheckCircle2,
   XCircle,
@@ -716,9 +719,11 @@ export function AgentDetail() {
   const shouldLoadHeartbeats = needsDashboardData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
   const [configDirtyDetails, setConfigDirtyDetails] = useState<{ count: number; sections: string[] }>({ count: 0, sections: [] });
+  const [configChanges, setConfigChanges] = useState<AgentConfigChange[]>([]);
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
   const cancelConfigActionRef = useRef<(() => void) | null>(null);
+  const revertConfigChangeRef = useRef<(key: string) => void>(() => undefined);
   const { isMobile } = useSidebar();
   const routeAgentRef = agentId ?? "";
   const routeCompanyId = useMemo(() => {
@@ -730,6 +735,21 @@ export function AgentDetail() {
   const canFetchAgent = routeAgentRef.length > 0 && (isUuidLike(routeAgentRef) || Boolean(lookupCompanyId));
   const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
   const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
+  const setConfigChangeset = useCallback((changes: AgentConfigChange[], revert: (key: string) => void) => {
+    setConfigChanges(changes);
+    revertConfigChangeRef.current = revert;
+  }, []);
+  useBeforeUnload(useCallback((event) => {
+    if (!configDirty) return;
+    event.preventDefault();
+    event.returnValue = "";
+  }, [configDirty]));
+  const navigationBlocker = useBlocker(configDirty);
+  useEffect(() => {
+    if (navigationBlocker.state !== "blocked") return;
+    if (window.confirm("Discard your unsaved agent configuration changes?")) navigationBlocker.proceed();
+    else navigationBlocker.reset();
+  }, [navigationBlocker]);
 
   const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
@@ -1064,6 +1084,25 @@ export function AgentDetail() {
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const pausedEscalationWarning = !hasInvalidOrgChain ? agent.orgChainHealth?.escalationWarning ?? null : null;
   const showConfigActionBar = (activeView === "configuration" || activeView === "instructions") && (configDirty || configSaving);
+  const reviewChangesPopover = configChanges.length > 0 ? (
+    <Popover>
+      <PopoverTrigger asChild><Button variant="ghost" size="sm">Review changes</Button></PopoverTrigger>
+      <PopoverContent align="end" className="w-96 max-w-(--pct-90)">
+        <div className="mb-2 text-sm font-medium">Changes to save</div>
+        <div className="max-h-80 divide-y divide-border overflow-y-auto">
+          {configChanges.map((change) => (
+            <div key={change.key} className="grid grid-cols-(--gtc-agent-config-review) gap-3 py-3">
+              <div className="min-w-0 space-y-1">
+                <div className="flex items-center gap-2"><span className="text-sm font-medium">{change.label}</span><span className="text-xs text-muted-foreground">{change.section}</span></div>
+                <div className="truncate font-mono text-xs text-muted-foreground">{formatAgentConfigValue(change.before)} → {formatAgentConfigValue(change.after)}</div>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => revertConfigChangeRef.current(change.key)}>Revert</Button>
+            </div>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  ) : null;
   const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
   const agentMembershipPending =
     membershipMutation.isPending &&
@@ -1306,6 +1345,7 @@ export function AgentDetail() {
         <div className="fixed bottom-6 right-6 z-30">
           <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-1.5 shadow-lg">
             <span className="text-xs text-muted-foreground">{configDirtyDetails.count} unsaved {configDirtyDetails.count === 1 ? "change" : "changes"}</span>
+            {reviewChangesPopover}
             <Button
               variant="ghost"
               size="sm"
@@ -1333,6 +1373,7 @@ export function AgentDetail() {
             style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.5rem)" }}
           >
             <span className="mr-auto text-xs text-muted-foreground">{configDirtyDetails.count} unsaved {configDirtyDetails.count === 1 ? "change" : "changes"}</span>
+            {reviewChangesPopover}
             <Button
               variant="ghost"
               size="sm"
@@ -1385,6 +1426,7 @@ export function AgentDetail() {
           companyId={resolvedCompanyId ?? undefined}
           onDirtyChange={setConfigDirty}
           onDirtyDetailsChange={setConfigDirtyDetails}
+          onChangesetChange={setConfigChangeset}
           onSaveActionChange={setSaveConfigAction}
           onCancelActionChange={setCancelConfigAction}
           onSavingChange={setConfigSaving}
@@ -1749,6 +1791,7 @@ function AgentConfigurePage({
   companyId,
   onDirtyChange,
   onDirtyDetailsChange,
+  onChangesetChange,
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
@@ -1759,6 +1802,7 @@ function AgentConfigurePage({
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
   onDirtyDetailsChange: (details: { count: number; sections: string[] }) => void;
+  onChangesetChange: (changes: AgentConfigChange[], revert: (key: string) => void) => void;
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
@@ -1767,7 +1811,6 @@ function AgentConfigurePage({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { tab: urlTab } = useParams<{ tab?: string }>();
-  const [revisionsOpen, setRevisionsOpen] = useState(false);
   const [filterQuery, setFilterQuery] = useState("");
   const [dirtyDetails, setDirtyDetails] = useState<{ count: number; sections: string[] }>({ count: 0, sections: [] });
   const visibleSections = useMemo(() => filterAgentConfigurationSections(filterQuery), [filterQuery]);
@@ -1817,6 +1860,7 @@ function AgentConfigurePage({
         agent={agent}
         onDirtyChange={onDirtyChange}
         onDirtyDetailsChange={handleDirtyDetailsChange}
+        onChangesetChange={onChangesetChange}
         onSaveActionChange={onSaveActionChange}
         onCancelActionChange={onCancelActionChange}
         onSavingChange={onSavingChange}
@@ -1826,55 +1870,8 @@ function AgentConfigurePage({
         hideInstructionsFile
         visibleSections={visibleSections}
       />
-      {/* Configuration Revisions — collapsible at the bottom */}
       {visibleSections.has("history") ? <ConfigurationSection id="history" title="History" instant>
-        <button
-          className="flex items-center gap-2 text-sm font-medium hover:text-foreground transition-colors"
-          onClick={() => setRevisionsOpen((v) => !v)}
-        >
-          {revisionsOpen
-            ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-            : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-          }
-          Configuration Revisions
-          <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
-        </button>
-        {revisionsOpen && (
-          <div className="mt-3">
-            {(configRevisions ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {(configRevisions ?? []).slice(0, 10).map((revision) => (
-                  <div key={revision.id} className="border border-border/70 rounded-md p-3 space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-xs text-muted-foreground">
-                        <span className="font-mono">{revision.id.slice(0, 8)}</span>
-                        <span className="mx-1">·</span>
-                        <span>{formatDate(revision.createdAt)}</span>
-                        <span className="mx-1">·</span>
-                        <span>{revision.source}</span>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2.5 text-xs"
-                        onClick={() => rollbackConfig.mutate(revision.id)}
-                        disabled={rollbackConfig.isPending}
-                      >
-                        Restore
-                      </Button>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Changed:{" "}
-                      {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+        <AgentConfigHistory revisions={configRevisions ?? []} onRestore={(revisionId) => rollbackConfig.mutate(revisionId)} restoring={rollbackConfig.isPending} />
       </ConfigurationSection> : null}
         </div>
       </div>
@@ -1889,6 +1886,7 @@ function ConfigurationTab({
   companyId,
   onDirtyChange,
   onDirtyDetailsChange,
+  onChangesetChange,
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
@@ -1901,6 +1899,7 @@ function ConfigurationTab({
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
   onDirtyDetailsChange: (details: { count: number; sections: string[] }) => void;
+  onChangesetChange: (changes: AgentConfigChange[], revert: (key: string) => void) => void;
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
@@ -2107,6 +2106,7 @@ function ConfigurationTab({
         adapterModels={adapterModels}
         onDirtyChange={onDirtyChange}
         onDirtyDetailsChange={onDirtyDetailsChange}
+        onChangesetChange={onChangesetChange}
         onSaveActionChange={onSaveActionChange}
         onCancelActionChange={onCancelActionChange}
         hideInlineSave
@@ -4305,39 +4305,26 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
           <h3 className="text-xs font-medium text-muted-foreground mb-2">
             Active Keys
           </h3>
-          <div className="overflow-x-auto rounded-lg border border-border">
-            <table className="w-full text-left">
-              <thead className="border-b border-border text-xs font-medium text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2 font-medium">Name</th>
-                  <th className="px-4 py-2 font-medium">Created</th>
-                  <th className="px-4 py-2 font-medium">Last used</th>
-                  <th className="px-4 py-2"><span className="sr-only">Actions</span></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {activeKeys.map((key: AgentKey) => (
-                  <tr key={key.id}>
-                    <td className="whitespace-nowrap px-4 py-2.5 text-sm font-medium">{key.name}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5 text-xs text-muted-foreground">{formatDate(key.createdAt)}</td>
-                    <td className="whitespace-nowrap px-4 py-2.5 text-xs font-mono text-muted-foreground" title={key.lastUsedAt ? formatDate(key.lastUsedAt) : undefined}>
-                      {key.lastUsedAt ? relativeTime(key.lastUsedAt) : "—"}
-                    </td>
-                    <td className="px-4 py-2.5 text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-destructive hover:text-destructive text-xs"
-                        onClick={() => revokeKey.mutate(key.id)}
-                        disabled={revokeKey.isPending}
-                      >
-                        Revoke
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="border border-border rounded-lg divide-y divide-border">
+            {activeKeys.map((key: AgentKey) => (
+              <div key={key.id} className="flex items-center justify-between px-4 py-2.5">
+                <div>
+                  <span className="text-sm font-medium">{key.name}</span>
+                  <span className="text-xs text-muted-foreground ml-3">
+                    Created {formatDate(key.createdAt)}
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-destructive hover:text-destructive text-xs"
+                  onClick={() => revokeKey.mutate(key.id)}
+                  disabled={revokeKey.isPending}
+                >
+                  Revoke
+                </Button>
+              </div>
+            ))}
           </div>
         </div>
       )}
