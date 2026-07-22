@@ -122,6 +122,29 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
+// Benign stderr lines that never explain a nonzero exit and must not be
+// surfaced as the run error: Codex always prints the YOLO approvals warning
+// because this adapter passes the approvals-bypass flag itself, and
+// "[paperclip] ..." lines are diagnostics the adapter injected (e.g. ACP
+// fallback notes). Keep this list conservative so real errors are never
+// skipped.
+const BENIGN_CODEX_STDERR_LINE_RES: readonly RegExp[] = [
+  /^YOLO mode is enabled\b/i,
+  /^\[paperclip\]/,
+];
+
+function isBenignCodexStderrLine(line: string): boolean {
+  return BENIGN_CODEX_STDERR_LINE_RES.some((re) => re.test(line));
+}
+
+export function firstMeaningfulStderrLine(text: string): string {
+  const meaningful = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !isBenignCodexStderrLine(line));
+  return meaningful ?? firstNonEmptyLine(text);
+}
+
 function signalCodexChild(
   target: { pid: number | null; processGroupId: number | null },
   signal: NodeJS.Signals,
@@ -1221,7 +1244,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         } as Record<string, unknown>)
         : null;
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-      const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+      const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
       const fallbackErrorMessage =
         parsedError ||
         stderrLine ||
