@@ -44,6 +44,9 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
+const mockExecutionWorkspaceService = vi.hoisted(() => ({
+  getById: vi.fn(async () => null),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../services/access.js", () => ({
@@ -52,6 +55,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/activity-log.js", () => ({
     logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/execution-workspaces.js", () => ({
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
   }));
 
   vi.doMock("../services/feedback.js", () => ({
@@ -87,7 +94,7 @@ function registerModuleMocks() {
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
-    executionWorkspaceService: () => ({}),
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => mockFeedbackService,
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
@@ -123,7 +130,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: unknown = {}) {
+async function createApp(db: unknown = {}, githubCompletionVerifier?: import("../services/issue-completion-proof.js").GitHubCompletionVerifier | null) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -140,7 +147,7 @@ async function createApp(db: unknown = {}) {
     };
     next();
   });
-  app.use("/api", issueRoutes(db as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any, { githubCompletionVerifier }));
   app.use(errorHandler);
   return app;
 }
@@ -165,6 +172,7 @@ describe("issue activity event routes", () => {
     vi.resetModules();
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/execution-workspaces.js");
     vi.doUnmock("../services/feedback.js");
     vi.doUnmock("../services/heartbeat.js");
     vi.doUnmock("../services/index.js");
@@ -370,19 +378,23 @@ describe("issue activity event routes", () => {
       },
       createdAt: new Date("2026-05-01T00:00:00.000Z"),
     };
+    let selectCount = 0;
     const dbMock = {
-      select: () => ({
-        from: () => ({
-          where: () => ({
-            orderBy: async () => [handoffActivityRow],
+      select: () => {
+        selectCount += 1;
+        return {
+          from: () => ({
+            where: selectCount === 1
+              ? async () => []
+              : () => ({ orderBy: async () => [handoffActivityRow] }),
           }),
-        }),
-      }),
+        };
+      },
     };
 
     const res = await request(await createApp(dbMock))
       .patch(`/api/issues/${issue.id}`)
-      .send({ status: "done" });
+      .send({ status: "done", completionProof: { deliveryType: "non_code", acceptance: { command: "manual review", output: "accepted" }, implementer: "dev", qaReviewer: "qa" } });
 
     expect(res.status).toBe(200);
     await vi.waitFor(() => {
@@ -430,6 +442,84 @@ describe("issue activity event routes", () => {
       expect.anything(),
       expect.objectContaining({ action: "issue.successful_run_handoff_resolved" }),
     );
+  });
+
+  describe("done completion gate", () => {
+    const proof = {
+      deliveryType: "code" as const,
+      pullRequestUrl: "https://github.com/acme/repo/pull/1",
+      mergedSha: "a".repeat(40),
+      defaultBranch: "main",
+      acceptance: { command: "pnpm test", output: "passed" },
+      implementer: "dev",
+      qaReviewer: "qa",
+      cleanupNotApplicable: "no_isolated_workspace" as const,
+    };
+    const dbWithChildren = (children: Array<{ id: string; status: string; executionState: unknown }> = []) => ({
+      select: vi.fn(() => ({ from: () => ({ where: async () => children }) })),
+    });
+
+    beforeEach(() => {
+      const issue = { ...makeIssue(), status: "in_progress", executionWorkspaceId: null };
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch }));
+      mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    });
+
+    it.each([
+      ["evidence-free", undefined, vi.fn(async () => []), "completionProof"],
+      ["missing GitHub integration", proof, null, "configuredGitHubIntegration"],
+      ["upstream verification failure", proof, vi.fn(async () => { throw new Error("offline"); }), "githubEvidenceVerifiable"],
+    ])("rejects %s and leaves issue unchanged", async (_name, completionProof, verifier, requirement) => {
+      const res = await request(await createApp(dbWithChildren(), verifier)).patch(`/api/issues/${makeIssue().id}`).send({ status: "done", completionProof });
+      expect(res.status).toBe(422);
+      expect(res.body.missingRequirements).toContain(requirement);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects incomplete child", async () => {
+      const childId = "33333333-3333-4333-8333-333333333333";
+      const res = await request(await createApp(dbWithChildren([{ id: childId, status: "in_progress", executionState: null }]), vi.fn(async () => [])))
+        .patch(`/api/issues/${makeIssue().id}`).send({ status: "done", completionProof: proof });
+      expect(res.status).toBe(422);
+      expect(res.body.incompleteChildIds).toEqual([childId]);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects incomplete cleanup and leaves issue and workspace unchanged", async () => {
+      const workspace = { status: "active", closedAt: null, branchName: "feat", metadata: null };
+      mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "in_progress", executionWorkspaceId: "workspace-1" });
+      mockExecutionWorkspaceService.getById.mockResolvedValue(workspace);
+      const res = await request(await createApp(dbWithChildren(), vi.fn(async () => []))).patch(`/api/issues/${makeIssue().id}`)
+        .send({ status: "done", completionProof: { ...proof, cleanupNotApplicable: undefined } });
+      expect(res.status).toBe(422);
+      expect(res.body.missingRequirements).toContain("workspaceArchivedAndPruned");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(workspace).toEqual({ status: "active", closedAt: null, branchName: "feat", metadata: null });
+    });
+
+    it("accepts explicit non-code proof without GitHub", async () => {
+      const completionProof = { deliveryType: "non_code", acceptance: proof.acceptance, implementer: "dev", qaReviewer: "qa" };
+      const res = await request(await createApp(dbWithChildren(), null)).patch(`/api/issues/${makeIssue().id}`).send({ status: "done", completionProof });
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledWith(makeIssue().id, expect.objectContaining({ status: "done", executionState: expect.objectContaining({ completionProof }) }));
+    });
+
+    it("atomically persists done status and server-verified code proof", async () => {
+      const verifier = vi.fn(async () => []);
+      const res = await request(await createApp(dbWithChildren(), verifier)).patch(`/api/issues/${makeIssue().id}`).send({ status: "done", completionProof: proof });
+      expect(res.status).toBe(200);
+      expect(verifier).toHaveBeenCalledWith(expect.objectContaining({ mergedSha: proof.mergedSha }));
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update).toHaveBeenCalledWith(makeIssue().id, expect.objectContaining({ status: "done", executionState: expect.objectContaining({ completionProof: proof }) }));
+    });
+
+    it("safely rejects malformed completion evidence", async () => {
+      const res = await request(await createApp(dbWithChildren(), vi.fn(async () => []))).patch(`/api/issues/${makeIssue().id}`)
+        .send({ status: "done", completionProof: { deliveryType: "code", pullRequestUrl: "javascript:alert(1)" } });
+      expect(res.status).toBe(400);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
   });
 
   it("logs explicit reviewer and approver activity when execution policy participants change", async () => {

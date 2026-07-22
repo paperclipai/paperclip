@@ -657,6 +657,16 @@ export interface IssueExecutionState {
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
   monitor?: IssueExecutionMonitorState | null;
+  completionProof?: {
+    deliveryType: "code" | "non_code";
+    acceptance: { command: string; output: string };
+    implementer: string;
+    qaReviewer: string;
+    pullRequestUrl?: string;
+    mergedSha?: string;
+    defaultBranch?: string;
+    cleanupNotApplicable?: "no_feature_branch" | "no_isolated_workspace";
+  };
 }
 
 export interface IssueExecutionDecision {

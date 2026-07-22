@@ -227,6 +227,25 @@ export const issueReviewRequestSchema = z.object({
   instructions: z.string().trim().min(1).max(20000),
 }).strict();
 
+export const issueCompletionProofSchema = z.discriminatedUnion("deliveryType", [
+  z.object({
+    deliveryType: z.literal("code"),
+    pullRequestUrl: z.string().url().regex(/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/),
+    mergedSha: z.string().regex(/^[0-9a-f]{40}$/i),
+    defaultBranch: z.string().trim().min(1).max(255),
+    acceptance: z.object({ command: z.string().trim().min(1), output: z.string().trim().min(1) }).strict(),
+    implementer: z.string().trim().min(1),
+    qaReviewer: z.string().trim().min(1),
+    cleanupNotApplicable: z.enum(["no_feature_branch", "no_isolated_workspace"]).optional(),
+  }).strict(),
+  z.object({
+    deliveryType: z.literal("non_code"),
+    acceptance: z.object({ command: z.string().trim().min(1), output: z.string().trim().min(1) }).strict(),
+    implementer: z.string().trim().min(1),
+    qaReviewer: z.string().trim().min(1),
+  }).strict(),
+]);
+
 export const issueExecutionStateSchema = z.object({
   status: z.enum(ISSUE_EXECUTION_STATE_STATUSES),
   currentStageId: z.string().uuid().nullable(),
@@ -239,6 +258,7 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionId: z.string().uuid().nullable(),
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
+  completionProof: issueCompletionProofSchema.optional(),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
@@ -474,6 +494,7 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  completionProof: issueCompletionProofSchema.optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;

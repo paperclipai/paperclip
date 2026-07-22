@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { githubCompletionVerifier, validateCompletionProof, type GitHubCompletionVerifier } from "../services/issue-completion-proof.js";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -2572,6 +2573,7 @@ export function issueRoutes(
       actionRequestId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    githubCompletionVerifier?: GitHubCompletionVerifier | null;
   } = {},
 ) {
   const router = Router();
@@ -7647,8 +7649,37 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      completionProof,
       ...updateFields
     } = req.body;
+    if (existing.status !== "done" && updateFields.status === "done") {
+      const children = await db.select({ id: issueRows.id, status: issueRows.status, executionState: issueRows.executionState })
+        .from(issueRows).where(and(eq(issueRows.companyId, existing.companyId), eq(issueRows.parentId, existing.id)));
+      const incompleteChildIds = children
+        .filter((child) => child.status !== "done" || !parseIssueExecutionState(child.executionState)?.completionProof)
+        .map((child) => child.id);
+      const workspace = existing.executionWorkspaceId
+        ? await executionWorkspacesSvc.getById(existing.executionWorkspaceId)
+        : null;
+      const missing = await validateCompletionProof(
+        completionProof,
+        { workspace: workspace ? { status: workspace.status, closedAt: workspace.closedAt, branchName: workspace.branchName, metadata: workspace.metadata } : null },
+        opts.githubCompletionVerifier === undefined ? githubCompletionVerifier() : opts.githubCompletionVerifier,
+      );
+      if (incompleteChildIds.length > 0) missing.push("childrenWithValidDoneProof");
+      if (missing.length > 0) {
+        res.status(422).json({ error: "Completion requirements not met", missingRequirements: missing, incompleteChildIds });
+        return;
+      }
+      updateFields.executionState = {
+        ...(parseIssueExecutionState(existing.executionState) ?? {
+          status: "idle", currentStageId: null, currentStageIndex: null, currentStageType: null,
+          currentParticipant: null, returnAssignee: null, completedStageIds: [], lastDecisionId: null,
+          lastDecisionOutcome: null,
+        }),
+        completionProof,
+      };
+    }
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
