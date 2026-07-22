@@ -6,7 +6,7 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { buildNextManifest, flipCurrentAtomic, isManagedExecutable, pruneInstallPayloads, readInstallManifest, resolveInstallStorePaths, withInstallStoreLock, writeInstallManifestAtomic, type InstallChannel, type InstallManifest, type InstallRecord, type InstallStorePaths } from "../install-store.js";
 import { dbBackupCommand } from "./db-backup.js";
-import { installNpmPayload, resolvePublishedVersion, type CommandRunner } from "./install.js";
+import { installGitPayload, installNpmPayload, resolveGitHubRef, resolvePublishedVersion, type CommandRunner } from "./install.js";
 
 const execFileAsync = promisify(execFile);
 export type InstallMode = "managed" | "global-npm" | "npx" | "source" | "unknown";
@@ -86,7 +86,23 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
   const request = resolveUpdateRequest(manifest, options);
   if (mode === "npx") { emit(options, { mode, action: "install" }, "This is an ephemeral npx install. Run `paperclipai install`, then use `paperclipai update` from the managed shim."); return; }
   if (mode === "source" || mode === "unknown") { emit(options, { mode, action: "manual" }, "This appears to be a source checkout. Update it with `git pull` followed by `pnpm install`; Paperclip will not mutate the repository."); return; }
-  if (mode === "managed" && manifest?.source === "git") { emit(options, { mode, source: "git", action: "manual", ref: manifest.ref ?? manifest.sha }, "Managed git payload updates require reinstalling the desired ref; the current payload was left unchanged."); return; }
+  if (mode === "managed" && manifest?.source === "git") {
+    if (!manifest.repo || !manifest.ref || !manifest.sha) throw new Error("Managed git install metadata is incomplete.");
+    if (/^[0-9a-f]{7,40}$/i.test(manifest.ref)) { emit(options, { mode, source: "git", pinned: true, sha: manifest.sha }, `Git install is pinned at ${manifest.sha.slice(0, 12)}.`); return; }
+    const targetSha = await resolveGitHubRef(manifest.repo, manifest.ref, runCommand);
+    if (targetSha === manifest.sha) { emit(options, { mode, source: "git", changed: false, sha: targetSha, ref: manifest.ref }, `${manifest.repo}@${manifest.ref} is already at ${targetSha.slice(0, 12)}.`); return; }
+    if (options.check || options.dryRun) { emit(options, { mode, source: "git", changed: true, currentSha: manifest.sha, targetSha, ref: manifest.ref, dryRun: Boolean(options.dryRun) }, `Git update available: ${manifest.sha.slice(0, 12)} → ${targetSha.slice(0, 12)}.`); if (options.check) process.exitCode = 10; return; }
+    if (options.backup !== false) await (overrides.backup ?? (() => dbBackupCommand({})))();
+    const installed = await withInstallStoreLock(async () => {
+      const payload = await installGitPayload(manifest.repo!, targetSha, runCommand, paths);
+      const record: InstallRecord = { source: "git", version: payload.version, channel: "pinned", repo: manifest.repo, ref: manifest.ref, sha: targetSha, payloadPath: payload.payloadPath, installedAt: (overrides.now?.() ?? new Date()).toISOString() };
+      const next = buildNextManifest(record, manifest); const oldTarget = fs.readlinkSync(paths.currentPath); flipCurrentAtomic(payload.payloadPath, paths);
+      try { writeInstallManifestAtomic(next, paths); } catch (error) { flipCurrentAtomic(path.resolve(paths.cliRoot, oldTarget), paths); throw error; }
+      pruneInstallPayloads(next, paths); return payload;
+    }, paths);
+    emit(options, { mode, source: "git", changed: true, currentSha: manifest.sha, targetSha, reused: installed.reused }, pc.yellow(`Updated unreleased git payload ${manifest.sha.slice(0, 12)} → ${targetSha.slice(0, 12)} from ${manifest.repo}@${manifest.ref}.`));
+    return;
+  }
   const targetVersion = await resolvePublishedVersion(request.spec, runCommand);
   const currentVersion = manifest?.version;
   const comparison = currentVersion ? compareVersions(targetVersion, currentVersion) : 1;
