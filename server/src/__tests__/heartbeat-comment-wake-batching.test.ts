@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -1148,9 +1148,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       expect(deferredRun).toBeNull();
 
+      let deferredWakeId: string | null = null;
       await waitFor(async () => {
         const deferred = await db
-          .select()
+          .select({ id: agentWakeupRequests.id })
           .from(agentWakeupRequests)
           .where(
             and(
@@ -1160,8 +1161,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
             ),
           )
           .then((rows) => rows[0] ?? null);
-        return Boolean(deferred);
+        deferredWakeId = deferred?.id ?? null;
+        return Boolean(deferredWakeId);
       });
+      const targetWakeId = deferredWakeId!;
 
       await db
         .update(issues)
@@ -1181,14 +1184,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         const wake = await db
           .select({ status: agentWakeupRequests.status })
           .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, agentId),
-            ),
-          )
-          .orderBy(desc(agentWakeupRequests.requestedAt))
-          .limit(1)
+          .where(eq(agentWakeupRequests.id, targetWakeId))
           .then((rows) => rows[0] ?? null);
         return wake?.status !== "deferred_issue_execution";
       }, 90_000);
@@ -1199,14 +1195,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           error: agentWakeupRequests.error,
         })
         .from(agentWakeupRequests)
-        .where(
-          and(
-            eq(agentWakeupRequests.companyId, companyId),
-            eq(agentWakeupRequests.agentId, agentId),
-          ),
-        )
-        .orderBy(desc(agentWakeupRequests.requestedAt))
-        .limit(1)
+        .where(eq(agentWakeupRequests.id, targetWakeId))
         .then((rows) => rows[0] ?? null);
       expect(deferredWake).toMatchObject({
         status: "cancelled",
