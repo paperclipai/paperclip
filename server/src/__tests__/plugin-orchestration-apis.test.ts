@@ -9,10 +9,13 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  companyMemberships,
   costEvents,
   createDb,
   executionWorkspaces,
+  heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issueRelations,
   issues,
   pluginManagedResources,
@@ -59,19 +62,45 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
+  function isHeartbeatRunDependentFkError(error: unknown) {
+    const message = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : String(error);
+    return (
+      message.includes("heartbeat_run_events_run_id_heartbeat_runs_id_fk")
+      || message.includes("activity_log_run_id_heartbeat_runs_id_fk")
+    );
+  }
+
+  // A real (fire-and-forget) heartbeat run may still be executing in the
+  // background when a test's own createComment-triggered wakeup completes —
+  // retry deletion so that race doesn't fail cleanup with an FK violation.
+  async function deleteHeartbeatRunsWithDependents() {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await db.delete(heartbeatRunEvents);
+      await db.delete(activityLog);
+      try {
+        await db.delete(heartbeatRuns);
+        return;
+      } catch (error) {
+        if (!isHeartbeatRunDependentFkError(error) || attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+  }
+
   afterEach(async () => {
     await Promise.all(tempRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
     tempRoots.length = 0;
-    await db.delete(activityLog);
     await db.delete(costEvents);
-    await db.delete(heartbeatRuns);
+    await deleteHeartbeatRunsWithDependents();
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(pluginManagedResources);
     await db.delete(projects);
     await db.delete(plugins);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -730,5 +759,97 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       cachedInputTokens: 3,
       outputTokens: 6,
     });
+  });
+
+  it("rejects a human-attributed plugin comment when actorUserId is not an active company member", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs human input",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.issues.createComment({
+        issueId,
+        companyId,
+        body: "Here's my answer",
+        actorUserId: randomUUID(),
+      }),
+    ).rejects.toThrow("is not an active human member of this company");
+
+    await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
+  });
+
+  it("creates a human-attributed plugin comment and wakes the issue's assignee", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: humanUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs human input",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    // Cap concurrency at 1 and pre-seed a running run so enqueueWakeup's
+    // queued-run bookkeeping is exercised without startNextQueuedRunForAgent
+    // going on to actually claim/execute the new run — that path spins up
+    // real environment/adapter orchestration this test has no business
+    // depending on (and which races the test's own db teardown).
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: {},
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const comment = await services.issues.createComment({
+      issueId,
+      companyId,
+      body: "Here's my answer",
+      actorUserId: humanUserId,
+    });
+
+    expect(comment).toMatchObject({
+      authorType: "user",
+      authorUserId: humanUserId,
+      authorAgentId: null,
+      body: "Here's my answer",
+    });
+
+    const [wakeupRequest] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    expect(wakeupRequest).toMatchObject({
+      reason: "issue_commented",
+      requestedByActorType: "user",
+      requestedByActorId: humanUserId,
+    });
+    expect(wakeupRequest?.status).toBe("queued");
+    expect(wakeupRequest?.runId).toEqual(expect.any(String));
+
+    const [run] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, wakeupRequest!.runId!));
+    expect(run).toMatchObject({ agentId, companyId, status: "queued" });
   });
 });

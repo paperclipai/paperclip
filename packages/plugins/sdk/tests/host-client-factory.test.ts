@@ -231,4 +231,78 @@ describe("createHostClientHandlers invocation company scope", () => {
     ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
     expect(searchAudit).not.toHaveBeenCalled();
   });
+
+  it("rejects a human-attributed createComment call when only issue.comments.create is granted", async () => {
+    const createComment = vi.fn(async () => ({ id: "comment-1" }));
+    const services = {
+      issues: { createComment },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.comments.create"],
+      services,
+    });
+    const context = { invocationScope: { companyId: "company-a" } };
+
+    await expect(
+      handlers["issues.createComment"]({
+        issueId: "issue-a",
+        body: "hello",
+        companyId: "company-a",
+        actorUserId: "user-a",
+      }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(createComment).not.toHaveBeenCalled();
+  });
+
+  it("allows a human-attributed createComment call once issue.comments.create_human_attributed is also granted", async () => {
+    const createComment = vi.fn(async () => ({ id: "comment-1" }));
+    const services = {
+      issues: { createComment },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.comments.create", "issue.comments.create_human_attributed"],
+      services,
+    });
+    const context = { invocationScope: { companyId: "company-a" } };
+
+    await expect(
+      handlers["issues.createComment"]({
+        issueId: "issue-a",
+        body: "hello",
+        companyId: "company-a",
+        actorUserId: "user-a",
+      }, context),
+    ).resolves.toEqual({ id: "comment-1" });
+    expect(createComment).toHaveBeenCalledWith({
+      issueId: "issue-a",
+      body: "hello",
+      companyId: "company-a",
+      actorUserId: "user-a",
+    });
+  });
+
+  it("still allows a plain agent-attributed createComment call without the human-attribution capability", async () => {
+    const createComment = vi.fn(async () => ({ id: "comment-2" }));
+    const services = {
+      issues: { createComment },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.comments.create"],
+      services,
+    });
+    const context = { invocationScope: { companyId: "company-a" } };
+
+    await expect(
+      handlers["issues.createComment"]({
+        issueId: "issue-a",
+        body: "hello",
+        companyId: "company-a",
+        authorAgentId: "agent-a",
+      }, context),
+    ).resolves.toEqual({ id: "comment-2" });
+    expect(createComment).toHaveBeenCalled();
+  });
 });
