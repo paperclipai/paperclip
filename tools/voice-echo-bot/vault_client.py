@@ -19,7 +19,7 @@ class VaultError(Exception):
     """Vault-Lookup-Dienst nicht erreichbar oder Antwort unbrauchbar."""
 
 
-def lookup(mode, query, vault=None, url=VAULT_LOOKUP_URL, timeout=30):
+def lookup(mode, query, vault=None, url=VAULT_LOOKUP_URL, timeout=60):
     """Ruft den Vault-Lookup-Dienst auf und gibt das JSON-dict zurück.
 
     `vault` (z.B. "clara") wählt den Mandanten-Vault; fehlt er, gilt serverseitig

@@ -184,7 +184,11 @@ def lookup_dokument(query, cfg, limit=6):
     if not toks:
         return []
     score = Counter()
-    for tok in toks[:6]:
+    # Token-Cap bewusst niedrig (4): jede Runde ist ein rg-Vollscan; über den
+    # Clara-SMB-Mount kostet ein Token ~6-7s. 4 Tokens × rg + Snippets bleibt
+    # unter dem 60s-Client-Timeout (vault_client.lookup). Recall-Verlust nur bei
+    # sehr langen Anfragen (>4 sinnvolle Begriffe), praktisch selten.
+    for tok in toks[:4]:
         try:
             r = subprocess.run([_RG, "-li", "--no-messages", "-g", "*.md", tok, base],
                                capture_output=True, text=True, timeout=20)
