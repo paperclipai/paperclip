@@ -95,6 +95,7 @@ import {
   HelpCircle,
   FolderOpen,
   AlertTriangle,
+  Lock,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -2058,7 +2059,12 @@ function ConfigurationTab({
               </div>
               <div className="flex items-center justify-between gap-4 text-sm">
                 <div className="space-y-1">
-                  <div>Can assign tasks</div>
+                  <div className="flex items-center gap-1.5">
+                    <span>Can assign tasks</span>
+                    {taskAssignLocked ? (
+                      <Lock className="h-3 w-3 text-muted-foreground" aria-label="Derived — locked" />
+                    ) : null}
+                  </div>
                   <p className="text-xs text-muted-foreground">{taskAssignHint}</p>
                 </div>
                 <ToggleSwitch

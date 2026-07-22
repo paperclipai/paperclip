@@ -454,6 +454,8 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
 
           {rows.map((row, index) => {
             const issue = validateName(row.name, duplicateNames, reservedPrefixes);
+            const trimmedName = row.name.trim();
+            const reserved = trimmedName.length > 0 && reservedPrefixes.some((prefix) => prefix && trimmedName.startsWith(prefix));
             const touched = touchedNames.has(row.name.trim());
             return (
               <EnvironmentVariableRow
@@ -464,6 +466,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 userSecretDefinitions={userSecretDefinitions}
                 recentlyUsedSecrets={recentlyUsedSecrets}
                 disabled={disabled}
+                reserved={reserved}
                 nameIssue={issue}
                 showNameIssue={touched}
                 dirtyFields={rowDirtyFields(row, committedRowsById.get(row.id))}

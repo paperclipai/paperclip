@@ -26,6 +26,17 @@ export const TRUST_PRESET_DESCRIPTIONS: Record<TrustPreset, string> = {
     "Contained for hostile or untrusted input. Narrow Paperclip API, quarantined output. Use for PR review and external-content triage.",
 };
 
+/**
+ * Plain-language consequence copy shown on the trust-preset radio cards
+ * (wireframe 06). SecurityEngineer owns the final wording (PAP-14947) — keep
+ * this in sync with the wireframe rather than inventing new text inline.
+ */
+export const TRUST_PRESET_CONSEQUENCES: Record<TrustPreset, string> = {
+  standard: "Reads and acts on all company work objects it's assigned. Default for trusted teammates.",
+  low_trust_review:
+    "Confined to a boundary you pick below; writes require review. For experimental or externally-sourced agents.",
+};
+
 export function getTrustPreset(permissions: Partial<AgentPermissions> | null | undefined): TrustPreset {
   return permissions?.trustPreset === LOW_TRUST_REVIEW_PRESET ? LOW_TRUST_REVIEW_PRESET : DEFAULT_TRUST_PRESET;
 }

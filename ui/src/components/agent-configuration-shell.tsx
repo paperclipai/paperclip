@@ -4,6 +4,14 @@ import type { Agent, AgentEnvConfig } from "@paperclipai/shared";
 import { adapterLabels, help } from "./agent-config-primitives";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "../lib/utils";
+import { CADENCE_UNIT_LABELS, secondsToCadence } from "../lib/cadence";
+
+/** Humanized cadence for the effective-config chip, e.g. "Every 5 minutes". */
+function formatCadenceSummary(intervalSec: number): string {
+  const { value, unit } = secondsToCadence(intervalSec);
+  const unitLabel = value === 1 ? CADENCE_UNIT_LABELS[unit].replace(/s$/, "") : CADENCE_UNIT_LABELS[unit];
+  return `Every ${value} ${unitLabel}`;
+}
 
 export type AgentConfigurationSectionId =
   | "runtime"
@@ -148,7 +156,7 @@ export function resolveEffectiveConfiguration(agent: Agent, apiKeyCount = 0) {
     cheapInherited: !readString(cheapConfig.model),
     environment: agent.defaultEnvironmentId ? "Override" : "Company default",
     environmentInherited: !agent.defaultEnvironmentId,
-    cadence: heartbeat.enabled === true ? `Every ${Number(heartbeat.intervalSec ?? 300)} sec` : "On demand",
+    cadence: heartbeat.enabled === true ? formatCadenceSummary(Number(heartbeat.intervalSec ?? 300)) : "On demand",
     trust: agent.permissions?.trustPreset === "low_trust_review" ? "Low-trust review" : "Standard",
     apiKeyCount,
     environmentVariableCount: Object.keys(env).length,
