@@ -27,6 +27,34 @@ BRAIN_TOKEN = os.environ.get(
     "5bc3675e4fc5e83977107dce675e2fde2038fda0b70b818f24aa99dbf90fe764",
 )
 
+
+def _token(env_name, default):
+    return os.environ.get(env_name, default)
+
+
+VAULTS = {
+    "whitestag": {
+        "path": os.path.expanduser("~/Obsidian/WHITESTAG-Vault"),
+        "brain_url": "http://localhost:7777/",
+        "brain_token": _token(
+            "BRAIN_TOKEN",
+            "5bc3675e4fc5e83977107dce675e2fde2038fda0b70b818f24aa99dbf90fe764"),
+    },
+    "clara": {
+        "path": "/Volumes/homes/cw/Obsidian/Clara-Vault",
+        "brain_url": "http://localhost:7778/",
+        "brain_token": _token(
+            "BRAIN_TOKEN_CLARA",
+            "ad3cae15e8264696f5943ded6cf9edba2ff9de14a12a9b49a1f3ea5a0019d03e"),
+    },
+}
+DEFAULT_VAULT = "whitestag"
+
+
+def resolve_vault(vault):
+    """Liefert die Vault-Config; unbekannter/None-Wert -> Default (WHITESTAG)."""
+    return VAULTS.get(vault or DEFAULT_VAULT, VAULTS[DEFAULT_VAULT])
+
 _WORD = re.compile(r"[A-Za-zÄÖÜäöüß0-9.@-]{2,}")
 
 
