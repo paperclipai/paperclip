@@ -41,6 +41,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
   renderTemplate,
+  quoteForCmd,
   resolvePaperclipInstanceRootForAdapter,
   resolvePaperclipDesiredSkillNames,
   resolveWindowsCmdShell,
@@ -285,13 +286,13 @@ async function probeGeminiVersionOutput(bin: string, env: NodeJS.ProcessEnv): Pr
     windowsHide: true,
   };
   if (process.platform === "win32") {
-    // Pass `bin` as a discrete argument (not interpolated into the command
-    // string) so cmd.exe treats it as data; `geminiAcpCommandTokens` already
-    // constrains it to a whitespace-free path whose basename is `gemini`.
+    // `call <quoted-bin>` stops cmd.exe from reparsing metacharacters (e.g. `&`)
+    // in a configured path, and `windowsVerbatimArguments` preserves that quoting
+    // instead of letting Node re-escape the assembled command line.
     const { stdout } = await execFileAsync(
       resolveWindowsCmdShell(env),
-      ["/d", "/s", "/c", bin, "--version"],
-      options,
+      ["/d", "/s", "/c", `call ${quoteForCmd(bin)} --version`],
+      { ...options, windowsVerbatimArguments: true },
     );
     return stdout;
   }
