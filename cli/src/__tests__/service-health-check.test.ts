@@ -12,15 +12,19 @@ const config = {
 } as PaperclipConfig;
 
 let previousPaperclipHome: string | undefined;
+let previousServiceManaged: string | undefined;
 
 beforeEach(() => {
   previousPaperclipHome = process.env.PAPERCLIP_HOME;
+  previousServiceManaged = process.env.PAPERCLIP_SERVICE_MANAGED;
   process.env.PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-service-restart-"));
 });
 
 afterEach(() => {
   if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
   else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+  if (previousServiceManaged === undefined) delete process.env.PAPERCLIP_SERVICE_MANAGED;
+  else process.env.PAPERCLIP_SERVICE_MANAGED = previousServiceManaged;
 });
 
 function managerFixture(active = true) {
@@ -52,6 +56,15 @@ function managerFixture(active = true) {
 }
 
 describe("service health doctor checks", () => {
+  it("skips live service checks during the managed unit's own activation", async () => {
+    process.env.PAPERCLIP_SERVICE_MANAGED = "1";
+    const detect = vi.fn();
+    const probe = vi.fn();
+    await expect(serviceHealthChecks(config, { detect, probe })).resolves.toEqual([]);
+    expect(detect).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+  });
+
   it("skips exact version matching unless a restart version is explicit", () => {
     expect(resolveRestartExpectedVersion(null)).toBeNull();
     expect(resolveRestartExpectedVersion(undefined)).toBeNull();

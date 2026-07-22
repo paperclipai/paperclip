@@ -93,7 +93,15 @@ describe("managed install commands", () => {
       if (file === "curl" && !args.includes("--output")) return { stdout: JSON.stringify({ sha }), stderr: "" };
       if (file === "curl") { fs.writeFileSync(args[args.indexOf("--output") + 1], "archive"); return { stdout: "", stderr: "" }; }
       if (file === "tar") { const checkout = args[args.indexOf("-C") + 1]; fs.mkdirSync(path.join(checkout, "cli"), { recursive: true }); fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1" })); return { stdout: "", stderr: "" }; }
-      if (file === "corepack" || file === "bash") return { stdout: "", stderr: "" };
+      if (file === "corepack") {
+        if (args.includes("pack")) {
+          const destination = args[args.indexOf("--pack-destination") + 1];
+          const packageName = args.includes("packages/db") ? "paperclipai-db" : "paperclipai-server";
+          fs.writeFileSync(path.join(destination, `${packageName}-0.3.1.tgz`), "package");
+        }
+        return { stdout: "", stderr: "" };
+      }
+      if (file === "bash") return { stdout: "", stderr: "" };
       if (file === "npm" && args[0] === "pack") { fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], "paperclipai-0.3.1.tgz"), "package"); return { stdout: "", stderr: "" }; }
       if (file === "npm" && args[0] === "install") { const prefix = args[args.indexOf("--prefix") + 1]; const packageRoot = path.join(prefix, "node_modules", "paperclipai"); fs.mkdirSync(path.join(packageRoot, "dist"), { recursive: true }); fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ version: "0.3.1" })); fs.writeFileSync(path.join(packageRoot, "dist", "index.js"), "#!/usr/bin/env node\n"); return { stdout: "", stderr: "" }; }
       if (file === process.execPath) return { stdout: "0.3.1\n", stderr: "" };
@@ -105,7 +113,8 @@ describe("managed install commands", () => {
     expect(manifest).toMatchObject({ source: "git", repo: "HenkDz/paperclip", ref: "master", sha });
     expect(manifest?.payloadPath).toContain(path.join("git", sha.slice(0, 12)));
     expect(runCommand.mock.calls.filter(([command, args]) => command === "curl" && args.includes("--output"))).toHaveLength(1);
-    expect(runCommand.mock.calls.filter(([command]) => command === "corepack")).toHaveLength(1);
+    expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args[1] === "install")).toHaveLength(1);
+    expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args.includes("pack"))).toHaveLength(2);
   });
 
   it("installs through the shim, reports provenance, and uninstalls without deleting user data", async () => {
