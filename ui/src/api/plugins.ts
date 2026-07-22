@@ -98,6 +98,35 @@ export interface PluginDashboardJobRun {
   createdAt: string;
 }
 
+export interface PluginDashboardJobRunCounts {
+  total: number;
+  succeeded: number;
+  failed: number;
+  pending: number;
+  queued: number;
+  running: number;
+  cancelled: number;
+}
+
+export interface PluginDashboardJobRunHealth {
+  last24Hours: PluginDashboardJobRunCounts;
+  last7Days: PluginDashboardJobRunCounts;
+  latestFailure: {
+    jobKey?: string;
+    createdAt: string;
+    error: string | null;
+  } | null;
+}
+
+export interface PluginDashboardScheduledJob {
+  id: string;
+  jobKey: string;
+  schedule: string;
+  status: string;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+}
+
 /**
  * A recent webhook delivery entry returned in the dashboard response.
  */
@@ -124,6 +153,10 @@ export interface PluginDashboardData {
   worker: PluginWorkerDiagnostics | null;
   /** Recent job execution history (newest first, max 10). */
   recentJobRuns: PluginDashboardJobRun[];
+  /** Exact SQL-backed outcome totals; null when job persistence is unavailable. */
+  jobRunHealth: PluginDashboardJobRunHealth | null;
+  /** Complete scheduled-job inventory for operator visibility and controls. */
+  scheduledJobs: PluginDashboardScheduledJob[];
   /** Recent inbound webhook deliveries (newest first, max 10). */
   recentWebhookDeliveries: PluginDashboardWebhookDelivery[];
   /** Current health check results. */
@@ -296,6 +329,17 @@ export const pluginsApi = {
    */
   dashboard: (pluginId: string) =>
     api.get<PluginDashboardData>(`/plugins/${pluginId}/dashboard`),
+
+  /**
+   * Manually dispatch one active scheduled job.
+   *
+   * The settings UI guards this with an explicit side-effect confirmation.
+   */
+  triggerJob: (pluginId: string, jobId: string) =>
+    api.post<{ runId: string; jobId: string }>(
+      `/plugins/${pluginId}/jobs/${jobId}/trigger`,
+      {},
+    ),
 
   /**
    * Fetch recent log entries for a plugin.

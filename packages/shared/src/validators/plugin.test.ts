@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { PLUGIN_CAPABILITIES } from "../constants.js";
-import { pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
+import {
+  pluginLauncherDeclarationSchema,
+  pluginManagedRoutineDeclarationSchema,
+  pluginManifestV1Schema,
+  pluginUiSlotDeclarationSchema,
+} from "./plugin.js";
 
 describe("plugin capability constants", () => {
   it("exposes each capability once", () => {
@@ -36,6 +41,41 @@ describe("plugin manifest validators", () => {
     });
 
     expect(parsed.capabilities).toEqual(["ui.dashboardWidget.register"]);
+  });
+});
+
+describe("plugin launcher badge validators", () => {
+  it("accepts a live numeric badge declaration", () => {
+    const parsed = pluginLauncherDeclarationSchema.parse({
+      id: "approval-inbox",
+      displayName: "Approval inbox",
+      placementZone: "sidebar",
+      badge: {
+        dataKey: "pending-approvals",
+        valuePath: "summary.pending",
+        label: "pending decisions",
+        refreshIntervalMs: 3000,
+      },
+      action: { type: "navigate", target: "approvals" },
+    });
+
+    expect(parsed.badge?.valuePath).toBe("summary.pending");
+  });
+
+  it("rejects unsafe badge paths and aggressive polling", () => {
+    const parsed = pluginLauncherDeclarationSchema.safeParse({
+      id: "approval-inbox",
+      displayName: "Approval inbox",
+      placementZone: "sidebar",
+      badge: {
+        dataKey: "pending-approvals",
+        valuePath: "__proto__.count",
+        refreshIntervalMs: 100,
+      },
+      action: { type: "navigate", target: "approvals" },
+    });
+
+    expect(parsed.success).toBe(false);
   });
 });
 

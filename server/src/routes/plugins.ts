@@ -2005,10 +2005,58 @@ export function pluginRoutes(
       });
     }
 
+    // Check 5: Ask the running worker for plugin-defined diagnostics. Lifecycle
+    // readiness only proves that the worker started; it says nothing about the
+    // external systems the plugin needs in order to do useful work.
+    let workerHealthy = true;
+    if (plugin.status === "ready" && bridgeDeps) {
+      if (!bridgeDeps.workerManager.isRunning(plugin.id)) {
+        workerHealthy = false;
+        checks.push({
+          name: "worker",
+          passed: false,
+          message: "Plugin is ready in the registry, but its worker is not running",
+        });
+      } else {
+        try {
+          const diagnostics = await bridgeDeps.workerManager.call(plugin.id, "health", {});
+          workerHealthy = diagnostics.status === "ok";
+          const detailText = diagnostics.details && typeof diagnostics.details === "object"
+            ? Object.entries(diagnostics.details)
+                .map(([key, value]) => `${key}: ${String(value)}`)
+                .join(" · ")
+            : "";
+          checks.push({
+            name: "worker",
+            passed: workerHealthy,
+            message: [diagnostics.message, detailText].filter(Boolean).join(" — ") || `Worker reported ${diagnostics.status}`,
+          });
+        } catch (err) {
+          if (
+            err instanceof JsonRpcCallError &&
+            err.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
+          ) {
+            checks.push({
+              name: "worker",
+              passed: true,
+              message: "Worker is running; plugin does not provide custom diagnostics",
+            });
+          } else {
+            workerHealthy = false;
+            checks.push({
+              name: "worker",
+              passed: false,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      }
+    }
+
     const result: PluginHealthCheckResult = {
       pluginId: plugin.id,
       status: plugin.status,
-      healthy: isHealthy && hasValidManifest && hasNoError,
+      healthy: isHealthy && hasValidManifest && hasNoError && workerHealthy,
       checks,
       lastError: plugin.lastError ?? undefined,
     };
@@ -2131,7 +2179,10 @@ export function pluginRoutes(
    * Errors: 404 if plugin not found
    */
   router.get("/plugins/:pluginId/config", async (req, res) => {
-    assertBoardOrgAccess(req);
+    // Instance configuration can contain direct credential fallbacks for
+    // plugins that cannot use company-scoped secret references yet. Reading
+    // it must therefore be protected by the same boundary as writing it.
+    assertInstanceAdmin(req);
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
@@ -2868,13 +2919,53 @@ export function pluginRoutes(
       finishedAt: string | null;
       createdAt: string;
     }> = [];
+    let jobRunHealth: {
+      last24Hours: Awaited<ReturnType<PluginJobStore["summarizeRunsByPlugin"]>>;
+      last7Days: Awaited<ReturnType<PluginJobStore["summarizeRunsByPlugin"]>>;
+      latestFailure: {
+        jobKey?: string;
+        createdAt: string;
+        error: string | null;
+      } | null;
+    } | null = null;
+    let scheduledJobs: Array<{
+      id: string;
+      jobKey: string;
+      schedule: string;
+      status: string;
+      lastRunAt: string | null;
+      nextRunAt: string | null;
+    }> = [];
 
     if (jobDeps) {
       try {
-        const runs = await jobDeps.jobStore.listRunsByPlugin(plugin.id, undefined, 10);
+        const now = Date.now();
+        const [runs, jobs, last24Hours, last7Days, failures] = await Promise.all([
+          jobDeps.jobStore.listRunsByPlugin(plugin.id, undefined, 10),
+          jobDeps.jobStore.listJobs(plugin.id),
+          jobDeps.jobStore.summarizeRunsByPlugin(
+            plugin.id,
+            new Date(now - 24 * 60 * 60 * 1000),
+          ),
+          jobDeps.jobStore.summarizeRunsByPlugin(
+            plugin.id,
+            new Date(now - 7 * 24 * 60 * 60 * 1000),
+          ),
+          jobDeps.jobStore.listRunsByPlugin(plugin.id, "failed", 1),
+        ]);
         // Also fetch job definitions so we can include jobKey
-        const jobs = await jobDeps.jobStore.listJobs(plugin.id);
         const jobKeyMap = new Map(jobs.map((j) => [j.id, j.jobKey]));
+        scheduledJobs = jobs.map((job) => ({
+          id: job.id,
+          jobKey: job.jobKey,
+          schedule: job.schedule,
+          status: job.status,
+          lastRunAt:
+            job.lastRunAt && new Date(job.lastRunAt).getTime() > 0
+              ? new Date(job.lastRunAt).toISOString()
+              : null,
+          nextRunAt: job.nextRunAt ? new Date(job.nextRunAt).toISOString() : null,
+        }));
 
         recentJobRuns = runs
           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
@@ -2890,6 +2981,18 @@ export function pluginRoutes(
             finishedAt: r.finishedAt ? new Date(r.finishedAt).toISOString() : null,
             createdAt: new Date(r.createdAt).toISOString(),
           }));
+        const latestFailure = failures[0];
+        jobRunHealth = {
+          last24Hours,
+          last7Days,
+          latestFailure: latestFailure
+            ? {
+                jobKey: jobKeyMap.get(latestFailure.jobId) ?? undefined,
+                createdAt: new Date(latestFailure.createdAt).toISOString(),
+                error: latestFailure.error,
+              }
+            : null,
+        };
       } catch {
         // Job data unavailable — leave empty
       }
@@ -2982,6 +3085,8 @@ export function pluginRoutes(
       pluginId: plugin.id,
       worker,
       recentJobRuns,
+      jobRunHealth,
+      scheduledJobs,
       recentWebhookDeliveries,
       health,
       checkedAt: new Date().toISOString(),

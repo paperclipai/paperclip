@@ -402,6 +402,20 @@ export interface PluginLauncherRenderDeclaration {
 }
 
 /**
+ * Optional live numeric badge sourced from the plugin's own data handler.
+ */
+export interface PluginLauncherBadgeDeclaration {
+  /** Plugin data key queried through the normal authenticated bridge. */
+  dataKey: string;
+  /** Dot-separated numeric field path in the returned data, for example "count". */
+  valuePath: string;
+  /** Accessible noun appended to the value, for example "pending decisions". */
+  label?: string;
+  /** Refresh cadence for the small badge query. */
+  refreshIntervalMs?: number;
+}
+
+/**
  * Serializable runtime snapshot of the host launcher/container environment.
  */
 export interface PluginLauncherRenderContextSnapshot {
@@ -435,6 +449,8 @@ export interface PluginLauncherDeclaration {
   entityTypes?: PluginUiSlotEntityType[];
   /** Optional ordering hint within the placement zone. */
   order?: number;
+  /** Optional live numeric badge for navigation launchers. */
+  badge?: PluginLauncherBadgeDeclaration;
   /** What should happen when the launcher is activated. */
   action: PluginLauncherActionDeclaration;
   /** Optional render/container hints for the launched destination. */

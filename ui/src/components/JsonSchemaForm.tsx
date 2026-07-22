@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useId, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -122,6 +122,25 @@ export function resolveType(schema: JsonSchemaNode): string {
     return schema.type.find((t) => t !== "null") ?? "string";
   }
   return schema.type ?? "string";
+}
+
+const SENSITIVE_FIELD_PATTERN =
+  /(?:api[\s_-]*key|api[\s_-]*token|client[\s_-]*secret|connection[\s_-]*url|database[\s_-]*url|private[\s_-]*key|refresh[\s_-]*token|access[\s_-]*token|bearer[\s_-]*token|secret|token|password|postgres)/i;
+
+export function isSensitiveSchemaField(fieldKey: string, schema: JsonSchemaNode): boolean {
+  if (schema.format === "secret-ref" || schema.writeOnly === true) return true;
+
+  const haystack = [fieldKey, schema.title, schema.description]
+    .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+    .join(" ");
+  if (!SENSITIVE_FIELD_PATTERN.test(haystack)) return false;
+
+  // Avoid masking ordinary public URLs unless the field also looks credential-like.
+  if (/\burl\b/i.test(fieldKey) && !/(api|token|secret|password|database|postgres|private|refresh|access|connection)/i.test(haystack)) {
+    return false;
+  }
+
+  return true;
 }
 
 /** Human-readable label from schema title or property key. */
@@ -331,6 +350,7 @@ export function getDefaultValues(schema: JsonSchemaNode): Record<string, unknown
 // ---------------------------------------------------------------------------
 
 interface FieldWrapperProps {
+  htmlFor?: string;
   label: string;
   description?: string;
   required?: boolean;
@@ -343,6 +363,7 @@ interface FieldWrapperProps {
  * Common wrapper for form fields that handles labels, descriptions, and error messages.
  */
 const FieldWrapper = React.memo(({
+  htmlFor,
   label,
   description,
   required,
@@ -354,7 +375,7 @@ const FieldWrapper = React.memo(({
     <div className={cn("space-y-2", disabled && "opacity-60")}>
       <div className="flex items-center justify-between">
         {label && (
-          <Label className="text-sm font-medium">
+          <Label htmlFor={htmlFor} className="text-sm font-medium">
             {label}
             {required && <span className="ml-1 text-destructive">*</span>}
           </Label>
@@ -385,6 +406,7 @@ interface FormFieldProps {
   isRequired?: boolean;
   errors: Record<string, string>; // needed for recursion
   path: string; // needed for recursion error filtering
+  fieldKey?: string;
 }
 
 /**
@@ -442,6 +464,7 @@ BooleanField.displayName = "BooleanField";
  * Specialized field for enum (select) values.
  */
 const EnumField = React.memo(({
+  id,
   value,
   onChange,
   disabled,
@@ -451,6 +474,7 @@ const EnumField = React.memo(({
   error,
   options,
 }: {
+  id: string;
   value: unknown;
   onChange: (val: unknown) => void;
   disabled: boolean;
@@ -461,6 +485,7 @@ const EnumField = React.memo(({
   options: unknown[];
 }) => (
   <FieldWrapper
+    htmlFor={id}
     label={label}
     description={description}
     required={isRequired}
@@ -472,7 +497,7 @@ const EnumField = React.memo(({
       onValueChange={onChange}
       disabled={disabled}
     >
-      <SelectTrigger className="w-full">
+      <SelectTrigger id={id} className="w-full">
         <SelectValue placeholder="Select an option" />
       </SelectTrigger>
       <SelectContent>
@@ -495,6 +520,8 @@ EnumField.displayName = "EnumField";
  * converts to a stored secret on save.
  */
 const SecretField = React.memo(({
+  id,
+  allowSecretBinding,
   value,
   onChange,
   disabled,
@@ -505,6 +532,8 @@ const SecretField = React.memo(({
   defaultValue,
   maxLength,
 }: {
+  id: string;
+  allowSecretBinding: boolean;
   value: unknown;
   onChange: (val: unknown) => void;
   disabled: boolean;
@@ -520,7 +549,7 @@ const SecretField = React.memo(({
 
   const stringValue = typeof value === "string" ? value : "";
   const trimmed = stringValue.trim();
-  const isBoundToSecret = trimmed.length > 0 && isUuidLike(trimmed);
+  const isBoundToSecret = allowSecretBinding && trimmed.length > 0 && isUuidLike(trimmed);
   const hasRawValue = stringValue.length > 0 && !isBoundToSecret;
 
   const [showRawInput, setShowRawInput] = useState(hasRawValue);
@@ -554,6 +583,10 @@ const SecretField = React.memo(({
     <div className="relative">
       {isVisible ? (
         <Textarea
+          id={id}
+          autoComplete="new-password"
+          autoCapitalize="none"
+          spellCheck={false}
           value={stringValue}
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
@@ -563,6 +596,10 @@ const SecretField = React.memo(({
         />
       ) : (
         <Textarea
+          id={id}
+          autoComplete="new-password"
+          autoCapitalize="none"
+          spellCheck={false}
           // Render a placeholder summary instead of the secret content while
           // hidden. This avoids exposing multi-line secrets (e.g. SSH
           // private keys) on screen-shares; clicking the eye toggle reveals
@@ -600,7 +637,11 @@ const SecretField = React.memo(({
   ) : (
     <div className="relative">
       <Input
+        id={id}
         type={isVisible ? "text" : "password"}
+        autoComplete="new-password"
+        autoCapitalize="none"
+        spellCheck={false}
         value={stringValue}
         onChange={(e) => onChange(e.target.value)}
         placeholder={String(defaultValue ?? "")}
@@ -630,26 +671,34 @@ const SecretField = React.memo(({
 
   return (
     <FieldWrapper
+      htmlFor={id}
       label={label}
       description={
         description ||
-        "Pick an existing company secret, or paste a raw value (Paperclip will store it as a secret on save)."
+        (allowSecretBinding
+          ? "Pick an existing company secret, or paste a raw value (Paperclip will store it as a secret on save)."
+          : "Sensitive value. It remains masked unless you explicitly reveal it.")
       }
       required={isRequired}
       error={error}
       disabled={disabled}
     >
       <div className="space-y-2">
-        <SecretBindingPicker
-          value={bindingValue}
-          onChange={handlePickerChange}
-          label=""
-          placeholder="Select an existing secret"
-          allowVersionSelector={false}
-          emptyHint="No active secrets yet. Create one or paste a raw value below."
-          disabled={disabled}
-        />
-        {!isBoundToSecret ? (
+        {allowSecretBinding ? (
+          <SecretBindingPicker
+            value={bindingValue}
+            onChange={handlePickerChange}
+            label=""
+            placeholder="Select an existing secret"
+            allowVersionSelector={false}
+            emptyHint="No active secrets yet. Create one or paste a raw value below."
+            disabled={disabled}
+          />
+        ) : null}
+        {!allowSecretBinding || !isBoundToSecret ? (
+          !allowSecretBinding ? (
+            rawInput
+          ) :
           showRawInput ? (
             <div className="space-y-1">
               {rawInput}
@@ -689,6 +738,7 @@ SecretField.displayName = "SecretField";
  * Specialized field for numeric (number/integer) values.
  */
 const NumberField = React.memo(({
+  id,
   value,
   onChange,
   disabled,
@@ -699,6 +749,7 @@ const NumberField = React.memo(({
   defaultValue,
   type,
 }: {
+  id: string;
   value: unknown;
   onChange: (val: unknown) => void;
   disabled: boolean;
@@ -710,6 +761,7 @@ const NumberField = React.memo(({
   type: "number" | "integer";
 }) => (
   <FieldWrapper
+    htmlFor={id}
     label={label}
     description={description}
     required={isRequired}
@@ -717,6 +769,7 @@ const NumberField = React.memo(({
     disabled={disabled}
   >
     <Input
+      id={id}
       type="number"
       step={type === "integer" ? "1" : "any"}
       value={value !== undefined ? String(value) : ""}
@@ -737,6 +790,7 @@ NumberField.displayName = "NumberField";
  * Specialized field for string values, rendering either an Input or Textarea based on length or format.
  */
 const StringField = React.memo(({
+  id,
   value,
   onChange,
   disabled,
@@ -748,6 +802,7 @@ const StringField = React.memo(({
   format,
   maxLength,
 }: {
+  id: string;
   value: unknown;
   onChange: (val: unknown) => void;
   disabled: boolean;
@@ -762,6 +817,7 @@ const StringField = React.memo(({
   const isTextArea = format === "textarea" || (maxLength && maxLength > TEXTAREA_THRESHOLD);
   return (
     <FieldWrapper
+      htmlFor={id}
       label={label}
       description={description}
       required={isRequired}
@@ -770,6 +826,7 @@ const StringField = React.memo(({
     >
       {isTextArea ? (
         <Textarea
+          id={id}
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
@@ -779,6 +836,7 @@ const StringField = React.memo(({
         />
       ) : (
         <Input
+          id={id}
           type="text"
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
@@ -992,15 +1050,18 @@ const FormField = React.memo(({
   isRequired,
   errors,
   path,
+  fieldKey,
 }: FormFieldProps) => {
+  const controlId = useId();
   const type = resolveType(propSchema);
   const isReadOnly = disabled || propSchema.readOnly === true;
+  const isSensitive = type === "string" && isSensitiveSchemaField(fieldKey ?? path, propSchema);
 
   switch (type) {
     case "boolean":
       return (
         <BooleanField
-          id={path}
+          id={controlId}
           value={value}
           onChange={onChange}
           disabled={isReadOnly}
@@ -1014,6 +1075,7 @@ const FormField = React.memo(({
     case "enum":
       return (
         <EnumField
+          id={controlId}
           value={value}
           onChange={onChange}
           disabled={isReadOnly}
@@ -1028,6 +1090,8 @@ const FormField = React.memo(({
     case "secret-ref":
       return (
         <SecretField
+          id={controlId}
+          allowSecretBinding
           value={value}
           onChange={onChange}
           disabled={isReadOnly}
@@ -1044,6 +1108,7 @@ const FormField = React.memo(({
     case "integer":
       return (
         <NumberField
+          id={controlId}
           value={value}
           onChange={onChange}
           disabled={isReadOnly}
@@ -1084,8 +1149,26 @@ const FormField = React.memo(({
       );
 
     default: // string
+      if (isSensitive) {
+        return (
+          <SecretField
+            id={controlId}
+            allowSecretBinding={false}
+            value={value}
+            onChange={onChange}
+            disabled={isReadOnly}
+            label={label}
+            isRequired={isRequired}
+            description={propSchema.description}
+            error={error}
+            defaultValue={propSchema.default}
+            maxLength={typeof propSchema.maxLength === "number" ? propSchema.maxLength : undefined}
+          />
+        );
+      }
       return (
         <StringField
+          id={controlId}
           value={value}
           onChange={onChange}
           disabled={isReadOnly}
@@ -1248,6 +1331,7 @@ export function JsonSchemaForm({
         isRequired={isRequired}
         errors={errors}
         path={path}
+        fieldKey={key}
       />
     );
   };

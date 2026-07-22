@@ -12,16 +12,15 @@ function sendNestedHostRequest(originalRequest, invocationId) {
   const params = originalRequest.params?.params ?? {};
   const mode = params.mode;
   const requestedCompanyId = params.requestedCompanyId;
+  const isGlobalJob = originalRequest.method === "runJob";
   const nestedRequest = {
     jsonrpc: "2.0",
     id: nestedId,
-    method: "companies.get",
-    params: {
-      companyId: requestedCompanyId,
-    },
+    method: isGlobalJob ? "companies.list" : "companies.get",
+    params: isGlobalJob ? {} : { companyId: requestedCompanyId },
   };
 
-  if (mode === "echo") {
+  if (mode === "echo" || isGlobalJob) {
     nestedRequest.paperclipInvocationId = invocationId;
   } else if (mode === "unknown") {
     nestedRequest.paperclipInvocationId = "unknown-invocation";
@@ -68,13 +67,13 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["getData", "performAction"],
+        supportedMethods: ["getData", "performAction", "runJob"],
       },
     });
     return;
   }
 
-  if (method === "getData" || method === "performAction") {
+  if (method === "getData" || method === "performAction" || method === "runJob") {
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
   }

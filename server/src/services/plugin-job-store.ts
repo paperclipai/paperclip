@@ -30,7 +30,7 @@
  * @see PLUGIN_SPEC.md §21.3 — `plugin_jobs` / `plugin_job_runs` tables
  */
 
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { plugins, pluginJobs, pluginJobRuns } from "@paperclipai/db";
 import type {
@@ -457,6 +457,60 @@ export function pluginJobStore(db: Db) {
         .where(and(...conditions))
         .orderBy(desc(pluginJobRuns.createdAt))
         .limit(limit);
+    },
+
+    /**
+     * Aggregate run outcomes for one plugin since a caller-supplied boundary.
+     * This is intentionally computed in SQL rather than by truncating recent
+     * history in memory: high-frequency jobs can exceed the dashboard's row
+     * limit within hours.
+     */
+    async summarizeRunsByPlugin(
+      pluginId: string,
+      since: Date,
+    ): Promise<{
+      total: number;
+      succeeded: number;
+      failed: number;
+      pending: number;
+      queued: number;
+      running: number;
+      cancelled: number;
+    }> {
+      const rows = await db
+        .select({
+          status: pluginJobRuns.status,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(pluginJobRuns)
+        .where(
+          and(
+            eq(pluginJobRuns.pluginId, pluginId),
+            gte(pluginJobRuns.createdAt, since),
+          ),
+        )
+        .groupBy(pluginJobRuns.status);
+
+      const counts = {
+        total: 0,
+        succeeded: 0,
+        failed: 0,
+        pending: 0,
+        queued: 0,
+        running: 0,
+        cancelled: 0,
+      };
+      for (const row of rows) {
+        const count = Number(row.count);
+        counts.total += count;
+        if (row.status === "succeeded") counts.succeeded += count;
+        else if (row.status === "failed") counts.failed += count;
+        else if (row.status === "pending") counts.pending += count;
+        else if (row.status === "queued") counts.queued += count;
+        else if (row.status === "running") counts.running += count;
+        else if (row.status === "cancelled") counts.cancelled += count;
+      }
+      return counts;
     },
   };
 }

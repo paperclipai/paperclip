@@ -754,13 +754,16 @@ function DefaultLauncherTrigger({
   displayName,
   launcher,
   placementZone,
+  hostContext,
   onClick,
 }: {
   displayName?: string;
   launcher: ResolvedPluginLauncher;
   placementZone: PluginLauncherPlacementZone;
+  hostContext: PluginLauncherContext;
   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 }) {
+  const label = displayName ?? launcher.displayName;
   return (
     <Button
       type="button"
@@ -769,8 +772,60 @@ function DefaultLauncherTrigger({
       className={launcherTriggerClassName(placementZone)}
       onClick={onClick}
     >
-      {displayName ?? launcher.displayName}
+      <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+      <PluginLauncherBadge launcher={launcher} hostContext={hostContext} />
     </Button>
+  );
+}
+
+export function readPluginLauncherBadgeValue(data: unknown, valuePath: string): number {
+  let current: unknown = data;
+  for (const segment of valuePath.split(".")) {
+    if (!current || typeof current !== "object") return 0;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  const value = typeof current === "number" ? current : Number(current);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function PluginLauncherBadge({
+  launcher,
+  hostContext,
+}: {
+  launcher: ResolvedPluginLauncher;
+  hostContext: PluginLauncherContext;
+}) {
+  const badge = launcher.badge;
+  const { data } = useQuery({
+    queryKey: [
+      "plugin-launcher-badge",
+      launcher.pluginId,
+      badge?.dataKey,
+      launcher.pluginVersion,
+      hostContext.companyId,
+    ],
+    queryFn: async () => {
+      if (!badge) return 0;
+      const response = await pluginsApi.bridgeGetData(
+        launcher.pluginId,
+        badge.dataKey,
+        undefined,
+        hostContext.companyId,
+      );
+      return readPluginLauncherBadgeValue(response.data, badge.valuePath);
+    },
+    enabled: Boolean(badge && hostContext.companyId),
+    refetchInterval: badge?.refreshIntervalMs ?? 3000,
+  });
+  const value = data ?? 0;
+  if (!badge || value <= 0) return null;
+  return (
+    <span
+      className="ml-auto rounded-full bg-primary px-1.5 py-0.5 text-xs leading-none text-primary-foreground"
+      aria-label={`${value} ${badge.label ?? "pending"}`}
+    >
+      {value}
+    </span>
   );
 }
 
@@ -817,6 +872,7 @@ export function PluginLauncherOutlet({
             displayName={launcherDisplayName(launcher, contributionsByPluginId.get(launcher.pluginId))}
             launcher={launcher}
             placementZone={launcher.placementZone}
+            hostContext={context}
             onClick={(event) => {
               const contribution = contributionsByPluginId.get(launcher.pluginId);
               if (!contribution) return;
@@ -851,6 +907,7 @@ export function PluginLauncherButton({
       <DefaultLauncherTrigger
         launcher={launcher}
         placementZone={launcher.placementZone}
+        hostContext={context}
         onClick={(event) => {
           event.preventDefault();
           onActivated?.();

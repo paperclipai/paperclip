@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
+import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save, Play } from "lucide-react";
 import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -19,8 +19,17 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
+import { useToastActions } from "@/context/ToastContext";
 import {
   JsonSchemaForm,
   validateJsonSchemaForm,
@@ -62,8 +71,14 @@ import {
 export function PluginSettings() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
   const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");
+  const [jobToTrigger, setJobToTrigger] = useState<{
+    id: string;
+    jobKey: string;
+  } | null>(null);
 
   const { data: plugin, isLoading: pluginLoading } = useQuery({
     queryKey: queryKeys.plugins.detail(pluginId!),
@@ -83,6 +98,28 @@ export function PluginSettings() {
     queryFn: () => pluginsApi.dashboard(pluginId!),
     enabled: !!pluginId,
     refetchInterval: 30000,
+  });
+
+  const triggerJobMutation = useMutation({
+    mutationFn: ({ jobId }: { jobId: string }) =>
+      pluginsApi.triggerJob(pluginId!, jobId),
+    onSuccess: (_result, variables) => {
+      const job = dashboardData?.scheduledJobs?.find((candidate) => candidate.id === variables.jobId);
+      pushToast({
+        tone: "success",
+        title: "Job dispatched",
+        body: `${job?.jobKey ?? "Scheduled job"} is running now.`,
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.plugins.dashboard(pluginId!) });
+      setJobToTrigger(null);
+    },
+    onError: (error: Error) => {
+      pushToast({
+        tone: "error",
+        title: "Job could not be dispatched",
+        body: error.message,
+      });
+    },
   });
 
   const { data: recentLogs } = useQuery({
@@ -347,6 +384,53 @@ export function PluginSettings() {
                           <CalendarClock className="h-3.5 w-3.5 text-muted-foreground" />
                           Recent Job Runs
                         </h3>
+                        {dashboardData.jobRunHealth ? (
+                          <div
+                            className={`mb-3 rounded-md border px-3 py-2 text-xs ${
+                              dashboardData.jobRunHealth.last24Hours.failed > 0
+                                ? "border-destructive/30 bg-destructive/5"
+                                : "border-green-500/20 bg-green-500/5"
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="flex items-center gap-1.5 font-medium text-foreground">
+                                {dashboardData.jobRunHealth.last24Hours.failed > 0 ? (
+                                  <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
+                                ) : (
+                                  <CheckCircle className="h-3.5 w-3.5 text-green-600" />
+                                )}
+                                24-hour reliability
+                              </span>
+                              <span className="text-muted-foreground">
+                                {dashboardData.jobRunHealth.last24Hours.succeeded} succeeded ·{" "}
+                                {dashboardData.jobRunHealth.last24Hours.failed} failed
+                              </span>
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-muted-foreground">
+                              <span>
+                                7 days: {dashboardData.jobRunHealth.last7Days.succeeded} succeeded ·{" "}
+                                {dashboardData.jobRunHealth.last7Days.failed} failed
+                              </span>
+                              {dashboardData.jobRunHealth.latestFailure ? (
+                                <span
+                                  className="min-w-0 max-w-full truncate sm:max-w-[28rem]"
+                                  title={[
+                                    dashboardData.jobRunHealth.latestFailure.createdAt,
+                                    dashboardData.jobRunHealth.latestFailure.error,
+                                  ].filter(Boolean).join(" — ")}
+                                >
+                                  Last failure: {dashboardData.jobRunHealth.latestFailure.jobKey ?? "unknown job"}{" "}
+                                  {formatRelativeTime(dashboardData.jobRunHealth.latestFailure.createdAt)}
+                                  {dashboardData.jobRunHealth.latestFailure.error
+                                    ? ` — ${dashboardData.jobRunHealth.latestFailure.error}`
+                                    : ""}
+                                </span>
+                              ) : (
+                                <span>No recorded failures</span>
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
                         {dashboardData.recentJobRuns.length > 0 ? (
                           <div className="space-y-2">
                             {dashboardData.recentJobRuns.map((run) => (
@@ -374,6 +458,65 @@ export function PluginSettings() {
                           <p className="text-sm text-muted-foreground italic">No job runs recorded yet.</p>
                         )}
                       </div>
+
+                      {(dashboardData.scheduledJobs?.length ?? 0) > 0 ? (
+                        <>
+                          <Separator />
+
+                          <div>
+                            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                              <h3 className="flex items-center gap-1.5 text-sm font-medium">
+                                <CalendarClock className="h-3.5 w-3.5 text-muted-foreground" />
+                                Scheduled Jobs
+                              </h3>
+                              <span className="text-xs text-muted-foreground">
+                                {dashboardData.scheduledJobs.length} configured
+                              </span>
+                            </div>
+                            <div className="space-y-2">
+                              {dashboardData.scheduledJobs.map((job) => (
+                                <div
+                                  key={job.id}
+                                  className="flex flex-col gap-2 rounded-md border border-border/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="flex min-w-0 items-center gap-2">
+                                      <JobStatusDot status={job.status} />
+                                      <span className="truncate font-mono text-xs" title={job.jobKey}>
+                                        {job.jobKey}
+                                      </span>
+                                      <Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px]">
+                                        {job.status}
+                                      </Badge>
+                                    </div>
+                                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                                      <span title={`Cron schedule: ${job.schedule}`}>{job.schedule}</span>
+                                      <span title={job.nextRunAt ?? undefined}>
+                                        Next: {formatJobTimestamp(job.nextRunAt)}
+                                      </span>
+                                      <span title={job.lastRunAt ?? undefined}>
+                                        Last: {job.lastRunAt ? formatRelativeTime(job.lastRunAt) : "never"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-8 shrink-0 self-start sm:self-auto"
+                                    disabled={job.status !== "active" || triggerJobMutation.isPending}
+                                    onClick={() => setJobToTrigger({ id: job.id, jobKey: job.jobKey })}
+                                    aria-label={`Run ${job.jobKey} now`}
+                                  >
+                                    <Play className="mr-1.5 h-3.5 w-3.5" />
+                                    Run now
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </>
+                      ) : null}
 
                       <Separator />
 
@@ -471,17 +614,22 @@ export function PluginSettings() {
                       <div className="flex items-center justify-between">
                         <span className="text-muted-foreground">Overall</span>
                         <Badge variant={healthData.healthy ? "default" : "destructive"}>
-                          {healthData.status}
+                          {healthData.healthy ? "Healthy" : "Needs attention"}
                         </Badge>
                       </div>
 
                       {healthData.checks.length > 0 ? (
                         <div className="space-y-2 border-t border-border/50 pt-2">
                           {healthData.checks.map((check, i) => (
-                            <div key={i} className="flex items-start justify-between gap-2">
-                              <span className="truncate text-muted-foreground" title={check.name}>
-                                {check.name}
-                              </span>
+                            <div key={i} className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-foreground">{check.name}</div>
+                                {check.message ? (
+                                  <div className="mt-0.5 break-words text-xs leading-5 text-muted-foreground">
+                                    {check.message}
+                                  </div>
+                                ) : null}
+                              </div>
                               {check.passed ? (
                                 <CheckCircle className="h-4 w-4 shrink-0 text-green-500" />
                               ) : (
@@ -542,30 +690,88 @@ export function PluginSettings() {
               </Card>
 
               <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-1.5">
-                    <ShieldAlert className="h-4 w-4" />
-                    Permissions
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {pluginCapabilities.length > 0 ? (
-                    <ul className="space-y-2 text-sm text-muted-foreground">
-                      {pluginCapabilities.map((cap) => (
-                        <li key={cap} className="rounded-md bg-muted/40 px-2.5 py-2 font-mono text-xs text-foreground/85">
-                          {cap}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-sm text-muted-foreground italic">No special permissions requested.</p>
-                  )}
-                </CardContent>
+                {pluginCapabilities.length > 0 ? (
+                  <details className="group">
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-6 py-6 outline-none">
+                      <CardTitle className="flex items-center gap-1.5 text-base">
+                        <ShieldAlert className="h-4 w-4" />
+                        Permissions
+                        <Badge variant="outline" className="ml-1">
+                          {pluginCapabilities.length}
+                        </Badge>
+                      </CardTitle>
+                      <span className="text-xs text-muted-foreground group-open:hidden">Show details</span>
+                      <span className="hidden text-xs text-muted-foreground group-open:inline">Hide details</span>
+                    </summary>
+                    <CardContent className="border-t pt-0">
+                      <ul className="space-y-2 text-sm text-muted-foreground">
+                        {pluginCapabilities.map((cap) => (
+                          <li key={cap} className="rounded-md bg-muted/40 px-2.5 py-2 font-mono text-xs text-foreground/85">
+                            {cap}
+                          </li>
+                        ))}
+                      </ul>
+                    </CardContent>
+                  </details>
+                ) : (
+                  <>
+                    <CardHeader>
+                      <CardTitle className="text-base flex items-center gap-1.5">
+                        <ShieldAlert className="h-4 w-4" />
+                        Permissions
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-sm text-muted-foreground italic">No special permissions requested.</p>
+                    </CardContent>
+                  </>
+                )}
               </Card>
             </div>
           </div>
         </TabsContent>
       </Tabs>
+
+      <Dialog
+        open={jobToTrigger !== null}
+        onOpenChange={(open) => {
+          if (!open && !triggerJobMutation.isPending) setJobToTrigger(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Run scheduled job now?</DialogTitle>
+            <DialogDescription>
+              <span className="font-mono text-foreground">{jobToTrigger?.jobKey}</span> will run outside its normal
+              schedule. Plugin jobs may write data, contact connected systems, or cause other side effects.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={triggerJobMutation.isPending}
+              onClick={() => setJobToTrigger(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={!jobToTrigger || triggerJobMutation.isPending}
+              onClick={() => {
+                if (jobToTrigger) triggerJobMutation.mutate({ jobId: jobToTrigger.id });
+              }}
+            >
+              {triggerJobMutation.isPending ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="mr-1.5 h-4 w-4" />
+              )}
+              {triggerJobMutation.isPending ? "Dispatching..." : "Run job"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1160,6 +1366,20 @@ function formatRelativeTime(isoString: string): string {
   return `${days}d ago`;
 }
 
+function formatJobTimestamp(isoString: string | null): string {
+  if (!isoString) return "not scheduled";
+  const timestamp = new Date(isoString).getTime();
+  if (!Number.isFinite(timestamp)) return "unknown";
+  const diffMs = timestamp - Date.now();
+  if (diffMs <= 0) return "due";
+  const minutes = Math.ceil(diffMs / 60000);
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.ceil(minutes / 60);
+  if (hours < 24) return `in ${hours}h`;
+  const days = Math.ceil(hours / 24);
+  return `in ${days}d`;
+}
+
 /**
  * Format a unix timestamp (ms since epoch) to a locale string.
  */
@@ -1172,13 +1392,13 @@ function formatTimestamp(epochMs: number): string {
  */
 function JobStatusDot({ status }: { status: string }) {
   const colorClass =
-    status === "success" || status === "succeeded"
+    status === "success" || status === "succeeded" || status === "active"
       ? "bg-green-500"
       : status === "failed"
         ? "bg-red-500"
         : status === "running"
           ? "bg-blue-500 animate-pulse"
-          : status === "cancelled"
+          : status === "cancelled" || status === "paused"
             ? "bg-gray-400"
             : "bg-amber-500"; // queued, pending
   return (

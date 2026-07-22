@@ -510,6 +510,12 @@ export function createPluginWorkerHandle(
   ): PluginInvocationScope | null {
     if (!isRecord(params)) return null;
 
+    // Scheduled plugin jobs are deliberately instance-wide and may enumerate
+    // companies. Give them an explicit host-issued global invocation token so
+    // nested host calls remain attributable even when tenant-scoped RPCs are
+    // running concurrently. A missing token still fails closed.
+    if (method === "runJob") return { companyId: null };
+
     const directCompanyId = readNonEmptyString(params.companyId);
     if (directCompanyId) return { companyId: directCompanyId };
 

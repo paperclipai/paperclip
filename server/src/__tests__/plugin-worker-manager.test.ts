@@ -275,6 +275,48 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("issues an explicit global invocation scope to scheduled jobs", async () => {
+    const companiesList = vi.fn(async (
+      _params: Record<string, never>,
+      context?: { invocationScope?: { companyId: string | null } | null },
+    ) => ({
+      scopePresent: context?.invocationScope !== undefined,
+      companyId: context?.invocationScope?.companyId ?? null,
+    }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {
+        "companies.list": companiesList as never,
+      },
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("runJob", {
+        job: {
+          jobKey: "global-sync",
+          runId: "run-1",
+          trigger: "schedule",
+          scheduledAt: new Date().toISOString(),
+        },
+      })).resolves.toEqual({ scopePresent: true, companyId: null });
+      expect(companiesList).toHaveBeenCalledWith(
+        {},
+        { invocationScope: { companyId: null } },
+      );
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("rejects performAction nested host calls that omit the invocation id", async () => {
     const handlers = createHostClientHandlers({
       pluginId: "test.plugin",

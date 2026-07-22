@@ -58,6 +58,11 @@ export function sidebarBadgeService(db: Db) {
             eq(heartbeatRuns.companyId, companyId),
             eq(agents.companyId, companyId),
             not(eq(agents.status, "terminated")),
+            // Exclude paused agents. A paused/parked
+            // agent's stale failed last-run is not actionable, and counting it
+            // made the inbox badge show a large number (dormant-agent noise)
+            // while the list — which only sees recent runs — showed nothing.
+            not(eq(agents.status, "paused")),
           ),
         )
         .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt));
