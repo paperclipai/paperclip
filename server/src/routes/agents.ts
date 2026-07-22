@@ -1465,6 +1465,29 @@ export function agentRoutes(
     );
   }
 
+  // LOOA-161: governance fields that only board/manager actors may set on an
+  // agent record. Agent keys — including an agent patching its own record —
+  // are blocked from touching these because they are spend-control and
+  // org-structure boundaries whose integrity must be managed by a human
+  // principal. `role` is intentionally omitted: it is gated separately through
+  // the change-consent gate (AGENT_PROFILE_CHANGE_CONSENT_FIELDS), and adding
+  // it here would block that legitimate consented-change path before it runs.
+  const AGENT_GOVERNANCE_FIELDS = [
+    "budgetMonthlyCents",
+    "spentMonthlyCents",
+    "status",
+    "reportsTo",
+  ] as const;
+
+  function assertNoAgentGovernanceFieldMutation(req: Request, patch: Record<string, unknown>) {
+    if (req.actor.type !== "agent") return;
+    const blocked = AGENT_GOVERNANCE_FIELDS.filter((key) => hasOwn(patch, key));
+    if (blocked.length === 0) return;
+    throw forbidden(
+      `Agent-authenticated callers cannot modify governance fields (${blocked.join(", ")}). Use a board-authenticated request.`,
+    );
+  }
+
   function assertNoAgentInstructionsConfigMutation(
     req: Request,
     adapterConfig: Record<string, unknown> | null | undefined,
@@ -2940,6 +2963,7 @@ export function agentRoutes(
     }
 
     const patchData = { ...(req.body as Record<string, unknown>) };
+    assertNoAgentGovernanceFieldMutation(req, patchData);
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     if (hasOwn(patchData, "adapterConfig")) {

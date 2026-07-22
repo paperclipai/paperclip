@@ -84,7 +84,9 @@ export const createAgentSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
-});
+  // Strict, so an unknown key is a 400 rather than a silent strip. `.strict()` carries through the
+  // `.extend()`/`.omit()`/`.partial()` chains below, so the hire and update schemas inherit it.
+}).strict();
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 
