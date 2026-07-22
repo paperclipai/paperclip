@@ -4,7 +4,16 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installCommand, resolveNpmInstallRequest } from "../commands/install.js";
 import { uninstallCommand } from "../commands/uninstall.js";
-import { readInstallManifest, resolveInstallStorePaths } from "../install-store.js";
+import {
+  INSTALL_MANIFEST_VERSION,
+  flipCurrentAtomic,
+  initializeInstallStore,
+  payloadPathFor,
+  readInstallManifest,
+  resolveInstallStorePaths,
+  withInstallStoreLock,
+  writeInstallManifestAtomic,
+} from "../install-store.js";
 import { resolveCliVersion } from "../version.js";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -107,5 +116,30 @@ describe("managed install commands", () => {
 
     await expect(uninstallCommand()).rejects.toThrow("unverified install store");
     expect(fs.readFileSync(unrelatedFile, "utf8")).toBe("keep");
+  });
+
+  it("refuses to uninstall while another store mutation holds the lock", async () => {
+    const paths = resolveInstallStorePaths();
+    const payloadPath = payloadPathFor(paths, "npm", "2026.720.0");
+    initializeInstallStore(paths);
+    fs.mkdirSync(payloadPath, { recursive: true });
+    flipCurrentAtomic(payloadPath, paths);
+    writeInstallManifestAtomic({
+      schemaVersion: INSTALL_MANIFEST_VERSION,
+      source: "npm",
+      version: "2026.720.0",
+      channel: "latest",
+      payloadPath,
+      installedAt: "2026-07-22T18:00:00.000Z",
+      previous: [],
+    }, paths);
+
+    await withInstallStoreLock(
+      async () => {
+        await expect(uninstallCommand()).rejects.toThrow("already running");
+      },
+      paths,
+    );
+    expect(fs.existsSync(paths.lockPath)).toBe(false);
   });
 });
