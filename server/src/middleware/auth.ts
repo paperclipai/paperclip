@@ -180,20 +180,24 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     // path is already bound (the signed run_id must equal the header, checked
     // below), so bind the static-key path too. Fail closed on any mismatch,
     // including a run id that does not resolve at all.
+    //
+    // LOOA-621: validate the run-id header shape *before* the lookup and let a
+    // genuine DB error propagate, mirroring requireLinkedAgentRunId in
+    // routes/issues.ts. A malformed (non-UUID) run id is a failed identity
+    // claim, so fail closed (→ 403) without a DB round-trip. Do NOT wrap the
+    // lookup in a catch-all: swallowing every throw turns a transient DB
+    // outage/timeout into a spurious credential-mismatch 403 that would deny
+    // otherwise-valid agents on the primary/live server. Letting it throw
+    // surfaces as a retryable 500 instead (Express 5 forwards the rejection to
+    // the error handler).
     const agentRunBindingOk = async (agentId: string, companyId: string): Promise<boolean> => {
       if (!runIdHeader) return true;
-      let run: { agentId: string; companyId: string } | null = null;
-      try {
-        run = await db
-          .select({ agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, runIdHeader))
-          .then((rows) => rows[0] ?? null);
-      } catch {
-        // A malformed run id (e.g. non-UUID) throws at the database layer;
-        // treat it exactly like an unknown run rather than an internal error.
-        run = null;
-      }
+      if (!isUuidLike(runIdHeader)) return false;
+      const run = await db
+        .select({ agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runIdHeader))
+        .then((rows) => rows[0] ?? null);
       return run !== null && run.agentId === agentId && run.companyId === companyId;
     };
 

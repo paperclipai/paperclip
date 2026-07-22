@@ -101,7 +101,12 @@ describe("actorMiddleware run-id ↔ static-key identity binding (LOOA-303)", ()
     expect(res.status).toBe(403);
   });
 
-  it("rejects, not errors, when the run id is malformed and the database lookup throws", async () => {
+  it("rejects a malformed run id via the uuid guard, without touching the database", async () => {
+    // LOOA-621: the isUuidLike(runIdHeader) guard runs *before* the lookup, so a
+    // non-UUID header fails closed (403) without a query. The heartbeatRuns mock
+    // is wired to throw here to prove the query is never reached — if the guard
+    // regressed and the lookup fired, this DB error would now surface as a 500
+    // (the try/catch that used to mask it is gone), not a 403.
     const db = createDb((table) => {
       if (table === boardApiKeys) return [];
       if (table === agentApiKeys) return [staticKeyRow(RUN_AGENT_ID, RUN_COMPANY_ID)];
@@ -116,6 +121,28 @@ describe("actorMiddleware run-id ↔ static-key identity binding (LOOA-303)", ()
       .set("X-Paperclip-Run-Id", "not-a-uuid");
 
     expect(res.status).toBe(403);
+  });
+
+  it("surfaces a transient DB error for a valid run id as a retryable 500, not a spurious 403", async () => {
+    // LOOA-621: the run-id binding lookup must not swallow genuine DB failures.
+    // A well-formed run id with a valid credential that hits a transient DB
+    // outage/timeout has to fail *open to a retry* (500), not masquerade as a
+    // credential-identity mismatch (403) — otherwise a database blip would deny
+    // every otherwise-valid agent on the primary/live server.
+    const db = createDb((table) => {
+      if (table === boardApiKeys) return [];
+      if (table === agentApiKeys) return [staticKeyRow(RUN_AGENT_ID, RUN_COMPANY_ID)];
+      if (table === agents) return [{ id: RUN_AGENT_ID, companyId: RUN_COMPANY_ID, status: "active" }];
+      if (table === heartbeatRuns) throw new Error("connection terminated unexpectedly");
+      return [];
+    });
+
+    const res = await request(buildApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${TOKEN}`)
+      .set("X-Paperclip-Run-Id", RUN_ID);
+
+    expect(res.status).toBe(500);
   });
 
   it("accepts a static agent key whose run id belongs to that same agent", async () => {
