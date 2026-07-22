@@ -1529,6 +1529,13 @@ async function emitAcpxLog(ctx: AdapterExecutionContext, payload: Record<string,
   await ctx.onLog("stdout", `${JSON.stringify(payload)}\n`);
 }
 
+// Placeholder title the acpx runtime assigns to a tool-call update that has not
+// yet resolved a real title (createToolCallEvent: `title || "tool call"`). Some
+// ACP backends (Kimi) stream tool-call arguments token-by-token, emitting a
+// separate `tool_call_update` for every partial-argument fragment before the
+// title resolves. Each fragment carries this generic placeholder title.
+const ACPX_UNRESOLVED_TOOL_CALL_TITLE = "tool call";
+
 async function emitRuntimeEvent(ctx: AdapterExecutionContext, event: AcpRuntimeEvent) {
   if (event.type === "text_delta") {
     await emitAcpxLog(ctx, {
@@ -1540,6 +1547,18 @@ async function emitRuntimeEvent(ctx: AdapterExecutionContext, event: AcpRuntimeE
     return;
   }
   if (event.type === "tool_call") {
+    // Coalesce token-by-token argument streaming: skip in-progress updates that
+    // still carry only the unresolved placeholder title. Backends that stream
+    // tool arguments (Kimi) otherwise emit tens of thousands of these per run,
+    // flooding the transcript and pinning the live activity indicator to a
+    // generic "tool call" instead of the real tool. The initial pending event,
+    // the resolved-title in-progress update, and the terminal
+    // completed/failed/cancelled update all still flow through. Backends that do
+    // not stream in-progress updates (Claude, Gemini) are unaffected.
+    const isPlaceholderTitle = (event.title ?? "").trim() === ACPX_UNRESOLVED_TOOL_CALL_TITLE;
+    if (event.status === "in_progress" && isPlaceholderTitle) {
+      return;
+    }
     const eventRecord = event as Record<string, unknown>;
     const toolInput = eventRecord.input;
     await emitAcpxLog(ctx, {

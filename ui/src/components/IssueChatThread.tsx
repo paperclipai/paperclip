@@ -917,15 +917,6 @@ function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
   return parts.join(", ");
 }
 
-function cleanToolDisplayText(tool: ToolCallMessagePart): string {
-  const name = displayToolName(tool.toolName, tool.args);
-  if (isCommandTool(tool.toolName, tool.args)) return name;
-  const summary = tool.result === undefined
-    ? summarizeToolInput(tool.toolName, tool.args)
-    : null;
-  return summary ? `${name} ${summary}` : name;
-}
-
 type IssueChatCoTPart = ReasoningMessagePart | ToolCallMessagePart;
 
 function IssueChatChainOfThought({
@@ -1029,49 +1020,83 @@ function IssueChatChainOfThought({
       </button>
       {expanded && hasContent ? (
         <div className="space-y-1 py-1">
-          {isActive ? (
-            <>
-              {allReasoningText ? <IssueChatReasoningPart text={allReasoningText} /> : null}
-              {toolParts.length > 0 ? <IssueChatRollingToolPart toolParts={toolParts} /> : null}
-            </>
-          ) : (
-            <>
-              {allReasoningText ? <IssueChatReasoningPart text={allReasoningText} /> : null}
-              {toolParts.map((tool) => (
-                <IssueChatToolPart
-                  key={tool.toolCallId}
-                  toolName={tool.toolName}
-                  args={tool.args}
-                  argsText={tool.argsText}
-                  result={tool.result}
-                  isError={false}
-                />
-              ))}
-            </>
-          )}
+          {allReasoningText ? <IssueChatReasoningPart text={allReasoningText} live={isActive} /> : null}
+          {toolParts.map((tool) => (
+            <IssueChatToolPart
+              key={tool.toolCallId}
+              toolName={tool.toolName}
+              args={tool.args}
+              argsText={tool.argsText}
+              result={tool.result}
+              isError={false}
+            />
+          ))}
         </div>
       ) : null}
     </div>
   );
 }
 
-function IssueChatReasoningPart({ text }: { text: string }) {
+function IssueChatReasoningPart({ text, live }: { text: string; live?: boolean }) {
   const lines = text.split("\n").filter((l) => l.trim());
   const lastLine = lines[lines.length - 1] ?? text.slice(-200);
   const prevRef = useRef(lastLine);
   const [ticker, setTicker] = useState<{
     key: number;
     current: string;
-    exiting: string | null;
-  }>({ key: 0, current: lastLine, exiting: null });
+  }>({ key: 0, current: lastLine });
 
   useEffect(() => {
     if (lastLine !== prevRef.current) {
-      const prev = prevRef.current;
       prevRef.current = lastLine;
-      setTicker((t) => ({ key: t.key + 1, current: lastLine, exiting: prev }));
+      setTicker((t) => ({ key: t.key + 1, current: lastLine }));
     }
   }, [lastLine]);
+
+  // Auto-follow the streamed reasoning: keep the scroll pinned to the bottom as
+  // new lines arrive, unless the reader has scrolled up to review earlier
+  // thinking (in which case we leave their position alone).
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pinnedToBottomRef = useRef(true);
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (!node || !live) return;
+    if (pinnedToBottomRef.current) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [text, live]);
+
+  // While streaming, show the full reasoning in a scrollable box so nothing is
+  // ever dropped — the reader can scroll back through everything the agent
+  // thought, and it auto-follows the latest line.
+  if (live && lines.length > 1) {
+    return (
+      <div className="flex gap-2 px-1">
+        <div className="flex flex-col items-center pt-0.5">
+          <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+        </div>
+        <div
+          ref={scrollRef}
+          onScroll={() => {
+            const node = scrollRef.current;
+            if (!node) return;
+            pinnedToBottomRef.current =
+              node.scrollHeight - node.scrollTop - node.clientHeight < 24;
+          }}
+          className="min-w-0 flex-1 max-h-40 space-y-0.5 overflow-y-auto pr-1"
+        >
+          {lines.map((line, index) => (
+            <p
+              key={index}
+              className="whitespace-pre-wrap break-words text-(length:--text-compact) italic leading-5 text-muted-foreground/70"
+            >
+              {line}
+            </p>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex gap-2 px-1">
@@ -1079,76 +1104,10 @@ function IssueChatReasoningPart({ text }: { text: string }) {
         <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
       </div>
       <div className="relative h-5 min-w-0 flex-1 overflow-hidden">
-        {ticker.exiting !== null && (
-          <span
-            key={`out-${ticker.key}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground/70"
-            onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
-          >
-            {ticker.exiting}
-          </span>
-        )}
         <span
           key={`in-${ticker.key}`}
           className={cn(
-            "absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground/70",
-            ticker.key > 0 && "cot-line-enter",
-          )}
-        >
-          {ticker.current}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePart[] }) {
-  const latest = toolParts[toolParts.length - 1];
-  if (!latest) return null;
-
-  const fullText = cleanToolDisplayText(latest);
-
-  const prevRef = useRef(fullText);
-  const [ticker, setTicker] = useState<{
-    key: number;
-    current: string;
-    exiting: string | null;
-  }>({ key: 0, current: fullText, exiting: null });
-
-  useEffect(() => {
-    if (fullText !== prevRef.current) {
-      const prev = prevRef.current;
-      prevRef.current = fullText;
-      setTicker((t) => ({ key: t.key + 1, current: fullText, exiting: prev }));
-    }
-  }, [fullText]);
-
-  const ToolIcon = getToolIcon(latest.toolName);
-  const isRunning = latest.result === undefined;
-
-  return (
-    <div className="flex gap-2 px-1">
-      <div className="flex flex-col items-center pt-0.5">
-        {isRunning ? (
-          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground/50" />
-        ) : (
-          <ToolIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
-        )}
-      </div>
-      <div className="relative h-5 min-w-0 flex-1 overflow-hidden">
-        {ticker.exiting !== null && (
-          <span
-            key={`out-${ticker.key}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) leading-5 text-muted-foreground/70"
-            onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
-          >
-            {ticker.exiting}
-          </span>
-        )}
-        <span
-          key={`in-${ticker.key}`}
-          className={cn(
-            "absolute inset-x-0 truncate text-(length:--text-compact) leading-5 text-muted-foreground/70",
+            "block truncate text-(length:--text-compact) italic leading-5 text-muted-foreground/70",
             ticker.key > 0 && "cot-line-enter",
           )}
         >
