@@ -146,6 +146,10 @@ if [ "$CANARY" = "1" ] && [ -n "$VERSION" ]; then
   fail "--canary and --version cannot be used together"
 fi
 
+if [ -n "$REF" ] || [ -n "$REPO" ]; then
+  fail "git-ref installs are not available in this installer build; omit --ref and --repo"
+fi
+
 if [ ! -t 0 ] || [ ! -t 1 ]; then
   NO_PROMPT=1
 fi
@@ -339,10 +343,17 @@ INSTALL_ARGS=(install)
 
 log "Delegating to the Paperclip CLI"
 print_command npx --yes "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}"
-npx --yes "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}"
 
 if [ "$DRY_RUN" = "1" ]; then
   exit 0
+fi
+
+npx --yes "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}"
+
+if [ "$INSTALL_SERVICE" = "1" ]; then
+  log "Installing the Paperclip service"
+  print_command npx --yes "$PACKAGE_SPEC" service install
+  npx --yes "$PACKAGE_SPEC" service install
 fi
 
 if [ "$NO_ONBOARD" = "0" ] && [ -t 0 ] && [ -t 1 ]; then
