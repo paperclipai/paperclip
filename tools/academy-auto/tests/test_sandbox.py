@@ -181,3 +181,9 @@ def test_protected_claude_paths_really_write_blocked(tmp_path):
     assert not (claude / "settings.json").exists()
     # scripts/ BLOCKIERT
     r = sb(f'echo evil > "{claude}/scripts/x.sh" 2>/dev/null && echo LEAK || echo BLOCKED'); assert "BLOCKED" in r.stdout
+
+
+def test_protected_write_paths_include_skills():
+    from academy_auto.config import Config
+    cfg = Config.default()
+    assert any(p.endswith(".claude/skills") for p in cfg.protected_write_paths)

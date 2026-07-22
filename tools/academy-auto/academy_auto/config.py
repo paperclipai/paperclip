@@ -65,7 +65,7 @@ class Config:
             protected_write_paths=(
                 str(home / ".claude/settings.json"), str(home / ".claude/settings.local.json"),
                 str(home / ".claude/scripts"), str(home / ".claude/hooks"),
-                str(home / ".claude/CLAUDE.md"), str(home / ".claude/plugins"),
+                str(home / ".claude/CLAUDE.md"), str(home / ".claude/plugins"), str(home / ".claude/skills"),
                 str(home / ".claude/commands"), str(home / ".claude/agents"),
                 str(home / ".claude/keybindings.json"),
             ),
