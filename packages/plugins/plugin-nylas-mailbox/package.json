@@ -1,0 +1,34 @@
+{
+  "name": "@paperclipai/plugin-nylas-mailbox",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Read-only access to one configured Nylas mailbox for finance workflows.",
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "node ./esbuild.config.mjs",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "keywords": [
+    "paperclip",
+    "plugin",
+    "connector"
+  ],
+  "author": "Paperclip",
+  "license": "MIT",
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.21",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.8"
+  }
+}
