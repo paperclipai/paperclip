@@ -18,10 +18,14 @@ import { formatDate } from "../lib/utils";
 import { formatAgentConfigValue } from "../lib/agent-config-changeset";
 
 function valueAt(snapshot: Record<string, unknown>, key: string): unknown {
-  return key.split(".").reduce<unknown>((current, segment) => {
-    if (!current || typeof current !== "object") return undefined;
-    return (current as Record<string, unknown>)[segment];
-  }, snapshot);
+  if (Object.prototype.hasOwnProperty.call(snapshot, key)) return snapshot[key];
+  const separator = key.indexOf(".");
+  if (separator === -1) return undefined;
+  const head = key.slice(0, separator);
+  const tail = key.slice(separator + 1);
+  const next = snapshot[head];
+  if (!next || typeof next !== "object" || Array.isArray(next)) return undefined;
+  return valueAt(next as Record<string, unknown>, tail);
 }
 
 export function revisionDiff(revision: AgentConfigRevision) {
