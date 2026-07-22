@@ -153,6 +153,7 @@ function createServerEnv(
   env.PORT = String(port);
   env.SERVE_UI = "false";
   env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
+  env.PAPERCLIP_DECISION_SIGNING_SECRET = "company-import-export-decision-signing-secret";
   env.HEARTBEAT_SCHEDULER_ENABLED = "false";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY = "true";
   env.PAPERCLIP_UI_DEV_MIDDLEWARE = "false";

@@ -4,7 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { decisionInputsSchema, decisionOptionsSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { decisionService } from "../services/decisions.js";
-import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
 const createSchema = z.object({
   title: z.string().trim().min(1).max(500),
@@ -76,25 +76,28 @@ export function decisionRoutes(db: Db) {
     res.json(await svc.stats(companyId, { originAgentId, since: query.data.since }));
   });
   router.get("/decisions/:id", async (req, res) => {
-    assertBoardOrAgent(req); const decision = await svc.get(req.params.id as string);
-    if (!decision) { res.status(404).json({ error: "Decision not found" }); return; }
-    assertCompanyAccess(req, decision.companyId);
+    assertBoardOrAgent(req);
+    const decision = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Decision not found");
+    if (!decision) return;
     if (req.actor.type === "agent" && req.actor.agentId !== decision.originAgentId) { res.status(403).json({ error: "Only the origin agent may read this decision" }); return; }
     res.json(await svc.outcome(decision.id));
   });
   router.post("/decisions/:id/decide", validate(decideSchema), async (req, res) => {
-    const userId = boardUserId(req); const decision = await svc.get(req.params.id as string);
-    if (!decision) { res.status(404).json({ error: "Decision not found" }); return; } assertCompanyAccess(req, decision.companyId);
+    const userId = boardUserId(req);
+    const decision = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Decision not found");
+    if (!decision) return;
     res.json(await svc.decide({ id: decision.id, decidedByUserId: userId, userActor: req.actor, ...req.body }));
   });
   router.post("/decisions/:id/dismiss", validate(dismissSchema), async (req, res) => {
-    const userId = boardUserId(req); const decision = await svc.get(req.params.id as string);
-    if (!decision) { res.status(404).json({ error: "Decision not found" }); return; } assertCompanyAccess(req, decision.companyId);
+    const userId = boardUserId(req);
+    const decision = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Decision not found");
+    if (!decision) return;
     res.json(await svc.dismiss(decision.id, userId, req.actor, req.body.reason));
   });
   router.post("/decisions/:id/cancel", async (req, res) => {
-    assertBoardOrAgent(req); const decision = await svc.get(req.params.id as string);
-    if (!decision) { res.status(404).json({ error: "Decision not found" }); return; } assertCompanyAccess(req, decision.companyId);
+    assertBoardOrAgent(req);
+    const decision = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Decision not found");
+    if (!decision) return;
     const actor = getActorInfo(req); res.json(await svc.cancel(decision.id, { actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId }));
   });
   return router;

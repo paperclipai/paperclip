@@ -42,6 +42,9 @@ import {
   updateCompanyBrandingSchema,
   companyArtifactsQuerySchema,
   companyArtifactsResponseSchema,
+  // Decisions
+  decisionInputsSchema,
+  decisionOptionsSchema,
   // Routine
   createRoutineSchema,
   updateRoutineSchema,
@@ -3085,6 +3088,108 @@ registry.registerPath({
   summary: "List decision-only attention feed items",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+// ─── Decisions ──────────────────────────────────────────────────────────────
+
+const createDecisionBodySchema = z.object({
+  title: z.string().trim().min(1).max(500),
+  body: z.string().max(100_000),
+  ruleKey: z.string().trim().max(240).nullable().optional(),
+  options: decisionOptionsSchema,
+  inputs: decisionInputsSchema.nullable().optional(),
+  expiresAt: z.string().datetime().optional(),
+  idempotencyKey: z.string().trim().min(1).max(500).nullable().optional(),
+  continuationPolicy: z.enum(["none", "wake_origin_agent"]).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+}).strict();
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decisions",
+  tags: ["decisions"],
+  summary: "Propose a decision",
+  body: createDecisionBodySchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-bundles",
+  tags: ["decisions"],
+  summary: "Propose a decision bundle",
+  body: z.object({
+    title: z.string().trim().min(1).max(500),
+    summary: z.string().max(100_000),
+    decisions: z.array(createDecisionBodySchema).min(1).max(50),
+  }).strict(),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decisions",
+  tags: ["decisions"],
+  summary: "List decisions",
+  query: z.object({
+    status: z.enum(["open", "decided", "expired", "cancelled"]).optional(),
+    bundleId: z.string().uuid().optional(),
+    targetIssueId: z.string().uuid().optional(),
+    originAgentId: z.string().uuid().optional(),
+    limit: z.coerce.number().int().positive().max(100).optional(),
+  }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decisions/stats",
+  tags: ["decisions"],
+  summary: "Get decision telemetry grouped by rule key",
+  query: z.object({
+    groupBy: z.literal("ruleKey"),
+    originAgentId: z.string().uuid().optional(),
+    since: z.string().datetime().optional(),
+  }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/decisions/{id}",
+  tags: ["decisions"],
+  summary: "Get a decision outcome",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/decisions/{id}/decide",
+  tags: ["decisions"],
+  summary: "Resolve a decision",
+  body: z.object({
+    optionId: z.string().trim().min(1).max(120),
+    inputValues: z.record(z.string(), z.string().max(20_000)).optional(),
+    idempotencyKey: z.string().trim().min(1).max(500).nullable().optional(),
+  }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/decisions/{id}/dismiss",
+  tags: ["decisions"],
+  summary: "Dismiss a decision",
+  body: z.object({ reason: z.string().max(20_000).nullable().optional() }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/decisions/{id}/cancel",
+  tags: ["decisions"],
+  summary: "Cancel a decision",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 // ─── Decision training ──────────────────────────────────────────────────────
