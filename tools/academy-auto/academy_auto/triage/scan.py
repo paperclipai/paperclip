@@ -158,3 +158,21 @@ def scan_issues(runner=subprocess.run) -> list[Candidate]:
             text=(issue.get("title") or "").strip(), raw_priority=20,
         ))
     return cands
+
+
+def scan_all(root, runner=subprocess.run) -> list[Candidate]:
+    collected: list[Candidate] = []
+    collected += scan_todos(root)
+    collected += scan_skipped_tests(root)
+    collected += scan_tsc(root, runner=runner)
+    collected += scan_lint(root, runner=runner)
+    collected += scan_issues(runner=runner)
+    seen: set[str] = set()
+    unique: list[Candidate] = []
+    for c in collected:
+        if c.key in seen:
+            continue
+        seen.add(c.key)
+        unique.append(c)
+    unique.sort(key=lambda c: (-c.raw_priority, c.key))
+    return unique

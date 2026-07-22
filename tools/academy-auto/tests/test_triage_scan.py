@@ -149,3 +149,22 @@ def test_scan_issues_fail_soft_when_gh_missing():
     def boom(*a, **k):
         raise FileNotFoundError("gh not found")
     assert scan_issues(runner=boom) == []
+
+
+from academy_auto.triage import scan as scanmod
+
+
+def test_scan_all_dedups_and_sorts(tmp_path, monkeypatch):
+    from academy_auto.triage.scan import Candidate
+    monkeypatch.setattr(scanmod, "scan_todos", lambda root: [
+        Candidate("todo", "todo:a.ts:1", "a.ts", 1, "TODO x", 10)])
+    monkeypatch.setattr(scanmod, "scan_skipped_tests", lambda root: [])
+    monkeypatch.setattr(scanmod, "scan_tsc", lambda root, runner=None: [
+        Candidate("tsc", "tsc:a.ts:5:TS1", "a.ts", 5, "err", 50),
+        Candidate("tsc", "tsc:a.ts:5:TS1", "a.ts", 5, "dup", 50)])
+    monkeypatch.setattr(scanmod, "scan_lint", lambda root, runner=None: [])
+    monkeypatch.setattr(scanmod, "scan_issues", lambda runner=None: [
+        Candidate("issue", "issue:9", "", 0, "Titel", 20)])
+    out = scanmod.scan_all(tmp_path)
+    keys = [c.key for c in out]
+    assert keys == ["tsc:a.ts:5:TS1", "issue:9", "todo:a.ts:1"]  # nach Priorität, Dup entfernt
