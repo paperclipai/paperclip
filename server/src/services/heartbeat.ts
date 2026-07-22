@@ -2667,7 +2667,7 @@ export function resolveLedgerCostStatus(input: {
   return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
 }
 
-async function resolveLedgerScopeForRun(
+export async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
   run: typeof heartbeatRuns.$inferSelect,
