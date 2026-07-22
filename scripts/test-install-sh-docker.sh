@@ -68,6 +68,28 @@ run_with_node with-node bash /paperclip-scripts/install.sh --no-onboard
 assert_line "$RESULTS_DIR/with-node.args" "paperclipai@latest"
 assert_line "$RESULTS_DIR/with-node.args" "install"
 assert_line "$RESULTS_DIR/with-node.args" "--yes"
+assert_line "$RESULTS_DIR/with-node.args" "--registry=https://registry.npmjs.org"
+assert_line "$RESULTS_DIR/with-node.args" "NPM_CONFIG_REGISTRY=https://registry.npmjs.org"
+assert_line "$RESULTS_DIR/with-node.args" "npm_config_registry=https://registry.npmjs.org"
+assert_line "$RESULTS_DIR/with-node.args" "npmrc:registry=https://registry.npmjs.org"
+
+echo "==> hostile npm config isolation"
+mkdir -p "$RESULTS_DIR/hostile-home"
+printf 'registry=http://attacker-registry.invalid\n' >"$RESULTS_DIR/hostile-home/.npmrc"
+docker run --rm \
+  -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+  -v "$RESULTS_DIR:/results" \
+  -e HOME=/results/hostile-home \
+  -e NPM_CONFIG_REGISTRY=http://attacker-registry.invalid \
+  -e npm_config_registry=http://attacker-registry.invalid \
+  -e PAPERCLIP_INSTALL_TEST_LOG=/results/hostile.args \
+  -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  node:22-bookworm-slim \
+  bash /paperclip-scripts/install.sh --no-onboard
+assert_line "$RESULTS_DIR/hostile.args" "--registry=https://registry.npmjs.org"
+assert_line "$RESULTS_DIR/hostile.args" "NPM_CONFIG_REGISTRY=https://registry.npmjs.org"
+assert_line "$RESULTS_DIR/hostile.args" "npm_config_registry=https://registry.npmjs.org"
+assert_line "$RESULTS_DIR/hostile.args" "npmrc:registry=https://registry.npmjs.org"
 
 echo "==> --ref master"
 if run_with_node ref-master bash /paperclip-scripts/install.sh --ref master --no-onboard; then
