@@ -199,6 +199,33 @@ describeEmbeddedPostgres("execution workspace terminal issue cleanup", () => {
     expect(await pathExists(fixture.worktreePath)).toBe(false);
   }, 20_000);
 
+  it("claims a terminal workspace once when linked issues finish concurrently", async () => {
+    const fixture = await createFixture(["done", "done"]);
+
+    const results = await Promise.all(
+      fixture.issueIds.map((issueId) => lifecycle.finishDeferredCleanup({ issueId, actor })),
+    );
+
+    expect(results.map((result) => result.outcome).sort()).toEqual([
+      "archived",
+      "not_applicable",
+    ]);
+    expect(await pathExists(fixture.worktreePath)).toBe(false);
+
+    const workspace = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, fixture.executionWorkspaceId))
+      .then((rows) => rows[0]);
+    expect(workspace.status).toBe("archived");
+
+    const cleanupActivities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "execution_workspace.terminal_issue_cleanup"));
+    expect(cleanupActivities).toHaveLength(1);
+  }, 20_000);
+
   it("keeps a dirty terminal workspace and records why automatic cleanup was skipped", async () => {
     const fixture = await createFixture(["done"]);
     await fs.writeFile(path.join(fixture.worktreePath, "untracked.txt"), "keep me\n", "utf8");

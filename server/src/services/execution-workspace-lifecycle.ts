@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import type { ExecutionWorkspace, ExecutionWorkspaceCloseReadiness } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
@@ -71,12 +71,29 @@ async function archiveExecutionWorkspace(
   const svc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const closedAt = new Date();
-  let archivedWorkspace = await svc.update(workspace.id, {
-    status: "archived",
-    closedAt,
-    cleanupEligibleAt: null,
-    cleanupReason: null,
-  });
+  const claimedWorkspaceId = await db
+    .update(executionWorkspaces)
+    .set({
+      status: "archived",
+      closedAt,
+      cleanupEligibleAt: null,
+      cleanupReason: null,
+      updatedAt: closedAt,
+    })
+    .where(
+      and(
+        eq(executionWorkspaces.id, workspace.id),
+        eq(executionWorkspaces.companyId, workspace.companyId),
+        inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+      ),
+    )
+    .returning({ id: executionWorkspaces.id })
+    .then((rows) => rows[0]?.id ?? null);
+  if (!claimedWorkspaceId) {
+    return { outcome: "not_applicable", workspace: await svc.getById(workspace.id) };
+  }
+
+  let archivedWorkspace = await svc.getById(claimedWorkspaceId);
   if (!archivedWorkspace) {
     return { outcome: "not_applicable", workspace: null };
   }
