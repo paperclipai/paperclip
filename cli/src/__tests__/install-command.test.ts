@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installCommand, installGitPayload, resolveGitHubRef, resolveGitInstallRequest, resolveNpmInstallRequest } from "../commands/install.js";
 import { uninstallCommand } from "../commands/uninstall.js";
+import { resolvePaperclipInstanceId } from "../config/home.js";
 import {
   INSTALL_MANIFEST_VERSION,
   flipCurrentAtomic,
@@ -15,6 +16,7 @@ import {
   writeInstallManifestAtomic,
 } from "../install-store.js";
 import { resolveCliVersion } from "../version.js";
+import { systemdServiceName } from "../services/service-manager.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -171,7 +173,7 @@ describe("managed install commands", () => {
       ".config",
       "systemd",
       "user",
-      "paperclipai.service",
+      systemdServiceName(resolvePaperclipInstanceId()),
     );
     fs.mkdirSync(path.dirname(unitPath), { recursive: true });
     fs.writeFileSync(unitPath, "unit");

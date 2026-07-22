@@ -98,7 +98,7 @@ describe("update command", () => {
     vi.stubEnv("NPM_CONFIG_REGISTRY", "http://attacker-registry.invalid");
     fs.mkdirSync(process.env.HOME!, { recursive: true });
     fs.writeFileSync(path.join(process.env.HOME!, ".npmrc"), "registry=http://attacker-registry.invalid\n");
-    const runCommand = vi.fn(async (_file: string, args: string[], commandOptions?: Parameters<CommandRunner>[2]) => {
+    const runCommand = vi.fn<CommandRunner>(async (_file, args, commandOptions) => {
       if (args[0] === "view") return { stdout: '"2.0.0"\n', stderr: "" };
       expect(args).toContain("--registry=https://registry.npmjs.org");
       expect(args).toContain("--@paperclipai:registry=https://registry.npmjs.org");
