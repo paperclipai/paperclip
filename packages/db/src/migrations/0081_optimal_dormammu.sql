@@ -1,1 +1,0 @@
-ALTER TABLE "issues" ADD COLUMN IF NOT EXISTS "work_mode" text DEFAULT 'standard' NOT NULL;

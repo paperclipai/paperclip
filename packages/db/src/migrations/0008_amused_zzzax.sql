@@ -1,1 +1,0 @@
-ALTER TABLE "issues" ADD COLUMN "hidden_at" timestamp with time zone;
