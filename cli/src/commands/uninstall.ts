@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
 import {
+  assertManagedInstallStore,
   removeManagedPathBlock,
   removeManagedShim,
   resolveInstallStorePaths,
@@ -24,6 +25,7 @@ export async function uninstallCommand(
   }
 
   const paths = resolveInstallStorePaths();
+  if (fs.existsSync(paths.cliRoot)) assertManagedInstallStore(paths);
   const shimRemoved = removeManagedShim(paths);
   fs.rmSync(paths.cliRoot, { recursive: true, force: true });
 

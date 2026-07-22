@@ -97,4 +97,27 @@ describe("managed install commands", () => {
     expect(fs.existsSync(paths.shimPath)).toBe(false);
     expect(fs.readFileSync(userData, "utf8")).toBe("keep");
   });
+
+  it("rejects a symlinked installs root before npm writes outside the store", async () => {
+    const paths = resolveInstallStorePaths();
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(paths.cliRoot, { recursive: true });
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, paths.installsRoot, "dir");
+    const runCommand = vi.fn(async () => ({ stdout: JSON.stringify("2026.720.0"), stderr: "" }));
+
+    await expect(installCommand({}, { runCommand })).rejects.toThrow("non-directory install-store path");
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(fs.readdirSync(outside)).toEqual([]);
+  });
+
+  it("refuses to uninstall an unverified cli directory", async () => {
+    const paths = resolveInstallStorePaths();
+    const unrelatedFile = path.join(paths.cliRoot, "keep.txt");
+    fs.mkdirSync(paths.cliRoot, { recursive: true });
+    fs.writeFileSync(unrelatedFile, "keep");
+
+    await expect(uninstallCommand()).rejects.toThrow("unverified install store");
+    expect(fs.readFileSync(unrelatedFile, "utf8")).toBe("keep");
+  });
 });
