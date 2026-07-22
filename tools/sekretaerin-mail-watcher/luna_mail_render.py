@@ -55,21 +55,27 @@ _IMG_DATA_RE = re.compile(
 
 
 def _sig_with_cid(sig_html: str) -> tuple[str, list[dict]]:
-    """Ersetzt base64-<img> durch cid-Referenzen; gibt (html, inline-attachments)."""
+    """Ersetzt base64-<img> durch Inline-CID-Referenzen; gibt (html, attachments).
+
+    WICHTIG: Der Relay-Node „Build Binary Attachments" legt die Anhänge unter dem
+    Binär-Property-Namen `attachment_<index>` ab, und n8n/nodemailer nutzt **diesen
+    Namen** als Content-ID. Die `<img>`-Referenz muss also `cid:attachment_<index>`
+    lauten (index = Position im attachments-Array). Ein davon abweichendes `cid`-Feld
+    im Anhang wird ignoriert → früher Platzhalter. So rendert das Logo inline überall
+    (Outlook, Apple Mail, Gmail) ohne „Bilder herunterladen"."""
     attachments: list[dict] = []
 
     def repl(m: re.Match) -> str:
         idx = len(attachments)
-        cid = f"sig-logo-{idx}"
         mime = m.group(2)
         ext = mime.split("/")[-1]
         attachments.append({
             "filename": f"logo-{idx}.{ext}",
             "content": m.group(3),
             "mimeType": mime,
-            "cid": cid,
+            "cid": f"attachment_{idx}",  # == Binär-Property-Name im Relay
         })
-        return f'<img{m.group(1)}src="cid:{cid}"{m.group(4)}>'
+        return f'<img{m.group(1)}src="cid:attachment_{idx}"{m.group(4)}>'
 
     return _IMG_DATA_RE.sub(repl, sig_html), attachments
 
@@ -77,14 +83,13 @@ def _sig_with_cid(sig_html: str) -> tuple[str, list[dict]]:
 def render_customer_html(area: str, body_md: str) -> tuple[str, list[dict]]:
     """Gibt (finales Kunden-HTML, Inline-Anhänge für Logos) zurück.
 
-    Logo-Strategie: Standard ist das base64-Logo direkt aus der Signatur
-    (rendert in Gmail/Apple Mail; Outlook zeigt es nicht — Outlook rendert
-    weder base64 noch webp, und n8n überträgt kein CID). Für zuverlässiges
-    Rendering in Outlook muss die Signatur auf eine gehostete PNG/JPG-URL
-    umgestellt werden. `_sig_with_cid` bleibt für einen künftigen CID-fähigen
-    Sendeweg erhalten, wird hier aber bewusst nicht genutzt."""
+    Logo-Strategie: Inline-CID. Das base64-Logo der Signatur wird zu
+    `<img src="cid:attachment_N">` + Inline-Anhang (siehe `_sig_with_cid`).
+    Rendert überall inkl. Outlook/Exchange und bei Kunden, ohne „Bilder
+    herunterladen" — anders als base64 (Outlook blockt) oder externe URLs
+    (von vielen Clients standardmäßig blockiert)."""
     answer = md_to_html(strip_self_signoff(body_md))
-    sig, attachments = load_sig(area), []
+    sig, attachments = _sig_with_cid(load_sig(area))
     html = (
         '<!DOCTYPE html><html><head><meta charset="utf-8"></head>'
         '<body style="font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:0;padding:20px;text-align:left;">'

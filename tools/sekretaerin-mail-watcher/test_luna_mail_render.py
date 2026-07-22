@@ -27,23 +27,27 @@ class RenderTest(unittest.TestCase):
         self.assertIn("text-align:left", out)  # linksbündig
         tmp.cleanup()
 
-    def test_render_keeps_base64_logo_no_attachments(self):
-        # Aktuelle Strategie: base64-Logo bleibt inline (Gmail/Apple Mail),
-        # keine Attachments (CID via n8n unzuverlässig → nicht genutzt).
+    def test_render_uses_cid_inline_logo(self):
+        # base64-Logo → Inline-CID (cid:attachment_0) + Anhang; kein base64 im HTML.
         tmp = tempfile.TemporaryDirectory()
         r.SIGDIR = Path(tmp.name)
         sig = '<table><tr><td><img src="data:image/png;base64,QUJDREVG" alt="Logo"></td></tr></table>'
         (Path(tmp.name) / "signatur-film.html").write_text(sig, encoding="utf-8")
         out, atts = r.render_customer_html("FILM", "Text")
-        self.assertIn("data:image/png;base64,QUJDREVG", out)  # base64 bleibt erhalten
-        self.assertEqual(atts, [])
+        self.assertNotIn("base64,", out)
+        self.assertIn('src="cid:attachment_0"', out)
+        self.assertEqual(len(atts), 1)
+        self.assertEqual(atts[0]["cid"], "attachment_0")
+        self.assertEqual(atts[0]["content"], "QUJDREVG")
         tmp.cleanup()
 
-    def test_sig_with_cid_helper_available(self):
-        # Der CID-Umbau bleibt als Baustein für einen künftigen Sendeweg erhalten.
-        html, atts = r._sig_with_cid('<img src="data:image/png;base64,QUJD" alt="x">')
-        self.assertIn('src="cid:sig-logo-0"', html)
-        self.assertEqual(atts[0]["content"], "QUJD")
+    def test_sig_with_cid_indexes_by_position(self):
+        # Mehrere Logos → attachment_0, attachment_1 (Reihenfolge = Relay-Binärname).
+        html, atts = r._sig_with_cid(
+            '<img src="data:image/png;base64,QUJD"><img src="data:image/gif;base64,WFla">')
+        self.assertIn('src="cid:attachment_0"', html)
+        self.assertIn('src="cid:attachment_1"', html)
+        self.assertEqual([a["cid"] for a in atts], ["attachment_0", "attachment_1"])
 
 
 if __name__ == "__main__":
