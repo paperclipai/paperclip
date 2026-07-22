@@ -145,37 +145,47 @@ def is_approval_reply(path: Path) -> str | None:
 
 
 def process_approvals(new_files, *, dry_run, send=approval_send.send_approved, make_issue=None):
-    """Verarbeitet Freigabe-Antworten. Gibt Liste von {token, action} zurück."""
+    """Verarbeitet Freigabe-Antworten. Gibt Liste von {file, token, action} zurück.
+
+    Terminale Aktionen (sent/correction/skip) dürfen vom Aufrufer als gesehen
+    markiert werden. **send-error/error bleiben absichtlich ungesehen** → der
+    nächste Lauf versucht die noch `pending` Freigabe erneut; ein Doppelversand ist
+    ausgeschlossen, weil `mark(..,'sent')` den Status auf non-pending zieht und der
+    Status-Guard oben dann `skip` liefert."""
     if make_issue is None:
         make_issue = _create_correction_issue
     results = []
     for name in new_files:
         path = MAILDIR / name
-        token = is_approval_reply(path)
-        if not token:
-            continue
-        entry = approval_queue.load(token)
-        if entry is None or entry.get("status") != "pending":
-            results.append({"token": token, "action": "skip"})
-            continue
-        action = approval_parse.classify(read_body(path))
-        if action == "send":
-            if dry_run:
-                results.append({"token": token, "action": "would-send"}); continue
-            code, resp = send(entry)
-            if code == 200:
-                approval_queue.mark(token, "sent",
-                                    sent=datetime.now().isoformat())
-                print(f"Freigabe #{token}: gesendet an {entry['to']}")
-                results.append({"token": token, "action": "sent"})
+        try:
+            token = is_approval_reply(path)
+            if not token:
+                results.append({"file": name, "token": None, "action": "skip"})
+                continue
+            entry = approval_queue.load(token)
+            if entry is None or entry.get("status") != "pending":
+                results.append({"file": name, "token": token, "action": "skip"})
+                continue
+            action = approval_parse.classify(read_body(path))
+            if action == "send":
+                if dry_run:
+                    results.append({"file": name, "token": token, "action": "would-send"}); continue
+                code, resp = send(entry)
+                if code == 200:
+                    approval_queue.mark(token, "sent", sent=datetime.now().isoformat())
+                    print(f"Freigabe #{token}: gesendet an {entry['to']}")
+                    results.append({"file": name, "token": token, "action": "sent"})
+                else:
+                    print(f"FEHLER Freigabe #{token}: Relay HTTP {code}: {resp}", file=sys.stderr)
+                    results.append({"file": name, "token": token, "action": "send-error"})
             else:
-                print(f"FEHLER Freigabe #{token}: Relay HTTP {code}: {resp}", file=sys.stderr)
-                results.append({"token": token, "action": "send-error"})
-        else:
-            if dry_run:
-                results.append({"token": token, "action": "would-correct"}); continue
-            make_issue(token, read_body(path), entry)
-            results.append({"token": token, "action": "correction"})
+                if dry_run:
+                    results.append({"file": name, "token": token, "action": "would-correct"}); continue
+                make_issue(token, read_body(path), entry)
+                results.append({"file": name, "token": token, "action": "correction"})
+        except Exception as e:  # noqa: BLE001 — ein kaputter Eintrag darf den Tick nicht killen
+            print(f"WARN Freigabe {name}: {e}", file=sys.stderr)
+            results.append({"file": name, "token": None, "action": "error"})
     return results
 
 
@@ -319,8 +329,14 @@ def main() -> None:
         results = process_approvals(approval_new, dry_run=a.dry_run)
         print(f"Freigabe-Antworten: {results}")
         if not a.dry_run:
-            seen = seen | set(approval_new)
-            save_state(seen, a.window_days)
+            # Nur terminal erledigte Antworten als gesehen markieren. send-error/error
+            # bleiben ungesehen → nächster Lauf versucht die noch pending Freigabe
+            # erneut (kein stiller Verlust; Doppelversand blockt der Queue-Status-Guard).
+            terminal = {"sent", "correction", "skip"}
+            done = {r["file"] for r in results if r.get("action") in terminal}
+            if done:
+                seen = seen | done
+                save_state(seen, a.window_days)
 
     new = [n for n in current if n not in seen]
     if not new:

@@ -3,7 +3,7 @@
 Trägt das Approval-Feld, das die (geöffnete) Luna-Guard in Relay V16 verlangt.
 Nur dieser Pfad kennt das Secret — Luna selbst nie."""
 from __future__ import annotations
-import json, urllib.request
+import json, urllib.error, urllib.request
 from pathlib import Path
 
 WEBHOOK = "http://localhost:5678/webhook/mailhub/send"
@@ -38,5 +38,7 @@ def send_approved(entry: dict, *, urlopen=urllib.request.urlopen) -> tuple[int, 
     try:
         with urlopen(req, timeout=30) as r:
             return r.status, r.read().decode()
-    except urllib.error.HTTPError as e:  # type: ignore[attr-defined]
+    except urllib.error.HTTPError as e:
         return e.code, e.read().decode()
+    except Exception as e:  # noqa: BLE001 — URLError/Timeout/Socket: nicht-terminal → Retry
+        return 0, f"{type(e).__name__}: {e}"

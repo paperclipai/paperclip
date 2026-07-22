@@ -86,6 +86,53 @@ class ApprovalScanTest(unittest.TestCase):
         self.assertIn("2026-07-22-okay-split-w.schonenbrocher.md",
                       w.scan_approval_replies(3, set()))
 
+    def test_result_carries_file_and_action(self):
+        self._write("2026-07-22-file-w.schonenbrocher.md", MAIL_OKAY)
+        r = w.process_approvals(["2026-07-22-file-w.schonenbrocher.md"],
+                                dry_run=False, send=lambda e, **k: (200, "ok"),
+                                make_issue=lambda *a, **k: None)
+        self.assertEqual(r[0]["file"], "2026-07-22-file-w.schonenbrocher.md")
+        self.assertEqual(r[0]["action"], "sent")
+
+    def test_send_error_stays_retryable_then_succeeds(self):
+        # I1-Fix: nach Relay-Fehler bleibt der Eintrag pending UND wird beim
+        # nächsten Lauf erneut versucht (Datei wird vom Aufrufer nicht als seen
+        # markiert, da 'send-error' nicht terminal ist).
+        self._write("2026-07-22-retry-w.schonenbrocher.md", MAIL_OKAY)
+        calls = {"n": 0}
+        def flaky(entry, **kw):
+            calls["n"] += 1
+            return (500, "boom") if calls["n"] == 1 else (200, "ok")
+        r1 = w.process_approvals(["2026-07-22-retry-w.schonenbrocher.md"],
+                                 dry_run=False, send=flaky, make_issue=lambda *a, **k: None)
+        self.assertEqual(r1[0]["action"], "send-error")
+        self.assertEqual(q.load("A7X3")["status"], "pending")
+        # 2. Lauf = Retry: Erfolg → sent, genau ein weiterer Sendeversuch
+        r2 = w.process_approvals(["2026-07-22-retry-w.schonenbrocher.md"],
+                                 dry_run=False, send=flaky, make_issue=lambda *a, **k: None)
+        self.assertEqual(r2[0]["action"], "sent")
+        self.assertEqual(q.load("A7X3")["status"], "sent")
+        self.assertEqual(calls["n"], 2)
+
+    def test_already_sent_is_skip_no_double_send(self):
+        q.mark("A7X3", "sent")
+        self._write("2026-07-22-again-w.schonenbrocher.md", MAIL_OKAY)
+        r = w.process_approvals(
+            ["2026-07-22-again-w.schonenbrocher.md"], dry_run=False,
+            send=lambda *a, **k: (_ for _ in ()).throw(AssertionError("kein Doppelversand")),
+            make_issue=lambda *a, **k: None)
+        self.assertEqual(r[0]["action"], "skip")
+
+    def test_send_raising_is_caught_not_crash(self):
+        # I2-Fix: eine Exception im Sendepfad killt den Tick nicht; Eintrag bleibt pending.
+        self._write("2026-07-22-boom-w.schonenbrocher.md", MAIL_OKAY)
+        def boom(entry, **kw):
+            raise RuntimeError("URLError o. ä.")
+        r = w.process_approvals(["2026-07-22-boom-w.schonenbrocher.md"],
+                                dry_run=False, send=boom, make_issue=lambda *a, **k: None)
+        self.assertEqual(r[0]["action"], "error")
+        self.assertEqual(q.load("A7X3")["status"], "pending")
+
 
 if __name__ == "__main__":
     unittest.main()

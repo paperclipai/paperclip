@@ -36,6 +36,18 @@ class SendTest(unittest.TestCase):
         self.assertIn("/webhook/mailhub/send", captured["url"])
         self.assertEqual(captured["data"]["approval"], "SECRET")
 
+    def test_urlerror_returns_non200_not_raises(self):
+        # I2-Fix: URLError/Timeout crasht nicht, sondern liefert non-200 (→ Retry).
+        import urllib.error
+        def boom_urlopen(req, timeout=0):
+            raise urllib.error.URLError("connection refused")
+        entry = {"to": "k@example.de", "subject": "s", "body_md": "b",
+                 "rendered_html": "h", "in_reply_to": ""}
+        s._secret_cache = "SECRET"
+        code, msg = s.send_approved(entry, urlopen=boom_urlopen)
+        self.assertNotEqual(code, 200)
+        self.assertIn("URLError", msg)
+
 
 if __name__ == "__main__":
     unittest.main()
