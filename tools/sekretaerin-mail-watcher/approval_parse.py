@@ -40,6 +40,11 @@ def classify(body: str) -> str:
     top = isolate_reply(body)
     if not top:
         return "correction"
-    # Nur wenn der GESAMTE oberste Block (ohne Leerzeilen) 'okay' ist.
+    # Nur wenn der GESAMTE oberste Block (ohne Leerzeilen) exakt das Kommando ist.
     compact = " ".join(l for l in top.split("\n") if l.strip()).strip()
-    return "send" if normalize(compact) == "okay" else "correction"
+    norm = normalize(compact)
+    if norm == "okay":
+        return "send"
+    if norm == "ignorieren":
+        return "ignore"
+    return "correction"

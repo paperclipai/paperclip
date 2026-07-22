@@ -37,6 +37,23 @@ class ClassifyTest(unittest.TestCase):
         body = "> [Freigabe #A7X3] Entwurf …\n> Sehr geehrte …"
         self.assertEqual(ap.classify(body), "correction")
 
+    def test_bare_ignorieren_is_ignore(self):
+        self.assertEqual(ap.classify("Ignorieren"), "ignore")
+        self.assertEqual(ap.classify("ignorieren"), "ignore")
+        self.assertEqual(ap.classify("  Ignorieren.  "), "ignore")
+        self.assertEqual(ap.classify("IGNORIEREN!"), "ignore")
+
+    def test_ignorieren_with_quote_is_ignore(self):
+        body = ("Ignorieren\n\n"
+                "> Am 22.07.2026 schrieb office@whitestag.ai:\n"
+                "> [Freigabe #A7X3] Entwurf …")
+        self.assertEqual(ap.classify(body), "ignore")
+
+    def test_mixed_ignorieren_is_correction(self):
+        for txt in ["okay ignorieren", "ignorieren bitte", "bitte ignorieren",
+                    "ignoriere das", "ignore"]:
+            self.assertEqual(ap.classify(txt), "correction", msg=repr(txt))
+
 
 if __name__ == "__main__":
     unittest.main()
