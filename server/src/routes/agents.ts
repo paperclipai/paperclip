@@ -1869,6 +1869,26 @@ export function agentRoutes(
     res.json(snapshot);
   });
 
+  router.get("/agents/:id/assigned-skills", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    if (!(await assertAgentReadAllowed(req, res, agent))) return;
+
+    const preference = readPaperclipSkillSyncPreference(
+      agent.adapterConfig as Record<string, unknown>,
+    );
+    const desiredSkillEntries = preference.desiredSkillEntries.filter(
+      (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
+    );
+
+    res.json({
+      agentId: agent.id,
+      desiredSkills: desiredSkillEntries.map((entry) => entry.key),
+      desiredSkillEntries,
+    });
+  });
+
   router.post(
     "/agents/:id/skills/sync",
     validate(agentSkillSyncSchema),
