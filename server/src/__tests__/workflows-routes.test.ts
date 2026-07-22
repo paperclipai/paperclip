@@ -130,6 +130,26 @@ describe("workflow routes", () => {
     }));
   });
 
+  it("rejects archived workflows being changed to paused", async () => {
+    mockWorkflowService.get.mockResolvedValue({
+      id: "workflow-1",
+      companyId,
+      title: "Social",
+      status: "archived",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/workflows/workflow-1")
+      .send({ status: "paused" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Archived workflows can only be restored to active. Restore the workflow before making other changes.",
+    });
+    expect(mockWorkflowService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("cancels a workflow run", async () => {
     mockWorkflowService.getRunDetail.mockResolvedValue({
       id: runId,

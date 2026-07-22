@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkflowListItem } from "@paperclipai/shared";
-import { filterWorkflowItems } from "./Workflows";
+import { filterWorkflowItems, getWorkflowEmptyStateMessage } from "./Workflows";
 
 function workflow(status: string, id: string): WorkflowListItem {
   return {
@@ -36,5 +36,12 @@ describe("workflow list archival filter", () => {
 
   it("shows all workflows in all view", () => {
     expect(filterWorkflowItems(items, "all").map((item) => item.id)).toEqual(["active-1", "paused-1", "archived-1"]);
+  });
+
+  it("explains when active view contains only archived workflows", () => {
+    expect(getWorkflowEmptyStateMessage([workflow("archived", "archived-1")], "active"))
+      .toBe("All workflows are archived. Switch to the Archived view to see them.");
+    expect(getWorkflowEmptyStateMessage([], "active"))
+      .toContain("No workflows yet.");
   });
 });

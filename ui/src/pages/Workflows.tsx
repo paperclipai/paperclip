@@ -35,6 +35,12 @@ export function filterWorkflowItems(items: WorkflowListItem[], filter: WorkflowF
     : item.status !== "archived"));
 }
 
+export function getWorkflowEmptyStateMessage(items: WorkflowListItem[], filter: WorkflowFilter) {
+  if (filter === "archived") return "No archived workflows.";
+  if (items.length > 0) return "All workflows are archived. Switch to the Archived view to see them.";
+  return "No workflows yet. Create one and point it at a Google ADK project to generate its first pipeline.";
+}
+
 const defaultDraft: WorkflowCreateDraft = {
   title: "",
   description: "",
@@ -78,7 +84,7 @@ export function Workflows() {
   })();
 
   const workflowsQuery = useQuery({
-    queryKey: queryKeys.workflows.list(selectedCompanyId ?? ""),
+    queryKey: [...queryKeys.workflows.list(selectedCompanyId ?? ""), { includeArchived: true }],
     queryFn: () => workflowsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
     refetchInterval: (query) => {
@@ -286,9 +292,7 @@ export function Workflows() {
       {visibleItems.length === 0 ? (
         <EmptyState
           icon={Sparkles}
-          message={workflowFilter === "archived"
-            ? "No archived workflows."
-            : "No workflows yet. Create one and point it at a Google ADK project to generate its first pipeline."}
+          message={getWorkflowEmptyStateMessage(items, workflowFilter)}
         />
       ) : (
         <div className="grid gap-4 xl:grid-cols-2">
