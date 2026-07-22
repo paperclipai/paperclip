@@ -155,6 +155,7 @@ import {
 } from "./issue-continuation-summary.js";
 import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import { executionWorkspaceLifecycleService } from "./execution-workspace-lifecycle.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
@@ -5460,6 +5461,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
+  const executionWorkspaceLifecycle = executionWorkspaceLifecycleService(db);
   const environmentsSvc = environmentService(db);
   const environmentRuntime = options.environmentRuntime ?? environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
@@ -14309,6 +14311,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           }
           activeRunExecutions.delete(run.id);
+          const terminalIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+          if (terminalIssueId) {
+            await executionWorkspaceLifecycle.finishDeferredCleanup({
+              issueId: terminalIssueId,
+              actor: {
+                actorType: "agent",
+                actorId: run.agentId,
+                agentId: run.agentId,
+                runId: run.id,
+              },
+            }).catch((err) => {
+              logger.warn(
+                { err, issueId: terminalIssueId, runId: run.id },
+                "failed to finish terminal issue execution workspace cleanup",
+              );
+            });
+          }
           await startNextQueuedRunForAgent(run.agentId);
         }
   }

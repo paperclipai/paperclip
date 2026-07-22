@@ -486,6 +486,8 @@ Side effects:
 - entering `in_progress` sets `started_at` if null
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
+- entering a terminal state makes the linked execution workspace eligible for automatic cleanup once every linked issue is terminal
+- cleanup waits for the active heartbeat to finish; workspaces with uncommitted files remain available with a recorded cleanup reason instead of being deleted automatically
 
 V1 non-terminal liveness rule:
 
