@@ -71,6 +71,13 @@ export async function execInPod(
   // instant it would exceed the cap so the caller can fall back. In-pod size
   // checks are worthless here — only the host can be trusted to enforce this.
   maxStdoutBytes?: number,
+  // Same bound for the stderr channel. stderr is equally pod-controlled: a
+  // malicious pod can emit an unbounded stderr stream during the SAME exec (e.g.
+  // crafted tar/realpath diagnostics on the `syncOut` path) and trigger the
+  // identical uncaught-`RangeError` worker crash. When set, stderr accumulation
+  // fails closed at the cap; regardless of the cap, the `+=` is guarded so a
+  // max-string-length `RangeError` can never escape as an uncaught exception.
+  maxStderrBytes?: number,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const exec = new Exec(kc);
   const stdoutStream = new PassThrough();
@@ -102,10 +109,7 @@ export async function execInPod(
   let stdoutData = "";
   let stderrData = "";
   let stdoutBytes = 0;
-
-  stderrStream.on("data", (chunk: Buffer) => {
-    stderrData += chunk.toString("utf-8");
-  });
+  let stderrBytes = 0;
 
   return await new Promise<{ exitCode: number; stdout: string; stderr: string }>(
     (resolve, reject) => {
@@ -182,6 +186,27 @@ export async function execInPod(
           // Belt-and-suspenders: even under an explicit cap (or with none set),
           // never let a `+=` RangeError at V8's max string length escape this
           // listener as an uncaught exception.
+          failClosed(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
+
+      // stderr is pod-controlled too — bound it with the same fail-closed policy
+      // and, unconditionally, guard the `+=` so a max-string-length `RangeError`
+      // can never escape this listener as an uncaught (worker-crashing) exception.
+      stderrStream.on("data", (chunk: Buffer) => {
+        if (resolved) return;
+        if (typeof maxStderrBytes === "number" && maxStderrBytes >= 0) {
+          stderrBytes += chunk.length;
+          if (stderrBytes > maxStderrBytes) {
+            failClosed(new Error(
+              `execInPod stderr exceeded the ${maxStderrBytes}-byte cap (pod=${podName}, container=${containerName}); the sandbox produced more output than the buffer allows.`,
+            ));
+            return;
+          }
+        }
+        try {
+          stderrData += chunk.toString("utf-8");
+        } catch (err) {
           failClosed(err instanceof Error ? err : new Error(String(err)));
         }
       });

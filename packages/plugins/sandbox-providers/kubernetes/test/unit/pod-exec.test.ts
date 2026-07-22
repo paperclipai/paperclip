@@ -93,3 +93,59 @@ describe("execInPod stdout cap", () => {
     expect(result.stdout).toHaveLength(4096);
   });
 });
+
+describe("execInPod stderr cap", () => {
+  it("fails closed when pod stderr exceeds the cap", async () => {
+    // stderr is equally pod-controlled: a malicious pod that floods stderr must
+    // not grow the host accumulator without bound. Same DoS class as stdout.
+    scriptedExec = (_stdout, stderr) => {
+      stderr.write(Buffer.alloc(64, 0x45));
+    };
+    await expect(
+      // maxStdoutBytes generous, maxStderrBytes = 16 -> stderr must trip.
+      execInPod(KC, "ns", "pod", "agent", ["/bin/sh", "-c", ":"], undefined, 5_000, 1024, 16),
+    ).rejects.toThrow(/stderr.*cap|cap.*stderr|exceeded/i);
+  });
+
+  it("accepts stderr within the cap and returns the accumulated output", async () => {
+    scriptedExec = (stdout, stderr, statusCb) => {
+      stderr.write(Buffer.from("warn", "utf-8"));
+      stdout.end();
+      stderr.end();
+      statusCb({ status: "Success" });
+    };
+    const result = await execInPod(
+      KC,
+      "ns",
+      "pod",
+      "agent",
+      ["/bin/sh", "-c", ":"],
+      undefined,
+      5_000,
+      1024,
+      1024,
+    );
+    expect(result).toEqual({ exitCode: 0, stdout: "", stderr: "warn" });
+  });
+
+  it("leaves stderr unbounded when no cap is provided", async () => {
+    scriptedExec = (stdout, stderr, statusCb) => {
+      stderr.write(Buffer.alloc(4096, 0x46));
+      stdout.end();
+      stderr.end();
+      statusCb({ status: "Success" });
+    };
+    const result = await execInPod(
+      KC,
+      "ns",
+      "pod",
+      "agent",
+      ["/bin/sh", "-c", ":"],
+      undefined,
+      5_000,
+      1024,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toHaveLength(4096);
+  });
+});
