@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 from academy_auto.config import Config
-from academy_auto.gate import GateResult, GateStep
+from academy_auto.gate import GateMeasure, StepMeasure
 from academy_auto.runner import RunOutcome
 from academy_auto.orchestrator import run_once
 
@@ -9,16 +9,30 @@ recorded: list = []
 resets: list = []
 
 
+def _measure(total):
+    # ein Schritt trägt den ganzen Fehler-Count
+    return GateMeasure(steps=[StepMeasure(["npx", "tsc", "--noEmit"], total)], total=total)
+
+
+def two_stage_measure(baseline_total, after_total):
+    seq = [baseline_total, after_total]
+
+    def m(cfg, cwd):
+        return _measure(seq.pop(0))
+
+    return m
+
+
 def base_deps(**over):
     d = dict(
         prepare_worktree=lambda cfg: cfg.worktree_path,
+        measure_gate=lambda cfg, cwd: _measure(0),  # default: grün (Baseline und After)
         implement_task=lambda cfg, cwd, prompt: RunOutcome(ok=True, output="done"),
-        run_gate=lambda cfg, cwd: GateResult(passed=True, steps=[GateStep(["npm", "test"], 0, "ok")]),
         commit_and_pr=lambda cfg, cwd, prompt: True,
         send_digest=lambda text: sent.append(text),
         count_diff_lines=lambda cfg, cwd: 10,
         list_changed_files=lambda cfg, cwd: ["src/App.tsx"],
-        triage_and_pick=lambda cfg, cwd: None,
+        triage_and_pick=lambda cfg, cwd, baseline_red: None,
         record_triage_outcome=lambda cfg, key, status: recorded.append((key, status)),
         reset_worktree=lambda cfg, cwd: resets.append(cwd),
         quarantined=lambda cfg: [],
@@ -58,7 +72,7 @@ def test_run_once_red_gate_discards_and_reports(tmp_path):
     cfg = Config.default()
     cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
     deps = base_deps(
-        run_gate=lambda cfg, cwd: GateResult(passed=False, steps=[GateStep(["npm", "test"], 1, "fail")]),
+        measure_gate=two_stage_measure(0, 3),  # grün Baseline, rotes After
         commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("darf nicht committen")),
     )
     report = run_once(cfg, "Refactor", deps)
@@ -74,7 +88,6 @@ def test_run_once_impl_failure_skips_gate_and_reports(tmp_path):
     cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
     deps = base_deps(
         implement_task=lambda cfg, cwd, prompt: RunOutcome(ok=False, output="claude timeout"),
-        run_gate=lambda cfg, cwd: (_ for _ in ()).throw(AssertionError("Gate darf nicht laufen")),
         commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("kein Commit")),
     )
     report = run_once(cfg, "x", deps)
@@ -120,7 +133,7 @@ def test_run_once_triage_mode_picks_and_commits(tmp_path):
     from academy_auto.triage.rank import Pick
     cfg = Config.default()
     cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
-    deps = base_deps(triage_and_pick=lambda cfg, cwd: Pick("tsc:a.ts:5:TS1", "Fix a.ts:5", "prio"))
+    deps = base_deps(triage_and_pick=lambda cfg, cwd, baseline_red: Pick("tsc:a.ts:5:TS1", "Fix a.ts:5", "prio"))
     report = run_once(cfg, None, deps)  # None -> Triage-Modus
     assert report.status == "committed"
     assert recorded == [("tsc:a.ts:5:TS1", "committed")]
@@ -133,7 +146,7 @@ def test_run_once_triage_nothing_to_do(tmp_path):
     sent, recorded, resets = [], [], []
     cfg = Config.default()
     cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
-    deps = base_deps(triage_and_pick=lambda cfg, cwd: None, quarantined=lambda cfg: ["todo:z.ts:3"])
+    deps = base_deps(triage_and_pick=lambda cfg, cwd, baseline_red: None, quarantined=lambda cfg: ["todo:z.ts:3"])
     report = run_once(cfg, None, deps)
     assert report.status == "nothing_to_do"
     assert recorded == []
@@ -147,8 +160,8 @@ def test_run_once_triage_discard_records_and_resets(tmp_path):
     cfg = Config.default()
     cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
     deps = base_deps(
-        triage_and_pick=lambda cfg, cwd: Pick("todo:b.ts:1", "b umsetzen", "einfach"),
-        run_gate=lambda cfg, cwd: GateResult(passed=False, steps=[GateStep(["npm", "test"], 1, "fail")]),
+        triage_and_pick=lambda cfg, cwd, baseline_red: Pick("todo:b.ts:1", "b umsetzen", "einfach"),
+        measure_gate=two_stage_measure(0, 3),  # grün Baseline, rotes After
         commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("kein Commit")),
     )
     report = run_once(cfg, None, deps)
@@ -162,7 +175,7 @@ def test_run_once_manual_prompt_skips_triage_and_recording(tmp_path):
     sent, recorded, resets = [], [], []
     cfg = Config.default()
     cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
-    deps = base_deps(triage_and_pick=lambda cfg, cwd: (_ for _ in ()).throw(AssertionError("Triage darf nicht laufen")))
+    deps = base_deps(triage_and_pick=lambda cfg, cwd, baseline_red: (_ for _ in ()).throw(AssertionError("Triage darf nicht laufen")))
     report = run_once(cfg, "manueller Auftrag", deps)  # String -> kein Triage
     assert report.status == "committed"
     assert recorded == []  # manueller Lauf zeichnet nichts auf
@@ -188,3 +201,66 @@ def test_run_once_committed_digest_lists_quarantine(tmp_path):
     report = run_once(cfg, "manuell", deps)
     assert report.status == "committed"
     assert any("todo:z.ts:9" in s for s in sent)  # Quarantäne auch im committed-Digest
+
+
+def test_run_once_green_baseline_absolute_pass_commits(tmp_path):
+    global sent, recorded, resets
+    sent, recorded, resets = [], [], []
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    deps = base_deps(measure_gate=two_stage_measure(0, 0))  # grün → grün
+    assert run_once(cfg, "manuell", deps).status == "committed"
+
+
+def test_run_once_green_baseline_after_red_discards(tmp_path):
+    global sent, recorded, resets
+    sent, recorded, resets = [], [], []
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    deps = base_deps(
+        measure_gate=two_stage_measure(0, 2),  # grün → rot: neuer Fehler → discard
+        commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("kein Commit")),
+    )
+    r = run_once(cfg, "manuell", deps)
+    assert r.status == "discarded"
+    assert len(resets) == 1
+
+
+def test_run_once_red_baseline_delta_progress_commits(tmp_path):
+    global sent, recorded, resets
+    sent, recorded, resets = [], [], []
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    deps = base_deps(measure_gate=two_stage_measure(5, 2))  # rot → weniger Fehler → Delta-Commit
+    r = run_once(cfg, "manuell", deps)
+    assert r.status == "committed"
+    assert any("Delta" in s for s in sent)
+
+
+def test_run_once_red_baseline_no_progress_discards(tmp_path):
+    global sent, recorded, resets
+    sent, recorded, resets = [], [], []
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    deps = base_deps(
+        measure_gate=two_stage_measure(5, 5),  # rot → kein Fortschritt → discard
+        commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("kein Commit")),
+    )
+    assert run_once(cfg, "manuell", deps).status == "discarded"
+
+
+def test_run_once_triage_receives_baseline_red(tmp_path):
+    global sent, recorded, resets
+    sent, recorded, resets = [], [], []
+    from academy_auto.triage.rank import Pick
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    seen = {}
+
+    def tp(cfg, cwd, baseline_red):
+        seen["red"] = baseline_red
+        return Pick("todo:b.ts:1", "b umsetzen", "grund")
+
+    deps = base_deps(measure_gate=two_stage_measure(4, 1), triage_and_pick=tp)
+    run_once(cfg, None, deps)  # Triage-Modus, Baseline rot
+    assert seen["red"] is True

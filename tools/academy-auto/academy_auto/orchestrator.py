@@ -4,6 +4,7 @@ import argparse
 from dataclasses import dataclass
 
 from .config import Config
+from .gate import delta_decision
 from .report import build_digest, build_nothing_digest
 from .scope import check_scope
 
@@ -14,16 +15,19 @@ class RunReport:
 
 
 def run_once(cfg: Config, task_prompt, deps) -> RunReport:
-    """Ein Lauf: Pause → Worktree → [Triage] → Impl → Gate → Scope → Cap → Commit."""
+    """Pause → Worktree → Baseline → [Triage] → Impl → After+Delta → Scope → Cap → Commit."""
     if cfg.pause_flag.exists():
         return RunReport(status="paused")
 
     cwd = deps.prepare_worktree(cfg)
     quar = deps.quarantined(cfg)
 
+    baseline = deps.measure_gate(cfg, cwd)
+    baseline_red = baseline.total > 0
+
     pick = None
     if task_prompt is None:
-        pick = deps.triage_and_pick(cfg, cwd)
+        pick = deps.triage_and_pick(cfg, cwd, baseline_red)
         if pick is None:
             deps.send_digest(build_nothing_digest(quar))
             return RunReport(status="nothing_to_do")
@@ -32,27 +36,28 @@ def run_once(cfg: Config, task_prompt, deps) -> RunReport:
 
     outcome = deps.implement_task(cfg, cwd, task_prompt)
     if not outcome.ok:
-        deps.send_digest(build_digest(task_prompt, outcome, _empty_gate(), committed=False, reason=reason, quarantined=quar))
+        deps.send_digest(build_digest(task_prompt, outcome, None, committed=False, reason=reason, quarantined=quar, gate_note="Umsetzung fehlgeschlagen"))
         return _finalize(deps, cfg, cwd, pick, "impl_failed")
 
-    gate = deps.run_gate(cfg, cwd)
-    if not gate.passed:
-        deps.send_digest(build_digest(task_prompt, outcome, gate, committed=False, reason=reason, quarantined=quar))
+    after = deps.measure_gate(cfg, cwd)
+    delta = delta_decision(baseline, after)
+    if not delta.passed:
+        deps.send_digest(build_digest(task_prompt, outcome, None, committed=False, reason=reason, quarantined=quar, gate_note=delta.note))
         return _finalize(deps, cfg, cwd, pick, "discarded")
 
     changed = deps.list_changed_files(cfg, cwd)
     scope = check_scope(cfg, changed)
     if not scope.ok:
-        deps.send_digest(build_digest(task_prompt, outcome, gate, committed=False, scope_violations=scope.violations, reason=reason, quarantined=quar))
+        deps.send_digest(build_digest(task_prompt, outcome, None, committed=False, scope_violations=scope.violations, reason=reason, quarantined=quar, gate_note=delta.note))
         return _finalize(deps, cfg, cwd, pick, "discarded")
 
     lines = deps.count_diff_lines(cfg, cwd)
     if lines > cfg.max_diff_lines:
-        deps.send_digest(build_digest(task_prompt, outcome, gate, committed=False, cap_exceeded=True, reason=reason, quarantined=quar))
+        deps.send_digest(build_digest(task_prompt, outcome, None, committed=False, cap_exceeded=True, reason=reason, quarantined=quar, gate_note=delta.note))
         return _finalize(deps, cfg, cwd, pick, "discarded")
 
     deps.commit_and_pr(cfg, cwd, task_prompt)
-    deps.send_digest(build_digest(task_prompt, outcome, gate, committed=True, reason=reason, quarantined=quar))
+    deps.send_digest(build_digest(task_prompt, outcome, None, committed=True, reason=reason, quarantined=quar, gate_note=delta.note))
     return _finalize(deps, cfg, cwd, pick, "committed")
 
 
@@ -87,12 +92,12 @@ def _build_default_deps(worktree, gate, runner, report):  # pragma: no cover
     return SimpleNamespace(
         prepare_worktree=lambda cfg: worktree.prepare_worktree(cfg),
         implement_task=lambda cfg, cwd, prompt: runner.implement_task(cfg, cwd, prompt),
-        run_gate=lambda cfg, cwd: gate.run_gate(cfg, cwd),
+        measure_gate=lambda cfg, cwd: gate.measure_gate(cfg, cwd),
         commit_and_pr=_commit_and_pr,
         send_digest=lambda text: report.send_digest(text, sender=print),
         count_diff_lines=_count_diff_lines,
         list_changed_files=_list_changed_files,
-        triage_and_pick=lambda cfg, cwd: _triage_and_pick(cfg, cwd),
+        triage_and_pick=lambda cfg, cwd, baseline_red: _triage_and_pick(cfg, cwd, baseline_red),
         record_triage_outcome=_record_triage_outcome,
         reset_worktree=_reset_worktree,
         quarantined=_quarantined,
@@ -133,9 +138,9 @@ def _commit_and_pr(cfg, cwd, prompt):
     return True
 
 
-def _triage_and_pick(cfg, cwd):  # pragma: no cover - echte Triage beim Deploy
+def _triage_and_pick(cfg, cwd, baseline_red):  # pragma: no cover - echte Triage beim Deploy
     from .triage.pick import triage_and_pick
-    return triage_and_pick(cfg, cwd)
+    return triage_and_pick(cfg, cwd, baseline_red=baseline_red)
 
 
 def _record_triage_outcome(cfg, key, status):
