@@ -327,10 +327,20 @@ run_package_publish() {
   local disable_provenance="${3:-false}"
 
   if [ "$publish_tool" = "npm" ]; then
+    # Publish a pre-packed tarball instead of the staged directory: npm 11's
+    # directory publish re-packs through libnpmpack, which dies with
+    # "Exit handler never called!" on CI runners before reaching the registry.
+    # A file spec skips that phase entirely while keeping trusted publishing.
+    local tarball
+    tarball="$(run_bundled_npm_pack pack --pack-destination "$PWD" | tail -n 1)"
+    if [ -z "$tarball" ] || [ ! -f "$PWD/$tarball" ]; then
+      release_warn "npm pack did not produce a tarball for the bundled package."
+      return 1
+    fi
     if [ "$disable_provenance" = "true" ]; then
-      run_bundled_npm_publish publish --tag "$dist_tag" --access public --provenance=false
+      run_bundled_npm_publish publish "./$tarball" --tag "$dist_tag" --access public --provenance=false
     else
-      run_bundled_npm_publish publish --tag "$dist_tag" --access public
+      run_bundled_npm_publish publish "./$tarball" --tag "$dist_tag" --access public
     fi
     return
   fi

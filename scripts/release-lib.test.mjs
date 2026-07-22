@@ -81,6 +81,21 @@ if [ "$1" = "publish" ]; then
   echo "published"
   exit 0
 fi
+if [ "$1" = "pack" ]; then
+  shift
+  destination="."
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--pack-destination" ]; then
+      destination="$2"
+      shift 2
+      continue
+    fi
+    shift
+  done
+  touch "$destination/paperclipai-example-1.2.3.tgz"
+  echo "paperclipai-example-1.2.3.tgz"
+  exit 0
+fi
 exit 1
 `,
   );
@@ -91,7 +106,7 @@ exit 1
 set -euo pipefail
 printf 'npx %s\n' "$*" >> "$FAKE_CALL_LOG"
 [ "$1" = "--yes" ] && shift
-[ "$1" = "npm@11.18.0" ] && shift
+case "$1" in npm@*) shift ;; esac
 exec npm "$@"
 `,
   );
@@ -145,11 +160,15 @@ test("publish_package_to_npm uses trusted-publishing-capable npm for bundled dep
   const result = runPublishHelper({ pnpmMode: "success", publishTool: "npm" });
 
   assert.equal(result.status, 0);
+  assert.match(result.calls, /^npx --yes npm@10\.9\.7 pack --pack-destination \S+$/m);
   assert.match(
     result.calls,
-    /^npx --yes npm@11\.18\.0 publish --tag canary --access public --loglevel verbose$/m,
+    /^npx --yes npm@11\.18\.0 publish \.\/paperclipai-example-1\.2\.3\.tgz --tag canary --access public --loglevel verbose$/m,
   );
-  assert.match(result.calls, /^npm publish --tag canary --access public --loglevel verbose$/m);
+  assert.match(
+    result.calls,
+    /^npm publish \.\/paperclipai-example-1\.2\.3\.tgz --tag canary --access public --loglevel verbose$/m,
+  );
   assert.doesNotMatch(result.calls, /^pnpm publish/m);
 });
 

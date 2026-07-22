@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import cliEsbuildConfig from "../cli/esbuild.config.mjs";
 import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
-import { materializePublishManifest } from "./prepare-bundled-package.mjs";
+import { materializeBundledNodeModules, materializePublishManifest } from "./prepare-bundled-package.mjs";
 
 const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const adapterUtilsPackage = JSON.parse(
@@ -31,6 +34,34 @@ test("bundled package staging materializes publishConfig entrypoints", () => {
   assert.equal(staged.main, "./dist/index.js");
   assert.equal(staged.types, "./dist/index.d.ts");
   assert.deepEqual(staged.exports, adapterUtilsPackage.publishConfig.exports);
+});
+
+test("bundled package staging replaces pnpm symlinks with a physical bundled tree", () => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "paperclip-bundled-staging-"));
+  const storePackageDir = join(
+    stagingDir,
+    "node_modules",
+    ".pnpm",
+    "acpx@0.12.0_patch_hash=abc",
+    "node_modules",
+    "acpx",
+  );
+  mkdirSync(storePackageDir, { recursive: true });
+  writeFileSync(join(storePackageDir, "package.json"), '{"name":"acpx","version":"0.12.0"}\n');
+  symlinkSync(storePackageDir, join(stagingDir, "node_modules", "acpx"), "dir");
+
+  materializeBundledNodeModules(stagingDir, ["acpx"]);
+
+  const stagedAcpx = join(stagingDir, "node_modules", "acpx");
+  assert.equal(lstatSync(stagedAcpx).isSymbolicLink(), false);
+  assert.equal(lstatSync(stagedAcpx).isDirectory(), true);
+  assert.equal(existsSync(join(stagedAcpx, "package.json")), true);
+  assert.equal(existsSync(join(stagingDir, "node_modules", ".pnpm")), false);
+});
+
+test("bundled package publishes the packed tarball instead of the staged directory", () => {
+  assert.match(releaseLib, /run_bundled_npm_pack pack --pack-destination "\$PWD"/);
+  assert.match(releaseLib, /run_bundled_npm_publish publish "\.\/\$tarball"/);
 });
 
 test("bundled package dry runs preview without querying published versions", () => {
