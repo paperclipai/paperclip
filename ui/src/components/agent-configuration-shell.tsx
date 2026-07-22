@@ -20,8 +20,8 @@ export const agentConfigurationSections: ReadonlyArray<{
   instant?: boolean;
   fields: string[];
 }> = [
-  { id: "runtime", label: "Runtime", fields: ["adapter", "model", "effort", "turns", "command", "arguments", "engine", "timeout", "chrome"] },
   { id: "environment", label: "Environment", fields: ["execution environment", "environment override", "variables", "secrets"] },
+  { id: "runtime", label: "Runtime", fields: ["adapter", "model", "effort", "turns", "command", "arguments", "engine", "timeout", "chrome"] },
   { id: "schedule", label: "Schedule & Runs", fields: ["heartbeat", "wake on demand", "cooldown", "concurrent runs", "continuation"] },
   { id: "access", label: "Access & Governance", instant: true, fields: ["trust preset", "boundary", "create agents", "create skills", "assign tasks"] },
   { id: "keys", label: "API Keys", instant: true, fields: ["credentials", "create key", "revoke key"] },
@@ -84,6 +84,15 @@ export function AgentConfigurationRail({
   return (
     <>
       <div className="sticky top-0 z-20 bg-background py-2 md:hidden">
+        <label className="mb-2 flex items-center gap-2 rounded-md border border-border px-2.5 py-2">
+          <Search className="h-3.5 w-3.5 text-muted-foreground" />
+          <input
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder="Find a setting"
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+          />
+        </label>
         <select
           className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
           aria-label="Configuration section"

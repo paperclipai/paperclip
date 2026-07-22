@@ -1779,11 +1779,11 @@ function AgentConfigurePage({
   });
 
   const effectiveChips: Array<{ label: string; value: string; section: AgentConfigurationSectionId; inherited?: boolean }> = [
+    { label: "Environment", value: effectiveConfig.environment, section: "environment", inherited: effectiveConfig.environmentInherited },
+    { label: "Variables", value: String(effectiveConfig.environmentVariableCount), section: "environment" },
     { label: "Adapter", value: effectiveConfig.adapter, section: "runtime" },
     { label: "Model", value: effectiveConfig.model, section: "runtime", inherited: effectiveConfig.modelInherited },
     { label: "Cost saver", value: effectiveConfig.cheapModel, section: "runtime", inherited: effectiveConfig.cheapInherited },
-    { label: "Environment", value: effectiveConfig.environment, section: "environment", inherited: effectiveConfig.environmentInherited },
-    { label: "Variables", value: String(effectiveConfig.environmentVariableCount), section: "environment" },
     { label: "Heartbeat", value: effectiveConfig.cadence, section: "schedule" },
     { label: "Trust", value: effectiveConfig.trust, section: "access" },
     { label: "API keys", value: String(effectiveConfig.apiKeyCount), section: "keys" },
