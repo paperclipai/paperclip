@@ -234,6 +234,23 @@ class ApprovalScanTest(unittest.TestCase):
         self.assertEqual(q.load("A7X3")["status"], "pending")  # nichts verändert
         self.assertFalse(bl.is_blocked("k@x.de"))
 
+    def test_scan_skips_blocked_sender(self):
+        import blocklist as bl
+        bl.STATE = self.dir / "luna-blocklist.json"
+        bl.add("spam@x.de")
+        mail = ("---\nvon: Spam Meier <spam@x.de>\n"
+                "subject: Angebot\n---\n\nKaufen Sie jetzt!\n")
+        self._write("2026-07-22-spam-eingang.md", mail)
+        self.assertNotIn("2026-07-22-spam-eingang.md", w.scan(3))
+
+    def test_scan_keeps_unblocked_sender(self):
+        import blocklist as bl
+        bl.STATE = self.dir / "luna-blocklist.json"  # leere Blocklist
+        mail = ("---\nvon: Echt Kunde <kunde@x.de>\n"
+                "subject: Anfrage\n---\n\nHallo Luna\n")
+        self._write("2026-07-22-echt-eingang.md", mail)
+        self.assertIn("2026-07-22-echt-eingang.md", w.scan(3))
+
 
 if __name__ == "__main__":
     unittest.main()

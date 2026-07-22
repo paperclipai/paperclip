@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -110,6 +111,30 @@ def _is_agent_mail(path: Path) -> bool:
                 low = line.lower()
                 if low.startswith(("von:", "from:")):
                     return any(s in low for s in AGENT_SENDERS)
+    except OSError:
+        return False
+    return False
+
+
+def _is_blocked_sender(path: Path, blocked: set[str] | None = None) -> bool:
+    """True, wenn die `von:`-Adresse der Mail auf der Blockliste steht.
+
+    Liest nur das Frontmatter (wie `_is_agent_mail`). `blocked` wird vom Aufrufer
+    einmal pro scan() geladen; None → selbst laden (bequem für Tests)."""
+    if blocked is None:
+        blocked = blocklist.load()
+    if not blocked:
+        return False
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for _ in range(12):
+                line = fh.readline()
+                if not line:
+                    break
+                low = line.lower()
+                if low.startswith(("von:", "from:")):
+                    m = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", line)
+                    return bool(m) and m.group(0).lower() in blocked
     except OSError:
         return False
     return False
@@ -286,11 +311,14 @@ def scan(window: int) -> list[str]:
         print(f"FEHLER: Vault-Ordner fehlt: {MAILDIR}", file=sys.stderr)
         sys.exit(2)
     cutoff = str(date.today() - timedelta(days=window))
+    blocked = blocklist.load()
     out = []
     for p in sorted(MAILDIR.glob("*.md")):
         if p.name[:10] < cutoff:
             continue
         if _is_agent_mail(p):
+            continue
+        if _is_blocked_sender(p, blocked):
             continue
         if is_approval_reply(p):
             continue
