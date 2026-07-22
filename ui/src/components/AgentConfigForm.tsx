@@ -1091,104 +1091,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       )}
 
-      {/* ---- Execution ---- */}
-      {configurationShell && sectionVisible("environment") ? (
-        <div id="config-environment" className="scroll-mt-24" />
-      ) : null}
-      {sectionVisible("environment") && (forcedKubernetes ? (
-        // Instance execution policy forces the managed Kubernetes sandbox
-        // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
-        // Render the environment read-only instead of the selectable picker.
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
-          {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
-          }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <Field
-              label="Default environment"
-              hint="This instance runs all agents in the Kubernetes sandbox. Local execution is disabled."
-            >
-              {kubernetesEnvironment ? (
-                <div className={cn(inputClass, "flex items-center text-muted-foreground")}>
-                  {kubernetesEnvironment.name} · Kubernetes sandbox
-                </div>
-              ) : (
-                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-                  This instance requires the Kubernetes sandbox, but no managed Kubernetes
-                  environment is available for this company yet. Configure one before creating
-                  agents; execution will not fall back to local.
-                </div>
-              )}
-            </Field>
-          </div>
-        </div>
-      ) : showEnvironmentOverrideControl ? (
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
-          {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
-          }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <Field label="Environment override">
-              <div className="space-y-2">
-                <select
-                  className={inputClass}
-                  value={currentDefaultEnvironmentId}
-                  onChange={(event) => {
-                    const nextValue = event.target.value;
-                    if (isCreate) {
-                      set!({ defaultEnvironmentId: nextValue });
-                      return;
-                    }
-                    mark("identity", "defaultEnvironmentId", nextValue || null);
-                  }}
-                >
-                  <option value="">Default: {inheritedEnvironmentLabel}</option>
-                  {environmentOptions.map((environment) => (
-                    <option key={environment.id} value={environment.id}>
-                      {environment.name} · {environment.driver}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </Field>
-          </div>
-        </div>
-      ) : null)}
-
-      {configurationShell && sectionVisible("environment") && isLocal && (
-        <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-          <Field label="Environment variables" hint={help.envVars}>
-            <EnvironmentVariablesEditor
-              ref={environmentVariablesEditorRef}
-              value={
-                isCreate
-                  ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-                  : eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>)
-              }
-              secrets={availableSecrets}
-              userSecretDefinitions={userSecretDefinitions}
-              onCreateSecret={async (name, value) => createSecret.mutateAsync({ name, value })}
-              onChange={(env) =>
-                isCreate
-                  ? set!({ envBindings: env ?? {}, envVars: "" })
-                  : mark("adapterConfig", "env", env)
-              }
-            />
-          </Field>
-          {!isCreate && (
-            <Field label="Secret access" hint={help.secretAccess}>
-              <AgentSecretAccessEditor
-                config={{ ...config, ...overlay.adapterConfig }}
-                secrets={availableSecrets}
-                onChange={applyAccessGrants}
-              />
-            </Field>
-          )}
-        </div>
-      )}
-
       {/* ---- Adapter ---- */}
       {sectionVisible("runtime") && <div id={configurationShell ? "config-runtime" : undefined} className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), configurationShell && "scroll-mt-24")}>
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
@@ -1560,6 +1462,104 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </>
               )}
           </div>}
+        </div>
+      )}
+
+      {/* ---- Execution ---- */}
+      {configurationShell && sectionVisible("environment") ? (
+        <div id="config-environment" className="scroll-mt-24" />
+      ) : null}
+      {sectionVisible("environment") && (forcedKubernetes ? (
+        // Instance execution policy forces the managed Kubernetes sandbox
+        // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
+        // Render the environment read-only instead of the selectable picker.
+        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+          {cards
+            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
+          }
+          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+            <Field
+              label="Default environment"
+              hint="This instance runs all agents in the Kubernetes sandbox. Local execution is disabled."
+            >
+              {kubernetesEnvironment ? (
+                <div className={cn(inputClass, "flex items-center text-muted-foreground")}>
+                  {kubernetesEnvironment.name} · Kubernetes sandbox
+                </div>
+              ) : (
+                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                  This instance requires the Kubernetes sandbox, but no managed Kubernetes
+                  environment is available for this company yet. Configure one before creating
+                  agents; execution will not fall back to local.
+                </div>
+              )}
+            </Field>
+          </div>
+        </div>
+      ) : showEnvironmentOverrideControl ? (
+        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+          {cards
+            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
+          }
+          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+            <Field label="Environment override">
+              <div className="space-y-2">
+                <select
+                  className={inputClass}
+                  value={currentDefaultEnvironmentId}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    if (isCreate) {
+                      set!({ defaultEnvironmentId: nextValue });
+                      return;
+                    }
+                    mark("identity", "defaultEnvironmentId", nextValue || null);
+                  }}
+                >
+                  <option value="">Default: {inheritedEnvironmentLabel}</option>
+                  {environmentOptions.map((environment) => (
+                    <option key={environment.id} value={environment.id}>
+                      {environment.name} · {environment.driver}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </Field>
+          </div>
+        </div>
+      ) : null)}
+
+      {configurationShell && sectionVisible("environment") && isLocal && (
+        <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <Field label="Environment variables" hint={help.envVars}>
+            <EnvironmentVariablesEditor
+              ref={environmentVariablesEditorRef}
+              value={
+                isCreate
+                  ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+                  : eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>)
+              }
+              secrets={availableSecrets}
+              userSecretDefinitions={userSecretDefinitions}
+              onCreateSecret={async (name, value) => createSecret.mutateAsync({ name, value })}
+              onChange={(env) =>
+                isCreate
+                  ? set!({ envBindings: env ?? {}, envVars: "" })
+                  : mark("adapterConfig", "env", env)
+              }
+            />
+          </Field>
+          {!isCreate && (
+            <Field label="Secret access" hint={help.secretAccess}>
+              <AgentSecretAccessEditor
+                config={{ ...config, ...overlay.adapterConfig }}
+                secrets={availableSecrets}
+                onChange={applyAccessGrants}
+              />
+            </Field>
+          )}
         </div>
       )}
 

@@ -398,6 +398,7 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).toContain("Advanced runtime");
     expect(result.container.textContent).toContain("runtime adapter fields");
+    expect(runtime?.compareDocumentPosition(environment as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(runtime?.textContent).not.toContain("Environment variables");
     expect(runtime?.textContent).not.toContain("Working directory (deprecated)");
     expect(environment?.parentElement?.textContent).toContain("Environment variables");
