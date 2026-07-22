@@ -2599,7 +2599,6 @@ export function Inbox() {
                       issueLinkState={issueLinkState}
                       treeGuides={depth}
                       hideDivider={hasChildren && isExpanded}
-                      externalObjectSummary={externalObjectSummaryByIssueId.get(issue.id) ?? null}
                       selected={selected}
                       className={
                         isArchiving
