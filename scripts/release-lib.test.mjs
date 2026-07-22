@@ -85,6 +85,17 @@ exit 1
 `,
   );
 
+  writeExecutable(
+    join(binDir, "npx"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf 'npx %s\n' "$*" >> "$FAKE_CALL_LOG"
+[ "$1" = "--yes" ] && shift
+[ "$1" = "npm@10.9.7" ] && shift
+exec npm "$@"
+`,
+  );
+
   const shellOptions = callerPipefail ? "set -euo pipefail" : "set -eu";
   const script = `
 ${shellOptions}
@@ -134,6 +145,7 @@ test("publish_package_to_npm uses npm for bundled dependencies", () => {
   const result = runPublishHelper({ pnpmMode: "success", publishTool: "npm" });
 
   assert.equal(result.status, 0);
+  assert.match(result.calls, /^npx --yes npm@10\.9\.7 publish --tag canary --access public$/m);
   assert.match(result.calls, /^npm publish --tag canary --access public$/m);
   assert.doesNotMatch(result.calls, /^pnpm publish/m);
 });

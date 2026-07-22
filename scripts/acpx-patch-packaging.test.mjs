@@ -11,6 +11,7 @@ const adapterUtilsPackage = JSON.parse(
   await readFile(new URL("../packages/adapter-utils/package.json", import.meta.url), "utf8"),
 );
 const releaseScript = await readFile(new URL("./release.sh", import.meta.url), "utf8");
+const releaseLib = await readFile(new URL("./release-lib.sh", import.meta.url), "utf8");
 
 test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(
@@ -33,7 +34,7 @@ test("bundled package staging materializes publishConfig entrypoints", () => {
 });
 
 test("bundled package dry runs preview without querying published versions", () => {
-  assert.match(releaseScript, /npm pack --pack-destination "\$publish_dir"/);
-  assert.doesNotMatch(releaseScript, /^\s*npm pack --dry-run/m);
-  assert.doesNotMatch(releaseScript, /^\s*npm publish --dry-run/m);
+  assert.match(releaseScript, /run_bundled_npm pack --pack-destination "\$publish_dir"/);
+  assert.match(releaseLib, /BUNDLED_NPM_VERSION="10\.9\.7"/);
+  assert.match(releaseLib, /npx --yes "npm@\$BUNDLED_NPM_VERSION"/);
 });

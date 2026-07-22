@@ -310,6 +310,12 @@ package_publish_tool() {
   '
 }
 
+BUNDLED_NPM_VERSION="10.9.7"
+
+run_bundled_npm() {
+  npx --yes "npm@$BUNDLED_NPM_VERSION" "$@"
+}
+
 run_package_publish() {
   local publish_tool="$1"
   local dist_tag="$2"
@@ -317,9 +323,9 @@ run_package_publish() {
 
   if [ "$publish_tool" = "npm" ]; then
     if [ "$disable_provenance" = "true" ]; then
-      npm publish --tag "$dist_tag" --access public --provenance=false
+      run_bundled_npm publish --tag "$dist_tag" --access public --provenance=false
     else
-      npm publish --tag "$dist_tag" --access public
+      run_bundled_npm publish --tag "$dist_tag" --access public
     fi
     return
   fi
