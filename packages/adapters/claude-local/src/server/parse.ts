@@ -527,3 +527,6 @@ export function isClaudeProviderQuotaError(input: {
 
 /** Alias for {@link isClaudeProviderQuotaError} — session/daily-limit exhaustion check. */
 export const isClaudeSessionExhaustionError = isClaudeProviderQuotaError;
+
+/** Exported alias of CLAUDE_PROVIDER_QUOTA_RE for callers that reference the session-exhaustion name. */
+export const CLAUDE_SESSION_EXHAUSTION_RE = CLAUDE_PROVIDER_QUOTA_RE;
