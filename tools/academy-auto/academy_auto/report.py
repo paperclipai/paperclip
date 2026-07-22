@@ -7,24 +7,28 @@ from .runner import RunOutcome
 def build_digest(
     task_prompt: str,
     run_outcome: RunOutcome,
-    gate_result: GateResult,
-    committed: bool,
+    gate_result: GateResult | None = None,
+    committed: bool = False,
     cap_exceeded: bool = False,
     scope_violations: list[str] | None = None,
     reason: str = "",
     quarantined: list[str] | None = None,
+    gate_note: str = "",
 ) -> str:
     """Deutschen Tages-Digest für Jarvis/Telegram bauen."""
     lines = ["🎓 Academy-Auto — Tagesstand", ""]
     lines.append(f"Aufgabe: {task_prompt}")
     lines.append(f"Umsetzung: {'ok' if run_outcome.ok else 'fehlgeschlagen'}")
 
-    if gate_result.passed:
-        lines.append("Gate: grün (jest + tsc + lint)")
-    else:
-        failing = gate_result.steps[-1] if gate_result.steps else None
-        cmd = " ".join(failing.cmd) if failing else "unbekannt"
-        lines.append(f"Gate: rot bei `{cmd}`")
+    if gate_note:
+        lines.append(f"Gate: {gate_note}")
+    elif gate_result is not None:
+        if gate_result.passed:
+            lines.append("Gate: grün (jest + tsc + lint)")
+        else:
+            failing = gate_result.steps[-1] if gate_result.steps else None
+            cmd = " ".join(failing.cmd) if failing else "unbekannt"
+            lines.append(f"Gate: rot bei `{cmd}`")
 
     if committed:
         lines.append("Ergebnis: auf agents/academy-auto committet")

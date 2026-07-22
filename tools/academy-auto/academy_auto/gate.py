@@ -47,6 +47,27 @@ class GateMeasure:
     total: int
 
 
+@dataclass
+class DeltaResult:
+    passed: bool
+    mode: str   # "absolut" | "delta"
+    note: str
+
+
+def delta_decision(baseline: GateMeasure, after: GateMeasure) -> DeltaResult:
+    """Absolutes Gate bei grüner Baseline, sonst Delta (weniger Fehler + kein Schritt schlechter)."""
+    if baseline.total == 0:
+        if after.total == 0:
+            return DeltaResult(True, "absolut", "grün (absolut)")
+        return DeltaResult(False, "absolut", f"rot (Fehler: {after.total})")
+    base_by = {tuple(s.cmd): s.count for s in baseline.steps}
+    no_regression = all(s.count <= base_by.get(tuple(s.cmd), 0) for s in after.steps)
+    improved = after.total < baseline.total
+    if no_regression and improved:
+        return DeltaResult(True, "delta", f"Delta grün (Fehler {baseline.total}→{after.total})")
+    return DeltaResult(False, "delta", f"rot (Fehler {baseline.total}→{after.total}, kein Fortschritt)")
+
+
 def _count_step_errors(cmd, output: str, returncode: int) -> int:
     joined = " ".join(cmd)
     text = output or ""

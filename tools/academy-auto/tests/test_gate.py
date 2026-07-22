@@ -107,3 +107,41 @@ def test_count_step_errors_returncode_fallback_tsc_and_jest():
     # jest-Fallback ohne "N failed"
     assert _count_step_errors(["npm", "test"], "seltsame ausgabe", 1) == 1
     assert _count_step_errors(["npm", "test"], "", 0) == 0
+
+
+# Task 2: Delta-Entscheidung Tests
+from academy_auto.gate import delta_decision, StepMeasure, GateMeasure, DeltaResult
+
+
+def _measure(jest, tsc, lint):
+    return GateMeasure(
+        steps=[StepMeasure(["npm", "test"], jest), StepMeasure(["npx", "tsc", "--noEmit"], tsc), StepMeasure(["npm", "run", "lint"], lint)],
+        total=jest + tsc + lint,
+    )
+
+
+def test_delta_absolute_pass_when_baseline_green():
+    d = delta_decision(_measure(0, 0, 0), _measure(0, 0, 0))
+    assert d.passed is True and d.mode == "absolut"
+
+
+def test_delta_absolute_fail_when_baseline_green_but_after_red():
+    d = delta_decision(_measure(0, 0, 0), _measure(0, 1, 0))
+    assert d.passed is False and d.mode == "absolut"
+
+
+def test_delta_pass_when_baseline_red_and_fewer_errors():
+    d = delta_decision(_measure(0, 5, 0), _measure(0, 2, 0))
+    assert d.passed is True and d.mode == "delta"
+    assert "5" in d.note and "2" in d.note
+
+
+def test_delta_fail_when_no_progress():
+    d = delta_decision(_measure(0, 5, 0), _measure(0, 5, 0))
+    assert d.passed is False and d.mode == "delta"
+
+
+def test_delta_fail_when_a_step_got_worse_even_if_total_lower():
+    # tsc runter (5->1), aber lint hoch (0->1): ein Schritt schlechter -> kein Delta-Pass
+    d = delta_decision(_measure(0, 5, 0), _measure(0, 1, 1))
+    assert d.passed is False

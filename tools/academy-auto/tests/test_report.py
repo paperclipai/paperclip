@@ -91,3 +91,15 @@ def test_build_nothing_digest():
     text = build_nothing_digest(quarantined=["todo:x.ts:9"])
     assert "nichts" in text.lower() or "keine" in text.lower()
     assert "todo:x.ts:9" in text
+
+
+# Task 2: gate_note Tests
+def test_build_digest_uses_gate_note_when_set():
+    from academy_auto.runner import RunOutcome
+    from academy_auto.report import build_digest
+    text = build_digest(
+        task_prompt="x", run_outcome=RunOutcome(ok=True, output=""),
+        gate_result=None, committed=True, gate_note="Delta grün (Fehler 5→2)",
+    )
+    assert "Delta grün (Fehler 5→2)" in text
+    assert "Gate: Delta grün" in text
