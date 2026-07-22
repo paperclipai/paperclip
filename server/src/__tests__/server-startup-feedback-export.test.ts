@@ -204,6 +204,9 @@ vi.mock("../services/index.js", () => ({
     agentMembershipsInserted: 0,
     humanGrantsInserted: 0,
   })),
+  decisionService: vi.fn(() => ({
+    sweepExpired: vi.fn(async () => ({ expired: 0 })),
+  })),
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
