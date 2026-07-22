@@ -64,6 +64,8 @@ program
   .description("Install Paperclip into a managed per-user CLI store")
   .option("--canary", "Install the npm canary channel")
   .option("--version <version>", "Install an exact published npm version")
+  .option("--ref <ref>", "Install a GitHub branch, tag, or commit SHA")
+  .option("--repo <owner/name>", "Override the GitHub repository used with --ref")
   .option("-y, --yes", "Consent to the supported shell PATH update without prompting")
   .action(installCommand);
 

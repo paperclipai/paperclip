@@ -53,6 +53,35 @@ describe("update command", () => {
     expect(() => resolveUpdateRequest(manifest, { latest: true, canary: true })).toThrow("only one");
   });
 
+  it("re-resolves a moving git branch and activates the new SHA payload", async () => {
+    const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
+    const oldSha = "1".repeat(40); const newSha = "2".repeat(40);
+    const oldPayload = payloadPathFor(paths, "git", oldSha.slice(0, 12));
+    const executable = createPayload(oldPayload, "0.3.1");
+    fs.writeFileSync(path.join(oldPayload, "node_modules", "paperclipai", "package.json"), JSON.stringify({ version: "0.3.1" }));
+    const newPayload = payloadPathFor(paths, "git", newSha.slice(0, 12));
+    createPayload(newPayload, "0.3.1");
+    fs.writeFileSync(path.join(newPayload, "node_modules", "paperclipai", "package.json"), JSON.stringify({ version: "0.3.1" }));
+    flipCurrentAtomic(oldPayload, paths);
+    writeInstallManifestAtomic({ schemaVersion: 1, source: "git", version: "0.3.1", channel: "pinned", repo: "paperclipai/paperclip", ref: "master", sha: oldSha, payloadPath: oldPayload, installedAt: "2026-07-22T00:00:00.000Z", previous: [] }, paths);
+    const backup = vi.fn(async () => undefined);
+    const runCommand = vi.fn(async (file: string) => file === "curl" ? { stdout: JSON.stringify({ sha: newSha }), stderr: "" } : { stdout: "0.3.1\n", stderr: "" });
+    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, now: () => new Date("2026-07-22T12:00:00Z") });
+    expect(backup).toHaveBeenCalledOnce();
+    expect(readInstallManifest(paths)?.sha).toBe(newSha);
+    expect(fs.realpathSync(paths.currentPath)).toBe(fs.realpathSync(newPayload));
+  });
+
+  it("reports SHA git installs as pinned without resolving again", async () => {
+    const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
+    const sha = "3".repeat(40); const payload = payloadPathFor(paths, "git", sha.slice(0, 12)); const executable = createPayload(payload, "0.3.1");
+    flipCurrentAtomic(payload, paths);
+    writeInstallManifestAtomic({ schemaVersion: 1, source: "git", version: "0.3.1", channel: "pinned", repo: "paperclipai/paperclip", ref: sha.slice(0, 12), sha, payloadPath: payload, installedAt: "2026-07-22T00:00:00.000Z", previous: [] }, paths);
+    const runCommand = vi.fn(async () => ({ stdout: "", stderr: "" }));
+    await updateCommand({}, { paths, executablePath: executable, runCommand });
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
   it("requires explicit confirmation before downgrading", async () => {
     const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
     const payload = payloadPathFor(paths, "npm", "2.0.0"); const entrypoint = createPayload(payload, "2.0.0"); flipCurrentAtomic(payload, paths);

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installCommand, resolveNpmInstallRequest } from "../commands/install.js";
+import { installCommand, installGitPayload, resolveGitHubRef, resolveGitInstallRequest, resolveNpmInstallRequest } from "../commands/install.js";
 import { uninstallCommand } from "../commands/uninstall.js";
 import {
   INSTALL_MANIFEST_VERSION,
@@ -49,6 +49,40 @@ describe("managed install commands", () => {
     });
     expect(() => resolveNpmInstallRequest({ canary: true, version: "1.2.3" })).toThrow();
     expect(() => resolveNpmInstallRequest({ version: "latest" })).toThrow();
+  });
+
+  it("resolves branch, tag, full SHA, and short SHA refs through GitHub", async () => {
+    const sha = "a".repeat(40);
+    const runCommand = vi.fn(async (_file: string, _args: string[]) => ({ stdout: JSON.stringify({ sha }), stderr: "" }));
+    for (const ref of ["master", "v1.2.3", sha, sha.slice(0, 12)]) {
+      await expect(resolveGitHubRef("paperclipai/paperclip", ref, runCommand)).resolves.toBe(sha);
+    }
+    expect(runCommand.mock.calls.map((call) => call[1].at(-1))).toEqual([
+      "https://api.github.com/repos/paperclipai/paperclip/commits/master",
+      "https://api.github.com/repos/paperclipai/paperclip/commits/v1.2.3",
+      `https://api.github.com/repos/paperclipai/paperclip/commits/${sha}`,
+      `https://api.github.com/repos/paperclipai/paperclip/commits/${sha.slice(0, 12)}`,
+    ]);
+  });
+
+  it("supports fork overrides and classifies SHA refs as pinned", () => {
+    expect(resolveGitInstallRequest({ ref: "feature/test", repo: "HenkDz/paperclip" })).toEqual({ repo: "HenkDz/paperclip", ref: "feature/test", pinned: false });
+    expect(resolveGitInstallRequest({ ref: "abcdef1" })).toEqual({ repo: "paperclipai/paperclip", ref: "abcdef1", pinned: true });
+    expect(() => resolveGitInstallRequest({ repo: "HenkDz/paperclip" })).toThrow("requires --ref");
+  });
+
+  it("reuses a SHA-keyed git payload without downloading or rebuilding", async () => {
+    const sha = "b".repeat(40);
+    const paths = resolveInstallStorePaths();
+    const payloadPath = payloadPathFor(paths, "git", sha.slice(0, 12));
+    const packageRoot = path.join(payloadPath, "node_modules", "paperclipai");
+    fs.mkdirSync(path.join(packageRoot, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ version: "0.3.1" }));
+    fs.writeFileSync(path.join(packageRoot, "dist", "index.js"), "#!/usr/bin/env node\n");
+    const runCommand = vi.fn(async (_file: string, _args: string[]) => ({ stdout: "0.3.1\n", stderr: "" }));
+    await expect(installGitPayload("paperclipai/paperclip", sha, runCommand, paths)).resolves.toEqual({ payloadPath, reused: true, version: "0.3.1" });
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(runCommand.mock.calls[0]?.[0]).toBe(process.execPath);
   });
 
   it("installs through the shim, reports provenance, and uninstalls without deleting user data", async () => {
