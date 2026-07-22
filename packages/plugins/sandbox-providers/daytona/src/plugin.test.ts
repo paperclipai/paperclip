@@ -1329,15 +1329,19 @@ describe("daytona native file-sync hooks", () => {
     expect(mvCall).toBeDefined();
     const mvCommand = String(mvCall?.[0]);
     // TOCTOU-hardened rename: each promotion re-canonicalizes the target's parent
-    // dir, confirms it is still confined, and `mv`s into that resolved parent by
-    // basename — all in ONE sh invocation, so a parent swap cannot slip between the
-    // confinement check and the rename. The rename is wrapped in `sh -c '...'`, so
+    // dir, confirms it is still confined, OPENS that dir as fd 8, re-verifies the
+    // pinned inode is in-root, then `mv`s into `/proc/self/fd/8/<base>` — all in ONE
+    // sh invocation, so neither an ancestor swap before the open nor a path swap
+    // after it can redirect the rename. The rename is wrapped in `sh -c '...'`, so
     // inner single-quotes are shell-escaped; assert on the un-escaped components.
     expect(mvCommand).toContain("_pc_resolve");
-    // The secret temp is promoted by basename into the resolved parent
-    // ($_pc_tgt_dir), not by the literal (swappable) target path.
+    // The parent dir is opened as fd 8 and its pinned inode re-verified in-root
+    // before the rename, which targets the inode via /proc/self/fd/8 rather than the
+    // literal (swappable) path string.
     expect(mvCommand).toContain(secretTemp);
-    expect(mvCommand).toContain(`"$_pc_tgt_dir"/`);
+    expect(mvCommand).toContain('exec 8<"$_pc_tgt_dir"');
+    expect(mvCommand).toContain("_pc_fd_dir=$(_pc_resolve /proc/self/fd/8)");
+    expect(mvCommand).toContain("/proc/self/fd/8/");
     expect(mvCommand).toContain("auth.json");
     // Both temps are promoted (one mv line per rename).
     expect(mvCommand.match(/mv -f /g)).toHaveLength(2);
@@ -1417,13 +1421,15 @@ describe("daytona native file-sync hooks", () => {
     expect(extractCall).toBeDefined();
     const extractCommand = String(extractCall?.[0]);
     // The extract binds validation and extraction into one sandbox invocation: it
-    // re-canonicalizes the target, opens the resolved dir as an fd, then extracts
-    // via /proc/self/fd/9 — binding extraction to the directory inode rather than
-    // the path string, so a post-open ancestor swap cannot redirect the write.
+    // re-canonicalizes the target, opens the resolved dir as fd 9, re-verifies the
+    // PINNED inode (`/proc/self/fd/9`) is still in-root — closing the ancestor-swap
+    // race in the `open()` itself — then extracts via /proc/self/fd/9, binding
+    // extraction to the directory inode rather than the path string.
     expect(extractCommand).toContain("_pc_resolve");
     expect(extractCommand).toContain(".paperclip-runtime/assets");
     expect(extractCommand).toContain("tar -xf");
     expect(extractCommand).toContain('exec 9<"$_pc_real"');
+    expect(extractCommand).toContain("_pc_fd_real=$(_pc_resolve /proc/self/fd/9)");
     expect(extractCommand).toContain("-C /proc/self/fd/9");
     expect(extractCommand).toMatch(/rm -f .*\.paperclip-upload-.*\.tar/);
   });

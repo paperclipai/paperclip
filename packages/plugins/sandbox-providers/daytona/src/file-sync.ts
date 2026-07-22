@@ -434,8 +434,18 @@ async function syncInFileMappings(input: {
     // redirecting the promotion outside the root. Bind the confinement re-check and
     // the rename into ONE sandbox invocation: for each target, re-canonicalize its
     // parent dir, confirm the resolved parent is still inside the workspace root,
-    // then `mv` into that resolved parent by basename. Check and promotion now share
-    // a single shell, so a parent swap cannot slip between them.
+    // then OPEN that dir as fd 8 and `mv` into `/proc/self/fd/8/<base>`. Two races
+    // are closed:
+    //  - check→open (ancestor swap): `mv "$_pc_tgt_dir"/<base>` would re-walk the
+    //    parent path string and follow an ancestor the sandbox repointed to a
+    //    symlink after the `case` check. Opening fd 8 PINS the directory inode, and
+    //    an immediate re-canonicalize of `/proc/self/fd/8` confirms the pinned inode
+    //    is still in-root before any write — an ancestor swap before the open is
+    //    caught by this verify (fail closed, exit 42); a swap after the open cannot
+    //    change which inode fd 8 references.
+    //  - open→rename: `mv` targets `/proc/self/fd/8/<base>`, which resolves through
+    //    the already-open inode rather than the path string, so the rename lands in
+    //    the verified directory even if the path is repointed mid-command.
     const renameScript = [...canonicalizerPreamble(shellQuote(remoteDir))];
     for (const rename of renames) {
       const parentDir = path.posix.dirname(rename.target);
@@ -443,7 +453,11 @@ async function syncInFileMappings(input: {
       renameScript.push(
         `_pc_tgt_dir=$(_pc_resolve ${shellQuote(parentDir)}) || { echo "ESCAPE"; exit 42; };`,
         `case "$_pc_tgt_dir/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
-        `mv -f ${shellQuote(rename.temp)} "$_pc_tgt_dir"/${shellQuote(base)} || { echo "rename failed"; exit 43; };`,
+        `exec 8<"$_pc_tgt_dir" || { echo "open failed"; exit 47; };`,
+        `_pc_fd_dir=$(_pc_resolve /proc/self/fd/8) || { echo "ESCAPE"; exit 42; };`,
+        `case "$_pc_fd_dir/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
+        `mv -f ${shellQuote(rename.temp)} /proc/self/fd/8/${shellQuote(base)} || { echo "rename failed"; exit 43; };`,
+        `exec 8>&-;`,
       );
     }
     await assertSandboxCommandOk(
@@ -498,24 +512,30 @@ async function syncInDirectoryMapping(input: {
       label: "inbound symlink-escape guard",
     });
     await sandbox.fs.uploadFiles([{ source: archivePath, destination: remoteTar }], timeoutSeconds);
-    // Bind validation and extraction into ONE sandbox invocation: re-canonicalize
-    // the target and confirm it is confined, then `tar -x` into that resolved
-    // directory, all in the same `sh -c`. The earlier standalone guard fails closed
-    // before the tarball is even uploaded; this re-check closes the window between
-    // that guard and the extract, so a sandbox symlink swap of the target (or an
-    // ancestor) cannot redirect extraction outside the workspace root after
-    // validation. Resolving `$_pc_real` still opens a PATH STRING at `tar` time, so
-    // an ancestor above `$_pc_root` could be swapped between `_pc_resolve` returning
-    // and `tar` opening it. Open the canonical dir as an fd first (`exec 9<`), then
-    // extract via `/proc/self/fd/9`: `tar -C` chdir's through that magic symlink to
-    // the already-open inode, binding extraction to the directory inode rather than
-    // the path string, so a post-open ancestor swap cannot redirect the write.
+    // Bind validation and extraction into ONE sandbox invocation, then extract into
+    // an OPEN directory inode rather than a path string. `exec 9<"$_pc_real"` itself
+    // walks every ancestor of `$_pc_real` during the `open()` syscall, so a sandbox
+    // process that swaps an ancestor component for a symlink AFTER `_pc_resolve`
+    // returns but BEFORE the `open()` resolves would leave fd 9 pointing at a
+    // directory outside the workspace — the earlier `case` check on the resolved
+    // string cannot see that. Close the gap with open-then-verify: open fd 9 (which
+    // PINS whatever inode `open()` landed on), then re-canonicalize `/proc/self/fd/9`
+    // — the pinned inode's own path — and confirm it is still inside `$_pc_root`
+    // before extracting. If an ancestor swap redirected the open, the pinned inode
+    // resolves outside the root and the verify fails closed (exit 42); once the
+    // verify passes, the inode is fixed and `tar -C /proc/self/fd/9` chdir's through
+    // the magic symlink to that exact inode, so a post-open ancestor swap cannot
+    // redirect the write. (The initial `case` on `$_pc_real` still fails fast on a
+    // pre-open escape; the fd re-verify is what makes the guarantee race-free.)
     const extractScript = [
       ...canonicalizerPreamble(shellQuote(remoteDir)),
       `_pc_real=$(_pc_resolve ${shellQuote(mapping.targetPath)}) || { echo "ESCAPE"; exit 42; };`,
       `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
       `exec 9<"$_pc_real" || { echo "open failed"; exit 46; };`,
+      `_pc_fd_real=$(_pc_resolve /proc/self/fd/9) || { echo "ESCAPE"; exit 42; };`,
+      `case "$_pc_fd_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
       `tar -xf ${shellQuote(remoteTar)} -C /proc/self/fd/9 || { echo "extract failed"; exit 43; };`,
+      `exec 9>&-;`,
       `rm -f ${shellQuote(remoteTar)};`,
     ].join("\n");
     await assertSandboxCommandOk(
