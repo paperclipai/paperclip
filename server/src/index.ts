@@ -897,6 +897,11 @@ export async function startServer(): Promise<StartedServer> {
   
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
+    const runScheduledDatabaseBackup = () => {
+      void runServerDatabaseBackup("scheduled").catch(() => {
+        // runServerDatabaseBackup already logs the failure with context.
+      });
+    };
 
     logger.info(
       {
@@ -906,11 +911,11 @@ export async function startServer(): Promise<StartedServer> {
       },
       "Automatic database backups enabled",
     );
-    setInterval(() => {
-      void runServerDatabaseBackup("scheduled").catch(() => {
-        // runServerDatabaseBackup already logs the failure with context.
-      });
-    }, backupIntervalMs);
+    // Protect the restart window immediately. A bare setInterval schedules the
+    // first backup only after a full interval, so repeated deployments or
+    // crashes can otherwise postpone backups indefinitely.
+    runScheduledDatabaseBackup();
+    setInterval(runScheduledDatabaseBackup, backupIntervalMs);
   }
   
   // Wait for external adapters to finish loading before accepting requests.

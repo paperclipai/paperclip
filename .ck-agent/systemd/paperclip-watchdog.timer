@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Paperclip server watchdog shortly after boot and every 90s
+
+[Timer]
+# Fire ~20s after boot (so the container + docker are up), then every 90s.
+OnBootSec=20s
+OnUnitActiveSec=90s
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

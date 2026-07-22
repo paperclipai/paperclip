@@ -1,0 +1,11 @@
+[Unit]
+Description=Paperclip server watchdog — (re)launch the server in pc-build if it is not healthy
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# pc-server-up.sh is idempotent: healthy -> instant no-op; down -> relaunch + wait for health.
+ExecStart=%h/paperclip/.ck-agent/pc-server-up.sh
+# Don't let a transient failure mark the unit failed forever; the timer retries.
+SuccessExitStatus=0 1
