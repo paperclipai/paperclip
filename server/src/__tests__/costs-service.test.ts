@@ -1,5 +1,6 @@
 import express from "express";
 import request from "supertest";
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -430,6 +431,83 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("keeps one idempotent cost row per model for a mixed-model heartbeat", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Mixed Model Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "ck_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+    });
+
+    const base = {
+      heartbeatRunId: runId,
+      agentId,
+      provider: "deepseek",
+      biller: "deepseek",
+      billingType: "metered_api",
+      occurredAt: new Date("2026-07-19T00:00:00.000Z"),
+    };
+    await costs.createEvent(companyId, {
+      ...base,
+      model: "deepseek-v4-pro",
+      inputTokens: 700,
+      cachedInputTokens: 200,
+      outputTokens: 100,
+      costCents: 0.04,
+    });
+    await costs.createEvent(companyId, {
+      ...base,
+      model: "deepseek-v4-flash",
+      inputTokens: 300,
+      cachedInputTokens: 100,
+      outputTokens: 50,
+      costCents: 0.01,
+    });
+    // Retrying either row must recover it, not double-charge the heartbeat.
+    await costs.createEvent(companyId, {
+      ...base,
+      model: "deepseek-v4-flash",
+      inputTokens: 300,
+      cachedInputTokens: 100,
+      outputTokens: 50,
+      costCents: 0.01,
+    });
+
+    const rows = await db
+      .select()
+      .from(costEvents)
+      .where(eq(costEvents.heartbeatRunId, runId));
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.model).sort()).toEqual([
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+    ]);
+    await expect(costs.summary(companyId)).resolves.toMatchObject({
+      spendCents: 0.05,
+    });
   });
 
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {

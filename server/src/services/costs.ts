@@ -63,7 +63,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         throw unprocessable("Agent does not belong to company");
       }
 
-      const event = await db
+      const insertedEvent = await db
         .insert(costEvents)
         .values({
           ...data,
@@ -72,8 +72,30 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           billingType: data.billingType ?? "unknown",
           cachedInputTokens: data.cachedInputTokens ?? 0,
         })
+        // A heartbeat run can contain one authoritative row per model. If a
+        // caller retries after an insert succeeded but a later cache update
+        // failed, recover the matching model row instead of double-billing it.
+        .onConflictDoNothing()
         .returning()
         .then((rows) => rows[0]);
+      const event = insertedEvent ?? (
+        data.heartbeatRunId
+          ? await db
+              .select()
+              .from(costEvents)
+              .where(and(
+                eq(costEvents.heartbeatRunId, data.heartbeatRunId),
+                eq(costEvents.provider, data.provider),
+                eq(costEvents.biller, data.biller ?? data.provider),
+                eq(costEvents.billingType, data.billingType ?? "unknown"),
+                eq(costEvents.model, data.model),
+              ))
+              .then((rows) => rows[0] ?? null)
+          : null
+      );
+      if (!event) {
+        throw unprocessable("Cost event conflicts with an existing ledger entry");
+      }
 
       const [agentMonthSpend, companyMonthSpend] = await Promise.all([
         getMonthlySpendTotal(db, { companyId, agentId: event.agentId }),
@@ -96,7 +118,9 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         })
         .where(eq(companies.id, companyId));
 
-      await budgets.evaluateCostEvent(event);
+      if (insertedEvent) {
+        await budgets.evaluateCostEvent(event);
+      }
 
       return event;
     },
