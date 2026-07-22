@@ -78,6 +78,15 @@ jobs:
           GITHUB_ACTIONS: "true"
         run: ./scripts/release.sh canary --skip-verify
 
+      - name: Dump npm debug logs
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for f in "$HOME"/.npm/_logs/*.log; do
+            echo "===== $f ====="
+            tail -n 300 "$f"
+          done
+
       - name: Push canary tag
         run: |
           tag="$(git tag --points-at HEAD | grep '^canary/v' | head -1)"
@@ -183,6 +192,15 @@ jobs:
             args+=(--date "${{ inputs.stable_date }}")
           fi
           ./scripts/release.sh "${args[@]}"
+
+      - name: Dump npm debug logs
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for f in "$HOME"/.npm/_logs/*.log; do
+            echo "===== $f ====="
+            tail -n 300 "$f"
+          done
 
       - name: Push stable tag
         run: |
