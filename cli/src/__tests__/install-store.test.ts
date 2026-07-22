@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   INSTALL_MANIFEST_VERSION,
+  MANAGED_SHIM_MARKER,
   addManagedPathBlock,
   buildNextManifest,
   flipCurrentAtomic,
@@ -125,5 +126,29 @@ describe("managed install store", () => {
     fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true });
     fs.writeFileSync(paths.shimPath, "#!/bin/sh\necho other-command\n");
     expect(() => writeManagedShim(paths)).toThrow("non-managed command");
+  });
+
+  it("refuses symlinked rc files, unsafe shim parents, and multiply linked shims", () => {
+    const outsideRc = path.join(root, "outside-rc");
+    fs.writeFileSync(outsideRc, "keep\n");
+    const rcPath = path.join(root, "home", ".bashrc");
+    fs.mkdirSync(path.dirname(rcPath), { recursive: true });
+    fs.symlinkSync(outsideRc, rcPath);
+    expect(() => addManagedPathBlock(rcPath)).toThrow("non-regular shell rc file");
+    expect(() => removeManagedPathBlock(rcPath)).toThrow("non-regular shell rc file");
+    expect(fs.readFileSync(outsideRc, "utf8")).toBe("keep\n");
+
+    fs.rmSync(rcPath);
+    const localDir = path.join(root, "home", ".local");
+    const outsideBin = path.join(root, "outside-bin");
+    fs.mkdirSync(outsideBin);
+    fs.symlinkSync(outsideBin, localDir, "dir");
+    expect(() => writeManagedShim(paths)).toThrow("unsafe shim directory");
+
+    fs.rmSync(localDir);
+    fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true });
+    fs.writeFileSync(paths.shimPath, `# ${MANAGED_SHIM_MARKER}\n`);
+    fs.linkSync(paths.shimPath, path.join(root, "linked-shim"));
+    expect(() => writeManagedShim(paths)).toThrow("multiply linked shim");
   });
 });

@@ -44,6 +44,26 @@ function ensurePrivateDirectory(directoryPath: string): void {
   fs.chmodSync(directoryPath, 0o700);
 }
 
+function assertOwnedByCurrentUser(stat: fs.Stats, targetPath: string): void {
+  const getuid = process.getuid;
+  if (typeof getuid === "function" && stat.uid !== getuid()) {
+    throw new Error(`Refusing to modify path not owned by the current user: ${targetPath}.`);
+  }
+}
+
+function writeFileAtomic(filePath: string, contents: string, mode: number): void {
+  const temporaryPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  try {
+    fs.writeFileSync(temporaryPath, contents, { mode, flag: "wx" });
+    fs.renameSync(temporaryPath, filePath);
+  } finally {
+    fs.rmSync(temporaryPath, { force: true });
+  }
+}
+
 export function resolveInstallStorePaths(options: {
   paperclipHome?: string;
   homeDir?: string;
@@ -209,11 +229,22 @@ export function pruneInstallPayloads(
 }
 
 export function assertManagedShimWritable(paths = resolveInstallStorePaths()): void {
+  const homeDir = path.dirname(path.dirname(path.dirname(paths.shimPath)));
+  for (const directoryPath of [homeDir, path.join(homeDir, ".local"), path.dirname(paths.shimPath)]) {
+    if (!fs.existsSync(directoryPath)) continue;
+    const directoryStat = fs.lstatSync(directoryPath);
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+      throw new Error(`Refusing to use unsafe shim directory ${directoryPath}.`);
+    }
+    assertOwnedByCurrentUser(directoryStat, directoryPath);
+  }
   try {
     const stat = fs.lstatSync(paths.shimPath);
-    if (stat.isSymbolicLink()) {
-      throw new Error(`Refusing to replace symlinked shim ${paths.shimPath}.`);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`Refusing to replace non-regular shim ${paths.shimPath}.`);
     }
+    assertOwnedByCurrentUser(stat, paths.shimPath);
+    if (stat.nlink > 1) throw new Error(`Refusing to replace multiply linked shim ${paths.shimPath}.`);
     const existing = fs.readFileSync(paths.shimPath, "utf8");
     if (!existing.includes(MANAGED_SHIM_MARKER)) {
       throw new Error(`Refusing to replace existing non-managed command ${paths.shimPath}.`);
@@ -225,10 +256,14 @@ export function assertManagedShimWritable(paths = resolveInstallStorePaths()): v
 
 export function writeManagedShim(paths = resolveInstallStorePaths()): void {
   assertManagedShimWritable(paths);
-  fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true, mode: 0o755 });
+  const homeDir = path.dirname(path.dirname(path.dirname(paths.shimPath)));
+  const localDir = path.dirname(path.dirname(paths.shimPath));
+  fs.mkdirSync(homeDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(localDir, { mode: 0o755 });
+  fs.mkdirSync(path.dirname(paths.shimPath), { mode: 0o755 });
+  assertManagedShimWritable(paths);
   const contents = `#!/bin/sh\n# ${MANAGED_SHIM_MARKER}\nset -eu\nPAPERCLIP_HOME="\${PAPERCLIP_HOME:-\$HOME/.paperclip}"\nexec node "\$PAPERCLIP_HOME/cli/current/node_modules/paperclipai/dist/index.js" "\$@"\n`;
-  fs.writeFileSync(paths.shimPath, contents, { mode: 0o755 });
-  fs.chmodSync(paths.shimPath, 0o755);
+  writeFileAtomic(paths.shimPath, contents, 0o755);
 }
 
 export function removeManagedShim(paths = resolveInstallStorePaths()): boolean {
@@ -249,7 +284,14 @@ export function managedPathBlock(): string {
 
 export function addManagedPathBlock(rcPath: string): boolean {
   let existing = "";
+  let mode = 0o600;
   try {
+    const stat = fs.lstatSync(rcPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`Refusing to modify non-regular shell rc file ${rcPath}.`);
+    }
+    assertOwnedByCurrentUser(stat, rcPath);
+    mode = stat.mode & 0o777;
     existing = fs.readFileSync(rcPath, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -257,13 +299,18 @@ export function addManagedPathBlock(rcPath: string): boolean {
   if (existing.includes(PATH_BLOCK_START)) return false;
   fs.mkdirSync(path.dirname(rcPath), { recursive: true });
   const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-  fs.appendFileSync(rcPath, `${prefix}${managedPathBlock()}\n`);
+  writeFileAtomic(rcPath, `${existing}${prefix}${managedPathBlock()}\n`, mode);
   return true;
 }
 
 export function removeManagedPathBlock(rcPath: string): boolean {
   let existing: string;
   try {
+    const stat = fs.lstatSync(rcPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`Refusing to modify non-regular shell rc file ${rcPath}.`);
+    }
+    assertOwnedByCurrentUser(stat, rcPath);
     existing = fs.readFileSync(rcPath, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
@@ -273,7 +320,7 @@ export function removeManagedPathBlock(rcPath: string): boolean {
   const escapedEnd = PATH_BLOCK_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const next = existing.replace(new RegExp(`(?:^|\\n)${escapedStart}\\n[\\s\\S]*?${escapedEnd}\\n?`), "\n");
   if (next === existing) return false;
-  fs.writeFileSync(rcPath, next.replace(/^\n/, ""));
+  writeFileAtomic(rcPath, next.replace(/^\n/, ""), fs.statSync(rcPath).mode & 0o777);
   return true;
 }
 
