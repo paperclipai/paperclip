@@ -5,6 +5,7 @@ import {
   approvals,
   assets,
   companies,
+  decisionBundles,
   decisionTrainingExamples,
   decisions,
   heartbeatRunEvents,
@@ -739,6 +740,8 @@ export function attentionService(db: Db) {
 
       const openDecisions = await db.select({
         id: decisions.id,
+        bundleId: decisions.bundleId,
+        originAgentId: decisions.originAgentId,
         title: decisions.title,
         body: decisions.body,
         status: decisions.status,
@@ -748,16 +751,27 @@ export function attentionService(db: Db) {
       }).from(decisions).where(and(eq(decisions.companyId, companyId), eq(decisions.status, "open")))
         .orderBy(desc(decisions.updatedAt), desc(decisions.id));
       const decisionIssueMap = await issueSummaryMap(db, companyId, openDecisions.map((decision) => decision.originIssueId));
+      // Bundle titles let the feed render a single "Gardener proposed N cleanups"
+      // group header over sibling decisions (v1 still decides each independently).
+      const bundleIds = [...new Set(openDecisions.map((decision) => decision.bundleId).filter((value): value is string => Boolean(value)))];
+      const bundleTitleMap = new Map<string, string>();
+      if (bundleIds.length > 0) {
+        const bundleRows = await db.select({ id: decisionBundles.id, title: decisionBundles.title })
+          .from(decisionBundles).where(and(eq(decisionBundles.companyId, companyId), inArray(decisionBundles.id, bundleIds)));
+        for (const row of bundleRows) bundleTitleMap.set(row.id, row.title);
+      }
       for (const decision of openDecisions) {
         const issue = decisionIssueMap.get(decision.originIssueId) ?? null;
         add(createItem({
           companyId,
           sourceKind: "decision",
           subject: { kind: "decision", id: decision.id, companyId, title: decision.title, identifier: null, status: decision.status,
-            href: `/${prefix}/decisions?decisionId=${decision.id}`, metadata: { originIssueId: decision.originIssueId } },
+            href: `/${prefix}/decisions?decisionId=${decision.id}`,
+            metadata: { originIssueId: decision.originIssueId, originAgentId: decision.originAgentId, bundleId: decision.bundleId,
+              bundleTitle: decision.bundleId ? bundleTitleMap.get(decision.bundleId) ?? null : null } },
           whyNow: "An agent decision is waiting for a board response.",
           decisionVerbs: decisionVerbs({ id: "decide", label: "Review", description: "Review and choose an option." }),
-          inlineResolvable: false,
+          inlineResolvable: true,
           entryRule: "decisions.status = 'open'",
           exitRule: "Decision is decided, expired, or cancelled.",
           dedupKey: `decision:${decision.id}`,
