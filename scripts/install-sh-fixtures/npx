@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${PAPERCLIP_INSTALL_TEST_LOG:?PAPERCLIP_INSTALL_TEST_LOG is required}"
+node --version >"${PAPERCLIP_INSTALL_TEST_LOG}.node"
+printf '%s\n' "$@" >"$PAPERCLIP_INSTALL_TEST_LOG"
