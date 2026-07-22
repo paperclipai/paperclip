@@ -363,16 +363,23 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     });
     const authenticatedAt = new Date();
     if (shouldUpdateAgentApiKeyLastUsed(key.lastUsedAt, authenticatedAt)) {
-      await db
-        .update(agentApiKeys)
-        .set({ lastUsedAt: authenticatedAt })
-        .where(and(
-          eq(agentApiKeys.id, key.id),
-          or(
-            isNull(agentApiKeys.lastUsedAt),
-            lt(agentApiKeys.lastUsedAt, new Date(authenticatedAt.getTime() - AGENT_API_KEY_LAST_USED_THROTTLE_MS)),
-          ),
-        ));
+      try {
+        await db
+          .update(agentApiKeys)
+          .set({ lastUsedAt: authenticatedAt })
+          .where(and(
+            eq(agentApiKeys.id, key.id),
+            or(
+              isNull(agentApiKeys.lastUsedAt),
+              lt(agentApiKeys.lastUsedAt, new Date(authenticatedAt.getTime() - AGENT_API_KEY_LAST_USED_THROTTLE_MS)),
+            ),
+          ));
+      } catch (err) {
+        logger.warn(
+          { err, companyId: key.companyId, agentId: key.agentId, keyId: key.id },
+          "Failed to update agent API key last-used timestamp",
+        );
+      }
     }
 
     req.actor = {
