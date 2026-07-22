@@ -13,7 +13,7 @@ describe("agent configuration shell", () => {
     expect([...filterAgentConfigurationSections("sandbox")]).toEqual(["danger"]);
   });
 
-  it("resolves adapter defaults to a concrete model label", () => {
+  it("does not guess an inherited adapter model from available choices", () => {
     const agent = {
       adapterType: "claude_local",
       adapterConfig: { modelReasoningEffort: "high" },
@@ -22,8 +22,8 @@ describe("agent configuration shell", () => {
       defaultEnvironmentId: null,
     } as unknown as Agent;
 
-    expect(resolveEffectiveConfiguration(agent, [{ id: "claude-fable-5", label: "Claude Fable 5" }], 2)).toMatchObject({
-      model: "Claude Fable 5 · high",
+    expect(resolveEffectiveConfiguration(agent, 2)).toMatchObject({
+      model: "Adapter default · high",
       modelInherited: true,
       environmentInherited: true,
       apiKeyCount: 2,
