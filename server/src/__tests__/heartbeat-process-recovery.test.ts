@@ -5554,7 +5554,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         eq(issueRecoveryActions.sourceIssueId, issueId),
       ));
     expect(actions).toHaveLength(1);
-    expect(actions[0]?.attemptCount).toBeGreaterThanOrEqual(1);
+    expect(actions[0]?.attemptCount).toBe(1);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    const recoveryWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.reason, "source_scoped_recovery_action"),
+      ));
+    expect(recoveryWakeups).toHaveLength(1);
     const recoveries = await db
       .select()
       .from(issues)
