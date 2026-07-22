@@ -17,6 +17,7 @@ Every control-plane restart hard-kills any heartbeat run in flight at that momen
 
 3. **Drain before restart (upcoming).** Graceful SIGTERM drain — stop accepting new runs, let in-flight runs finish or checkpoint, then exit — is being added in PAP-12930. Once it lands, send SIGTERM and wait for drain instead of hard-restarting. Until then, rule 2 is your drain.
 4. **After any restart, glance at the damage.** See the detection queries below; confirm lost runs either retried successfully or get manual follow-up.
+5. **Do a paused-agent diff, not a blanket resume.** On Wednesday, July 22, 2026, the `00:44 IST` recovery restart for the pool-starvation outage left the paused-agent snapshot unchanged before vs after restart. Treat that as evidence that hot restarts do not inherently drift pause state, but keep verifying with a pre/post diff instead of assuming safety or auto-resuming paused lanes.
 
 ## How to spot a restart burst
 

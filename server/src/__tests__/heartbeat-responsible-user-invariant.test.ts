@@ -194,6 +194,61 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect(completed?.responsibleUserId).toBe(triggeringUserId);
   });
 
+  it("resolves issue-assigned responsible users on the active transaction reader", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue assignment wake",
+      status: "todo",
+      assigneeAgentId: agentId,
+      responsibleUserId: issueResponsibleUserId,
+    });
+
+    let transactionOpen = false;
+    const originalTransaction = db.transaction.bind(db);
+    const originalSelect = db.select.bind(db);
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation(
+      (async (callback: Parameters<typeof db.transaction>[0]) =>
+        originalTransaction(async (tx) => {
+          transactionOpen = true;
+          try {
+            return await callback(tx);
+          } finally {
+            transactionOpen = false;
+          }
+        })) as typeof db.transaction,
+    );
+    const selectSpy = vi.spyOn(db, "select").mockImplementation(
+      ((...args: Parameters<typeof db.select>) => {
+        if (transactionOpen) {
+          throw new Error("root db.select used while wakeup transaction was open");
+        }
+        return originalSelect(...args);
+      }) as typeof db.select,
+    );
+
+    try {
+      const run = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId, mutation: "create" },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      });
+
+      expect(run).not.toBeNull();
+      expect(run?.responsibleUserId).toBe(issueResponsibleUserId);
+    } finally {
+      selectSpy.mockRestore();
+      transactionSpy.mockRestore();
+    }
+  });
+
   it("falls back to the company default for system-originated runs without an issue", async () => {
     const { agentId, ownerUserId } = await seedCompany();
     const run = await heartbeat.wakeup(agentId, {
