@@ -34,7 +34,7 @@ def md_to_html(md: str) -> str:
     out = []
     for b in blocks:
         safe = htmllib.escape(b).replace("\n", "<br>")
-        out.append(f'<p style="margin:0 0 12px 0;font-size:14px;line-height:1.5;color:#222;">{safe}</p>')
+        out.append(f'<p style="margin:0 0 12px 0;font-size:14px;line-height:1.5;color:#222;text-align:left;">{safe}</p>')
     return "\n".join(out)
 
 
@@ -50,6 +50,6 @@ def render_customer_html(area: str, body_md: str) -> str:
     sig = load_sig(area)
     return (
         '<!DOCTYPE html><html><head><meta charset="utf-8"></head>'
-        '<body style="font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:0 auto;padding:20px;">'
-        f'<div style="margin:0 0 24px 0;">{answer}</div>{sig}</body></html>'
+        '<body style="font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:0;padding:20px;text-align:left;">'
+        f'<div style="margin:0 0 24px 0;text-align:left;">{answer}</div>{sig}</body></html>'
     )
