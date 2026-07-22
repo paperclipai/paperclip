@@ -14,6 +14,7 @@
  *   - Exact types:   "application/pdf"
  *   - Wildcards:     "image/*"  or  "application/vnd.openxmlformats-officedocument.*"
  */
+import { StringDecoder } from "node:string_decoder";
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
@@ -155,6 +156,59 @@ export const ATTACHMENT_INLINE_MAX_BYTES =
   Number.isFinite(parsedAttachmentInlineMaxBytes) && parsedAttachmentInlineMaxBytes >= 0
     ? Math.floor(parsedAttachmentInlineMaxBytes)
     : 65_536;
+
+/**
+ * Truncate a string so its UTF-8 encoding is at most `maxBytes`, without splitting
+ * a multi-byte character mid-sequence. Returns the (possibly shortened) body and a
+ * `truncated` flag. Callers should size limits in bytes (via `Buffer.byteLength` /
+ * `ATTACHMENT_INLINE_MAX_BYTES`) rather than character count, so the payload budget
+ * reflects real transport/memory cost regardless of the alphabet used.
+ */
+export function truncateUtf8ToByteLimit(
+  body: string,
+  maxBytes: number,
+): { body: string; truncated: boolean } {
+  const buf = Buffer.from(body, "utf-8");
+  if (buf.length <= maxBytes) {
+    return { body, truncated: false };
+  }
+  // StringDecoder emits only whole characters and buffers any incomplete trailing
+  // multi-byte sequence, so slicing at an arbitrary byte offset never yields a
+  // U+FFFD replacement character.
+  const decoder = new StringDecoder("utf-8");
+  const truncated = decoder.write(buf.subarray(0, maxBytes));
+  return { body: truncated, truncated: true };
+}
+
+/**
+ * Read an object stream into memory with a hard runtime byte cap. The recorded
+ * `byteSize` of a stored object is only metadata; the backing object can be larger
+ * (metadata drift, tampering, or a write racing this read — a TOCTOU gap). This
+ * guard bounds how much is ever buffered: once the accumulated bytes exceed
+ * `maxBytes` the read stops and `buffer` is `null` so the caller skips inlining
+ * instead of buffering an unbounded blob.
+ */
+export async function readStreamWithByteCap(
+  stream: AsyncIterable<Buffer | Uint8Array | string>,
+  maxBytes: number,
+): Promise<{ buffer: Buffer | null; truncated: boolean }> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of stream) {
+    const buf =
+      typeof chunk === "string"
+        ? Buffer.from(chunk, "utf-8")
+        : Buffer.isBuffer(chunk)
+          ? chunk
+          : Buffer.from(chunk);
+    total += buf.length;
+    if (total > maxBytes) {
+      return { buffer: null, truncated: true };
+    }
+    chunks.push(buf);
+  }
+  return { buffer: Buffer.concat(chunks), truncated: false };
+}
 
 export function normalizeIssueAttachmentMaxBytes(value: number | null | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {

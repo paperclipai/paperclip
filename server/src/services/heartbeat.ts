@@ -96,6 +96,7 @@ import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { ATTACHMENT_INLINE_MAX_BYTES, truncateUtf8ToByteLimit } from "../attachment-types.js";
 import {
   buildHeartbeatRunIssueComment,
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
@@ -4716,14 +4717,23 @@ export async function buildPaperclipWakePayload(input: {
       byteSize: a.byteSize,
       contentPath: `/api/attachments/${a.id}/content`,
     })),
-    documents: userDocumentRows.map((d) => ({
-      key: d.key,
-      title: d.title,
-      format: d.format,
-      body: d.body ? d.body.slice(0, 65_536) : null,
-      bodyTruncated: d.body ? d.body.length > 65_536 : false,
-      updatedAt: d.updatedAt instanceof Date ? d.updatedAt.toISOString() : d.updatedAt,
-    })),
+    documents: userDocumentRows.map((d) => {
+      // Truncate on UTF-8 byte length against the configurable inline budget,
+      // matching the heartbeat-context path in routes/issues.ts. A hardcoded
+      // character count under-counts multi-byte text and ignores an operator's
+      // PAPERCLIP_ATTACHMENT_INLINE_MAX_BYTES override.
+      const truncatedBody = d.body
+        ? truncateUtf8ToByteLimit(d.body, ATTACHMENT_INLINE_MAX_BYTES)
+        : null;
+      return {
+        key: d.key,
+        title: d.title,
+        format: d.format,
+        body: truncatedBody ? truncatedBody.body : null,
+        bodyTruncated: truncatedBody ? truncatedBody.truncated : false,
+        updatedAt: d.updatedAt instanceof Date ? d.updatedAt.toISOString() : d.updatedAt,
+      };
+    }),
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,

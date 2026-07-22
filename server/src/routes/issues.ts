@@ -145,6 +145,7 @@ import {
   normalizeUploadAttachmentContentType,
   SVG_CONTENT_TYPE,
   ATTACHMENT_INLINE_MAX_BYTES,
+  readStreamWithByteCap,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import {
@@ -5218,11 +5219,22 @@ export function issueRoutes(
           if (inlineIds.has(a.id)) {
             try {
               const obj = await storage.getObject(a.companyId, a.objectKey);
-              const chunks: Buffer[] = [];
-              for await (const chunk of obj.stream) {
-                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+              // Runtime size cap: a.byteSize was only checked against the budget as
+              // metadata. If the stored object is actually larger (metadata drift,
+              // tampering, or a write racing this read — TOCTOU), skip inlining
+              // instead of buffering an unbounded blob into memory.
+              const { buffer, truncated } = await readStreamWithByteCap(
+                obj.stream,
+                ATTACHMENT_INLINE_MAX_BYTES,
+              );
+              if (truncated || buffer === null) {
+                logger.warn(
+                  { issueId: issue.id, attachmentId: a.id, recordedByteSize: a.byteSize },
+                  "skipped inlining attachment: stored object exceeded ATTACHMENT_INLINE_MAX_BYTES at read time",
+                );
+              } else {
+                inlineContent = buffer.toString("utf-8");
               }
-              inlineContent = Buffer.concat(chunks).toString("utf-8");
             } catch (err) {
               logger.warn(
                 { err, issueId: issue.id, attachmentId: a.id },

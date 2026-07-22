@@ -8,6 +8,8 @@ import {
   normalizeContentType,
   normalizeUploadAttachmentContentType,
   parseAllowedTypes,
+  readStreamWithByteCap,
+  truncateUtf8ToByteLimit,
 } from "../attachment-types.js";
 
 describe("parseAllowedTypes", () => {
@@ -197,5 +199,56 @@ describe("isInlineAttachmentContentType", () => {
     expect(INLINE_ATTACHMENT_TYPES).not.toContain("text/html");
     expect(isInlineAttachmentContentType("text/html")).toBe(false);
     expect(isInlineAttachmentContentType("application/zip")).toBe(false);
+  });
+});
+
+describe("truncateUtf8ToByteLimit", () => {
+  it("returns the body unchanged when within the byte budget", () => {
+    expect(truncateUtf8ToByteLimit("hello", 64)).toEqual({ body: "hello", truncated: false });
+  });
+
+  it("measures in UTF-8 bytes, not characters", () => {
+    // "€" is 3 UTF-8 bytes; 3 of them = 9 bytes but only 3 characters.
+    const body = "€€€";
+    expect(body.length).toBe(3);
+    const result = truncateUtf8ToByteLimit(body, 4);
+    expect(result.truncated).toBe(true);
+    // Must not split a multi-byte character mid-sequence.
+    expect(result.body).toBe("€");
+    expect(Buffer.byteLength(result.body, "utf-8")).toBeLessThanOrEqual(4);
+    expect(result.body).not.toContain("�");
+  });
+
+  it("does not truncate when the body exactly fills the budget", () => {
+    const body = "€€"; // 6 bytes
+    expect(truncateUtf8ToByteLimit(body, 6)).toEqual({ body, truncated: false });
+  });
+});
+
+describe("readStreamWithByteCap", () => {
+  async function* chunks(...parts: Array<string | Uint8Array>) {
+    for (const p of parts) {
+      yield typeof p === "string" ? Buffer.from(p, "utf-8") : p;
+    }
+  }
+
+  it("returns the concatenated buffer when total size is within the cap", async () => {
+    const result = await readStreamWithByteCap(chunks("ab", "cd"), 64);
+    expect(result.truncated).toBe(false);
+    expect(result.buffer?.toString("utf-8")).toBe("abcd");
+  });
+
+  it("skips inlining (null buffer) when the stream exceeds the cap", async () => {
+    // 8 bytes streamed against a 4-byte cap: the stored object is larger than
+    // its recorded size, so it must not be buffered into memory.
+    const result = await readStreamWithByteCap(chunks("aaaa", "bbbb"), 4);
+    expect(result.truncated).toBe(true);
+    expect(result.buffer).toBeNull();
+  });
+
+  it("accepts a stream exactly at the cap", async () => {
+    const result = await readStreamWithByteCap(chunks("aa", "bb"), 4);
+    expect(result.truncated).toBe(false);
+    expect(result.buffer?.toString("utf-8")).toBe("aabb");
   });
 });
