@@ -110,3 +110,22 @@ def test_scan_lint_parses_json():
 
 def test_scan_lint_fail_soft_on_bad_json():
     assert scan_lint(None, runner=lambda *a, **k: _proc(stdout="not json", returncode=1), repo_root="/repo") == []
+
+
+def test_scan_lint_null_rule_id_becomes_unknown():
+    lint_json = '[{"filePath":"/repo/src/a.ts","messages":[{"line":9,"ruleId":null,"message":"Parsing error","severity":2}]}]'
+    cands = scan_lint(None, runner=lambda *a, **k: _proc(stdout=lint_json, returncode=1), repo_root="/repo")
+    assert len(cands) == 1
+    assert cands[0].key == "lint:src/a.ts:9:unknown"
+
+
+def test_scan_tsc_reads_errors_from_stderr():
+    tsc_err = "src/x.ts(2,3): error TS2531: Object is possibly 'null'.\n"
+    def runner(*a, **k):
+        class R:
+            stdout = ""
+            stderr = tsc_err
+            returncode = 2
+        return R()
+    cands = scan_tsc(None, runner=runner)
+    assert "tsc:src/x.ts:2:TS2531" in {c.key for c in cands}

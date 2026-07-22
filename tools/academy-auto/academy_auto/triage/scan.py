@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,9 +80,6 @@ def scan_skipped_tests(root: Path) -> list[Candidate]:
 def _is_test_file(rel: str) -> bool:
     return ".test." in rel or ".spec." in rel or "__tests__/" in rel
 
-
-import json
-import subprocess
 
 _TSC_RE = re.compile(r"^(.+?)\((\d+),\d+\):\s+error\s+(TS\d+):\s+(.+)$")
 
