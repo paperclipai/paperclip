@@ -789,6 +789,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/tool-connections/{connectionId}/test-agents",
   "POST /api/tool-connections/{connectionId}/test-calls",
   "GET /api/tool-connections/{connectionId}/test-calls/{actionRequestId}",
+  "GET /api/tool-connections/{connectionId}/triggers",
+  "POST /api/tool-connections/{connectionId}/triggers",
+  "PATCH /api/tool-connections/{connectionId}/triggers/{triggerId}",
+  "DELETE /api/tool-connections/{connectionId}/triggers/{triggerId}",
+  "POST /api/tool-connections/{connectionId}/relay/register",
+  "POST /api/tools/oauth/{connectionId}/claim",
   "POST /api/agents/me/connections/{connectionId}/start-authorization",
   "POST /api/agents/me/connections/{connectionId}/token",
   "POST /api/tools/oauth/{connectionId}/start",
@@ -6157,6 +6163,49 @@ registerCurrentRoute({
   tags: ["tool-access"],
   summary: "Get a tool connection test call status",
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 501: r.ok() },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/triggers",
+  tags: ["tool-access"],
+  summary: "List triggers for a tool connection",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/triggers",
+  tags: ["tool-access"],
+  summary: "Create a trigger for a tool connection",
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/tool-connections/{connectionId}/triggers/{triggerId}",
+  tags: ["tool-access"],
+  summary: "Update a tool connection trigger",
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-connections/{connectionId}/triggers/{triggerId}",
+  tags: ["tool-access"],
+  summary: "Delete a tool connection trigger",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/relay/register",
+  tags: ["tool-access"],
+  summary: "Register a relay destination for a tool connection",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tools/oauth/{connectionId}/claim",
+  tags: ["tool-access"],
+  summary: "Claim an OAuth token for a tool connection",
 });
 
 registerCurrentRoute({
