@@ -3,11 +3,13 @@ set -euo pipefail
 
 : "${PAPERCLIP_INSTALL_TEST_LOG:?PAPERCLIP_INSTALL_TEST_LOG is required}"
 node --version >"${PAPERCLIP_INSTALL_TEST_LOG}.node"
-printf 'NPM_CONFIG_REGISTRY=%s\n' "${NPM_CONFIG_REGISTRY:-}" >>"$PAPERCLIP_INSTALL_TEST_LOG"
-printf 'npm_config_registry=%s\n' "${npm_config_registry:-}" >>"$PAPERCLIP_INSTALL_TEST_LOG"
-printf 'NPM_CONFIG_USERCONFIG=%s\n' "${NPM_CONFIG_USERCONFIG:-}" >>"$PAPERCLIP_INSTALL_TEST_LOG"
-printf 'npm_config_userconfig=%s\n' "${npm_config_userconfig:-}" >>"$PAPERCLIP_INSTALL_TEST_LOG"
-if [ -n "${NPM_CONFIG_USERCONFIG:-}" ] && [ -f "$NPM_CONFIG_USERCONFIG" ]; then
-  sed 's/^/npmrc:/' "$NPM_CONFIG_USERCONFIG" >>"$PAPERCLIP_INSTALL_TEST_LOG"
-fi
-printf '%s\n' "$@" >>"$PAPERCLIP_INSTALL_TEST_LOG"
+{
+  printf 'NPM_CONFIG_REGISTRY=%s\n' "${NPM_CONFIG_REGISTRY:-}"
+  printf 'npm_config_registry=%s\n' "${npm_config_registry:-}"
+  printf 'NPM_CONFIG_USERCONFIG=%s\n' "${NPM_CONFIG_USERCONFIG:-}"
+  printf 'npm_config_userconfig=%s\n' "${npm_config_userconfig:-}"
+  if [ -n "${NPM_CONFIG_USERCONFIG:-}" ] && [ -f "$NPM_CONFIG_USERCONFIG" ]; then
+    sed 's/^/npmrc:/' "$NPM_CONFIG_USERCONFIG"
+  fi
+  printf '%s\n' "$@"
+} >>"$PAPERCLIP_INSTALL_TEST_LOG"
