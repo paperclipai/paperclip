@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PC_TEST_ROOT="${PC_TEST_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/paperclip-clean-install-git.XXXXXX")}" 
+PC_TEST_ROOT="${PC_TEST_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/paperclip-clean-install-git.XXXXXX")}"
 PC_HOME="${PC_HOME:-$PC_TEST_ROOT/home}"
 PC_CACHE="${PC_CACHE:-$PC_TEST_ROOT/npm-cache}"
 KEEP_TEMP="${KEEP_TEMP:-0}"
