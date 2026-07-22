@@ -76,6 +76,7 @@ import { Badge } from "@/components/ui/badge";
 
 type AgentConfigFormProps = {
   adapterModels?: AdapterModel[];
+  onDirtyDetailsChange?: (details: { count: number; sections: string[] }) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onSaveActionChange?: (save: (() => void) | null) => void;
   onCancelActionChange?: (cancel: (() => void) | null) => void;
@@ -90,6 +91,11 @@ type AgentConfigFormProps = {
   showAdapterTestEnvironmentButton?: boolean;
   showCreateRunPolicySection?: boolean;
   hideInstructionsFile?: boolean;
+  hideIdentity?: boolean;
+  identityOnly?: boolean;
+  identitySectionTitle?: string;
+  configurationShell?: boolean;
+  visibleConfigurationSections?: ReadonlySet<string>;
   /** Hide the prompt template field from the Identity section (used when it's shown in a separate Prompts tab). */
   hidePromptTemplate?: boolean;
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
@@ -133,6 +139,37 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.runtime).length > 0 ||
     o.modelProfiles?.cheap !== undefined
   );
+}
+
+export function getAgentConfigDirtyDetails(o: AgentConfigOverlay): { count: number; sections: string[] } {
+  const sections = new Set<string>();
+  let count = 0;
+  const addGroup = (group: Record<string, unknown>, defaultSection: string) => {
+    for (const key of Object.keys(group)) {
+      count += 1;
+      if (key === "defaultEnvironmentId" || key === "env") sections.add("environment");
+      else if (
+        key === "cwd" ||
+        key === "dangerouslySkipPermissions" ||
+        key === "dangerouslyBypassSandbox" ||
+        key === "dangerouslyBypassApprovalsAndSandbox"
+      ) sections.add("danger");
+      else sections.add(defaultSection);
+    }
+  };
+  addGroup(o.identity, "runtime");
+  if (o.adapterType !== undefined) {
+    count += 1;
+    sections.add("runtime");
+  }
+  addGroup(o.adapterConfig, "runtime");
+  addGroup(o.heartbeat, "schedule");
+  addGroup(o.runtime, "runtime");
+  if (o.modelProfiles?.cheap !== undefined) {
+    count += 1;
+    sections.add("runtime");
+  }
+  return { count, sections: [...sections] };
 }
 
 /* ---- Shared input class ---- */
@@ -326,6 +363,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const isDirty = !isCreate && isOverlayDirty(overlay);
+  const dirtyDetails = useMemo(() => getAgentConfigDirtyDetails(overlay), [overlay]);
 
   type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "runtime";
 
@@ -395,10 +433,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   useEffect(() => {
     if (!isCreate) {
       props.onDirtyChange?.(isDirty);
+      props.onDirtyDetailsChange?.(dirtyDetails);
       props.onSaveActionChange?.(handleSave);
       props.onCancelActionChange?.(handleCancel);
     }
-  }, [isCreate, isDirty, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange, handleSave, handleCancel]);
+  }, [isCreate, isDirty, dirtyDetails, props.onDirtyChange, props.onDirtyDetailsChange, props.onSaveActionChange, props.onCancelActionChange, handleSave, handleCancel]);
 
   useEffect(() => {
     if (isCreate) return;
@@ -406,8 +445,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       props.onSaveActionChange?.(null);
       props.onCancelActionChange?.(null);
       props.onDirtyChange?.(false);
+      props.onDirtyDetailsChange?.({ count: 0, sections: [] });
     };
-  }, [isCreate, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange]);
+  }, [isCreate, props.onDirtyChange, props.onDirtyDetailsChange, props.onSaveActionChange, props.onCancelActionChange]);
 
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
@@ -972,6 +1012,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     0,
     MAX_TURN_CONTINUATION_MAX_DELAY_SEC,
   );
+  const configurationShell = props.configurationShell === true;
+  const sectionVisible = (section: string) =>
+    !props.identityOnly && (!props.visibleConfigurationSections || props.visibleConfigurationSections.has(section));
 
   function updateMaxTurnContinuation(patch: Record<string, unknown>) {
     mark("heartbeat", "maxTurnContinuation", {
@@ -999,10 +1042,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Identity (edit only) ---- */}
-      {!isCreate && (
+      {!isCreate && !props.hideIdentity && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Identity</h3>
+            ? <h3 className="text-sm font-medium mb-3">{props.identitySectionTitle ?? "Identity"}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1077,11 +1120,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Execution ---- */}
-      {forcedKubernetes ? (
+      {sectionVisible("environment") && (forcedKubernetes ? (
         // Instance execution policy forces the managed Kubernetes sandbox
         // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
         // Render the environment read-only instead of the selectable picker.
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+        <div id={configurationShell ? "config-environment" : undefined} className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), configurationShell && "scroll-mt-24")}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">Environment</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
@@ -1106,7 +1149,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       ) : showEnvironmentOverrideControl ? (
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+        <div id={configurationShell ? "config-environment" : undefined} className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), configurationShell && "scroll-mt-24")}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">Environment</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
@@ -1137,13 +1180,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           </div>
         </div>
-      ) : null}
+      ) : null)}
 
       {/* ---- Adapter ---- */}
-      <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+      {sectionVisible("runtime") && <div id={configurationShell ? "config-runtime" : undefined} className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), configurationShell && "scroll-mt-24")}>
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">Adapter</h3>
+            ? <h3 className="text-sm font-medium">{configurationShell ? "Runtime" : "Adapter"}</h3>
             : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
           }
           {showInlineAdapterTestEnvironmentButton && (
@@ -1258,13 +1301,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {/* Local adapter-specific fields are rendered inside Permissions & Configuration */}
         </div>
 
-      </div>
+      </div>}
 
       {/* ---- Permissions & Configuration ---- */}
-      {isLocal && (
+      {sectionVisible("runtime") && isLocal && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
+            ? <h3 className="text-sm font-medium mb-3">{configurationShell ? "Advanced runtime" : "Permissions & Configuration"}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1506,10 +1549,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Run Policy ---- */}
-      {isCreate && showCreateRunPolicySection ? (
-        <div className={cn(!cards && "border-b border-border")}>
+      {sectionVisible("schedule") && (isCreate && showCreateRunPolicySection ? (
+        <div id={configurationShell ? "config-schedule" : undefined} className={cn(!cards && "border-b border-border", configurationShell && "scroll-mt-24")}>
           {cards
-            ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
+            ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> {configurationShell ? "Schedule & Runs" : "Run Policy"}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1528,9 +1571,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       ) : !isCreate ? (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div id={configurationShell ? "config-schedule" : undefined} className={cn(!cards && "border-b border-border", configurationShell && "scroll-mt-24")}>
           {cards
-            ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
+            ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> {configurationShell ? "Schedule & Runs" : "Run Policy"}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg overflow-hidden" : "")}>
@@ -1627,7 +1670,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </CollapsibleSection>
           </div>
         </div>
-      ) : null}
+      ) : null)}
 
     </div>
   );
