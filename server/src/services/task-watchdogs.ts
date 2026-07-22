@@ -905,15 +905,24 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           latestAt: sql<Date | null>`MAX(${issueComments.updatedAt})`,
         })
         .from(issueComments)
+        .leftJoin(heartbeatRuns, eq(issueComments.createdByRunId, heartbeatRuns.id))
         .where(and(
           eq(issueComments.companyId, companyId),
           inArray(issueComments.issueId, subtreeIssueIds),
           isNull(issueComments.deletedAt),
           // Ignore watchdog/system housekeeping comments when computing stopped-subtree
-          // fingerprint signals; no-op heartbeat transcripts should not re-arm watchdogs.
+          // heartbeat no-op transcripts should not re-arm watchdogs.
           or(
             isNull(issueComments.authorType),
-            ne(issueComments.authorType, "system"),
+            and(
+              ne(issueComments.authorType, "system"),
+              or(
+                isNull(heartbeatRuns.id),
+                ne(heartbeatRuns.livenessState, "empty_response"),
+                ne(heartbeatRuns.status, "succeeded"),
+                ne(heartbeatRuns.invocationSource, "heartbeat"),
+              ),
+            ),
           ),
         ))
         .groupBy(issueComments.issueId),
