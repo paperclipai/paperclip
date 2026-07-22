@@ -22,6 +22,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import paperclip_client as pc  # noqa: E402
+import approval_queue as approval_queue  # noqa: E402
+import approval_parse as approval_parse  # noqa: E402
+import approval_send as approval_send  # noqa: E402
+
+WALTER_SENDERS = ("w.schonenbrocher", "walter", "ws@whitestag.ai")
 
 BASE = "http://localhost:3100"
 COMPANY = "9cebf3cf-efe8-4597-a400-f06488900a87"
@@ -107,6 +112,101 @@ def _is_agent_mail(path: Path) -> bool:
     return False
 
 
+def read_body(path: Path) -> str:
+    """Body ohne Frontmatter."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if text.startswith("---"):
+        parts = text.split("\n---", 1)
+        if len(parts) == 2:
+            return parts[1].lstrip("-\n")
+    return text
+
+
+def is_approval_reply(path: Path) -> str | None:
+    """Token, falls die Datei Walters Antwort auf eine Freigabe-Mail ist."""
+    try:
+        from_ok = False
+        subject = ""
+        with path.open(encoding="utf-8") as fh:
+            for _ in range(12):
+                line = fh.readline()
+                if not line:
+                    break
+                low = line.lower()
+                if low.startswith(("von:", "from:")):
+                    from_ok = any(s in low for s in WALTER_SENDERS)
+                elif low.startswith(("subject:", "betreff:")):
+                    subject = line.split(":", 1)[1]
+        if not from_ok:
+            return None
+        return approval_parse.extract_token(subject)
+    except OSError:
+        return None
+
+
+def process_approvals(new_files, *, dry_run, send=approval_send.send_approved, make_issue=None):
+    """Verarbeitet Freigabe-Antworten. Gibt Liste von {token, action} zurück."""
+    if make_issue is None:
+        make_issue = _create_correction_issue
+    results = []
+    for name in new_files:
+        path = MAILDIR / name
+        token = is_approval_reply(path)
+        if not token:
+            continue
+        entry = approval_queue.load(token)
+        if entry is None or entry.get("status") != "pending":
+            results.append({"token": token, "action": "skip"})
+            continue
+        action = approval_parse.classify(read_body(path))
+        if action == "send":
+            if dry_run:
+                results.append({"token": token, "action": "would-send"}); continue
+            code, resp = send(entry)
+            if code == 200:
+                approval_queue.mark(token, "sent",
+                                    sent=datetime.now().isoformat())
+                print(f"Freigabe #{token}: gesendet an {entry['to']}")
+                results.append({"token": token, "action": "sent"})
+            else:
+                print(f"FEHLER Freigabe #{token}: Relay HTTP {code}: {resp}", file=sys.stderr)
+                results.append({"token": token, "action": "send-error"})
+        else:
+            if dry_run:
+                results.append({"token": token, "action": "would-correct"}); continue
+            make_issue(token, read_body(path), entry)
+            results.append({"token": token, "action": "correction"})
+    return results
+
+
+def _create_correction_issue(token: str, note: str, entry: dict) -> None:
+    """Weckt Luna zur Überarbeitung eines Entwurfs nach Walters Korrektur."""
+    token_pc = pc.load_token()
+    desc = f"""## Korrektur zu Freigabe #{token}
+
+Walter hat den Entwurf an **{entry['to']}** (Betreff „{entry['subject']}") NICHT freigegeben,
+sondern folgende Anmerkung geschickt:
+
+> {note.strip().replace(chr(10), chr(10) + '> ')}
+
+## Auftrag
+
+Überarbeite den Entwurf gemäß dieser Anmerkung und lege ihn erneut zur Freigabe vor:
+
+```
+bin/luna-queue-approval.py --area {entry['area']} --to {entry['to']} \\
+  --subject "{entry['subject']}" --body /tmp/entwurf-neu.md \\
+  --original-file "{entry['original_mail_file']}"
+```
+
+Der alte Entwurf #{token} ist verbraucht — es entsteht ein neuer Token.
+"""
+    pc.create_issue(BASE, token_pc, COMPANY,
+                    title=f"Korrektur Entwurf #{token} — {entry['subject']}",
+                    description=desc, assignee_agent_id=AGENT, priority="high")
+    approval_queue.mark(token, "superseded")
+
+
 def scan(window: int) -> list[str]:
     """Neue Mail-Dateien im Fenster, OHNE die eigenen ausgehenden Mails."""
     if not MAILDIR.is_dir():
@@ -119,7 +219,23 @@ def scan(window: int) -> list[str]:
             continue
         if _is_agent_mail(p):
             continue
+        if is_approval_reply(p):
+            continue
         out.append(p.name)
+    return out
+
+
+def scan_approval_replies(window: int, seen: set[str]) -> list[str]:
+    """Neue (ungesehene) Freigabe-Antworten von Walter im Fenster."""
+    cutoff = str(date.today() - timedelta(days=window))
+    out = []
+    for p in sorted(MAILDIR.glob("*.md")):
+        if p.name[:10] < cutoff:
+            continue
+        if p.name in seen:
+            continue
+        if is_approval_reply(p):
+            out.append(p.name)
     return out
 
 
@@ -190,6 +306,18 @@ def main() -> None:
         save_state(set(current), a.window_days)
         print(f"Erstlauf — {len(current)} vorhandene Datei(en) als gesehen markiert.")
         return
+
+    # --- Vier-Augen: Freigaben & TTL zuerst (deterministisch, kein LLM) ---
+    if not a.dry_run:
+        for tok in approval_queue.expire_stale(ttl_days=7):
+            print(f"Freigabe #{tok} nach TTL verfallen.")
+    approval_new = scan_approval_replies(a.window_days, seen)
+    if approval_new:
+        results = process_approvals(approval_new, dry_run=a.dry_run)
+        print(f"Freigabe-Antworten: {results}")
+        if not a.dry_run:
+            seen = seen | set(approval_new)
+            save_state(seen, a.window_days)
 
     new = [n for n in current if n not in seen]
     if not new:
