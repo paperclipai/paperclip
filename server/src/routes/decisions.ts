@@ -20,6 +20,11 @@ const createSchema = z.object({
 const bundleSchema = z.object({ title: z.string().trim().min(1).max(500), summary: z.string().max(100_000), decisions: z.array(createSchema).min(1).max(50) }).strict();
 const decideSchema = z.object({ optionId: z.string().trim().min(1).max(120), inputValues: z.record(z.string().max(20_000)).optional(), idempotencyKey: z.string().trim().min(1).max(500).nullable().optional() }).strict();
 const dismissSchema = z.object({ reason: z.string().max(20_000).nullable().optional() }).strict();
+const statsQuerySchema = z.object({
+  groupBy: z.literal("ruleKey"),
+  originAgentId: z.string().uuid().optional(),
+  since: z.coerce.date().optional(),
+}).strict();
 
 function agentContext(req: Parameters<typeof getActorInfo>[0]) {
   if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) return null;
@@ -49,6 +54,26 @@ export function decisionRoutes(db: Db) {
     const query = z.object({ status: z.enum(["open", "decided", "expired", "cancelled"]).optional(), bundleId: z.string().uuid().optional(), targetIssueId: z.string().uuid().optional(), originAgentId: z.string().uuid().optional(), limit: z.coerce.number().int().positive().max(100).optional() }).safeParse(req.query);
     if (!query.success) { res.status(400).json({ error: "Invalid decision filters", details: query.error.flatten() }); return; }
     res.json(await svc.list(companyId, query.data));
+  });
+  /**
+   * Gardener telemetry contract:
+   * { groupBy: "ruleKey", filters: { originAgentId: string|null, since: ISO-8601|null },
+   *   totals: { proposed, accepted, rejected, expired },
+   *   groups: [{ ruleKey: string|null, proposed, accepted, rejected, expired,
+   *     chosenOptions: [{ optionId, count }] }] }
+   * Accepted means a non-dismissed decided outcome; rejected means an explicit dismiss;
+   * chosenOptions counts accepted outcomes only; expired is separate, and cancelled
+   * decisions contribute only to proposed.
+   */
+  router.get("/companies/:companyId/decisions/stats", async (req, res) => {
+    const companyId = req.params.companyId as string; assertBoardOrAgent(req); assertCompanyAccess(req, companyId);
+    const query = statsQuerySchema.safeParse(req.query);
+    if (!query.success) { res.status(400).json({ error: "Invalid decision stats filters", details: query.error.flatten() }); return; }
+    if (req.actor.type === "agent" && query.data.originAgentId && query.data.originAgentId !== req.actor.agentId) {
+      res.status(403).json({ error: "Agents may only read their own decision stats" }); return;
+    }
+    const originAgentId = req.actor.type === "agent" ? req.actor.agentId : query.data.originAgentId;
+    res.json(await svc.stats(companyId, { originAgentId, since: query.data.since }));
   });
   router.get("/decisions/:id", async (req, res) => {
     assertBoardOrAgent(req); const decision = await svc.get(req.params.id as string);

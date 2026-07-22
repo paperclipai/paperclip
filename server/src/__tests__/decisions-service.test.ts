@@ -191,4 +191,34 @@ describePg("decisionService", () => {
     expect(rows.find((row) => row.id === gone.id)?.metadata).toMatchObject({ expiredReason: "target_gone" });
     expect(wakes).toHaveLength(2);
   });
+
+  it("groups rule-key stats and separates explicit dismissals from expiry", async () => {
+    const accepted = await service().create({
+      companyId, actor: agentActor(), agentId, runId, ruleKey: "routing.assign", title: "Assign?", body: "Body",
+      options: [{ id: "assign", label: "Assign", effects: [] }, { id: "skip", label: "Skip", effects: [] }],
+    });
+    const rejected = await service().create({
+      companyId, actor: agentActor(), agentId, runId, ruleKey: "routing.assign", title: "Assign another?", body: "Body",
+      options: [{ id: "assign", label: "Assign", effects: [] }, { id: "skip", label: "Skip", effects: [] }],
+    });
+    await service().create({
+      companyId, actor: agentActor(), agentId, runId, ruleKey: "cleanup.stale", title: "Clean up?", body: "Body",
+      options: [{ id: "clean", label: "Clean", effects: [] }], expiresAt: new Date(Date.now() + 5),
+    });
+    await service().decide({ id: accepted.id, optionId: "assign", decidedByUserId, userActor: boardActor() });
+    await service().dismiss(rejected.id, decidedByUserId, boardActor(), "Not this time");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await service().sweepExpired();
+
+    const stats = await service().stats(companyId, { originAgentId: agentId });
+    expect(stats.totals).toEqual({ proposed: 3, accepted: 1, rejected: 1, expired: 1 });
+    expect(stats.groups).toEqual([
+      { ruleKey: "cleanup.stale", proposed: 1, accepted: 0, rejected: 0, expired: 1, chosenOptions: [] },
+      { ruleKey: "routing.assign", proposed: 2, accepted: 1, rejected: 1, expired: 0,
+        chosenOptions: [{ optionId: "assign", count: 1 }] },
+    ]);
+    expect((await service().outcome(rejected.id)).metadata).toMatchObject({ dismissed: true, dismissReason: "Not this time" });
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "decision.dismissed")))
+      .toEqual([expect.objectContaining({ entityId: rejected.id, responsibleUserId: decidedByUserId })]);
+  });
 });

@@ -795,6 +795,10 @@ export type {
   ResolveBlockerDecisionEffect,
   DecisionEffect,
   DecisionOption,
+  DecisionStatsCounts,
+  DecisionChosenOptionCount,
+  DecisionRuleKeyStats,
+  DecisionStatsResponse,
 } from "./decision.js";
 export type {
   AccessUserProfile,

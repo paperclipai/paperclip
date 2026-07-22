@@ -32,6 +32,10 @@ export type {
   ResolveBlockerDecisionEffect,
   DecisionEffect,
   DecisionOption,
+  DecisionStatsCounts,
+  DecisionChosenOptionCount,
+  DecisionRuleKeyStats,
+  DecisionStatsResponse,
 } from "./types/decision.js";
 
 export {

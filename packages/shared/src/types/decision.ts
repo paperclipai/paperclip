@@ -74,3 +74,30 @@ export interface DecisionOption {
   style?: DecisionOptionStyle;
   effects: DecisionEffect[];
 }
+
+export interface DecisionStatsCounts {
+  proposed: number;
+  accepted: number;
+  rejected: number;
+  expired: number;
+}
+
+export interface DecisionChosenOptionCount {
+  optionId: string;
+  count: number;
+}
+
+export interface DecisionRuleKeyStats extends DecisionStatsCounts {
+  ruleKey: string | null;
+  chosenOptions: DecisionChosenOptionCount[];
+}
+
+export interface DecisionStatsResponse {
+  groupBy: "ruleKey";
+  filters: {
+    originAgentId: string | null;
+    since: string | null;
+  };
+  totals: DecisionStatsCounts;
+  groups: DecisionRuleKeyStats[];
+}
