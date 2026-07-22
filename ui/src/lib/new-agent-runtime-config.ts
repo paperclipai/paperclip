@@ -20,11 +20,11 @@ export function buildNewAgentRuntimeConfig(input?: {
 
   const cheapModel = input?.cheapModel?.trim() ?? "";
   const cheapEnabled = input?.cheapModelEnabled ?? false;
-  if (cheapModel && cheapEnabled) {
+  if (cheapEnabled) {
     config.modelProfiles = {
       cheap: {
         enabled: true,
-        adapterConfig: { model: cheapModel },
+        adapterConfig: cheapModel ? { model: cheapModel } : {},
       },
     };
   }
