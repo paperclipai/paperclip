@@ -87,3 +87,23 @@ def test_measure_gate_passes_timeout():
         return R()
     measure_gate(Config.default(), "/tmp/wt", runner=runner)
     assert captured.get("timeout") == GATE_TIMEOUT
+
+
+def test_measure_gate_exception_counts_as_one_not_green():
+    import subprocess
+    def boom(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 180)
+    m = measure_gate(Config.default(), "/tmp/wt", runner=boom)
+    # jeder der 3 Schritte wirft -> jeder count=1, KEIN Schritt fehlt, NICHT grün gefälscht
+    assert len(m.steps) == 3
+    assert all(s.count == 1 for s in m.steps)
+    assert m.total == 3
+
+
+def test_count_step_errors_returncode_fallback_tsc_and_jest():
+    # tsc-Fallback ohne parsbares Muster
+    assert _count_step_errors(["npx", "tsc", "--noEmit"], "unlesbar", 2) == 1
+    assert _count_step_errors(["npx", "tsc", "--noEmit"], "", 0) == 0
+    # jest-Fallback ohne "N failed"
+    assert _count_step_errors(["npm", "test"], "seltsame ausgabe", 1) == 1
+    assert _count_step_errors(["npm", "test"], "", 0) == 0
