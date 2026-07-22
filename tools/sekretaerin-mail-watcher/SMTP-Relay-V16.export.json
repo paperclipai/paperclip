@@ -1,0 +1,2144 @@
+{
+ "updatedAt": "2026-07-22T13:06:02.822Z",
+ "createdAt": "2026-07-22T13:06:02.822Z",
+ "id": "BXHc5kdNdZQNiuMr",
+ "name": "SMTP Relay V16 — Office Freigabe-gated",
+ "description": null,
+ "active": true,
+ "isArchived": false,
+ "nodes": [
+  {
+   "parameters": {
+    "httpMethod": "POST",
+    "path": "mailhub/send",
+    "authentication": "headerAuth",
+    "responseMode": "responseNode",
+    "options": {}
+   },
+   "id": "81da4c45-7c17-453d-ad2b-1b20b580b98b",
+   "name": "Webhook",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    11680,
+    3152
+   ],
+   "webhookId": "smtp-relay-send-mail",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": "ff80c9a87a99225b",
+     "name": "Mailhub Webhook Secret"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "\n// Validate request and normalize fields.\n// Webhook auth (X-Mailhub-Secret) ist bereits durch Webhook-Node geprueft.\n\nconst input = $input.first().json;\nconst body = input.body || input;\n\nconst ALLOWED_FROM = [\n  'ceo@whitestag.ai',\n  'cmo@whitestag.ai',\n  'cto@whitestag.ai',\n  'cpo@whitestag.ai',\n  'cro@whitestag.ai',\n  'creative@whitestag.ai',\n  'dpo@whitestag.ai',\n  'webdesign@whitestag.ai',\n  'health@whitestag.ai',\n  'office@whitestag.ai',\n  'paperclip@clara-werden.de',\n];\n\nfunction reject(message) {\n  return [{ json: { __invalid: true, errorMessage: message } }];\n}\n\nconst from = String(body.from || '').trim().toLowerCase();\nconst to = String(body.to || '').trim();\nconst subject = String(body.subject || '').trim();\nconst text = body.text != null ? String(body.text) : '';\nlet html = body.html != null ? String(body.html) : '';\nconst cc = body.cc != null ? String(body.cc) : '';\nconst inReplyTo = body.inReplyTo != null ? String(body.inReplyTo) : '';\n\nif (!ALLOWED_FROM.includes(from)) {\n  return reject('Unauthorized from-address: ' + (from || '(empty)'));\n}\nif (!to) return reject('Missing required field: to');\nif (!subject) return reject('Missing required field: subject');\nif (!text && !html) return reject('Missing required field: text (or html)');\n\n// --- Aussen-Sperre (Agenten-Guard) ---------------------------------------\n// Kein Paperclip-Agent sendet ohne Freigabe an einen echten externen Empfaenger.\n// office@ (Luna, Phase 2) am strengsten: NUR ws@whitestag.ai.\n// Alle anderen Agenten: nur interne Ziele (whitestag.*, sorbART, Clara) + Walter.\nconst INTERNAL_DOMAINS = ['whitestag.ai','whitestag.de','whitestag.film','sorbart.de','sorbart.shop','clara-werden.de','clara-sound.de'];\n// Walter wird ausschliesslich ueber ws@whitestag.ai erreicht (gmail + schoenenbroecher.de gestrichen 2026-07-22).\nfunction _isInternalTarget(addr) {\n  const dom = (String(addr).toLowerCase().split('@')[1] || '');\n  return INTERNAL_DOMAINS.includes(dom);\n}\n{\n  const combined = [to, cc].filter(Boolean).join(',');\n  const addrs = (combined.match(/[\\w.+-]+@[\\w.-]+\\.\\w+/g) || []).map(a => a.toLowerCase());\n  if (from === 'office@whitestag.ai') {\n    const APPROVAL_SECRET = '<REDACTED-see ~/.paperclip/state/luna-approval-secret>';\n    const approval = String(body.approval || '').trim();\n    const onlyWalter = addrs.length > 0 && addrs.every(a => a === 'ws@whitestag.ai');\n    const approved = approval.length > 0 && approval === APPROVAL_SECRET;\n    if (!onlyWalter && !approved) return reject('Phase-3-Gate: office@ (Luna) an Externe nur mit gueltiger Freigabe. Blockiert: to=' + to + (cc ? ' cc=' + cc : ''));\n  } else {\n    const ext = addrs.filter(a => !_isInternalTarget(a));\n    if (ext.length) return reject('Aussen-Sperre: Agenten duerfen ohne Freigabe nicht an externe Empfaenger senden. Blockiert: ' + ext.join(', '));\n  }\n}\n\n\n// Optional attachments: Array von { filename, content (base64), mimeType? }\nconst rawAttachments = Array.isArray(body.attachments) ? body.attachments : [];\nconst attachments = [];\nfor (const [i, a] of rawAttachments.entries()) {\n  if (!a || typeof a !== 'object') return reject(`Attachment #${i}: not an object`);\n  const filename = String(a.filename || '').trim();\n  const content = String(a.content || '').trim();\n  if (!filename) return reject(`Attachment #${i}: missing filename`);\n  if (!content) return reject(`Attachment #${i}: missing content (base64)`);\n  const mimeType = String(a.mimeType || 'application/octet-stream');\n  const cid = a.cid ? String(a.cid).trim() : '';\n  attachments.push({ filename, content, mimeType, ...(cid ? {cid} : {}) });\n}\n\n// --- Auto-HTML: wenn kein html geliefert wurde, aus markdown text aufbauen ----\n// Konsistent zum lib/build_walter_mail_html.py Layout (eine \"Bericht\"-Sektion).\nfunction escapeHtml(s) {\n  return String(s)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction stripFrontmatter(md) {\n  return md.replace(/^---\\n[\\s\\S]*?\\n---\\n+/, '');\n}\n\nfunction mdToHtml(md) {\n  if (!md) return '';\n  md = stripFrontmatter(md);\n\n  // Fenced code blocks first (extract & placeholder)\n  const codeBlocks = [];\n  md = md.replace(/```([a-zA-Z0-9_-]*)\\n([\\s\\S]*?)```/g, (m, lang, code) => {\n    const i = codeBlocks.length;\n    codeBlocks.push(`<pre style=\"background:#f6f8fa;padding:12px;border-radius:4px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;\"><code>${escapeHtml(code)}</code></pre>`);\n    return `@@CODEBLOCK${i}@@`;\n  });\n\n  const lines = md.split('\\n');\n  const out = [];\n  let inList = null; // 'ul' | 'ol' | null\n  let para = [];\n\n  function flushPara() {\n    if (para.length) {\n      out.push(`<p style=\"margin:8px 0;\">${inlineMd(para.join(' '))}</p>`);\n      para = [];\n    }\n  }\n  function closeList() {\n    if (inList) { out.push(`</${inList}>`); inList = null; }\n  }\n\n  function inlineMd(s) {\n    s = escapeHtml(s);\n    // links [text](url)\n    s = s.replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, '<a href=\"$2\" style=\"color:#0066cc;text-decoration:none;\">$1</a>');\n    // bold **x** / __x__\n    s = s.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');\n    s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');\n    // italic *x* / _x_\n    s = s.replace(/(^|[\\s(])\\*([^*\\n]+)\\*/g, '$1<em>$2</em>');\n    s = s.replace(/(^|[\\s(])_([^_\\n]+)_/g, '$1<em>$2</em>');\n    // inline code `x`\n    s = s.replace(/`([^`]+)`/g, '<code style=\"background:#f6f8fa;padding:1px 4px;border-radius:3px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;\">$1</code>');\n    // restore code-block placeholders\n    s = s.replace(/@@CODEBLOCK(\\d+)@@/g, (_, i) => codeBlocks[Number(i)]);\n    return s;\n  }\n\n  for (const raw of lines) {\n    const line = raw.replace(/\\s+$/, '');\n\n    if (!line.trim()) { flushPara(); continue; } // blank lines inside a list don't close it (loose-list handling)\n\n    // headings\n    const h = line.match(/^(#{1,6})\\s+(.*)$/);\n    if (h) {\n      flushPara(); closeList();\n      const lvl = h[1].length;\n      const size = [22, 18, 16, 15, 14, 14][lvl - 1];\n      const margin = lvl <= 2 ? '24px 0 8px 0' : '16px 0 6px 0';\n      const border = lvl === 2 ? 'border-bottom:1px solid #eee;padding-bottom:4px;' : '';\n      out.push(`<h${lvl} style=\"font-size:${size}px;margin:${margin};color:#${lvl<=2?'333':'555'};${border}\">${inlineMd(h[2])}</h${lvl}>`);\n      continue;\n    }\n\n    // unordered list\n    const ul = line.match(/^[-*+]\\s+(.*)$/);\n    if (ul) {\n      flushPara();\n      if (inList !== 'ul') { closeList(); out.push('<ul style=\"margin:8px 0;padding-left:24px;\">'); inList = 'ul'; }\n      out.push(`<li style=\"margin:2px 0;\">${inlineMd(ul[1])}</li>`);\n      continue;\n    }\n    // ordered list\n    const ol = line.match(/^\\d+\\.\\s+(.*)$/);\n    if (ol) {\n      flushPara();\n      if (inList !== 'ol') { closeList(); out.push('<ol style=\"margin:8px 0;padding-left:24px;\">'); inList = 'ol'; }\n      out.push(`<li style=\"margin:2px 0;\">${inlineMd(ol[1])}</li>`);\n      continue;\n    }\n\n    // code-block placeholder on its own line\n    if (/^@@CODEBLOCK\\d+@@$/.test(line)) {\n      flushPara(); closeList();\n      out.push(inlineMd(line));\n      continue;\n    }\n\n    // paragraph accumulator\n    closeList();\n    para.push(line);\n  }\n  flushPara(); closeList();\n\n  return out.join('\\n');\n}\n\nif (!html && text) {\n  const agentLabel = from.split('@')[0].toUpperCase();\n  const bodyHtml = mdToHtml(text);\n  html = [\n    '<!DOCTYPE html>',\n    '<html><head><meta charset=\"utf-8\"></head>',\n    '<body style=\"font-family:-apple-system,BlinkMacSystemFont,\\'Segoe UI\\',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#222;max-width:780px;margin:0 auto;padding:20px;\">',\n    `<h1 style=\"font-size:22px;margin:0 0 4px 0;color:#111;\">\\u{1F4EC} ${escapeHtml(subject)}</h1>`,\n    `<div style=\"color:#888;font-size:13px;margin-bottom:24px;\">${escapeHtml(agentLabel)} · ${escapeHtml(from)}</div>`,\n    '<h2 style=\"font-size:16px;margin:24px 0 8px 0;color:#444;border-bottom:1px solid #eee;padding-bottom:4px;\">\\u{1F4CB} Inhalt</h2>',\n    `<div style=\"margin-bottom:8px;\">${bodyHtml}</div>`,\n    '</body></html>',\n  ].join('\\n');\n}\n\n// agentKey for Switch routing (lowercased local part)\nconst agentKey = from.split('@')[0];\n\nreturn [{\n  json: {\n    __invalid: false,\n    agentKey,\n    from,\n    to,\n    subject,\n    text,\n    html,\n    cc,\n    inReplyTo,\n    attachments,\n  }\n}];\n"
+   },
+   "id": "55759c6d-4020-42b5-a74a-4ef272f6172b",
+   "name": "Validate Request",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    11920,
+    3152
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "strict",
+      "version": 2
+     },
+     "combinator": "and",
+     "conditions": [
+      {
+       "id": "is-valid",
+       "leftValue": "={{ $json.__invalid }}",
+       "rightValue": true,
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ]
+    },
+    "options": {}
+   },
+   "id": "94cb2e83-5c1e-49e6-80b6-b9f587468bc7",
+   "name": "Validation Error?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    12160,
+    3152
+   ]
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify({ ok: false, error: $json.errorMessage }) }}",
+    "options": {
+     "responseCode": 400
+    }
+   },
+   "id": "afd51a6b-273d-472f-97ab-8c00fef0bc69",
+   "name": "Respond Error",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    12400,
+    2928
+   ]
+  },
+  {
+   "parameters": {
+    "rules": {
+     "values": [
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "combinator": "and",
+        "conditions": [
+         {
+          "id": "r-ceo",
+          "leftValue": "={{ $json.agentKey }}",
+          "rightValue": "ceo",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "combinator": "and",
+        "conditions": [
+         {
+          "id": "r-cmo",
+          "leftValue": "={{ $json.agentKey }}",
+          "rightValue": "cmo",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "combinator": "and",
+        "conditions": [
+         {
+          "id": "r-cto",
+          "leftValue": "={{ $json.agentKey }}",
+          "rightValue": "cto",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "combinator": "and",
+        "conditions": [
+         {
+          "id": "r-cpo",
+          "leftValue": "={{ $json.agentKey }}",
+          "rightValue": "cpo",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "combinator": "and",
+        "conditions": [
+         {
+          "id": "r-cro",
+          "leftValue": "={{ $json.agentKey }}",
+          "rightValue": "cro",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "combinator": "and",
+        "conditions": [
+         {
+          "id": "r-creative",
+          "leftValue": "={{ $json.agentKey }}",
+          "rightValue": "creative",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "combinator": "and",
+        "conditions": [
+         {
+          "id": "r-dpo",
+          "leftValue": "={{ $json.agentKey }}",
+          "rightValue": "dpo",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "combinator": "and",
+        "conditions": [
+         {
+          "id": "r-webdesign",
+          "leftValue": "={{ $json.agentKey }}",
+          "rightValue": "webdesign",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "combinator": "and",
+        "conditions": [
+         {
+          "id": "r-health",
+          "leftValue": "={{ $json.agentKey }}",
+          "rightValue": "health",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "combinator": "and",
+        "conditions": [
+         {
+          "id": "r-office",
+          "leftValue": "={{ $json.agentKey }}",
+          "rightValue": "office",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "combinator": "and",
+        "conditions": [
+         {
+          "id": "r-clara-ceo",
+          "leftValue": "={{ $json.from }}",
+          "rightValue": "paperclip@clara-werden.de",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    },
+    "options": {}
+   },
+   "id": "2fd997ba-7af2-4c8f-9495-0d5eaaeb272b",
+   "name": "Switch by Sender",
+   "type": "n8n-nodes-base.switch",
+   "typeVersion": 3.2,
+   "position": [
+    12400,
+    3376
+   ]
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $json.from }}",
+    "toEmail": "={{ $json.to }}",
+    "subject": "={{ $json.subject }}",
+    "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+    "text": "={{ $json.text }}",
+    "html": "={{ $json.html }}",
+    "options": {
+     "appendAttribution": false,
+     "attachments": "={{ $json.__attachmentKeys || undefined }}",
+     "replyTo": "={{ $json.from }}"
+    }
+   },
+   "id": "42fb5bcb-a480-440f-b616-7193b05072c5",
+   "name": "SMTP Send CEO",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    12720,
+    2848
+   ],
+   "webhookId": "8f0436e2-9ab9-4a4f-aceb-5376e347c22b",
+   "credentials": {
+    "smtp": {
+     "id": "ce33367a78fd175c",
+     "name": "Mailhub SMTP CEO"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $json.from }}",
+    "toEmail": "={{ $json.to }}",
+    "subject": "={{ $json.subject }}",
+    "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+    "text": "={{ $json.text }}",
+    "html": "={{ $json.html }}",
+    "options": {
+     "appendAttribution": false,
+     "attachments": "={{ $json.__attachmentKeys || undefined }}",
+     "replyTo": "={{ $json.from }}"
+    }
+   },
+   "id": "8cdef1b6-f551-45f1-94cb-e3ed036243a3",
+   "name": "SMTP Send CMO",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    12720,
+    3024
+   ],
+   "webhookId": "adb88d9a-8a4d-4366-8b81-7be0f9e8bcd1",
+   "credentials": {
+    "smtp": {
+     "id": "8dd82c4cf1f8d887",
+     "name": "Mailhub SMTP CMO"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $json.from }}",
+    "toEmail": "={{ $json.to }}",
+    "subject": "={{ $json.subject }}",
+    "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+    "text": "={{ $json.text }}",
+    "html": "={{ $json.html }}",
+    "options": {
+     "appendAttribution": false,
+     "attachments": "={{ $json.__attachmentKeys || undefined }}",
+     "replyTo": "={{ $json.from }}"
+    }
+   },
+   "id": "1462e370-71c9-413c-9cc3-896ecdcec960",
+   "name": "SMTP Send CTO",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    12720,
+    3200
+   ],
+   "webhookId": "c1db9297-7833-44d4-abee-1f98fd7bfe4c",
+   "credentials": {
+    "smtp": {
+     "id": "8c3383ab57dee46f",
+     "name": "Mailhub SMTP CTO"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $json.from }}",
+    "toEmail": "={{ $json.to }}",
+    "subject": "={{ $json.subject }}",
+    "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+    "text": "={{ $json.text }}",
+    "html": "={{ $json.html }}",
+    "options": {
+     "appendAttribution": false,
+     "attachments": "={{ $json.__attachmentKeys || undefined }}",
+     "replyTo": "={{ $json.from }}"
+    }
+   },
+   "id": "66adfb17-5d3b-4442-9f08-7f0b944817c8",
+   "name": "SMTP Send CPO",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    12720,
+    3376
+   ],
+   "webhookId": "bd3f512b-8655-492b-af3c-3ee73c2885ac",
+   "credentials": {
+    "smtp": {
+     "id": "3e95692695f74a9c",
+     "name": "Mailhub SMTP CPO"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $json.from }}",
+    "toEmail": "={{ $json.to }}",
+    "subject": "={{ $json.subject }}",
+    "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+    "text": "={{ $json.text }}",
+    "html": "={{ $json.html }}",
+    "options": {
+     "appendAttribution": false,
+     "attachments": "={{ $json.__attachmentKeys || undefined }}",
+     "replyTo": "={{ $json.from }}"
+    }
+   },
+   "id": "6d9a2192-9031-4aee-8723-d544d26cb46f",
+   "name": "SMTP Send CRO",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    12720,
+    3552
+   ],
+   "webhookId": "c17886ee-d27a-4786-97f7-6e156b5a5055",
+   "credentials": {
+    "smtp": {
+     "id": "e36beae2a64d10f0",
+     "name": "Mailhub SMTP CRO"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $json.from }}",
+    "toEmail": "={{ $json.to }}",
+    "subject": "={{ $json.subject }}",
+    "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+    "text": "={{ $json.text }}",
+    "html": "={{ $json.html }}",
+    "options": {
+     "appendAttribution": false,
+     "attachments": "={{ $json.__attachmentKeys || undefined }}",
+     "replyTo": "={{ $json.from }}"
+    }
+   },
+   "id": "e0a17a1d-6d91-474d-8b0e-48f55378b9fb",
+   "name": "SMTP Send Creative",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    12720,
+    3728
+   ],
+   "webhookId": "4d3fe894-a03b-4a67-b6b7-d6e231691c87",
+   "credentials": {
+    "smtp": {
+     "id": "2a5fee336c8d5029",
+     "name": "Mailhub SMTP Creative"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $json.from }}",
+    "toEmail": "={{ $json.to }}",
+    "subject": "={{ $json.subject }}",
+    "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+    "text": "={{ $json.text }}",
+    "html": "={{ $json.html }}",
+    "options": {
+     "appendAttribution": false,
+     "attachments": "={{ $json.__attachmentKeys || undefined }}",
+     "replyTo": "={{ $json.from }}"
+    }
+   },
+   "id": "477d6e8a-055d-49de-982a-ea883d6bf874",
+   "name": "SMTP Send DPO",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    12720,
+    3904
+   ],
+   "webhookId": "04041a81-6cae-455c-9f1e-2c3369af72bc",
+   "credentials": {
+    "smtp": {
+     "id": "f5105d24e89c9ab7",
+     "name": "Mailhub SMTP DPO"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $json.from }}",
+    "toEmail": "={{ $json.to }}",
+    "subject": "={{ $json.subject }}",
+    "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+    "text": "={{ $json.text }}",
+    "html": "={{ $json.html }}",
+    "options": {
+     "appendAttribution": false,
+     "attachments": "={{ $json.__attachmentKeys || undefined }}",
+     "replyTo": "={{ $json.from }}"
+    }
+   },
+   "id": "4d9ed6c7-6eb6-4f9c-80e5-deb91c74e9f5",
+   "name": "SMTP Send Web Design",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    12720,
+    4080
+   ],
+   "webhookId": "d87f7a69-7fa8-47ec-ba40-ae1730f278f6",
+   "credentials": {
+    "smtp": {
+     "id": "yL8KEtqtZrGntZ9q",
+     "name": "Mailhub SMTP Web-Designer"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "numberInputs": 11
+   },
+   "id": "635f40a0-afa5-4f6b-b247-3639c9b5bd0b",
+   "name": "Merge Sent",
+   "type": "n8n-nodes-base.merge",
+   "typeVersion": 3,
+   "position": [
+    13040,
+    3376
+   ]
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify({ ok: true, from: $json.from, to: $json.to, subject: $json.subject, messageId: $json.messageId || null }) }}",
+    "options": {
+     "responseCode": 200
+    }
+   },
+   "id": "741ff2db-61e3-4507-8e2b-c9658be3c0a6",
+   "name": "Respond OK",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    13520,
+    3376
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Webhook-Felder aus Validate Request (vor SMTP Send, sonst überschrieben)\nconst req = $('Validate Request').first().json;\n// SMTP-Response aus aktuellem Item\nconst smtp = $input.first().json;\n\nconst now = new Date();\nconst pad = (n) => String(n).padStart(2, '0');\nconst ts = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;\n\nconst from = String(req.from || '?');\nconst to = String(req.to || '?');\nconst cc = String(req.cc || '').trim();\nconst subject = String(req.subject || '(ohne Betreff)').replace(/[\\r\\n]+/g, ' ').slice(0, 200);\nconst messageId = String(smtp.messageId || (smtp.envelope && smtp.envelope.messageId) || '');\nconst ccPart = cc ? ` (cc: \\`${cc}\\`)` : '';\n\nconst line = `- **${ts}** \\`${from}\\` → \\`${to}\\`${ccPart} · *${subject}* · msgId \\`${messageId}\\`\\n`;\n\nreturn [{\n  json: { ...smtp, logLine: line },\n  binary: {\n    data: {\n      data: Buffer.from(line, 'utf8').toString('base64'),\n      mimeType: 'text/markdown; charset=utf-8',\n      fileExtension: 'md',\n      fileName: 'Mailhub-Outbound-Log.md',\n    },\n  },\n}];\n"
+   },
+   "id": "e1fd4c27-e25b-4a90-b330-586764600664",
+   "name": "Build Log Line",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    13280,
+    3376
+   ]
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $json.from }}",
+    "toEmail": "={{ $json.to }}",
+    "subject": "={{ $json.subject }}",
+    "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+    "text": "={{ $json.text }}",
+    "html": "={{ $json.html }}",
+    "options": {
+     "appendAttribution": false,
+     "attachments": "={{ $json.__attachmentKeys || undefined }}",
+     "replyTo": "={{ $json.from }}"
+    }
+   },
+   "id": "cd4ea908-7a9b-488d-8049-3e9e5c97c3fa",
+   "name": "SMTP Send Health",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    12720,
+    4272
+   ],
+   "webhookId": "8f0436e2-9ab9-4a4f-aceb-5376e347c22b",
+   "credentials": {
+    "smtp": {
+     "id": "YhpKMzRNxGqBRc9h",
+     "name": "Mailhub SMTP Health"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "operation": "write",
+    "fileName": "/Users/walterschoenenbroecher.de/Obsidian/WHITESTAG-Vault/Paperclip/_Meta/Mailhub-Outbound-Log.md",
+    "options": {
+     "append": true
+    }
+   },
+   "id": "10e3504d-59f4-4048-a11c-e5ae4bf7a826",
+   "name": "Append Log to Markdown",
+   "type": "n8n-nodes-base.readWriteFile",
+   "typeVersion": 1,
+   "position": [
+    13504,
+    3376
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "const items = $input.all();\nreturn items.map(item => {\n  const json = item.json;\n  const list = Array.isArray(json.attachments) ? json.attachments : [];\n  const binary = {};\n  list.forEach((att, i) => {\n    binary[`attachment_${i}`] = {\n      data: att.content,\n      mimeType: att.mimeType || 'application/octet-stream',\n      fileName: att.filename,\n      ...(att.cid ? { contentId: att.cid } : {}),\n    };\n  });\n  json.__attachmentKeys = list.length > 0 ? list.map((_, i) => `attachment_${i}`).join(',') : '';\n  return { json, binary };\n});"
+   },
+   "id": "6c9ee5bb-c5bf-40ef-9a7b-cd5d9ad65b3f",
+   "name": "Build Binary Attachments",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    12272,
+    3376
+   ]
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $json.from }}",
+    "toEmail": "={{ $json.to }}",
+    "subject": "={{ $json.subject }}",
+    "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+    "text": "={{ $json.text }}",
+    "html": "={{ $json.html }}",
+    "options": {
+     "appendAttribution": false,
+     "attachments": "={{ $json.__attachmentKeys || undefined }}",
+     "replyTo": "={{ $json.replyTo || $json.from }}"
+    }
+   },
+   "id": "dcee0570-4cfe-4bde-a8b8-423b9514447c",
+   "name": "SMTP Send Office",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    12720,
+    4480
+   ],
+   "webhookId": "8f0436e2-9ab9-4a4f-aceb-5376e347c22b",
+   "credentials": {
+    "smtp": {
+     "id": "YpS9r1bvapPDX8SC",
+     "name": "Mailhub SMTP office"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $json.from }}",
+    "toEmail": "={{ $json.to }}",
+    "subject": "={{ $json.subject }}",
+    "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+    "text": "={{ $json.text }}",
+    "html": "={{ $json.html }}",
+    "options": {
+     "appendAttribution": false,
+     "attachments": "={{ $json.__attachmentKeys || undefined }}",
+     "replyTo": "={{ $json.from }}"
+    }
+   },
+   "id": "c1343cfe-a000-4154-8fdb-6648ce8c52f2",
+   "name": "SMTP Send Clara CEO",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    12720,
+    4704
+   ],
+   "webhookId": "dc2f2bb9-1707-4430-b2ff-54106fb3252a",
+   "credentials": {
+    "smtp": {
+     "id": "ox3jL7QpUEtZTrNi",
+     "name": "Mailhub SMTP CEO Clara Sound"
+    }
+   }
+  }
+ ],
+ "connections": {
+  "Webhook": {
+   "main": [
+    [
+     {
+      "node": "Validate Request",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Validate Request": {
+   "main": [
+    [
+     {
+      "node": "Validation Error?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Validation Error?": {
+   "main": [
+    [
+     {
+      "node": "Respond Error",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Build Binary Attachments",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Switch by Sender": {
+   "main": [
+    [
+     {
+      "node": "SMTP Send CEO",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "SMTP Send CMO",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "SMTP Send CTO",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "SMTP Send CPO",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "SMTP Send CRO",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "SMTP Send Creative",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "SMTP Send DPO",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "SMTP Send Web Design",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "SMTP Send Health",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "SMTP Send Office",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "SMTP Send Clara CEO",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "SMTP Send CEO": {
+   "main": [
+    [
+     {
+      "node": "Merge Sent",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "SMTP Send CMO": {
+   "main": [
+    [
+     {
+      "node": "Merge Sent",
+      "type": "main",
+      "index": 1
+     }
+    ]
+   ]
+  },
+  "SMTP Send CTO": {
+   "main": [
+    [
+     {
+      "node": "Merge Sent",
+      "type": "main",
+      "index": 2
+     }
+    ]
+   ]
+  },
+  "SMTP Send CPO": {
+   "main": [
+    [
+     {
+      "node": "Merge Sent",
+      "type": "main",
+      "index": 3
+     }
+    ]
+   ]
+  },
+  "SMTP Send CRO": {
+   "main": [
+    [
+     {
+      "node": "Merge Sent",
+      "type": "main",
+      "index": 4
+     }
+    ]
+   ]
+  },
+  "SMTP Send Creative": {
+   "main": [
+    [
+     {
+      "node": "Merge Sent",
+      "type": "main",
+      "index": 5
+     }
+    ]
+   ]
+  },
+  "SMTP Send DPO": {
+   "main": [
+    [
+     {
+      "node": "Merge Sent",
+      "type": "main",
+      "index": 6
+     }
+    ]
+   ]
+  },
+  "SMTP Send Web Design": {
+   "main": [
+    [
+     {
+      "node": "Merge Sent",
+      "type": "main",
+      "index": 7
+     }
+    ]
+   ]
+  },
+  "SMTP Send Health": {
+   "main": [
+    [
+     {
+      "node": "Merge Sent",
+      "type": "main",
+      "index": 8
+     }
+    ]
+   ]
+  },
+  "Build Log Line": {
+   "main": [
+    [
+     {
+      "node": "Append Log to Markdown",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Append Log to Markdown": {
+   "main": [
+    [
+     {
+      "node": "Respond OK",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build Binary Attachments": {
+   "main": [
+    [
+     {
+      "node": "Switch by Sender",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Merge Sent": {
+   "main": [
+    [
+     {
+      "node": "Build Log Line",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "SMTP Send Office": {
+   "main": [
+    [
+     {
+      "node": "Merge Sent",
+      "type": "main",
+      "index": 9
+     }
+    ]
+   ]
+  },
+  "SMTP Send Clara CEO": {
+   "main": [
+    [
+     {
+      "node": "Merge Sent",
+      "type": "main",
+      "index": 10
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "binaryMode": "separate"
+ },
+ "staticData": null,
+ "meta": null,
+ "nodeGroups": [],
+ "pinData": null,
+ "versionId": "cb32511f-b10f-413b-90d1-cb3a1a665cbe",
+ "activeVersionId": "cb32511f-b10f-413b-90d1-cb3a1a665cbe",
+ "versionCounter": 2,
+ "triggerCount": 1,
+ "sourceWorkflowId": null,
+ "shared": [
+  {
+   "updatedAt": "2026-07-22T13:06:02.823Z",
+   "createdAt": "2026-07-22T13:06:02.823Z",
+   "role": "workflow:owner",
+   "workflowId": "BXHc5kdNdZQNiuMr",
+   "projectId": "uz0H4zWAoQRyQ8Se",
+   "project": {
+    "updatedAt": "2026-04-26T16:22:27.677Z",
+    "createdAt": "2025-05-04T12:54:39.493Z",
+    "id": "uz0H4zWAoQRyQ8Se",
+    "name": "Walter Schönenbröcher <ws@whitestag.ai>",
+    "type": "personal",
+    "icon": null,
+    "description": null,
+    "customTelemetryTags": [],
+    "creatorId": "6e9bbf01-8fa7-4f03-b232-90ed25d20657"
+   }
+  }
+ ],
+ "tags": [],
+ "activeVersion": {
+  "updatedAt": "2026-07-22T13:06:02.824Z",
+  "createdAt": "2026-07-22T13:06:02.824Z",
+  "versionId": "cb32511f-b10f-413b-90d1-cb3a1a665cbe",
+  "workflowId": "BXHc5kdNdZQNiuMr",
+  "nodes": [
+   {
+    "parameters": {
+     "httpMethod": "POST",
+     "path": "mailhub/send",
+     "authentication": "headerAuth",
+     "responseMode": "responseNode",
+     "options": {}
+    },
+    "id": "81da4c45-7c17-453d-ad2b-1b20b580b98b",
+    "name": "Webhook",
+    "type": "n8n-nodes-base.webhook",
+    "typeVersion": 2,
+    "position": [
+     11680,
+     3152
+    ],
+    "webhookId": "smtp-relay-send-mail",
+    "credentials": {
+     "httpHeaderAuth": {
+      "id": "ff80c9a87a99225b",
+      "name": "Mailhub Webhook Secret"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "jsCode": "\n// Validate request and normalize fields.\n// Webhook auth (X-Mailhub-Secret) ist bereits durch Webhook-Node geprueft.\n\nconst input = $input.first().json;\nconst body = input.body || input;\n\nconst ALLOWED_FROM = [\n  'ceo@whitestag.ai',\n  'cmo@whitestag.ai',\n  'cto@whitestag.ai',\n  'cpo@whitestag.ai',\n  'cro@whitestag.ai',\n  'creative@whitestag.ai',\n  'dpo@whitestag.ai',\n  'webdesign@whitestag.ai',\n  'health@whitestag.ai',\n  'office@whitestag.ai',\n  'paperclip@clara-werden.de',\n];\n\nfunction reject(message) {\n  return [{ json: { __invalid: true, errorMessage: message } }];\n}\n\nconst from = String(body.from || '').trim().toLowerCase();\nconst to = String(body.to || '').trim();\nconst subject = String(body.subject || '').trim();\nconst text = body.text != null ? String(body.text) : '';\nlet html = body.html != null ? String(body.html) : '';\nconst cc = body.cc != null ? String(body.cc) : '';\nconst inReplyTo = body.inReplyTo != null ? String(body.inReplyTo) : '';\n\nif (!ALLOWED_FROM.includes(from)) {\n  return reject('Unauthorized from-address: ' + (from || '(empty)'));\n}\nif (!to) return reject('Missing required field: to');\nif (!subject) return reject('Missing required field: subject');\nif (!text && !html) return reject('Missing required field: text (or html)');\n\n// --- Aussen-Sperre (Agenten-Guard) ---------------------------------------\n// Kein Paperclip-Agent sendet ohne Freigabe an einen echten externen Empfaenger.\n// office@ (Luna, Phase 2) am strengsten: NUR ws@whitestag.ai.\n// Alle anderen Agenten: nur interne Ziele (whitestag.*, sorbART, Clara) + Walter.\nconst INTERNAL_DOMAINS = ['whitestag.ai','whitestag.de','whitestag.film','sorbart.de','sorbart.shop','clara-werden.de','clara-sound.de'];\n// Walter wird ausschliesslich ueber ws@whitestag.ai erreicht (gmail + schoenenbroecher.de gestrichen 2026-07-22).\nfunction _isInternalTarget(addr) {\n  const dom = (String(addr).toLowerCase().split('@')[1] || '');\n  return INTERNAL_DOMAINS.includes(dom);\n}\n{\n  const combined = [to, cc].filter(Boolean).join(',');\n  const addrs = (combined.match(/[\\w.+-]+@[\\w.-]+\\.\\w+/g) || []).map(a => a.toLowerCase());\n  if (from === 'office@whitestag.ai') {\n    const APPROVAL_SECRET = 'luna-approval-b482e1347a3aa8e0ef8aa5765d8b13bd';\n    const approval = String(body.approval || '').trim();\n    const onlyWalter = addrs.length > 0 && addrs.every(a => a === 'ws@whitestag.ai');\n    const approved = approval.length > 0 && approval === APPROVAL_SECRET;\n    if (!onlyWalter && !approved) return reject('Phase-3-Gate: office@ (Luna) an Externe nur mit gueltiger Freigabe. Blockiert: to=' + to + (cc ? ' cc=' + cc : ''));\n  } else {\n    const ext = addrs.filter(a => !_isInternalTarget(a));\n    if (ext.length) return reject('Aussen-Sperre: Agenten duerfen ohne Freigabe nicht an externe Empfaenger senden. Blockiert: ' + ext.join(', '));\n  }\n}\n\n\n// Optional attachments: Array von { filename, content (base64), mimeType? }\nconst rawAttachments = Array.isArray(body.attachments) ? body.attachments : [];\nconst attachments = [];\nfor (const [i, a] of rawAttachments.entries()) {\n  if (!a || typeof a !== 'object') return reject(`Attachment #${i}: not an object`);\n  const filename = String(a.filename || '').trim();\n  const content = String(a.content || '').trim();\n  if (!filename) return reject(`Attachment #${i}: missing filename`);\n  if (!content) return reject(`Attachment #${i}: missing content (base64)`);\n  const mimeType = String(a.mimeType || 'application/octet-stream');\n  const cid = a.cid ? String(a.cid).trim() : '';\n  attachments.push({ filename, content, mimeType, ...(cid ? {cid} : {}) });\n}\n\n// --- Auto-HTML: wenn kein html geliefert wurde, aus markdown text aufbauen ----\n// Konsistent zum lib/build_walter_mail_html.py Layout (eine \"Bericht\"-Sektion).\nfunction escapeHtml(s) {\n  return String(s)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction stripFrontmatter(md) {\n  return md.replace(/^---\\n[\\s\\S]*?\\n---\\n+/, '');\n}\n\nfunction mdToHtml(md) {\n  if (!md) return '';\n  md = stripFrontmatter(md);\n\n  // Fenced code blocks first (extract & placeholder)\n  const codeBlocks = [];\n  md = md.replace(/```([a-zA-Z0-9_-]*)\\n([\\s\\S]*?)```/g, (m, lang, code) => {\n    const i = codeBlocks.length;\n    codeBlocks.push(`<pre style=\"background:#f6f8fa;padding:12px;border-radius:4px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;\"><code>${escapeHtml(code)}</code></pre>`);\n    return `@@CODEBLOCK${i}@@`;\n  });\n\n  const lines = md.split('\\n');\n  const out = [];\n  let inList = null; // 'ul' | 'ol' | null\n  let para = [];\n\n  function flushPara() {\n    if (para.length) {\n      out.push(`<p style=\"margin:8px 0;\">${inlineMd(para.join(' '))}</p>`);\n      para = [];\n    }\n  }\n  function closeList() {\n    if (inList) { out.push(`</${inList}>`); inList = null; }\n  }\n\n  function inlineMd(s) {\n    s = escapeHtml(s);\n    // links [text](url)\n    s = s.replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, '<a href=\"$2\" style=\"color:#0066cc;text-decoration:none;\">$1</a>');\n    // bold **x** / __x__\n    s = s.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');\n    s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');\n    // italic *x* / _x_\n    s = s.replace(/(^|[\\s(])\\*([^*\\n]+)\\*/g, '$1<em>$2</em>');\n    s = s.replace(/(^|[\\s(])_([^_\\n]+)_/g, '$1<em>$2</em>');\n    // inline code `x`\n    s = s.replace(/`([^`]+)`/g, '<code style=\"background:#f6f8fa;padding:1px 4px;border-radius:3px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;\">$1</code>');\n    // restore code-block placeholders\n    s = s.replace(/@@CODEBLOCK(\\d+)@@/g, (_, i) => codeBlocks[Number(i)]);\n    return s;\n  }\n\n  for (const raw of lines) {\n    const line = raw.replace(/\\s+$/, '');\n\n    if (!line.trim()) { flushPara(); continue; } // blank lines inside a list don't close it (loose-list handling)\n\n    // headings\n    const h = line.match(/^(#{1,6})\\s+(.*)$/);\n    if (h) {\n      flushPara(); closeList();\n      const lvl = h[1].length;\n      const size = [22, 18, 16, 15, 14, 14][lvl - 1];\n      const margin = lvl <= 2 ? '24px 0 8px 0' : '16px 0 6px 0';\n      const border = lvl === 2 ? 'border-bottom:1px solid #eee;padding-bottom:4px;' : '';\n      out.push(`<h${lvl} style=\"font-size:${size}px;margin:${margin};color:#${lvl<=2?'333':'555'};${border}\">${inlineMd(h[2])}</h${lvl}>`);\n      continue;\n    }\n\n    // unordered list\n    const ul = line.match(/^[-*+]\\s+(.*)$/);\n    if (ul) {\n      flushPara();\n      if (inList !== 'ul') { closeList(); out.push('<ul style=\"margin:8px 0;padding-left:24px;\">'); inList = 'ul'; }\n      out.push(`<li style=\"margin:2px 0;\">${inlineMd(ul[1])}</li>`);\n      continue;\n    }\n    // ordered list\n    const ol = line.match(/^\\d+\\.\\s+(.*)$/);\n    if (ol) {\n      flushPara();\n      if (inList !== 'ol') { closeList(); out.push('<ol style=\"margin:8px 0;padding-left:24px;\">'); inList = 'ol'; }\n      out.push(`<li style=\"margin:2px 0;\">${inlineMd(ol[1])}</li>`);\n      continue;\n    }\n\n    // code-block placeholder on its own line\n    if (/^@@CODEBLOCK\\d+@@$/.test(line)) {\n      flushPara(); closeList();\n      out.push(inlineMd(line));\n      continue;\n    }\n\n    // paragraph accumulator\n    closeList();\n    para.push(line);\n  }\n  flushPara(); closeList();\n\n  return out.join('\\n');\n}\n\nif (!html && text) {\n  const agentLabel = from.split('@')[0].toUpperCase();\n  const bodyHtml = mdToHtml(text);\n  html = [\n    '<!DOCTYPE html>',\n    '<html><head><meta charset=\"utf-8\"></head>',\n    '<body style=\"font-family:-apple-system,BlinkMacSystemFont,\\'Segoe UI\\',Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#222;max-width:780px;margin:0 auto;padding:20px;\">',\n    `<h1 style=\"font-size:22px;margin:0 0 4px 0;color:#111;\">\\u{1F4EC} ${escapeHtml(subject)}</h1>`,\n    `<div style=\"color:#888;font-size:13px;margin-bottom:24px;\">${escapeHtml(agentLabel)} · ${escapeHtml(from)}</div>`,\n    '<h2 style=\"font-size:16px;margin:24px 0 8px 0;color:#444;border-bottom:1px solid #eee;padding-bottom:4px;\">\\u{1F4CB} Inhalt</h2>',\n    `<div style=\"margin-bottom:8px;\">${bodyHtml}</div>`,\n    '</body></html>',\n  ].join('\\n');\n}\n\n// agentKey for Switch routing (lowercased local part)\nconst agentKey = from.split('@')[0];\n\nreturn [{\n  json: {\n    __invalid: false,\n    agentKey,\n    from,\n    to,\n    subject,\n    text,\n    html,\n    cc,\n    inReplyTo,\n    attachments,\n  }\n}];\n"
+    },
+    "id": "55759c6d-4020-42b5-a74a-4ef272f6172b",
+    "name": "Validate Request",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+     11920,
+     3152
+    ]
+   },
+   {
+    "parameters": {
+     "conditions": {
+      "options": {
+       "caseSensitive": true,
+       "leftValue": "",
+       "typeValidation": "strict",
+       "version": 2
+      },
+      "combinator": "and",
+      "conditions": [
+       {
+        "id": "is-valid",
+        "leftValue": "={{ $json.__invalid }}",
+        "rightValue": true,
+        "operator": {
+         "type": "boolean",
+         "operation": "true",
+         "singleValue": true
+        }
+       }
+      ]
+     },
+     "options": {}
+    },
+    "id": "94cb2e83-5c1e-49e6-80b6-b9f587468bc7",
+    "name": "Validation Error?",
+    "type": "n8n-nodes-base.if",
+    "typeVersion": 2.2,
+    "position": [
+     12160,
+     3152
+    ]
+   },
+   {
+    "parameters": {
+     "respondWith": "json",
+     "responseBody": "={{ JSON.stringify({ ok: false, error: $json.errorMessage }) }}",
+     "options": {
+      "responseCode": 400
+     }
+    },
+    "id": "afd51a6b-273d-472f-97ab-8c00fef0bc69",
+    "name": "Respond Error",
+    "type": "n8n-nodes-base.respondToWebhook",
+    "typeVersion": 1.1,
+    "position": [
+     12400,
+     2928
+    ]
+   },
+   {
+    "parameters": {
+     "rules": {
+      "values": [
+       {
+        "conditions": {
+         "options": {
+          "caseSensitive": true,
+          "leftValue": "",
+          "typeValidation": "strict",
+          "version": 2
+         },
+         "combinator": "and",
+         "conditions": [
+          {
+           "id": "r-ceo",
+           "leftValue": "={{ $json.agentKey }}",
+           "rightValue": "ceo",
+           "operator": {
+            "type": "string",
+            "operation": "equals"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "conditions": {
+         "options": {
+          "caseSensitive": true,
+          "leftValue": "",
+          "typeValidation": "strict",
+          "version": 2
+         },
+         "combinator": "and",
+         "conditions": [
+          {
+           "id": "r-cmo",
+           "leftValue": "={{ $json.agentKey }}",
+           "rightValue": "cmo",
+           "operator": {
+            "type": "string",
+            "operation": "equals"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "conditions": {
+         "options": {
+          "caseSensitive": true,
+          "leftValue": "",
+          "typeValidation": "strict",
+          "version": 2
+         },
+         "combinator": "and",
+         "conditions": [
+          {
+           "id": "r-cto",
+           "leftValue": "={{ $json.agentKey }}",
+           "rightValue": "cto",
+           "operator": {
+            "type": "string",
+            "operation": "equals"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "conditions": {
+         "options": {
+          "caseSensitive": true,
+          "leftValue": "",
+          "typeValidation": "strict",
+          "version": 2
+         },
+         "combinator": "and",
+         "conditions": [
+          {
+           "id": "r-cpo",
+           "leftValue": "={{ $json.agentKey }}",
+           "rightValue": "cpo",
+           "operator": {
+            "type": "string",
+            "operation": "equals"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "conditions": {
+         "options": {
+          "caseSensitive": true,
+          "leftValue": "",
+          "typeValidation": "strict",
+          "version": 2
+         },
+         "combinator": "and",
+         "conditions": [
+          {
+           "id": "r-cro",
+           "leftValue": "={{ $json.agentKey }}",
+           "rightValue": "cro",
+           "operator": {
+            "type": "string",
+            "operation": "equals"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "conditions": {
+         "options": {
+          "caseSensitive": true,
+          "leftValue": "",
+          "typeValidation": "strict",
+          "version": 2
+         },
+         "combinator": "and",
+         "conditions": [
+          {
+           "id": "r-creative",
+           "leftValue": "={{ $json.agentKey }}",
+           "rightValue": "creative",
+           "operator": {
+            "type": "string",
+            "operation": "equals"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "conditions": {
+         "options": {
+          "caseSensitive": true,
+          "leftValue": "",
+          "typeValidation": "strict",
+          "version": 2
+         },
+         "combinator": "and",
+         "conditions": [
+          {
+           "id": "r-dpo",
+           "leftValue": "={{ $json.agentKey }}",
+           "rightValue": "dpo",
+           "operator": {
+            "type": "string",
+            "operation": "equals"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "conditions": {
+         "options": {
+          "caseSensitive": true,
+          "leftValue": "",
+          "typeValidation": "strict",
+          "version": 2
+         },
+         "combinator": "and",
+         "conditions": [
+          {
+           "id": "r-webdesign",
+           "leftValue": "={{ $json.agentKey }}",
+           "rightValue": "webdesign",
+           "operator": {
+            "type": "string",
+            "operation": "equals"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "conditions": {
+         "options": {
+          "caseSensitive": true,
+          "leftValue": "",
+          "typeValidation": "strict",
+          "version": 2
+         },
+         "combinator": "and",
+         "conditions": [
+          {
+           "id": "r-health",
+           "leftValue": "={{ $json.agentKey }}",
+           "rightValue": "health",
+           "operator": {
+            "type": "string",
+            "operation": "equals"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "conditions": {
+         "options": {
+          "caseSensitive": true,
+          "leftValue": "",
+          "typeValidation": "strict",
+          "version": 2
+         },
+         "combinator": "and",
+         "conditions": [
+          {
+           "id": "r-office",
+           "leftValue": "={{ $json.agentKey }}",
+           "rightValue": "office",
+           "operator": {
+            "type": "string",
+            "operation": "equals"
+           }
+          }
+         ]
+        }
+       },
+       {
+        "conditions": {
+         "options": {
+          "caseSensitive": true,
+          "leftValue": "",
+          "typeValidation": "strict",
+          "version": 2
+         },
+         "combinator": "and",
+         "conditions": [
+          {
+           "id": "r-clara-ceo",
+           "leftValue": "={{ $json.from }}",
+           "rightValue": "paperclip@clara-werden.de",
+           "operator": {
+            "type": "string",
+            "operation": "equals"
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "options": {}
+    },
+    "id": "2fd997ba-7af2-4c8f-9495-0d5eaaeb272b",
+    "name": "Switch by Sender",
+    "type": "n8n-nodes-base.switch",
+    "typeVersion": 3.2,
+    "position": [
+     12400,
+     3376
+    ]
+   },
+   {
+    "parameters": {
+     "fromEmail": "={{ $json.from }}",
+     "toEmail": "={{ $json.to }}",
+     "subject": "={{ $json.subject }}",
+     "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+     "text": "={{ $json.text }}",
+     "html": "={{ $json.html }}",
+     "options": {
+      "appendAttribution": false,
+      "attachments": "={{ $json.__attachmentKeys || undefined }}",
+      "replyTo": "={{ $json.from }}"
+     }
+    },
+    "id": "42fb5bcb-a480-440f-b616-7193b05072c5",
+    "name": "SMTP Send CEO",
+    "type": "n8n-nodes-base.emailSend",
+    "typeVersion": 2.1,
+    "position": [
+     12720,
+     2848
+    ],
+    "webhookId": "8f0436e2-9ab9-4a4f-aceb-5376e347c22b",
+    "credentials": {
+     "smtp": {
+      "id": "ce33367a78fd175c",
+      "name": "Mailhub SMTP CEO"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "fromEmail": "={{ $json.from }}",
+     "toEmail": "={{ $json.to }}",
+     "subject": "={{ $json.subject }}",
+     "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+     "text": "={{ $json.text }}",
+     "html": "={{ $json.html }}",
+     "options": {
+      "appendAttribution": false,
+      "attachments": "={{ $json.__attachmentKeys || undefined }}",
+      "replyTo": "={{ $json.from }}"
+     }
+    },
+    "id": "8cdef1b6-f551-45f1-94cb-e3ed036243a3",
+    "name": "SMTP Send CMO",
+    "type": "n8n-nodes-base.emailSend",
+    "typeVersion": 2.1,
+    "position": [
+     12720,
+     3024
+    ],
+    "webhookId": "adb88d9a-8a4d-4366-8b81-7be0f9e8bcd1",
+    "credentials": {
+     "smtp": {
+      "id": "8dd82c4cf1f8d887",
+      "name": "Mailhub SMTP CMO"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "fromEmail": "={{ $json.from }}",
+     "toEmail": "={{ $json.to }}",
+     "subject": "={{ $json.subject }}",
+     "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+     "text": "={{ $json.text }}",
+     "html": "={{ $json.html }}",
+     "options": {
+      "appendAttribution": false,
+      "attachments": "={{ $json.__attachmentKeys || undefined }}",
+      "replyTo": "={{ $json.from }}"
+     }
+    },
+    "id": "1462e370-71c9-413c-9cc3-896ecdcec960",
+    "name": "SMTP Send CTO",
+    "type": "n8n-nodes-base.emailSend",
+    "typeVersion": 2.1,
+    "position": [
+     12720,
+     3200
+    ],
+    "webhookId": "c1db9297-7833-44d4-abee-1f98fd7bfe4c",
+    "credentials": {
+     "smtp": {
+      "id": "8c3383ab57dee46f",
+      "name": "Mailhub SMTP CTO"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "fromEmail": "={{ $json.from }}",
+     "toEmail": "={{ $json.to }}",
+     "subject": "={{ $json.subject }}",
+     "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+     "text": "={{ $json.text }}",
+     "html": "={{ $json.html }}",
+     "options": {
+      "appendAttribution": false,
+      "attachments": "={{ $json.__attachmentKeys || undefined }}",
+      "replyTo": "={{ $json.from }}"
+     }
+    },
+    "id": "66adfb17-5d3b-4442-9f08-7f0b944817c8",
+    "name": "SMTP Send CPO",
+    "type": "n8n-nodes-base.emailSend",
+    "typeVersion": 2.1,
+    "position": [
+     12720,
+     3376
+    ],
+    "webhookId": "bd3f512b-8655-492b-af3c-3ee73c2885ac",
+    "credentials": {
+     "smtp": {
+      "id": "3e95692695f74a9c",
+      "name": "Mailhub SMTP CPO"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "fromEmail": "={{ $json.from }}",
+     "toEmail": "={{ $json.to }}",
+     "subject": "={{ $json.subject }}",
+     "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+     "text": "={{ $json.text }}",
+     "html": "={{ $json.html }}",
+     "options": {
+      "appendAttribution": false,
+      "attachments": "={{ $json.__attachmentKeys || undefined }}",
+      "replyTo": "={{ $json.from }}"
+     }
+    },
+    "id": "6d9a2192-9031-4aee-8723-d544d26cb46f",
+    "name": "SMTP Send CRO",
+    "type": "n8n-nodes-base.emailSend",
+    "typeVersion": 2.1,
+    "position": [
+     12720,
+     3552
+    ],
+    "webhookId": "c17886ee-d27a-4786-97f7-6e156b5a5055",
+    "credentials": {
+     "smtp": {
+      "id": "e36beae2a64d10f0",
+      "name": "Mailhub SMTP CRO"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "fromEmail": "={{ $json.from }}",
+     "toEmail": "={{ $json.to }}",
+     "subject": "={{ $json.subject }}",
+     "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+     "text": "={{ $json.text }}",
+     "html": "={{ $json.html }}",
+     "options": {
+      "appendAttribution": false,
+      "attachments": "={{ $json.__attachmentKeys || undefined }}",
+      "replyTo": "={{ $json.from }}"
+     }
+    },
+    "id": "e0a17a1d-6d91-474d-8b0e-48f55378b9fb",
+    "name": "SMTP Send Creative",
+    "type": "n8n-nodes-base.emailSend",
+    "typeVersion": 2.1,
+    "position": [
+     12720,
+     3728
+    ],
+    "webhookId": "4d3fe894-a03b-4a67-b6b7-d6e231691c87",
+    "credentials": {
+     "smtp": {
+      "id": "2a5fee336c8d5029",
+      "name": "Mailhub SMTP Creative"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "fromEmail": "={{ $json.from }}",
+     "toEmail": "={{ $json.to }}",
+     "subject": "={{ $json.subject }}",
+     "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+     "text": "={{ $json.text }}",
+     "html": "={{ $json.html }}",
+     "options": {
+      "appendAttribution": false,
+      "attachments": "={{ $json.__attachmentKeys || undefined }}",
+      "replyTo": "={{ $json.from }}"
+     }
+    },
+    "id": "477d6e8a-055d-49de-982a-ea883d6bf874",
+    "name": "SMTP Send DPO",
+    "type": "n8n-nodes-base.emailSend",
+    "typeVersion": 2.1,
+    "position": [
+     12720,
+     3904
+    ],
+    "webhookId": "04041a81-6cae-455c-9f1e-2c3369af72bc",
+    "credentials": {
+     "smtp": {
+      "id": "f5105d24e89c9ab7",
+      "name": "Mailhub SMTP DPO"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "fromEmail": "={{ $json.from }}",
+     "toEmail": "={{ $json.to }}",
+     "subject": "={{ $json.subject }}",
+     "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+     "text": "={{ $json.text }}",
+     "html": "={{ $json.html }}",
+     "options": {
+      "appendAttribution": false,
+      "attachments": "={{ $json.__attachmentKeys || undefined }}",
+      "replyTo": "={{ $json.from }}"
+     }
+    },
+    "id": "4d9ed6c7-6eb6-4f9c-80e5-deb91c74e9f5",
+    "name": "SMTP Send Web Design",
+    "type": "n8n-nodes-base.emailSend",
+    "typeVersion": 2.1,
+    "position": [
+     12720,
+     4080
+    ],
+    "webhookId": "d87f7a69-7fa8-47ec-ba40-ae1730f278f6",
+    "credentials": {
+     "smtp": {
+      "id": "yL8KEtqtZrGntZ9q",
+      "name": "Mailhub SMTP Web-Designer"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "numberInputs": 11
+    },
+    "id": "635f40a0-afa5-4f6b-b247-3639c9b5bd0b",
+    "name": "Merge Sent",
+    "type": "n8n-nodes-base.merge",
+    "typeVersion": 3,
+    "position": [
+     13040,
+     3376
+    ]
+   },
+   {
+    "parameters": {
+     "respondWith": "json",
+     "responseBody": "={{ JSON.stringify({ ok: true, from: $json.from, to: $json.to, subject: $json.subject, messageId: $json.messageId || null }) }}",
+     "options": {
+      "responseCode": 200
+     }
+    },
+    "id": "741ff2db-61e3-4507-8e2b-c9658be3c0a6",
+    "name": "Respond OK",
+    "type": "n8n-nodes-base.respondToWebhook",
+    "typeVersion": 1.1,
+    "position": [
+     13520,
+     3376
+    ]
+   },
+   {
+    "parameters": {
+     "jsCode": "// Webhook-Felder aus Validate Request (vor SMTP Send, sonst überschrieben)\nconst req = $('Validate Request').first().json;\n// SMTP-Response aus aktuellem Item\nconst smtp = $input.first().json;\n\nconst now = new Date();\nconst pad = (n) => String(n).padStart(2, '0');\nconst ts = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;\n\nconst from = String(req.from || '?');\nconst to = String(req.to || '?');\nconst cc = String(req.cc || '').trim();\nconst subject = String(req.subject || '(ohne Betreff)').replace(/[\\r\\n]+/g, ' ').slice(0, 200);\nconst messageId = String(smtp.messageId || (smtp.envelope && smtp.envelope.messageId) || '');\nconst ccPart = cc ? ` (cc: \\`${cc}\\`)` : '';\n\nconst line = `- **${ts}** \\`${from}\\` → \\`${to}\\`${ccPart} · *${subject}* · msgId \\`${messageId}\\`\\n`;\n\nreturn [{\n  json: { ...smtp, logLine: line },\n  binary: {\n    data: {\n      data: Buffer.from(line, 'utf8').toString('base64'),\n      mimeType: 'text/markdown; charset=utf-8',\n      fileExtension: 'md',\n      fileName: 'Mailhub-Outbound-Log.md',\n    },\n  },\n}];\n"
+    },
+    "id": "e1fd4c27-e25b-4a90-b330-586764600664",
+    "name": "Build Log Line",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+     13280,
+     3376
+    ]
+   },
+   {
+    "parameters": {
+     "fromEmail": "={{ $json.from }}",
+     "toEmail": "={{ $json.to }}",
+     "subject": "={{ $json.subject }}",
+     "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+     "text": "={{ $json.text }}",
+     "html": "={{ $json.html }}",
+     "options": {
+      "appendAttribution": false,
+      "attachments": "={{ $json.__attachmentKeys || undefined }}",
+      "replyTo": "={{ $json.from }}"
+     }
+    },
+    "id": "cd4ea908-7a9b-488d-8049-3e9e5c97c3fa",
+    "name": "SMTP Send Health",
+    "type": "n8n-nodes-base.emailSend",
+    "typeVersion": 2.1,
+    "position": [
+     12720,
+     4272
+    ],
+    "webhookId": "8f0436e2-9ab9-4a4f-aceb-5376e347c22b",
+    "credentials": {
+     "smtp": {
+      "id": "YhpKMzRNxGqBRc9h",
+      "name": "Mailhub SMTP Health"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "operation": "write",
+     "fileName": "/Users/walterschoenenbroecher.de/Obsidian/WHITESTAG-Vault/Paperclip/_Meta/Mailhub-Outbound-Log.md",
+     "options": {
+      "append": true
+     }
+    },
+    "id": "10e3504d-59f4-4048-a11c-e5ae4bf7a826",
+    "name": "Append Log to Markdown",
+    "type": "n8n-nodes-base.readWriteFile",
+    "typeVersion": 1,
+    "position": [
+     13504,
+     3376
+    ]
+   },
+   {
+    "parameters": {
+     "jsCode": "const items = $input.all();\nreturn items.map(item => {\n  const json = item.json;\n  const list = Array.isArray(json.attachments) ? json.attachments : [];\n  const binary = {};\n  list.forEach((att, i) => {\n    binary[`attachment_${i}`] = {\n      data: att.content,\n      mimeType: att.mimeType || 'application/octet-stream',\n      fileName: att.filename,\n      ...(att.cid ? { contentId: att.cid } : {}),\n    };\n  });\n  json.__attachmentKeys = list.length > 0 ? list.map((_, i) => `attachment_${i}`).join(',') : '';\n  return { json, binary };\n});"
+    },
+    "id": "6c9ee5bb-c5bf-40ef-9a7b-cd5d9ad65b3f",
+    "name": "Build Binary Attachments",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+     12272,
+     3376
+    ]
+   },
+   {
+    "parameters": {
+     "fromEmail": "={{ $json.from }}",
+     "toEmail": "={{ $json.to }}",
+     "subject": "={{ $json.subject }}",
+     "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+     "text": "={{ $json.text }}",
+     "html": "={{ $json.html }}",
+     "options": {
+      "appendAttribution": false,
+      "attachments": "={{ $json.__attachmentKeys || undefined }}",
+      "replyTo": "={{ $json.replyTo || $json.from }}"
+     }
+    },
+    "id": "dcee0570-4cfe-4bde-a8b8-423b9514447c",
+    "name": "SMTP Send Office",
+    "type": "n8n-nodes-base.emailSend",
+    "typeVersion": 2.1,
+    "position": [
+     12720,
+     4480
+    ],
+    "webhookId": "8f0436e2-9ab9-4a4f-aceb-5376e347c22b",
+    "credentials": {
+     "smtp": {
+      "id": "YpS9r1bvapPDX8SC",
+      "name": "Mailhub SMTP office"
+     }
+    }
+   },
+   {
+    "parameters": {
+     "fromEmail": "={{ $json.from }}",
+     "toEmail": "={{ $json.to }}",
+     "subject": "={{ $json.subject }}",
+     "emailFormat": "={{ $json.html ? 'both' : 'text' }}",
+     "text": "={{ $json.text }}",
+     "html": "={{ $json.html }}",
+     "options": {
+      "appendAttribution": false,
+      "attachments": "={{ $json.__attachmentKeys || undefined }}",
+      "replyTo": "={{ $json.from }}"
+     }
+    },
+    "id": "c1343cfe-a000-4154-8fdb-6648ce8c52f2",
+    "name": "SMTP Send Clara CEO",
+    "type": "n8n-nodes-base.emailSend",
+    "typeVersion": 2.1,
+    "position": [
+     12720,
+     4704
+    ],
+    "webhookId": "dc2f2bb9-1707-4430-b2ff-54106fb3252a",
+    "credentials": {
+     "smtp": {
+      "id": "ox3jL7QpUEtZTrNi",
+      "name": "Mailhub SMTP CEO Clara Sound"
+     }
+    }
+   }
+  ],
+  "connections": {
+   "Webhook": {
+    "main": [
+     [
+      {
+       "node": "Validate Request",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Validate Request": {
+    "main": [
+     [
+      {
+       "node": "Validation Error?",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Validation Error?": {
+    "main": [
+     [
+      {
+       "node": "Respond Error",
+       "type": "main",
+       "index": 0
+      }
+     ],
+     [
+      {
+       "node": "Build Binary Attachments",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Switch by Sender": {
+    "main": [
+     [
+      {
+       "node": "SMTP Send CEO",
+       "type": "main",
+       "index": 0
+      }
+     ],
+     [
+      {
+       "node": "SMTP Send CMO",
+       "type": "main",
+       "index": 0
+      }
+     ],
+     [
+      {
+       "node": "SMTP Send CTO",
+       "type": "main",
+       "index": 0
+      }
+     ],
+     [
+      {
+       "node": "SMTP Send CPO",
+       "type": "main",
+       "index": 0
+      }
+     ],
+     [
+      {
+       "node": "SMTP Send CRO",
+       "type": "main",
+       "index": 0
+      }
+     ],
+     [
+      {
+       "node": "SMTP Send Creative",
+       "type": "main",
+       "index": 0
+      }
+     ],
+     [
+      {
+       "node": "SMTP Send DPO",
+       "type": "main",
+       "index": 0
+      }
+     ],
+     [
+      {
+       "node": "SMTP Send Web Design",
+       "type": "main",
+       "index": 0
+      }
+     ],
+     [
+      {
+       "node": "SMTP Send Health",
+       "type": "main",
+       "index": 0
+      }
+     ],
+     [
+      {
+       "node": "SMTP Send Office",
+       "type": "main",
+       "index": 0
+      }
+     ],
+     [
+      {
+       "node": "SMTP Send Clara CEO",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "SMTP Send CEO": {
+    "main": [
+     [
+      {
+       "node": "Merge Sent",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "SMTP Send CMO": {
+    "main": [
+     [
+      {
+       "node": "Merge Sent",
+       "type": "main",
+       "index": 1
+      }
+     ]
+    ]
+   },
+   "SMTP Send CTO": {
+    "main": [
+     [
+      {
+       "node": "Merge Sent",
+       "type": "main",
+       "index": 2
+      }
+     ]
+    ]
+   },
+   "SMTP Send CPO": {
+    "main": [
+     [
+      {
+       "node": "Merge Sent",
+       "type": "main",
+       "index": 3
+      }
+     ]
+    ]
+   },
+   "SMTP Send CRO": {
+    "main": [
+     [
+      {
+       "node": "Merge Sent",
+       "type": "main",
+       "index": 4
+      }
+     ]
+    ]
+   },
+   "SMTP Send Creative": {
+    "main": [
+     [
+      {
+       "node": "Merge Sent",
+       "type": "main",
+       "index": 5
+      }
+     ]
+    ]
+   },
+   "SMTP Send DPO": {
+    "main": [
+     [
+      {
+       "node": "Merge Sent",
+       "type": "main",
+       "index": 6
+      }
+     ]
+    ]
+   },
+   "SMTP Send Web Design": {
+    "main": [
+     [
+      {
+       "node": "Merge Sent",
+       "type": "main",
+       "index": 7
+      }
+     ]
+    ]
+   },
+   "SMTP Send Health": {
+    "main": [
+     [
+      {
+       "node": "Merge Sent",
+       "type": "main",
+       "index": 8
+      }
+     ]
+    ]
+   },
+   "Build Log Line": {
+    "main": [
+     [
+      {
+       "node": "Append Log to Markdown",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Append Log to Markdown": {
+    "main": [
+     [
+      {
+       "node": "Respond OK",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Build Binary Attachments": {
+    "main": [
+     [
+      {
+       "node": "Switch by Sender",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "Merge Sent": {
+    "main": [
+     [
+      {
+       "node": "Build Log Line",
+       "type": "main",
+       "index": 0
+      }
+     ]
+    ]
+   },
+   "SMTP Send Office": {
+    "main": [
+     [
+      {
+       "node": "Merge Sent",
+       "type": "main",
+       "index": 9
+      }
+     ]
+    ]
+   },
+   "SMTP Send Clara CEO": {
+    "main": [
+     [
+      {
+       "node": "Merge Sent",
+       "type": "main",
+       "index": 10
+      }
+     ]
+    ]
+   }
+  },
+  "nodeGroups": [],
+  "authors": "Walter Schönenbröcher",
+  "name": null,
+  "description": null,
+  "autosaved": false,
+  "workflowPublishHistory": [
+   {
+    "createdAt": "2026-07-22T13:06:36.013Z",
+    "id": 1154,
+    "workflowId": "BXHc5kdNdZQNiuMr",
+    "versionId": "cb32511f-b10f-413b-90d1-cb3a1a665cbe",
+    "event": "activated",
+    "userId": "6e9bbf01-8fa7-4f03-b232-90ed25d20657"
+   }
+  ]
+ }
+}
