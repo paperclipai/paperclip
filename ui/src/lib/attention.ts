@@ -45,6 +45,7 @@ interface SourceMeta {
 
 const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   approval: { label: "Approval", icon: ShieldCheck },
+  decision: { label: "Decision", icon: MessageSquareQuote },
   issue_thread_interaction: { label: "Decision requested", icon: MessageSquareQuote },
   join_request: { label: "Join request", icon: UserPlus },
   recovery_action: { label: "Recovery", icon: LifeBuoy },
