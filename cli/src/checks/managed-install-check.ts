@@ -17,13 +17,19 @@ function pathContains(directory: string): boolean {
 }
 
 function hasManagedArtifacts(paths: InstallStorePaths): boolean {
-  return [
-    paths.installsRoot,
+  const persistentArtifacts = [
     paths.manifestPath,
     paths.markerPath,
     paths.currentPath,
     paths.shimPath,
   ].some((entry) => fs.existsSync(entry));
+  if (persistentArtifacts) return true;
+  try {
+    return fs.readdirSync(paths.installsRoot).length > 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    return true;
+  }
 }
 
 export function nodeRuntimeCheck(): CheckResult {

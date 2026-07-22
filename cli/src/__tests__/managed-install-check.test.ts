@@ -72,4 +72,17 @@ describe("managed install doctor checks", () => {
       expect.objectContaining({ name: "Managed install", status: "pass" }),
     ]);
   });
+
+  it("ignores an empty installs directory left by a harmless lock lifecycle", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-install-doctor-"));
+    const paths = resolveInstallStorePaths({
+      paperclipHome: path.join(root, ".paperclip"),
+      homeDir: root,
+    });
+    fs.mkdirSync(paths.installsRoot, { recursive: true });
+
+    expect(managedInstallChecks(paths)).toEqual([
+      expect.objectContaining({ name: "Managed install", status: "pass" }),
+    ]);
+  });
 });
