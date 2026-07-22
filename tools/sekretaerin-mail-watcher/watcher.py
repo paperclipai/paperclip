@@ -113,13 +113,24 @@ def _is_agent_mail(path: Path) -> bool:
 
 
 def read_body(path: Path) -> str:
-    """Body ohne Frontmatter."""
+    """Reiner Antworttext einer Vault-Mail.
+
+    Entfernt (1) das YAML-Frontmatter und (2) den von „E-Mails v9" gerenderten
+    Kopfblock (`# Betreff` + `**Von:**/**An:**/**Datum:**/**Ordner:**` + `---`-Trenner),
+    sodass der eigentliche Antworttext ganz oben steht. Roh-Mails ohne Renderblock
+    bleiben unverändert (Rückwärtskompatibilität)."""
     text = path.read_text(encoding="utf-8", errors="replace")
     if text.startswith("---"):
         parts = text.split("\n---", 1)
         if len(parts) == 2:
-            return parts[1].lstrip("-\n")
-    return text
+            text = parts[1].lstrip("-\n")
+    lines = text.split("\n")
+    head = next((l for l in lines if l.strip()), "")
+    if head.lstrip().startswith("# "):  # gerenderter Mail-Header → Body ab erstem '---'-Trenner
+        for i, l in enumerate(lines):
+            if l.strip() == "---":
+                return "\n".join(lines[i + 1:]).strip()
+    return text.strip()
 
 
 def is_approval_reply(path: Path) -> str | None:

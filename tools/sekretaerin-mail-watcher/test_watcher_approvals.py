@@ -22,6 +22,33 @@ subject: AW: [Freigabe #A7X3] AW: Textkorrektur → an k@x.de
 Bitte etwas förmlicher formulieren.
 """
 
+# Echtes „E-Mails v9"-Renderformat: Frontmatter + # Betreff + **Von:**-Block +
+# '---'-Trenner + eigentlicher Antworttext + zitiertes Original. (Regression:
+# der E2E deckte auf, dass der Renderblock 'Okay' als correction fehlklassifiziert.)
+MAIL_OKAY_RENDERED = """---
+type: email
+betreff: "AW: [Freigabe #A7X3] AW: Textkorrektur → an k@x.de"
+von: "WHITESTAG - Walter Schönenbröcher <w.schonenbrocher@oubifb.hostedoffice.ag>"
+an: "office@whitestag.ai"
+ordner: "Gesendete Elemente"
+---
+
+# AW: [Freigabe #A7X3] AW: Textkorrektur → an k@x.de
+
+**Von:** WHITESTAG - Walter Schönenbröcher <w.schonenbrocher@oubifb.hostedoffice.ag>
+**An:** office@whitestag.ai
+**Datum:** 22.7.2026, 15:29:13
+**Ordner:** Gesendete Elemente
+
+---
+
+Okay
+
+> **Von:** office@whitestag.ai
+> [Freigabe #A7X3] Entwurf …
+> Sehr geehrte Damen und Herren …
+"""
+
 
 class ApprovalScanTest(unittest.TestCase):
     def setUp(self):
@@ -122,6 +149,23 @@ class ApprovalScanTest(unittest.TestCase):
             send=lambda *a, **k: (_ for _ in ()).throw(AssertionError("kein Doppelversand")),
             make_issue=lambda *a, **k: None)
         self.assertEqual(r[0]["action"], "skip")
+
+    def test_read_body_strips_rendered_header(self):
+        # read_body muss den v9-Renderblock entfernen, sodass 'Okay' oben steht.
+        self._write("2026-07-22-rendered-w.schonenbrocher.md", MAIL_OKAY_RENDERED)
+        body = w.read_body(w.MAILDIR / "2026-07-22-rendered-w.schonenbrocher.md")
+        self.assertTrue(body.lstrip().startswith("Okay"), body[:40])
+        self.assertNotIn("**Von:**", body.split("\n")[0])
+
+    def test_rendered_okay_triggers_send(self):
+        # Voller Pfad mit echtem Vault-Renderformat: 'Okay' → send (nicht correction).
+        self._write("2026-07-22-rok-w.schonenbrocher.md", MAIL_OKAY_RENDERED)
+        sent = []
+        w.process_approvals(["2026-07-22-rok-w.schonenbrocher.md"], dry_run=False,
+                            send=lambda e, **k: (sent.append(e["token"]), (200, "ok"))[1],
+                            make_issue=lambda *a, **k: None)
+        self.assertEqual(sent, ["A7X3"])
+        self.assertEqual(q.load("A7X3")["status"], "sent")
 
     def test_send_raising_is_caught_not_crash(self):
         # I2-Fix: eine Exception im Sendepfad killt den Tick nicht; Eintrag bleibt pending.
