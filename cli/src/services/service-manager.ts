@@ -168,7 +168,8 @@ export class SystemdServiceManager implements ServiceManager {
   }
 
   async uninstall(): Promise<void> {
-    await this.stop().catch(() => undefined);
+    const status = await this.status();
+    if (status.active) await this.stop();
     await this.runner("systemctl", ["--user", "disable", this.serviceName]).catch(() => undefined);
     await fs.rm(this.definitionPath, { force: true });
     await this.runner("systemctl", ["--user", "daemon-reload"]);
@@ -237,7 +238,7 @@ export class LaunchdServiceManager implements ServiceManager {
     await this.runner("launchctl", ["disable", `${this.domain}/${this.serviceName}`]).catch(() => undefined);
     await fs.rm(this.definitionPath, { force: true });
   }
-  async start(): Promise<void> { await this.install({ startNow: true, startOnLogin: true }); }
+  async start(): Promise<void> { await this.install({ startNow: true, startOnLogin: await this.isEnabled() }); }
   async stop(): Promise<void> { await this.runner("launchctl", ["bootout", `${this.domain}/${this.serviceName}`]); }
   async restart(): Promise<void> { await writeIfChanged(this.definitionPath, this.renderDefinition()); await this.runner("launchctl", ["kickstart", "-k", `${this.domain}/${this.serviceName}`]); }
 

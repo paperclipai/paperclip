@@ -164,6 +164,25 @@ describe("managed install commands", () => {
     expect(fs.readFileSync(userData, "utf8")).toBe("keep");
   });
 
+  it("refuses to remove the shared CLI while another instance service is installed", async () => {
+    const paths = resolveInstallStorePaths();
+    const otherUnitPath = path.join(process.env.HOME!, ".config", "systemd", "user", systemdServiceName("team-a"));
+    fs.mkdirSync(path.dirname(otherUnitPath), { recursive: true });
+    fs.writeFileSync(otherUnitPath, "unit");
+
+    await expect(uninstallCommand({
+      detectServiceManager: vi.fn(async () => ({
+        supported: true as const,
+        manager: { status: vi.fn(async () => ({ installed: false, active: false })) } as never,
+      })),
+      platform: "linux",
+      userHomeDir: process.env.HOME!,
+    })).rejects.toThrow("other instance services are installed");
+
+    expect(fs.existsSync(paths.cliRoot)).toBe(false);
+    expect(fs.existsSync(otherUnitPath)).toBe(true);
+  });
+
   it("preserves the managed install when an existing systemd unit cannot be checked", async () => {
     const paths = resolveInstallStorePaths();
     fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true });

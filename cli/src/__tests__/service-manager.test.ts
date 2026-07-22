@@ -75,6 +75,21 @@ describe("systemd drift regeneration", () => {
     expect(await fs.readFile(manager.definitionPath, "utf8")).toBe(manager.renderDefinition());
     expect(calls).toContain("systemctl --user daemon-reload");
   });
+
+  it("keeps the unit installed when stopping an active service fails", async () => {
+    const userHome = await temporaryDirectory();
+    const runner: CommandRunner = async (command, args) => {
+      if (args.includes("--property=LoadState,ActiveState,UnitFileState,MainPID")) return { stdout: "LoadState=loaded\nActiveState=active\nUnitFileState=enabled\nMainPID=42\n", stderr: "" };
+      if (command === "systemctl" && args.includes("stop")) throw new Error("stop failed");
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new SystemdServiceManager("default", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome);
+    await fs.mkdir(path.dirname(manager.definitionPath), { recursive: true });
+    await fs.writeFile(manager.definitionPath, manager.renderDefinition(), "utf8");
+
+    await expect(manager.uninstall()).rejects.toThrow("stop failed");
+    await expect(fs.access(manager.definitionPath)).resolves.toBeUndefined();
+  });
 });
 
 describe("service adapter dispatch", () => {
@@ -99,6 +114,22 @@ describe("service adapter dispatch", () => {
 });
 
 describe("launchd lifecycle", () => {
+  it("starts without changing the saved login preference", async () => {
+    const userHome = await temporaryDirectory();
+    const calls: string[] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (args[0] === "print-disabled") return { stdout: `\"ing.paperclip.paperclipai.team-a\" => true`, stderr: "" };
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome);
+
+    await manager.start();
+
+    expect(calls).toContain(`launchctl disable gui/${process.getuid?.() ?? 0}/ing.paperclip.paperclipai.team-a`);
+    expect(calls).not.toContain(`launchctl enable gui/${process.getuid?.() ?? 0}/ing.paperclip.paperclipai.team-a`);
+  });
+
   it("disables login startup and unloads the keepalive job when stopped", async () => {
     const userHome = await temporaryDirectory();
     const calls: string[] = [];

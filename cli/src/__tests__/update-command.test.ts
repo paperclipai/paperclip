@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flipCurrentAtomic, initializeInstallStore, payloadPathFor, readInstallManifest, resolveInstallStorePaths, writeInstallManifestAtomic, type InstallManifest, type InstallRecord } from "../install-store.js";
 import type { CommandRunner } from "../commands/install.js";
-import { detectInstallMode, resolveUpdateRequest, rollbackManagedInstall, updateCommand } from "../commands/update.js";
+import { compareVersions, detectInstallMode, resolveUpdateRequest, rollbackManagedInstall, updateCommand } from "../commands/update.js";
 
 let root: string;
 let previousHome: string | undefined;
@@ -36,6 +36,12 @@ afterEach(() => {
 });
 
 describe("update command", () => {
+  it("orders SemVer prerelease identifiers numerically", () => {
+    expect(compareVersions("1.0.0-canary.10", "1.0.0-canary.2")).toBeGreaterThan(0);
+    expect(compareVersions("1.0.0-1", "1.0.0-alpha")).toBeLessThan(0);
+    expect(compareVersions("1.0.0-alpha", "1.0.0-alpha.1")).toBeLessThan(0);
+  });
+
   it("detects managed, global npm, npx, and source modes", () => {
     const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
     const payload = payloadPathFor(paths, "npm", "1.0.0"); const entrypoint = createPayload(payload, "1.0.0");
@@ -67,9 +73,11 @@ describe("update command", () => {
     flipCurrentAtomic(oldPayload, paths);
     writeInstallManifestAtomic({ schemaVersion: 1, source: "git", version: "0.3.1", channel: "pinned", repo: "paperclipai/paperclip", ref: "master", sha: oldSha, payloadPath: oldPayload, installedAt: "2026-07-22T00:00:00.000Z", previous: [] }, paths);
     const backup = vi.fn(async () => undefined);
+    const restartActiveService = vi.fn(async () => true);
     const runCommand = vi.fn(async (file: string) => file === "curl" ? { stdout: JSON.stringify({ sha: newSha }), stderr: "" } : { stdout: "0.3.1\n", stderr: "" });
-    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, now: () => new Date("2026-07-22T12:00:00Z") });
+    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, restartActiveService, now: () => new Date("2026-07-22T12:00:00Z") });
     expect(backup).toHaveBeenCalledOnce();
+    expect(restartActiveService).toHaveBeenCalledWith("0.3.1");
     expect(readInstallManifest(paths)?.sha).toBe(newSha);
     expect(fs.realpathSync(paths.currentPath)).toBe(fs.realpathSync(newPayload));
   });
@@ -90,6 +98,14 @@ describe("update command", () => {
     writeInstallManifestAtomic({ schemaVersion: 1, ...record(payload, "2.0.0"), previous: [] }, paths);
     const runCommand = vi.fn(async () => ({ stdout: '"1.0.0"\n', stderr: "" }));
     await expect(updateCommand({ version: "1.0.0", dryRun: true }, { paths, executablePath: entrypoint, runCommand, confirm: async () => false })).rejects.toThrow("Downgrade cancelled");
+  });
+
+  it("requires explicit confirmation before a global npm downgrade", async () => {
+    const paths = resolveInstallStorePaths();
+    const executable = path.join(root, "lib", "node_modules", "paperclipai", "dist", "index.js");
+    const runCommand = vi.fn(async () => ({ stdout: '"0.2.0"\n', stderr: "" }));
+    await expect(updateCommand({ version: "0.2.0" }, { paths, executablePath: executable, runCommand, confirm: async () => false })).rejects.toThrow("Downgrade cancelled");
+    expect(runCommand).toHaveBeenCalledTimes(1);
   });
 
   it("isolates global npm updates from hostile registry configuration", async () => {
@@ -117,13 +133,15 @@ describe("update command", () => {
     const oldPayload = payloadPathFor(paths, "npm", "1.0.0"); const executable = createPayload(oldPayload, "1.0.0"); flipCurrentAtomic(oldPayload, paths);
     writeInstallManifestAtomic({ schemaVersion: 1, ...record(oldPayload, "1.0.0"), previous: [] }, paths);
     const backup = vi.fn(async () => undefined);
+    const restartActiveService = vi.fn(async () => true);
     const runCommand = vi.fn(async (file: string, args: string[]) => {
       if (args[0] === "view") return { stdout: '"2.0.0"\n', stderr: "" };
       if (file === "npm" && args[0] === "install") { const prefix = args[args.indexOf("--prefix") + 1]; createPayload(prefix, "2.0.0"); return { stdout: "", stderr: "" }; }
       return { stdout: "2.0.0\n", stderr: "" };
     });
-    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, now: () => new Date("2026-07-22T12:00:00Z") });
+    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, restartActiveService, now: () => new Date("2026-07-22T12:00:00Z") });
     expect(backup).toHaveBeenCalledOnce();
+    expect(restartActiveService).toHaveBeenCalledWith("2.0.0");
     expect(readInstallManifest(paths)?.version).toBe("2.0.0");
     expect(fs.realpathSync(paths.currentPath)).toBe(fs.realpathSync(payloadPathFor(paths, "npm", "2.0.0")));
     const rolledBack = rollbackManagedInstall(paths);

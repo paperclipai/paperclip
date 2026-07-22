@@ -8,11 +8,23 @@ import pc from "picocolors";
 import { buildNextManifest, flipCurrentAtomic, isManagedExecutable, pruneInstallPayloads, readInstallManifest, resolveInstallStorePaths, withInstallStoreLock, writeInstallManifestAtomic, type InstallChannel, type InstallManifest, type InstallRecord, type InstallStorePaths } from "../install-store.js";
 import { dbBackupCommand } from "./db-backup.js";
 import { installGitPayload, installNpmPayload, PUBLIC_NPM_REGISTRY, resolveGitHubRef, resolvePublishedVersion, type CommandRunner } from "./install.js";
+import { resolvePaperclipInstanceId } from "../config/home.js";
+import { detectServiceManager } from "../services/service-manager.js";
+import { restartManagedService } from "./service.js";
+import { packageVersion } from "../version.js";
 
 const execFileAsync = promisify(execFile);
 export type InstallMode = "managed" | "global-npm" | "npx" | "source" | "unknown";
 export type UpdateOptions = { canary?: boolean; latest?: boolean; version?: string; rollback?: boolean; check?: boolean; dryRun?: boolean; json?: boolean; yes?: boolean; backup?: boolean };
-type Dependencies = { executablePath: string; runCommand: CommandRunner; backup: () => Promise<void>; confirm: (message: string) => Promise<boolean>; now: () => Date; paths: InstallStorePaths };
+type Dependencies = { executablePath: string; runCommand: CommandRunner; backup: () => Promise<void>; confirm: (message: string) => Promise<boolean>; now: () => Date; paths: InstallStorePaths; restartActiveService: (expectedVersion: string) => Promise<boolean> };
+
+async function restartActiveManagedService(expectedVersion: string): Promise<boolean> {
+  const instanceId = resolvePaperclipInstanceId();
+  const detection = await detectServiceManager({ instanceId });
+  if (!detection.supported || !(await detection.manager.status()).active) return false;
+  await restartManagedService({ instanceId, expectedVersion });
+  return true;
+}
 
 export function detectInstallMode(executablePath = process.argv[1] ?? "", paths = resolveInstallStorePaths()): InstallMode {
   const resolved = path.resolve(executablePath || ".");
@@ -36,7 +48,21 @@ export function compareVersions(left: string, right: string): number {
   if (a.prerelease === b.prerelease) return 0;
   if (!a.prerelease) return 1;
   if (!b.prerelease) return -1;
-  return a.prerelease.localeCompare(b.prerelease);
+  const aParts = a.prerelease.split(".");
+  const bParts = b.prerelease.split(".");
+  for (let index = 0; index < Math.max(aParts.length, bParts.length); index += 1) {
+    const leftPart = aParts[index];
+    const rightPart = bParts[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    if (leftPart === rightPart) continue;
+    const leftNumeric = /^\d+$/.test(leftPart);
+    const rightNumeric = /^\d+$/.test(rightPart);
+    if (leftNumeric && rightNumeric) return Math.sign(Number(leftPart) - Number(rightPart));
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftPart < rightPart ? -1 : 1;
+  }
+  return 0;
 }
 
 export function resolveUpdateRequest(manifest: InstallManifest | null, options: Pick<UpdateOptions, "canary" | "latest" | "version">): { spec: string; channel: InstallChannel; explicit: boolean } {
@@ -81,7 +107,8 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
     if (mode !== "managed") throw new Error("--rollback is only available for managed installs.");
     if (options.dryRun) { emit(options, { mode, action: "rollback", dryRun: true, target: manifest?.previous[0]?.version ?? null }, `Would roll back to ${manifest?.previous[0]?.version ?? "the previous payload"}.`); return; }
     const next = await withInstallStoreLock(async () => rollbackManagedInstall(paths), paths);
-    emit(options, { mode, action: "rollback", version: next.version }, pc.green(`Rolled back instantly to paperclipai ${next.version}. Database migrations are not reversed; restore the pre-update backup if needed.`));
+    const restarted = await (overrides.restartActiveService ?? restartActiveManagedService)(next.version);
+    emit(options, { mode, action: "rollback", version: next.version, restarted }, pc.green(`Rolled back to paperclipai ${next.version}${restarted ? " and restarted the active service" : ""}. Database migrations are not reversed; restore the pre-update backup if needed.`));
     return;
   }
   const request = resolveUpdateRequest(manifest, options);
@@ -101,14 +128,16 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
       try { writeInstallManifestAtomic(next, paths); } catch (error) { flipCurrentAtomic(path.resolve(paths.cliRoot, oldTarget), paths); throw error; }
       pruneInstallPayloads(next, paths); return payload;
     }, paths);
-    emit(options, { mode, source: "git", changed: true, currentSha: manifest.sha, targetSha, reused: installed.reused }, pc.yellow(`Updated unreleased git payload ${manifest.sha.slice(0, 12)} → ${targetSha.slice(0, 12)} from ${manifest.repo}@${manifest.ref}.`));
+    const restarted = await (overrides.restartActiveService ?? restartActiveManagedService)(installed.version);
+    emit(options, { mode, source: "git", changed: true, currentSha: manifest.sha, targetSha, reused: installed.reused, restarted }, pc.yellow(`Updated unreleased git payload ${manifest.sha.slice(0, 12)} → ${targetSha.slice(0, 12)} from ${manifest.repo}@${manifest.ref}${restarted ? " and restarted the active service" : ""}.`));
     return;
   }
   const targetVersion = await resolvePublishedVersion(request.spec, runCommand);
-  const currentVersion = manifest?.version;
+  const currentVersion = manifest?.version ?? (mode === "global-npm" ? packageVersion : undefined);
   const comparison = currentVersion ? compareVersions(targetVersion, currentVersion) : 1;
   if (options.check) { emit(options, { mode, currentVersion: currentVersion ?? null, targetVersion, updateAvailable: comparison > 0, downgrade: comparison < 0, channel: request.channel }, comparison > 0 ? `Update available: ${targetVersion}` : comparison < 0 ? `Target ${targetVersion} is older than ${currentVersion}.` : `paperclipai ${targetVersion} is current.`); if (comparison > 0) process.exitCode = 10; return; }
   if (mode === "global-npm") {
+    if (comparison < 0 && options.yes !== true) { const confirmed = await (overrides.confirm ?? defaultConfirm)(`Downgrade paperclipai from ${currentVersion} to ${targetVersion}?`); if (!confirmed) throw new Error("Downgrade cancelled. Re-run with --yes to confirm explicitly."); }
     const args = ["install", "-g", `paperclipai@${targetVersion}`, `--registry=${PUBLIC_NPM_REGISTRY}`, `--@paperclipai:registry=${PUBLIC_NPM_REGISTRY}`]; console.log(`Running: npm ${args.join(" ")}`);
     if (!options.dryRun) {
       const npmConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-npm-"));
@@ -143,5 +172,6 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
     try { writeInstallManifestAtomic(next, paths); } catch (error) { flipCurrentAtomic(path.resolve(paths.cliRoot, oldTarget), paths); throw error; }
     pruneInstallPayloads(next, paths); return payload;
   }, paths);
-  emit(options, { mode, currentVersion, targetVersion, changed: true, reused: installed.reused }, pc.green(`Updated paperclipai ${currentVersion} → ${targetVersion}. Run \`paperclipai update --rollback\` for an instant payload rollback.`));
+  const restarted = await (overrides.restartActiveService ?? restartActiveManagedService)(targetVersion);
+  emit(options, { mode, currentVersion, targetVersion, changed: true, reused: installed.reused, restarted }, pc.green(`Updated paperclipai ${currentVersion} → ${targetVersion}${restarted ? " and restarted the active service" : ""}. Run \`paperclipai update --rollback\` for an instant payload rollback.`));
 }
