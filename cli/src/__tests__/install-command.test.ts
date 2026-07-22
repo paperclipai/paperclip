@@ -107,6 +107,33 @@ describe("managed install commands", () => {
     expect(fs.readFileSync(userData, "utf8")).toBe("keep");
   });
 
+  it("preserves the managed install when an existing systemd unit cannot be checked", async () => {
+    const paths = resolveInstallStorePaths();
+    fs.mkdirSync(path.dirname(paths.shimPath), { recursive: true });
+    fs.writeFileSync(paths.shimPath, "managed shim");
+    const unitPath = path.join(
+      process.env.HOME!,
+      ".config",
+      "systemd",
+      "user",
+      "paperclipai.service",
+    );
+    fs.mkdirSync(path.dirname(unitPath), { recursive: true });
+    fs.writeFileSync(unitPath, "unit");
+
+    await expect(uninstallCommand({
+      detectServiceManager: vi.fn(async () => ({
+        supported: false as const,
+        reason: "No usable systemd user manager was detected",
+      })),
+      platform: "linux",
+      userHomeDir: process.env.HOME!,
+    })).rejects.toThrow("Cannot verify or remove the background service");
+
+    expect(fs.existsSync(paths.shimPath)).toBe(true);
+    expect(fs.existsSync(unitPath)).toBe(true);
+  });
+
   it("rejects a symlinked installs root before npm writes outside the store", async () => {
     const paths = resolveInstallStorePaths();
     const outside = path.join(root, "outside");

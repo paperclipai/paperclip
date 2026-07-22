@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import pc from "picocolors";
 import {
@@ -9,17 +10,36 @@ import {
   withInstallStoreLock,
 } from "../install-store.js";
 import { resolvePaperclipInstanceId } from "../config/home.js";
-import { detectServiceManager } from "../services/service-manager.js";
+import { detectServiceManager, systemdServiceName } from "../services/service-manager.js";
 
 type UninstallDependencies = {
   detectServiceManager: typeof detectServiceManager;
+  platform: NodeJS.Platform;
+  userHomeDir: string;
 };
 
 export async function uninstallCommand(
   dependencies: Partial<UninstallDependencies> = {},
 ): Promise<void> {
+  const instanceId = resolvePaperclipInstanceId();
   const detect = dependencies.detectServiceManager ?? detectServiceManager;
-  const detection = await detect({ instanceId: resolvePaperclipInstanceId() });
+  const platform = dependencies.platform ?? process.platform;
+  const userHomeDir = dependencies.userHomeDir ?? os.homedir();
+  const detection = await detect({ instanceId, platform });
+  if (!detection.supported && platform === "linux") {
+    const definitionPath = path.join(
+      userHomeDir,
+      ".config",
+      "systemd",
+      "user",
+      systemdServiceName(instanceId),
+    );
+    if (fs.existsSync(definitionPath)) {
+      throw new Error(
+        `Cannot verify or remove the background service: ${detection.reason}. Retry when the service manager is available.`,
+      );
+    }
+  }
   if (detection.supported) {
     const status = await detection.manager.status();
     if (status.installed || status.active) await detection.manager.uninstall();
