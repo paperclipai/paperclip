@@ -10,13 +10,31 @@ import {
   withInstallStoreLock,
 } from "../install-store.js";
 import { resolvePaperclipInstanceId } from "../config/home.js";
-import { detectServiceManager, systemdServiceName } from "../services/service-manager.js";
+import { detectServiceManager, launchdServiceName, systemdServiceName } from "../services/service-manager.js";
 
 type UninstallDependencies = {
   detectServiceManager: typeof detectServiceManager;
   platform: NodeJS.Platform;
   userHomeDir: string;
 };
+
+function otherServiceDefinitions(platform: NodeJS.Platform, userHomeDir: string, instanceId: string): string[] {
+  const directory = platform === "linux"
+    ? path.join(userHomeDir, ".config", "systemd", "user")
+    : platform === "darwin"
+      ? path.join(userHomeDir, "Library", "LaunchAgents")
+      : null;
+  if (!directory || !fs.existsSync(directory)) return [];
+  const currentName = platform === "linux"
+    ? systemdServiceName(instanceId)
+    : `${launchdServiceName(instanceId)}.plist`;
+  const pattern = platform === "linux"
+    ? /^paperclipai(?:-.+)?\.service$/
+    : /^ing\.paperclip\.paperclipai(?:\..+)?\.plist$/;
+  return fs.readdirSync(directory)
+    .filter((name) => name !== currentName && pattern.test(name))
+    .map((name) => path.join(directory, name));
+}
 
 export async function uninstallCommand(
   dependencies: Partial<UninstallDependencies> = {},
@@ -26,6 +44,10 @@ export async function uninstallCommand(
   const platform = dependencies.platform ?? process.platform;
   const userHomeDir = dependencies.userHomeDir ?? os.homedir();
   const detection = await detect({ instanceId, platform });
+  const otherDefinitions = otherServiceDefinitions(platform, userHomeDir, instanceId);
+  if (otherDefinitions.length > 0) {
+    throw new Error(`Cannot remove the shared managed CLI while other instance services are installed: ${otherDefinitions.join(", ")}. Uninstall those services first.`);
+  }
   if (!detection.supported && platform === "linux") {
     const definitionPath = path.join(
       userHomeDir,

@@ -3,7 +3,7 @@ import path from "node:path";
 import * as p from "@clack/prompts";
 import type { Command } from "commander";
 import { readConfig, resolveConfigPath } from "../config/store.js";
-import { resolvePaperclipHomeDir, resolvePaperclipInstanceId } from "../config/home.js";
+import { resolvePaperclipInstanceId, resolvePaperclipInstanceRoot } from "../config/home.js";
 import { detectServiceManager, type ServiceManager, type ServiceStatus } from "../services/service-manager.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
 
@@ -57,11 +57,11 @@ export function resolveRestartExpectedVersion(expectedVersion: string | null | u
 async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, drainRequired: boolean): Promise<{ requestedAt: string }> {
   if (!status.pid) throw new Error(`Cannot restart ${status.serviceName}: supervisor did not report a server pid.`);
   const health = await probeHealth(instanceId);
-  const homeDir = resolvePaperclipHomeDir();
+  const instanceRoot = resolvePaperclipInstanceRoot(instanceId);
   const requestedAt = new Date().toISOString();
-  await fs.mkdir(homeDir, { recursive: true });
-  await fs.rm(path.join(homeDir, "hot-restart-report.json"), { force: true });
-  await fs.writeFile(path.join(homeDir, "hot-restart-intent.json"), `${JSON.stringify({
+  await fs.mkdir(instanceRoot, { recursive: true });
+  await fs.rm(path.join(instanceRoot, "hot-restart-report.json"), { force: true });
+  await fs.writeFile(path.join(instanceRoot, "hot-restart-intent.json"), `${JSON.stringify({
     version: 1,
     requestedAt,
     previousServerPid: status.pid,
@@ -72,8 +72,8 @@ async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, 
   return { requestedAt };
 }
 
-async function waitForRestartReport(requestedAt: string, timeoutMs = 10_000): Promise<unknown | null> {
-  const reportPath = path.join(resolvePaperclipHomeDir(), "hot-restart-report.json");
+async function waitForRestartReport(instanceId: string, requestedAt: string, timeoutMs = 10_000): Promise<unknown | null> {
+  const reportPath = path.join(resolvePaperclipInstanceRoot(instanceId), "hot-restart-report.json");
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -95,7 +95,7 @@ export async function restartManagedService(input: { instanceId?: string; expect
   const intent = await writeHotRestartIntent(before, instanceId, input.waitForDrain ?? false);
   await detection.manager.restart();
   const health = await waitForHealth(instanceId, resolveRestartExpectedVersion(input.expectedVersion));
-  return { status: await detection.manager.status(), health, report: await waitForRestartReport(intent.requestedAt) };
+  return { status: await detection.manager.status(), health, report: await waitForRestartReport(instanceId, intent.requestedAt) };
 }
 
 export function registerServiceCommands(program: Command): void {
