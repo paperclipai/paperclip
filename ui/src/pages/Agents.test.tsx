@@ -245,10 +245,10 @@ describe("Agents", () => {
     });
     await flushReact();
 
-    // The title cell carries a constant width (`w-56`), not a content-sized
-    // `min-w-[7rem]`, so the `meta` group starts at the same x on every row and
-    // the model + timestamp columns line up vertically.
-    const titleCell = container.querySelector(".w-56");
+    // The title cell carries a constant desktop width (`sm:w-56`), not a
+    // content-sized `min-w-[7rem]`, so the `meta` group starts at the same x on
+    // every desktop row while mobile can use the available width.
+    const titleCell = container.querySelector(".sm\\:w-56");
     expect(titleCell).not.toBeNull();
     expect(titleCell?.textContent).toContain("Alpha");
     expect(container.querySelector(".min-w-\\[7rem\\]")).toBeNull();

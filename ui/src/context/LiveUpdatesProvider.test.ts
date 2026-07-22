@@ -256,8 +256,12 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       queryKey: queryKeys.issues.activity("issue-1"),
       refetchType: "inactive",
     });
-    expect(invalidations).not.toContainEqual({
+    expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.comments("issue-1"),
+      refetchType: "inactive",
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.interactions("issue-1"),
       refetchType: "inactive",
     });
   });
