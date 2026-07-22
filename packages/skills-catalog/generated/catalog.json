@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-15T22:20:53.895Z",
+  "generatedAt": "2026-07-22T19:37:05.731Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -107,6 +107,41 @@
         }
       ],
       "contentHash": "sha256:1c7a82cd9638a1d845b238032da3ff4ad80c5b6a87dca46082f501fa4583db55"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:status-card-query",
+      "key": "paperclipai/bundled/paperclip-operations/status-card-query",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "status-card-query",
+      "name": "status-card-query",
+      "description": "Compile a prose Paperclip status-card interest prompt into narrow, bounded CompanySearchQuery objects, then write the query and first summary back from the assigned Summarizer run.",
+      "path": "catalog/bundled/paperclip-operations/status-card-query",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "general",
+        "manager"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "status",
+        "search",
+        "reporting",
+        "operations"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 3648,
+          "sha256": "90e1f29887a41b6b2cd2d6c2bc66025ba5672f433710043b3ff668382b56179a"
+        }
+      ],
+      "contentHash": "sha256:7ea50bb125b047f43035f9e12222f00d396ca962916973bf9cc8d39ca4b317ec"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:summarize-status",

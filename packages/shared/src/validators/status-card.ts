@@ -101,6 +101,8 @@ export const statusCardUpdateSchema = z.object({
   outputTokens: z.number().int().nonnegative(),
   costCents: z.number().int().nonnegative(),
   model: z.string().nullable(),
+  queryVersion: z.number().int().nonnegative().nullable(),
+  changeSummary: z.string().nullable(),
   startedAt: z.string().datetime(),
   finishedAt: z.string().datetime().nullable(),
   status: statusCardUpdateStatusSchema,
@@ -135,8 +137,25 @@ export const patchStatusCardSchema = z
   })
   .refine((value) => Object.keys(value).length > 0, "At least one field is required");
 
+export const writeStatusCardQuerySchema = z.object({
+  queries: z.array(companySearchQuerySchema).min(1).max(10),
+  title: z.string().trim().min(1).max(300),
+  changeSummary: z.string().trim().min(1).max(2_000),
+  generationIssueId: z.string().uuid(),
+});
+
+export const writeStatusCardSummarySchema = z.object({
+  markdown: z.string().trim().min(1).max(200_000),
+  title: z.string().trim().min(1).max(300).optional(),
+  changeSummary: z.string().trim().min(1).max(2_000),
+  generationIssueId: z.string().uuid(),
+  model: z.string().trim().min(1).max(200).optional().nullable(),
+});
+
 export type StatusCard = z.infer<typeof statusCardSchema>;
 export type StatusCardRefreshPolicy = z.infer<typeof statusCardRefreshPolicySchema>;
 export type StatusCardUpdate = z.infer<typeof statusCardUpdateSchema>;
 export type CreateStatusCard = z.infer<typeof createStatusCardSchema>;
 export type PatchStatusCard = z.infer<typeof patchStatusCardSchema>;
+export type WriteStatusCardQuery = z.infer<typeof writeStatusCardQuerySchema>;
+export type WriteStatusCardSummary = z.infer<typeof writeStatusCardSummarySchema>;

@@ -71,6 +71,8 @@ export const statusCardUpdates = pgTable(
     outputTokens: integer("output_tokens").notNull().default(0),
     costCents: integer("cost_cents").notNull().default(0),
     model: text("model"),
+    queryVersion: integer("query_version"),
+    changeSummary: text("change_summary"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     status: text("status").$type<"ok" | "failed">().notNull(),

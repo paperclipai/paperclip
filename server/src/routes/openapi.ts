@@ -16,6 +16,8 @@ import {
   writeSummarySlotSchema,
   createStatusCardSchema,
   patchStatusCardSchema,
+  writeStatusCardQuerySchema,
+  writeStatusCardSummarySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
@@ -1459,6 +1461,8 @@ registry.registerPath({
 for (const route of [
   ["get", "/api/status-cards/{id}", "Get a status card"],
   ["delete", "/api/status-cards/{id}", "Delete a status card"],
+  ["post", "/api/status-cards/{id}/recompile", "Recompile a status card query"],
+  ["get", "/api/status-cards/{id}/dry-run", "Execute stored status card queries without an LLM"],
   ["get", "/api/status-cards/{id}/updates", "List status card updates"],
 ] as const) {
   registerCurrentRoute({ method: route[0], path: route[1], tags: ["status-cards"], summary: route[2] });
@@ -1470,6 +1474,22 @@ registerCurrentRoute({
   tags: ["status-cards"],
   summary: "Update, archive, or restore a status card",
   body: patchStatusCardSchema,
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/status-cards/{id}/query",
+  tags: ["status-cards"],
+  summary: "Write a compiled status card query",
+  body: writeStatusCardQuerySchema,
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/status-cards/{id}/summary",
+  tags: ["status-cards"],
+  summary: "Write a generated status card summary",
+  body: writeStatusCardSummarySchema,
 });
 
 registry.registerPath({
