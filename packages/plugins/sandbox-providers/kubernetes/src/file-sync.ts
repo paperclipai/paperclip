@@ -25,6 +25,15 @@
  * window (the staging dir is created `0700` and each file is `chmod`ed before
  * the rename). All interpolated paths are single-quoted. Sandbox-authored
  * tarballs (outbound) are member-confined before host extraction.
+ *
+ * Buffer cap: a single exec holds the whole base64 payload in memory on both the
+ * host and the pod, so every transfer is bounded by `MAX_BUFFER_BYTES` and fails
+ * closed above it (the orchestrator falls back to the chunked transport).
+ * Inbound the host pre-flights the archive it built. Outbound the payload is
+ * authored by the untrusted pod, which controls how many bytes it emits, so the
+ * bound is enforced host-side DURING stdout accumulation in `execInPod` (bound in
+ * `plugin.ts` via `base64CapBytes`) — an in-pod check would be worthless — and
+ * this module re-checks the returned stdout length before decoding.
  */
 import path from "node:path";
 import os from "node:os";
@@ -276,12 +285,25 @@ async function countHostFiles(root: string, exclude?: string[]): Promise<number>
 }
 
 /**
- * Assert a base64 payload fits under the buffer cap before it is streamed over a
- * single exec. base64 is ~4/3 of the binary size; both the host and the pod hold
- * the whole payload in memory, so exceeding the cap must fail closed.
+ * The maximum base64 length that encodes a payload within `maxBufferBytes` of
+ * binary. base64 inflates by ~4/3, so this is the wire-size ceiling both the host
+ * and the pod must hold in memory for a single exec. Exported so `plugin.ts` binds
+ * `execInPod`'s stdout cap to the identical bound the inbound pre-flight uses.
+ */
+export function base64CapBytes(maxBufferBytes: number = MAX_BUFFER_BYTES): number {
+  return Math.ceil((maxBufferBytes * 4) / 3);
+}
+
+/**
+ * Assert a base64 payload fits under the buffer cap. On inbound this pre-flights
+ * the host-built archive before it streams over stdin; on outbound it re-checks
+ * the pod-returned base64 stdout before it is decoded (defense in depth — the
+ * authoritative bound is enforced host-side during accumulation in `execInPod`,
+ * since the pod controls how many bytes it emits). Either way, exceeding the cap
+ * fails closed so the orchestrator falls back to the chunked transport.
  */
 function assertUnderBufferCap(base64Length: number, maxBufferBytes: number): void {
-  if (base64Length > Math.ceil((maxBufferBytes * 4) / 3)) {
+  if (base64Length > base64CapBytes(maxBufferBytes)) {
     throw new Error(
       `Kubernetes sync payload exceeds the ${maxBufferBytes}-byte buffer cap; the orchestrator must fall back to the chunked transport.`,
     );
@@ -499,8 +521,9 @@ async function syncOutFileMappings(input: {
   mappings: PluginSyncFileMapping[];
   remoteDir: string;
   timeoutMs: number;
+  maxBufferBytes: number;
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
-  const { exec, mappings, remoteDir, timeoutMs } = input;
+  const { exec, mappings, remoteDir, timeoutMs, maxBufferBytes } = input;
   if (mappings.length === 0) return { filesTransferred: 0, bytesTransferred: 0 };
 
   for (const mapping of mappings) {
@@ -536,6 +559,9 @@ async function syncOutFileMappings(input: {
     );
 
     const stdout = await execOk(exec, script.join("\n"), undefined, timeoutMs, "syncOut file transfer");
+    // The pod authored this base64 stream; re-check it fits the buffer cap before
+    // decoding (the hard bound is enforced during accumulation in `execInPod`).
+    assertUnderBufferCap(stdout.length, maxBufferBytes);
 
     // Reassemble on the host: decode → extract to a temp → atomic-rename each
     // index file onto its host target.
@@ -571,8 +597,9 @@ async function syncOutDirectoryMapping(input: {
   mapping: PluginSyncFileMapping;
   remoteDir: string;
   timeoutMs: number;
+  maxBufferBytes: number;
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
-  const { exec, mapping, remoteDir, timeoutMs } = input;
+  const { exec, mapping, remoteDir, timeoutMs, maxBufferBytes } = input;
   assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
   return withHostTempDir(async (tmp) => {
     const remoteTar = path.posix.join(remoteDir, scratchName(".tar"));
@@ -601,6 +628,9 @@ async function syncOutDirectoryMapping(input: {
     ].join("\n");
 
     const stdout = await execOk(exec, script, undefined, timeoutMs, "syncOut directory transfer");
+    // Pod-authored base64; re-check the cap before decoding (hard bound enforced
+    // during accumulation in `execInPod`).
+    assertUnderBufferCap(stdout.length, maxBufferBytes);
     const localTar = path.join(tmp, "sync-out.tar");
     await fs.writeFile(localTar, Buffer.from(stdout, "base64"));
     const bytesTransferred = (await fs.stat(localTar)).size;
@@ -615,7 +645,9 @@ export async function performSyncOut(input: {
   operations: PluginSyncOperation[];
   remoteDir: string;
   timeoutMs: number;
+  maxBufferBytes?: number;
 }): Promise<PluginEnvironmentSyncResult> {
+  const maxBufferBytes = input.maxBufferBytes ?? MAX_BUFFER_BYTES;
   const operations: PluginEnvironmentSyncResult["operations"] = [];
   for (const operation of input.operations) {
     let filesTransferred = 0;
@@ -629,6 +661,7 @@ export async function performSyncOut(input: {
       mappings: fileMappings,
       remoteDir: input.remoteDir,
       timeoutMs: input.timeoutMs,
+      maxBufferBytes,
     });
     filesTransferred += fileResult.filesTransferred;
     bytesTransferred += fileResult.bytesTransferred;
@@ -639,6 +672,7 @@ export async function performSyncOut(input: {
         mapping,
         remoteDir: input.remoteDir,
         timeoutMs: input.timeoutMs,
+        maxBufferBytes,
       });
       filesTransferred += dirResult.filesTransferred;
       bytesTransferred += dirResult.bytesTransferred;

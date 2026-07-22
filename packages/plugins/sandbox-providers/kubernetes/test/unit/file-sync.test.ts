@@ -55,6 +55,20 @@ function makeRealExec(): { exec: PodExec; calls: RecordedCall[] } {
   return { exec, calls };
 }
 
+// A stub exec that returns a fixed stdout without running any shell — used to
+// drive the outbound buffer-cap recheck with a pod-authored payload the host did
+// not build. Records calls so a test can assert the exec actually ran.
+function makeStubExec(stdout: string): { exec: PodExec; calls: RecordedCall[] } {
+  const calls: RecordedCall[] = [];
+  const exec: PodExec = async (command, stdin) => {
+    const stdinBuf =
+      stdin == null ? null : Buffer.isBuffer(stdin) ? stdin : Buffer.from(stdin, "utf-8");
+    calls.push({ command, script: command[2] ?? "", stdin: stdinBuf });
+    return { exitCode: 0, stdout, stderr: "" };
+  };
+  return { exec, calls };
+}
+
 const tmpDirs: string[] = [];
 async function makeTmp(prefix: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -371,5 +385,35 @@ describe("kubernetes onEnvironmentSyncOut (native single-exec transfer)", () => 
       }),
     ).rejects.toThrow(/escapes|not a confined/);
     expect(calls).toHaveLength(0);
+  });
+
+  it("fails closed when the outbound payload exceeds the buffer cap, writing no target", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const hostOut = await makeTmp("k8s-hostout-");
+    await fs.writeFile(path.join(remoteDir, "result.txt"), "computed output");
+    const target = path.join(hostOut, "result.txt");
+    // The (untrusted) pod returns far more base64 than a 1KB cap allows
+    // (ceil(1024*4/3) = 1366 bytes); the host must reject before decoding.
+    const { exec, calls } = makeStubExec("A".repeat(4096));
+    await expect(
+      performSyncOut({
+        exec,
+        remoteDir,
+        timeoutMs: 30_000,
+        maxBufferBytes: 1024,
+        operations: [
+          {
+            operationId: "op",
+            files: [
+              { sourcePath: path.join(remoteDir, "result.txt"), targetPath: target, kind: "file" },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/buffer cap|exceeds/i);
+    // The exec ran (source was confined), but the oversize stdout is rejected
+    // before decode, so nothing lands at the host target.
+    expect(calls).toHaveLength(1);
+    await expect(fs.stat(target)).rejects.toThrow();
   });
 });

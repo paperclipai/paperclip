@@ -37,7 +37,7 @@ import {
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
-import { performSyncIn, performSyncOut, type PodExec } from "./file-sync.js";
+import { performSyncIn, performSyncOut, base64CapBytes, type PodExec } from "./file-sync.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
   deriveCompanySlug,
@@ -183,8 +183,12 @@ async function resolveSyncPodExec(
     throw new Error("Kubernetes file sync could not resolve the Sandbox pod name.");
   }
 
+  // Bound host-side stdout accumulation to the same base64 cap the transport
+  // enforces: on syncOut the pod authors the stdout stream and could otherwise
+  // emit unbounded bytes, exhausting the worker (see execInPod's maxStdoutBytes).
+  const maxStdoutBytes = base64CapBytes();
   const exec: PodExec = (command, stdin, execTimeoutMs) =>
-    execInPod(kc, namespace, podName, "agent", command, stdin, execTimeoutMs ?? timeoutMs);
+    execInPod(kc, namespace, podName, "agent", command, stdin, execTimeoutMs ?? timeoutMs, maxStdoutBytes);
   return { exec, timeoutMs };
 }
 

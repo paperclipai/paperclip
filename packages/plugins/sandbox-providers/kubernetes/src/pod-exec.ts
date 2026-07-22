@@ -61,6 +61,16 @@ export async function execInPod(
   command: string[],
   stdin?: string | Buffer,
   timeoutMs?: number,
+  // Optional host-side bound on accumulated stdout. The pod is an untrusted,
+  // attacker-controlled endpoint: a malicious pod can emit unbounded stdout
+  // during an exec (e.g. a native file-sync `syncOut` tarball), which would grow
+  // the in-memory accumulator without limit — blowing up the worker's RSS and,
+  // past V8's ~512 MB max string length, throwing a synchronous RangeError inside
+  // the stream `data` listener that no caller can catch (an uncaught exception =
+  // worker crash = cross-tenant DoS). When set, accumulation fails closed the
+  // instant it would exceed the cap so the caller can fall back. In-pod size
+  // checks are worthless here — only the host can be trusted to enforce this.
+  maxStdoutBytes?: number,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const exec = new Exec(kc);
   const stdoutStream = new PassThrough();
@@ -91,10 +101,8 @@ export async function execInPod(
 
   let stdoutData = "";
   let stderrData = "";
+  let stdoutBytes = 0;
 
-  stdoutStream.on("data", (chunk: Buffer) => {
-    stdoutData += chunk.toString("utf-8");
-  });
   stderrStream.on("data", (chunk: Buffer) => {
     stderrData += chunk.toString("utf-8");
   });
@@ -142,6 +150,41 @@ export async function execInPod(
         try { ws?.close(); } catch { /* ignore */ }
         resolve({ exitCode: pendingExitCode, stdout: stdoutData, stderr: stderrData });
       };
+
+      // Fail the whole exec closed, tearing down the WebSocket so the pod stops
+      // streaming. Used by the stdout cap below; the `resolved` guard makes it a
+      // no-op if the exec already finished.
+      const failClosed = (err: Error) => {
+        if (resolved) return;
+        resolved = true;
+        if (watchdog) clearTimeout(watchdog);
+        try { ws?.close(); } catch { /* ignore */ }
+        reject(err);
+      };
+
+      // Accumulate stdout inside the executor so the cap can reject before an
+      // unbounded pod payload exhausts memory. Once resolved (finished, timed
+      // out, or capped) further chunks are dropped rather than appended.
+      stdoutStream.on("data", (chunk: Buffer) => {
+        if (resolved) return;
+        if (typeof maxStdoutBytes === "number" && maxStdoutBytes >= 0) {
+          stdoutBytes += chunk.length;
+          if (stdoutBytes > maxStdoutBytes) {
+            failClosed(new Error(
+              `execInPod stdout exceeded the ${maxStdoutBytes}-byte cap (pod=${podName}, container=${containerName}); the sandbox produced more output than the buffer allows.`,
+            ));
+            return;
+          }
+        }
+        try {
+          stdoutData += chunk.toString("utf-8");
+        } catch (err) {
+          // Belt-and-suspenders: even under an explicit cap (or with none set),
+          // never let a `+=` RangeError at V8's max string length escape this
+          // listener as an uncaught exception.
+          failClosed(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
 
       stdoutStream.on("end", () => { stdoutEnded = true; tryFinish(); });
       stderrStream.on("end", () => { stderrEnded = true; tryFinish(); });
