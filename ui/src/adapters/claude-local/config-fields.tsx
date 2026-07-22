@@ -7,6 +7,7 @@ import {
   help,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
+import { DangerToggleField } from "../../components/DangerToggleField";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
 
 const inputClass =
@@ -30,9 +31,13 @@ export function ClaudeLocalConfigFields({
 }: AdapterConfigFieldsProps) {
   if (configurationSection === "danger") {
     return (
-      <ToggleField
-        label="Skip permissions"
-        hint={help.dangerouslySkipPermissions}
+      <DangerToggleField
+        label="Skip permission prompts"
+        description="Runs unattended by auto-approving every adapter permission prompt. The agent can take any action its environment allows without asking."
+        toggleTestId="danger-skip-permissions"
+        confirmTitle="Skip permission prompts?"
+        confirmBody="Runs unattended by auto-approving every adapter permission prompt. The agent can take any action its environment allows without asking."
+        confirmActionLabel="Skip permissions"
         checked={
           isCreate
             ? values!.dangerouslySkipPermissions

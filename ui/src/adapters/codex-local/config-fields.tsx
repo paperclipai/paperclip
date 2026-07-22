@@ -7,6 +7,7 @@ import {
   help,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
+import { DangerToggleField } from "../../components/DangerToggleField";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
@@ -56,9 +57,13 @@ export function CodexLocalConfigFields({
 
   if (configurationSection === "danger") {
     return (
-      <ToggleField
-        label="Bypass sandbox"
-        hint={help.dangerouslyBypassSandbox}
+      <DangerToggleField
+        label="Bypass sandbox (Codex)"
+        description="Removes filesystem/network restrictions."
+        toggleTestId="danger-bypass-sandbox"
+        confirmTitle="Bypass sandbox?"
+        confirmBody="Removes filesystem/network restrictions. Codex runs can read, write, and reach the network without sandbox containment."
+        confirmActionLabel="Bypass sandbox"
         checked={
           isCreate
             ? values!.dangerouslyBypassSandbox

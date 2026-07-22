@@ -1,11 +1,10 @@
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
-  ToggleField,
   DraftInput,
-  help,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
+import { DangerToggleField } from "../../components/DangerToggleField";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -24,9 +23,13 @@ export function OpenCodeLocalConfigFields({
 }: AdapterConfigFieldsProps) {
   if (configurationSection === "danger") {
     return (
-      <ToggleField
-        label="Skip permissions"
-        hint={help.dangerouslySkipPermissions}
+      <DangerToggleField
+        label="Skip permission prompts"
+        description="Runs unattended by auto-approving every adapter permission prompt. The agent can take any action its environment allows without asking."
+        toggleTestId="danger-skip-permissions"
+        confirmTitle="Skip permission prompts?"
+        confirmBody="Runs unattended by auto-approving every adapter permission prompt. The agent can take any action its environment allows without asking."
+        confirmActionLabel="Skip permissions"
         checked={
           isCreate
             ? values!.dangerouslySkipPermissions

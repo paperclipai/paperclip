@@ -25,7 +25,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, X, AlertTriangle } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
@@ -40,6 +40,7 @@ import {
   help,
   adapterLabels,
 } from "./agent-config-primitives";
+import { CadenceField } from "./CadenceField";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
@@ -54,7 +55,7 @@ import {
 } from "./environment-variables-editor";
 import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
 import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
-import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
+import { hasLegacyWorkingDirectory, shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
@@ -586,8 +587,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     hideInstructionsFile,
   };
 
-  // Section toggle state — advanced always starts collapsed
-  const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [cheapModelOpen, setCheapModelOpen] = useState(false);
@@ -1004,6 +1003,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }, [hasAdvancedRuntimeOverrides]);
   const hasAdapterDangerFields =
     adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local";
+
+  // Legacy card visibility — derived from the *effective* (draft-aware) values
+  // so clearing a deprecated field hides the card immediately, and a clean
+  // agent never renders it at all (wireframe 07).
+  const legacyCwdValue = !isCreate && isLocal ? eff("adapterConfig", "cwd", String(config.cwd ?? "")) : "";
+  const legacyBootstrapValue = !isCreate
+    ? eff("adapterConfig", "bootstrapPromptTemplate", String(config.bootstrapPromptTemplate ?? ""))
+    : "";
+  const hasLegacyCwdValue = hasLegacyWorkingDirectory(legacyCwdValue);
+  const hasLegacyBootstrapValue = legacyBootstrapValue.trim().length > 0;
+  const showLegacyCard = hasLegacyCwdValue || hasLegacyBootstrapValue;
 
   function updateMaxTurnContinuation(patch: Record<string, unknown>) {
     mark("heartbeat", "maxTurnContinuation", {
@@ -1482,11 +1492,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       )}
 
-      {/* ---- Execution ---- */}
-      {configurationShell && sectionVisible("environment") ? (
-        <div id="config-environment" className="scroll-mt-24" />
-      ) : null}
-      {sectionVisible("environment") && (forcedKubernetes ? (
+      {/* ---- Execution environment (non-shell / create) ---- */}
+      {!configurationShell && sectionVisible("environment") && (forcedKubernetes ? (
         // Instance execution policy forces the managed Kubernetes sandbox
         // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
         // Render the environment read-only instead of the selectable picker.
@@ -1548,34 +1555,93 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       ) : null)}
 
-      {configurationShell && sectionVisible("environment") && isLocal && (
-        <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-          <Field label="Environment variables" hint={help.envVars}>
-            <EnvironmentVariablesEditor
-              ref={environmentVariablesEditorRef}
-              value={
-                isCreate
-                  ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-                  : eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>)
-              }
-              secrets={availableSecrets}
-              userSecretDefinitions={userSecretDefinitions}
-              onCreateSecret={async (name, value) => createSecret.mutateAsync({ name, value })}
-              onChange={(env) =>
-                isCreate
-                  ? set!({ envBindings: env ?? {}, envVars: "" })
-                  : mark("adapterConfig", "env", env)
-              }
-            />
-          </Field>
-          {!isCreate && (
-            <Field label="Secret access" hint={help.secretAccess}>
-              <AgentSecretAccessEditor
-                config={{ ...config, ...overlay.adapterConfig }}
-                secrets={availableSecrets}
-                onChange={applyAccessGrants}
-              />
+      {/* ---- Environment (configuration shell) ---- */}
+      {configurationShell && sectionVisible("environment") && (
+        <div id="config-environment" className="scroll-mt-24 space-y-4">
+          <CardSectionHeading className="text-sm font-medium mb-1">Environment</CardSectionHeading>
+
+          {/* Execution target — inherit vs override is always explicit; the
+              closed select names the inherited value (wireframe 04). */}
+          <div className="rounded-lg border border-border p-4 space-y-3">
+            <Field label="Execution environment" hint="Where runs execute.">
+              {forcedKubernetes ? (
+                kubernetesEnvironment ? (
+                  <div className={cn(inputClass, "flex items-center text-muted-foreground")}>
+                    {kubernetesEnvironment.name} · Kubernetes sandbox
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                    This instance requires the Kubernetes sandbox, but no managed Kubernetes
+                    environment is available for this company yet.
+                  </div>
+                )
+              ) : showEnvironmentOverrideControl ? (
+                <select
+                  className={inputClass}
+                  value={currentDefaultEnvironmentId}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    if (isCreate) {
+                      set!({ defaultEnvironmentId: nextValue });
+                      return;
+                    }
+                    mark("identity", "defaultEnvironmentId", nextValue || null);
+                  }}
+                >
+                  <option value="">
+                    Inherit from company — {inheritedEnvironmentLabel}{instanceDefaultEnvironment ? "" : " (default)"}
+                  </option>
+                  {environmentOptions.map((environment) => (
+                    <option key={environment.id} value={environment.id}>
+                      Override — {environment.name} · {environment.driver}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className={cn(inputClass, "flex items-center text-muted-foreground")}>
+                  Inherit from company — {inheritedEnvironmentLabel}{instanceDefaultEnvironment ? "" : " (default)"}
+                </div>
+              )}
             </Field>
+          </div>
+
+          {/* Variables & secrets — table of per-row source badges. Reserved
+              PAPERCLIP_* keys render as locked rows instead of being silently
+              stripped at run time (see PAP-14732). */}
+          {isLocal && (
+            <div className="rounded-lg border border-border p-4 space-y-3">
+              <div className="space-y-1">
+                <div className="text-sm">Environment variables &amp; secrets</div>
+                <p className="text-xs text-muted-foreground">
+                  Injected into the adapter process on every run. Bind secrets by reference — values never shown here.
+                </p>
+              </div>
+              <EnvironmentVariablesEditor
+                ref={environmentVariablesEditorRef}
+                value={
+                  isCreate
+                    ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+                    : eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>)
+                }
+                secrets={availableSecrets}
+                userSecretDefinitions={userSecretDefinitions}
+                onCreateSecret={async (name, value) => createSecret.mutateAsync({ name, value })}
+                onChange={(env) =>
+                  isCreate
+                    ? set!({ envBindings: env ?? {}, envVars: "" })
+                    : mark("adapterConfig", "env", env)
+                }
+              />
+              {!isCreate && (
+                <Field label="Secret access" hint={help.secretAccess}>
+                  <AgentSecretAccessEditor
+                    config={{ ...config, ...overlay.adapterConfig }}
+                    secrets={availableSecrets}
+                    onChange={applyAccessGrants}
+                  />
+                </Field>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -1608,98 +1674,83 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <CardSectionHeading className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> {configurationShell ? "Schedule & Runs" : "Run Policy"}</CardSectionHeading>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg overflow-hidden" : "")}>
-            <div className={cn(cards ? "p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              <ToggleWithNumber
-                label="Heartbeat on interval"
+          <div className={cn(cards ? "space-y-4" : "px-4 pb-3 space-y-4")}>
+            {/* Heartbeat — humanized cadence with a live runs/day preview.
+                Stored in seconds; the unit select is a display convenience. */}
+            <div className={cn(cards && "rounded-lg border border-border p-4")}>
+              <CadenceField
                 hint={help.heartbeatInterval}
-                checked={eff("heartbeat", "enabled", heartbeat.enabled === true)}
-                onCheckedChange={(v) => mark("heartbeat", "enabled", v)}
-                number={eff("heartbeat", "intervalSec", Number(heartbeat.intervalSec ?? 300))}
-                onNumberChange={(v) => mark("heartbeat", "intervalSec", v)}
-                numberLabel="sec"
-                numberPrefix="Run heartbeat every"
-                numberHint={help.intervalSec}
-                showNumber={eff("heartbeat", "enabled", heartbeat.enabled === true)}
+                enabled={eff("heartbeat", "enabled", heartbeat.enabled === true)}
+                onEnabledChange={(v) => mark("heartbeat", "enabled", v)}
+                intervalSec={eff("heartbeat", "intervalSec", Number(heartbeat.intervalSec ?? 300))}
+                onIntervalSecChange={(v) => mark("heartbeat", "intervalSec", v)}
               />
             </div>
-            <CollapsibleSection
-              title="Advanced Run Policy"
-              bordered={cards}
-              open={runPolicyAdvancedOpen}
-              onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}
-            >
-            <div className="space-y-3">
+
+            {/* Waking & concurrency — first-class (the old "Advanced Run
+                Policy" collapse is dissolved per wireframe 05). */}
+            <div className={cn("space-y-3", cards && "rounded-lg border border-border p-4")}>
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Waking &amp; concurrency</div>
               <ToggleField
                 label="Wake on demand"
                 hint={help.wakeOnDemand}
-                checked={eff(
-                  "heartbeat",
-                  "wakeOnDemand",
-                  heartbeat.wakeOnDemand !== false,
-                )}
+                checked={eff("heartbeat", "wakeOnDemand", heartbeat.wakeOnDemand !== false)}
                 onChange={(v) => mark("heartbeat", "wakeOnDemand", v)}
               />
-              <Field label="Cooldown (sec)" hint={help.cooldownSec}>
-                <DraftNumberInput
-                  value={eff(
-                    "heartbeat",
-                    "cooldownSec",
-                    Number(heartbeat.cooldownSec ?? 10),
-                  )}
-                  onCommit={(v) => mark("heartbeat", "cooldownSec", v)}
-                  immediate
-                  className={inputClass}
-                />
-              </Field>
               <Field label="Max concurrent runs" hint={help.maxConcurrentRuns}>
                 <DraftNumberInput
-                  value={eff(
-                    "heartbeat",
-                    "maxConcurrentRuns",
-                    Number(heartbeat.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS),
-                  )}
+                  value={eff("heartbeat", "maxConcurrentRuns", Number(heartbeat.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS))}
                   onCommit={(v) => mark("heartbeat", "maxConcurrentRuns", v)}
                   immediate
                   className={inputClass}
                 />
               </Field>
-              <div className="rounded-md border border-border/70 px-3 py-2">
-                <ToggleField
-                  label="Continue after max-turn stop"
-                  hint={help.maxTurnContinuationEnabled}
-                  checked={maxTurnContinuationEnabled}
-                  onChange={(v) => updateMaxTurnContinuation({ enabled: v })}
+              <Field label="Cooldown between runs (sec)" hint={help.cooldownSec}>
+                <DraftNumberInput
+                  value={eff("heartbeat", "cooldownSec", Number(heartbeat.cooldownSec ?? 10))}
+                  onCommit={(v) => mark("heartbeat", "cooldownSec", v)}
+                  immediate
+                  className={inputClass}
                 />
-                {maxTurnContinuationEnabled ? (
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <Field label="Continuation attempts" hint={help.maxTurnContinuationMaxAttempts}>
-                      <DraftNumberInput
-                        value={maxTurnContinuationMaxAttempts}
-                        onCommit={(v) =>
-                          updateMaxTurnContinuation({
-                            maxAttempts: clampInteger(v, 0, MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP),
-                          })}
-                        immediate
-                        className={inputClass}
-                      />
-                    </Field>
-                    <Field label="Continuation delay (sec)" hint={help.maxTurnContinuationDelaySec}>
-                      <DraftNumberInput
-                        value={maxTurnContinuationDelaySec}
-                        onCommit={(v) =>
-                          updateMaxTurnContinuation({
-                            delayMs: clampDelayMsFromSeconds(v),
-                          })}
-                        immediate
-                        className={inputClass}
-                      />
-                    </Field>
-                  </div>
-                ) : null}
+              </Field>
+            </div>
+
+            {/* Continuation after max-turn stop — a distinct card; niche
+                behavior with inputs gated behind the enable toggle. */}
+            <div className={cn(cards ? "rounded-lg border border-border p-4" : "rounded-md border border-border/70 px-3 py-2")}>
+              <ToggleField
+                label="Continue after max-turn stop"
+                hint={help.maxTurnContinuationEnabled}
+                checked={maxTurnContinuationEnabled}
+                onChange={(v) => updateMaxTurnContinuation({ enabled: v })}
+              />
+              <div className={cn("mt-3 grid gap-3 sm:grid-cols-2", !maxTurnContinuationEnabled && "opacity-50")}>
+                <Field label="Attempts" hint={help.maxTurnContinuationMaxAttempts}>
+                  <DraftNumberInput
+                    value={maxTurnContinuationMaxAttempts}
+                    onCommit={(v) =>
+                      updateMaxTurnContinuation({
+                        maxAttempts: clampInteger(v, 0, MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP),
+                      })}
+                    immediate
+                    disabled={!maxTurnContinuationEnabled}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Delay (sec)" hint={help.maxTurnContinuationDelaySec}>
+                  <DraftNumberInput
+                    value={maxTurnContinuationDelaySec}
+                    onCommit={(v) =>
+                      updateMaxTurnContinuation({
+                        delayMs: clampDelayMsFromSeconds(v),
+                      })}
+                    immediate
+                    disabled={!maxTurnContinuationEnabled}
+                    className={inputClass}
+                  />
+                </Field>
               </div>
             </div>
-          </CollapsibleSection>
           </div>
         </div>
       ) : null)}
@@ -1707,57 +1758,95 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {configurationShell ? props.configurationShellAfterSchedule : null}
 
       {configurationShell && sectionVisible("danger") && (
-        <div id="config-danger" className="scroll-mt-24">
-          <CardSectionHeading className="text-sm font-medium mb-3">Danger &amp; Legacy</CardSectionHeading>
-          <div className="border border-border rounded-lg p-4 space-y-3">
+        <div id="config-danger" className="scroll-mt-24 space-y-4">
+          <CardSectionHeading className="text-sm font-medium mb-1">Danger &amp; Legacy</CardSectionHeading>
+
+          {/* Danger zone — high-consequence toggles, isolated with a warm
+              border. Each enable requires a confirm-on-enable dialog. */}
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
+              <h3 className="text-sm font-medium">Danger zone</h3>
+            </div>
             {hasAdapterDangerFields ? (
               <uiAdapter.ConfigFields {...adapterFieldProps} configurationSection="danger" />
             ) : (
               <p className="text-xs text-muted-foreground">This adapter has no permission or sandbox bypass settings.</p>
             )}
-            {showLegacyWorkingDirectoryField && (
-              <Field label="Working directory (deprecated)" hint={help.cwd}>
-                <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
-                  <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  <DraftInput
-                    value={isCreate ? val!.cwd : eff("adapterConfig", "cwd", String(config.cwd ?? ""))}
-                    onCommit={(value) =>
-                      isCreate ? set!({ cwd: value }) : mark("adapterConfig", "cwd", value || undefined)
-                    }
-                    immediate
-                    className="w-full bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40"
-                    placeholder="/path/to/project"
-                  />
-                  <ChoosePathButton />
-                </div>
-              </Field>
-            )}
-            {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
-              <>
-                <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
-                  <MarkdownEditor
-                    value={eff("adapterConfig", "bootstrapPromptTemplate", config.bootstrapPromptTemplate)}
-                    onChange={(value) => mark("adapterConfig", "bootstrapPromptTemplate", value || undefined)}
-                    placeholder="Optional initial setup prompt for the first run"
-                    contentClassName="min-h-(--sz-44px) text-sm font-mono"
-                    imageUploadHandler={async (file) => {
-                      const asset = await uploadMarkdownImage.mutateAsync({
-                        file,
-                        namespace: `agents/${props.agent.id}/bootstrap-prompt`,
-                      });
-                      return asset.contentPath;
-                    }}
-                  />
-                </Field>
-                <p className="text-xs text-muted-foreground">
-                  Legacy bootstrap content remains supported, but new behavior should live in the prompt template or instructions file.
-                </p>
-              </>
-            )}
+            <p className="text-xs text-muted-foreground">
+              Enabling either opens a confirm dialog stating the consequence. The change is part of the draft changeset, so it lands in History like everything else.
+            </p>
           </div>
+
+          {/* Legacy settings — rendered ONLY when a deprecated field still
+              carries a value; each row is paired with a migration action. */}
+          {showLegacyCard && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+              <div>
+                <h3 className="text-sm font-medium">Legacy settings</h3>
+                <p className="text-xs text-muted-foreground">
+                  Deprecated fields that still carry a value. Migrate them off — a clean agent never sees this card.
+                </p>
+              </div>
+              {hasLegacyCwdValue && (
+                <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-background/60 px-3 py-2">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex items-center gap-1.5 text-sm">
+                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span>Working directory (deprecated)</span>
+                    </div>
+                    <p className="truncate font-mono text-xs text-muted-foreground" title={legacyCwdValue}>{legacyCwdValue}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 px-2.5 text-xs"
+                    onClick={() => (isCreate ? set!({ cwd: "" }) : mark("adapterConfig", "cwd", undefined))}
+                  >
+                    Clear — use workspaces
+                  </Button>
+                </div>
+              )}
+              {hasLegacyBootstrapValue && (
+                <LegacyBootstrapRow
+                  value={legacyBootstrapValue}
+                  onMove={() => mark("adapterConfig", "bootstrapPromptTemplate", undefined)}
+                />
+              )}
+            </div>
+          )}
         </div>
       )}
 
+    </div>
+  );
+}
+
+/**
+ * Legacy bootstrap-prompt row with a "Move to instructions…" migration action.
+ * Copies the prompt to the clipboard and clears the field from the draft; once
+ * cleared the surrounding Legacy card auto-hides (no deprecated value remains).
+ */
+function LegacyBootstrapRow({ value, onMove }: { value: string; onMove: () => void }) {
+  const charCount = value.trim().length;
+  async function handleMove() {
+    try {
+      await navigator.clipboard?.writeText(value);
+    } catch {
+      // Clipboard may be blocked (permissions/headless); still migrate off.
+    }
+    onMove();
+  }
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-background/60 px-3 py-2">
+      <div className="min-w-0 space-y-1">
+        <div className="text-sm">Bootstrap prompt (legacy)</div>
+        <p className="text-xs text-muted-foreground">{charCount} chars · sent only on fresh sessions</p>
+      </div>
+      <Button type="button" variant="outline" size="sm" className="h-7 shrink-0 px-2.5 text-xs" onClick={handleMove}>
+        Move to instructions…
+      </Button>
     </div>
   );
 }
