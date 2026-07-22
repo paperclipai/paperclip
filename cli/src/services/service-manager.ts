@@ -230,7 +230,7 @@ export class LaunchdServiceManager implements ServiceManager {
 
   async uninstall(): Promise<void> {
     await this.runner("launchctl", ["bootout", `${this.domain}/${this.serviceName}`]).catch(() => undefined);
-    await this.runner("launchctl", ["enable", `${this.domain}/${this.serviceName}`]).catch(() => undefined);
+    await this.runner("launchctl", ["disable", `${this.domain}/${this.serviceName}`]).catch(() => undefined);
     await fs.rm(this.definitionPath, { force: true });
   }
   async start(): Promise<void> { await this.install({ startNow: true, startOnLogin: true }); }

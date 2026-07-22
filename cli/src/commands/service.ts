@@ -6,6 +6,7 @@ import { packageVersion } from "../version.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 import { resolvePaperclipHomeDir, resolvePaperclipInstanceId } from "../config/home.js";
 import { detectServiceManager, type ServiceManager, type ServiceStatus } from "../services/service-manager.js";
+import { buildLocalHealthUrl } from "../utils/health-url.js";
 
 type CommonOptions = { instance?: string; json?: boolean };
 type HealthResult = { ok: boolean; serverVersion: string | null; error?: string };
@@ -26,10 +27,7 @@ async function resolveManager(opts: CommonOptions): Promise<ServiceManager | nul
 function healthUrl(instanceId: string): string {
   process.env.PAPERCLIP_INSTANCE_ID = instanceId;
   const config = readConfig(resolveConfigPath());
-  const port = config?.server.port ?? 3100;
-  const configuredHost = config?.server.host?.trim();
-  const host = !configuredHost || configuredHost === "0.0.0.0" || configuredHost === "::" ? "127.0.0.1" : configuredHost;
-  return `http://${host}:${port}/api/health`;
+  return buildLocalHealthUrl(config?.server.host, config?.server.port ?? 3100);
 }
 
 async function probeHealth(instanceId: string): Promise<HealthResult> {
@@ -53,11 +51,11 @@ async function waitForHealth(instanceId: string, expectedVersion: string | null,
   throw new Error(`Paperclip service did not become healthy${expectedVersion ? ` at version ${expectedVersion}` : ""}: ${last.error ?? `reported ${last.serverVersion ?? "no version"}`}`);
 }
 
-export function resolveRestartExpectedVersion(serverVersion: string | null): string {
-  return serverVersion ?? packageVersion;
+export function resolveRestartExpectedVersion(expectedVersion: string | null | undefined): string {
+  return expectedVersion ?? packageVersion;
 }
 
-async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, drainRequired: boolean): Promise<{ requestedAt: string; previousVersion: string }> {
+async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, drainRequired: boolean): Promise<{ requestedAt: string }> {
   if (!status.pid) throw new Error(`Cannot restart ${status.serviceName}: supervisor did not report a server pid.`);
   const health = await probeHealth(instanceId);
   const homeDir = resolvePaperclipHomeDir();
@@ -72,7 +70,7 @@ async function writeHotRestartIntent(status: ServiceStatus, instanceId: string, 
     drainRequired,
     requestedByRunId: process.env.PAPERCLIP_RUN_ID?.trim() || null,
   }, null, 2)}\n`, "utf8");
-  return { requestedAt, previousVersion: resolveRestartExpectedVersion(health.serverVersion) };
+  return { requestedAt };
 }
 
 async function waitForRestartReport(requestedAt: string, timeoutMs = 10_000): Promise<unknown | null> {
@@ -97,7 +95,7 @@ export async function restartManagedService(input: { instanceId?: string; expect
   const before = await detection.manager.status();
   const intent = await writeHotRestartIntent(before, instanceId, input.waitForDrain ?? false);
   await detection.manager.restart();
-  const health = await waitForHealth(instanceId, input.expectedVersion ?? intent.previousVersion);
+  const health = await waitForHealth(instanceId, resolveRestartExpectedVersion(input.expectedVersion));
   return { status: await detection.manager.status(), health, report: await waitForRestartReport(intent.requestedAt) };
 }
 

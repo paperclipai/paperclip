@@ -6,8 +6,23 @@ import {
   removeManagedShim,
   resolveInstallStorePaths,
 } from "../install-store.js";
+import { resolvePaperclipInstanceId } from "../config/home.js";
+import { detectServiceManager } from "../services/service-manager.js";
 
-export async function uninstallCommand(): Promise<void> {
+type UninstallDependencies = {
+  detectServiceManager: typeof detectServiceManager;
+};
+
+export async function uninstallCommand(
+  dependencies: Partial<UninstallDependencies> = {},
+): Promise<void> {
+  const detect = dependencies.detectServiceManager ?? detectServiceManager;
+  const detection = await detect({ instanceId: resolvePaperclipInstanceId() });
+  if (detection.supported) {
+    const status = await detection.manager.status();
+    if (status.installed || status.active) await detection.manager.uninstall();
+  }
+
   const paths = resolveInstallStorePaths();
   const shimRemoved = removeManagedShim(paths);
   fs.rmSync(paths.cliRoot, { recursive: true, force: true });

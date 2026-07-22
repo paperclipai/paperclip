@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { serviceHealthChecks } from "../checks/service-health-check.js";
 import { resolveRestartExpectedVersion } from "../commands/service.js";
 import type { PaperclipConfig } from "../config/schema.js";
+import { buildLocalHealthUrl } from "../utils/health-url.js";
 import { packageVersion } from "../version.js";
 
 const config = {
@@ -40,9 +41,14 @@ function managerFixture(active = true) {
 }
 
 describe("service health doctor checks", () => {
-  it("uses the bare package version when restart health has no prior server version", () => {
+  it("uses the current CLI version unless an expected restart version is explicit", () => {
     expect(resolveRestartExpectedVersion(null)).toBe(packageVersion);
     expect(resolveRestartExpectedVersion("1.2.3")).toBe("1.2.3");
+  });
+
+  it("brackets configured IPv6 hosts in health URLs", () => {
+    expect(buildLocalHealthUrl("::1", 3100)).toBe("http://[::1]:3100/api/health");
+    expect(buildLocalHealthUrl("::", 3100)).toBe("http://127.0.0.1:3100/api/health");
   });
 
   it("passes for a current, active, healthy service", async () => {
