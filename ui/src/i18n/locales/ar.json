@@ -1,0 +1,9 @@
+{
+  "app": {
+    "noCompanies": {
+      "title": "أنشئ شركتك الأولى",
+      "description": "ابدأ بإنشاء شركة.",
+      "newCompany": "شركة جديدة"
+    }
+  }
+}

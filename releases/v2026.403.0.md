@@ -1,0 +1,68 @@
+# v2026.403.0
+
+> Released: 2026-04-03
+
+## Highlights
+
+- **Inbox overhaul** — New "Mine" inbox tab with mail-client keyboard shortcuts (j/k navigation, a/y archive, o open), swipe-to-archive, "Mark all as read" button, operator search with keyboard controls, and a "Today" divider. Read/dismissed state now extends to all inbox item types. ([#2072](https://github.com/paperclipai/paperclip/pull/2072), [#2540](https://github.com/paperclipai/paperclip/pull/2540))
+- **Feedback and evals** — Thumbs-up/down feedback capture flow with voting UI, feedback modal styling, and run link placement in the feedback row. ([#2529](https://github.com/paperclipai/paperclip/pull/2529))
+- **Document revisions** — Issue document revision history with a restore flow, replay-safe migrations, and revision tracking API. ([#2317](https://github.com/paperclipai/paperclip/pull/2317))
+- **Telemetry** — Anonymized App-side telemetry. Disable with `DO_NOT_TRACK=1` or `PAPERCLIP_TELEMETRY_DISABLED=1` ([#2527](https://github.com/paperclipai/paperclip/pull/2527))
+- **Execution workspaces (EXPERIMENTAL)** — Full workspace lifecycle management for agent runs: workspace-aware routine runs, execution workspace detail pages with linked issues, runtime controls (start/stop), close readiness checks, and follow-up issue workspace inheritance. Project workspaces get their own detail pages and a dedicated tab on the project view. ([#2074](https://github.com/paperclipai/paperclip/pull/2074), [#2203](https://github.com/paperclipai/paperclip/pull/2203))
+
+## Improvements
+
+- **Comment interrupts** — New interrupt support for issue comments with queued comment thread UX.
+- **Docker improvements** — Improved base image organization, host UID/GID mapping for volume mounts, and Docker file structure. ([#2407](https://github.com/paperclipai/paperclip/pull/2407), [#1923](https://github.com/paperclipai/paperclip/pull/1923), @radiusred)
+- **Optimistic comments** — Comments render instantly with optimistic IDs while the server confirms; draft clearing is fixed for a smoother composing experience.
+- **GitHub Enterprise URL support** — Skill and company imports now accept GitHub Enterprise URLs with hardened GHE URL detection and shared GitHub helpers. ([#2449](https://github.com/paperclipai/paperclip/pull/2449), @statxc)
+- **Gemini local adapter** — Added `gemini_local` to the adapter types validation enum so Gemini agents no longer fail validation. ([#2430](https://github.com/paperclipai/paperclip/pull/2430), @bittoby)
+- **Routines skill** — New `paperclip-routines` skill with documentation moved into Paperclip references. Routine runs now support workspace awareness and variables. ([#2414](https://github.com/paperclipai/paperclip/pull/2414), @aronprins)
+- **GPT-5.4 and xhigh effort** — Added GPT-5.4 model fallback and xhigh effort options for OpenAI-based adapters. ([#112](https://github.com/paperclipai/paperclip/pull/112), @kevmok)
+- **Commit metrics** — New Paperclip commit metrics script with filtered exports and edge case handling.
+- **CLI onboarding** — Onboarding reruns now preserve existing config; exported tsx CLI entrypoint for cleaner startup. ([#2071](https://github.com/paperclipai/paperclip/pull/2071))
+- **Board delegation guide** — New documentation for board-operator delegation patterns. ([#1889](https://github.com/paperclipai/paperclip/pull/1889))
+- **Agent capabilities in org chart** — Agent capabilities field now renders on org chart cards. ([#2349](https://github.com/paperclipai/paperclip/pull/2349))
+- **PR template updates** — Added Model Used section to PR template; CONTRIBUTING.md now requires PR template, Greptile 5/5, and tests. ([#2552](https://github.com/paperclipai/paperclip/pull/2552), [#2618](https://github.com/paperclipai/paperclip/pull/2618))
+- **Hermes adapter upgrade** — Upgraded hermes-paperclip-adapter with UI adapter and skills support, plus detectModel improvements.
+- **Markdown editor monospace** — Agent instruction file editors now use monospace font. ([#2620](https://github.com/paperclipai/paperclip/pull/2620))
+- **Markdown link styling** — Links in markdown now render with underline and pointer cursor.
+- **@-mention autocomplete** — Mention autocomplete in project descriptions now renders via portal to prevent overflow clipping.
+- **Skipped wakeup messages** — Agent detail view now surfaces skipped wakeup messages for better observability.
+
+## Fixes
+
+- **Inbox ordering** — Self-touched issues no longer sink to the bottom of the inbox. ([#2144](https://github.com/paperclipai/paperclip/pull/2144))
+- **Env var type switching** — Switching an env var from Plain to Secret no longer loses the value; dropdown snap-back when switching is fixed. ([#2327](https://github.com/paperclipai/paperclip/pull/2327), @radiusred)
+- **Adapter type switching** — Adapter-agnostic keys are now preserved when changing adapter type.
+- **Project slug collisions** — Non-ASCII project names no longer produce duplicate slugs; a short UUID suffix is appended. ([#2328](https://github.com/paperclipai/paperclip/pull/2328), @bittoby)
+- **Codex RPC spawn error** — Fixed CodexRpcClient crash on ENOENT when spawning Codex. ([#2048](https://github.com/paperclipai/paperclip/pull/2048), @remdev)
+- **Heartbeat session reuse** — Fixed stale session reuse across heartbeat runs. ([#2065](https://github.com/paperclipai/paperclip/pull/2065), @edimuj)
+- **Vite HMR with reverse proxy** — Fixed WebSocket HMR connections behind reverse proxies and added StrictMode guard. ([#2171](https://github.com/paperclipai/paperclip/pull/2171))
+- **Copy button fallback** — Copy-to-clipboard now works in non-secure (HTTP) contexts. ([#2472](https://github.com/paperclipai/paperclip/pull/2472))
+- **Worktree default branch** — Worktree creation auto-detects the default branch when baseRef is not configured. ([#2463](https://github.com/paperclipai/paperclip/pull/2463))
+- **Session continuity** — Timer and heartbeat wakes now preserve session continuity.
+- **Worktree isolation** — Fixed worktree provision isolation, runtime recovery, and sibling port collisions.
+- **Cursor adapter auth** — Cursor adapter now checks native auth before warning about missing API key.
+- **Codex skill injection** — Fixed skill injection to use effective `$CODEX_HOME/skills/` instead of cwd.
+- **OpenCode config pollution** — Prevented `opencode.json` config pollution in workspace directories.
+- **Pi adapter** — Fixed Pi local adapter execution, transcript parsing, and model detection from stderr.
+- **x-forwarded-host origin check** — Board mutation origin check now includes x-forwarded-host header.
+- **Health DB probe** — Fixed database connectivity health check probe.
+- **Issue breadcrumb routing** — Hardened issue breadcrumb source routing.
+- **Instructions tab width** — Removed max-w-6xl constraint from instructions tab for full-width content. ([#2621](https://github.com/paperclipai/paperclip/pull/2621))
+- **Shell fallback on Windows** — Uses `sh` instead of `/bin/sh` as shell fallback on Windows. ([#891](https://github.com/paperclipai/paperclip/pull/891))
+- **Feedback migration** — Made feedback migration replay-safe after rebase.
+- **Issue detail polish** — Polished issue detail timelines and attachments display.
+
+## Upgrade Guide
+
+Four new database migrations (`0045`–`0048`) will run automatically on startup. These migrations add workspace lifecycle columns, routine variables, feedback tables, and document revision tracking. All migrations are additive — no existing data is modified.
+
+If you use execution workspaces, note that follow-up issues now automatically inherit workspace linkage from their parent. For non-child follow-ups tied to the same workspace, set `inheritExecutionWorkspaceFromIssueId` explicitly when creating the issue.
+
+## Contributors
+
+Thank you to everyone who contributed to this release!
+
+@aronprins, @bittoby, @cryppadotta, @edimuj, @HenkDz, @kevmok, @mvanhorn, @radiusred, @remdev, @statxc, @vanductai

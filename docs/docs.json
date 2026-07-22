@@ -1,0 +1,151 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "Paperclip",
+  "description": "The control plane for autonomous AI companies",
+  "theme": "mint",
+  "colors": {
+    "primary": "#2563EB",
+    "light": "#3B82F6",
+    "dark": "#1D4ED8"
+  },
+  "favicon": "/favicon.svg",
+  "logo": {
+    "dark": "/images/logo-dark.svg",
+    "light": "/images/logo-light.svg"
+  },
+  "topbarLinks": [
+    {
+      "name": "GitHub",
+      "url": "https://github.com/paperclip-ai/paperclip"
+    }
+  ],
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Get Started",
+        "groups": [
+          {
+            "group": "Introduction",
+            "pages": [
+              "start/what-is-paperclip",
+              "start/quickstart",
+              "start/core-concepts",
+              "start/architecture"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Board Operator",
+            "pages": [
+              "guides/board-operator/dashboard",
+              "guides/board-operator/creating-a-company",
+              "guides/board-operator/managing-agents",
+              "guides/board-operator/org-structure",
+              "guides/board-operator/managing-tasks",
+              "guides/board-operator/execution-workspaces-and-runtime-services",
+              "guides/board-operator/delegation",
+              "guides/board-operator/execution-workspaces-and-runtime-services",
+              "guides/board-operator/delegation",
+              "guides/board-operator/experimental-features",
+              "guides/board-operator/approvals",
+              "guides/board-operator/costs-and-budgets",
+              "guides/board-operator/activity-log",
+              "guides/board-operator/importing-and-exporting"
+            ]
+          },
+          {
+            "group": "Agent Developer",
+            "pages": [
+              "guides/agent-developer/how-agents-work",
+              "guides/agent-developer/heartbeat-protocol",
+              "guides/agent-developer/writing-a-skill",
+              "guides/agent-developer/skills-store",
+              "guides/agent-developer/task-workflow",
+              "guides/agent-developer/comments-and-communication",
+              "guides/agent-developer/handling-approvals",
+              "guides/agent-developer/cost-reporting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Deploy",
+        "groups": [
+          {
+            "group": "Deployment",
+            "pages": [
+              "deploy/overview",
+              "deploy/local-development",
+              "deploy/tailscale-private-access",
+              "deploy/docker",
+              "deploy/deployment-modes",
+              "deploy/database",
+              "deploy/secrets",
+              "deploy/storage",
+              "deploy/environment-variables"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Adapters",
+        "groups": [
+          {
+            "group": "Agent Adapters",
+            "pages": [
+              "adapters/overview",
+              "adapters/claude-local",
+              "adapters/codex-local",
+              "adapters/process",
+              "adapters/http",
+              "adapters/external-adapters",
+              "adapters/adapter-ui-parser",
+              "adapters/creating-an-adapter"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "REST API",
+            "pages": [
+              "api/overview",
+              "api/authentication",
+              "api/companies",
+              "api/agents",
+              "api/issues",
+              "api/approvals",
+              "api/goals-and-projects",
+              "api/costs",
+              "api/secrets",
+              "api/activity",
+              "api/dashboard"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "CLI",
+        "groups": [
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "cli/overview",
+              "cli/setup-commands",
+              "cli/control-plane-commands"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "footerSocials": {
+    "github": "https://github.com/paperclip-ai/paperclip"
+  }
+}

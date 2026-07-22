@@ -1,0 +1,426 @@
+import express from "express";
+import os from "node:os";
+import path from "node:path";
+import request from "supertest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import type { ServerAdapterModule } from "../adapters/index.js";
+
+const mockAgentService = vi.hoisted(() => ({
+  create: vi.fn(),
+  getById: vi.fn(),
+  update: vi.fn(),
+}));
+
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(),
+  decide: vi.fn(),
+  hasPermission: vi.fn(),
+  ensureMembership: vi.fn(),
+  setPrincipalPermission: vi.fn(),
+}));
+
+const mockCompanySkillService = vi.hoisted(() => ({
+  listRuntimeSkillEntries: vi.fn(),
+  resolveRequestedSkillKeys: vi.fn(),
+}));
+
+const mockSecretService = vi.hoisted(() => ({
+  normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+  resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({ config })),
+  syncEnvBindingsForTarget: vi.fn(),
+}));
+
+const mockAgentInstructionsService = vi.hoisted(() => ({
+  materializeManagedBundle: vi.fn(),
+  getBundle: vi.fn(),
+  readFile: vi.fn(),
+  updateBundle: vi.fn(),
+  writeFile: vi.fn(),
+  deleteFile: vi.fn(),
+  exportFiles: vi.fn(),
+  ensureManagedBundle: vi.fn(),
+}));
+
+const mockBudgetService = vi.hoisted(() => ({
+  upsertPolicy: vi.fn(),
+}));
+
+const mockHeartbeatService = vi.hoisted(() => ({
+  cancelActiveForAgent: vi.fn(),
+}));
+
+const mockIssueApprovalService = vi.hoisted(() => ({
+  linkManyForApproval: vi.fn(),
+}));
+
+const mockApprovalService = vi.hoisted(() => ({
+  create: vi.fn(),
+  getById: vi.fn(),
+}));
+
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
+}));
+
+const mockLogActivity = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/index.js", () => ({
+  agentService: () => mockAgentService,
+  agentInstructionsService: () => mockAgentInstructionsService,
+  accessService: () => mockAccessService,
+  approvalService: () => mockApprovalService,
+  builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
+  companySkillService: () => mockCompanySkillService,
+  budgetService: () => mockBudgetService,
+  heartbeatService: () => mockHeartbeatService,
+  issueApprovalService: () => mockIssueApprovalService,
+  issueService: () => ({}),
+  logActivity: mockLogActivity,
+  secretService: () => mockSecretService,
+  syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
+  workspaceOperationService: () => ({}),
+}));
+
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: () => mockInstanceSettingsService,
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
+}));
+
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    agentService: () => mockAgentService,
+    agentInstructionsService: () => mockAgentInstructionsService,
+    accessService: () => mockAccessService,
+    approvalService: () => mockApprovalService,
+    builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
+    companySkillService: () => mockCompanySkillService,
+    budgetService: () => mockBudgetService,
+    heartbeatService: () => mockHeartbeatService,
+    issueApprovalService: () => mockIssueApprovalService,
+    issueService: () => ({}),
+    logActivity: mockLogActivity,
+    secretService: () => mockSecretService,
+    syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
+    workspaceOperationService: () => ({}),
+  }));
+
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+  }));
+
+  vi.doMock("../services/secrets.js", () => ({
+    secretService: () => mockSecretService,
+  }));
+}
+
+const externalAdapter: ServerAdapterModule = {
+  type: "external_test",
+  execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+  testEnvironment: async () => ({
+    adapterType: "external_test",
+    status: "pass",
+    checks: [],
+    testedAt: new Date(0).toISOString(),
+  }),
+};
+
+const missingAdapterType = "missing_adapter_validation_test";
+
+async function createApp() {
+  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as any).actor = {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    };
+    next();
+  });
+  const db = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(async () => [
+          {
+            id: "company-1",
+            requireBoardApprovalForNewAgents: false,
+          },
+        ]),
+      })),
+    })),
+  };
+  app.use("/api", agentRoutes(db as any));
+  app.use(errorHandler);
+  return app;
+}
+
+async function requestApp(
+  app: express.Express,
+  buildRequest: (baseUrl: string) => request.Test,
+) {
+  const { createServer } = await vi.importActual<typeof import("node:http")>("node:http");
+  const server = createServer(app);
+  try {
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected HTTP server to listen on a TCP port");
+    }
+    return await buildRequest(`http://127.0.0.1:${address.port}`);
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    }
+  }
+}
+
+async function unregisterTestAdapter(type: string) {
+  const { unregisterServerAdapter } = await import("../adapters/index.js");
+  unregisterServerAdapter(type);
+}
+
+describe("agent routes adapter validation", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.doUnmock("../routes/agents.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../routes/agents.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
+    mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
+    mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant",
+    });
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAccessService.ensureMembership.mockResolvedValue(undefined);
+    mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
+    mockLogActivity.mockResolvedValue(undefined);
+    mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
+    mockAgentInstructionsService.materializeManagedBundle.mockImplementation(async (agent: { adapterConfig: unknown }) => ({
+      adapterConfig: agent.adapterConfig,
+    }));
+    mockAgentService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: String(input.id ?? "11111111-1111-4111-8111-111111111111"),
+      companyId: "company-1",
+      name: String(input.name ?? "Agent"),
+      urlKey: "agent",
+      role: String(input.role ?? "general"),
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: String(input.adapterType ?? "process"),
+      adapterConfig: (input.adapterConfig as Record<string, unknown> | undefined) ?? {},
+      runtimeConfig: (input.runtimeConfig as Record<string, unknown> | undefined) ?? {},
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }));
+    mockAgentService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      name: "Codex",
+      urlKey: "codex",
+      role: "engineer",
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...(await mockAgentService.getById()),
+      ...patch,
+    }));
+    await unregisterTestAdapter("external_test");
+    await unregisterTestAdapter(missingAdapterType);
+  });
+
+  afterEach(async () => {
+    await unregisterTestAdapter("external_test");
+    await unregisterTestAdapter(missingAdapterType);
+  });
+
+  it("creates agents for dynamically registered external adapter types", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "External Agent",
+          adapterType: "external_test",
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.adapterType).toBe("external_test");
+  });
+
+  it("does not inject CODEX_HOME or OPENAI_API_KEY when creating a keyless codex_local agent", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Codex Agent",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
+    const env = (adapterConfig.env as Record<string, unknown> | undefined) ?? {};
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.CODEX_HOME).toBeUndefined();
+  });
+
+  it("does not re-inject CODEX_HOME or OPENAI_API_KEY when updating a keyless codex_local agent", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({
+          adapterConfig: { model: "gpt-5.4" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = patch.adapterConfig as Record<string, unknown>;
+    const env = (adapterConfig.env as Record<string, unknown> | undefined) ?? {};
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.CODEX_HOME).toBeUndefined();
+  });
+
+  it("isolates CODEX_HOME when updating a codex_local agent to set its own OPENAI_API_KEY", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({
+          adapterConfig: {
+            env: {
+              OPENAI_API_KEY: "sk-test-key",
+            },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = patch.adapterConfig as Record<string, unknown>;
+    const env = adapterConfig.env as Record<string, unknown>;
+    expect(env.OPENAI_API_KEY).toBe("sk-test-key");
+    expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
+  });
+
+  it("allows codex_local agents to share the host Codex home", async () => {
+    const app = await createApp();
+    const sharedHome = path.join(os.homedir(), ".codex");
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Shared Codex",
+          adapterType: "codex_local",
+          adapterConfig: {
+            env: {
+              CODEX_HOME: sharedHome,
+            },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
+    const env = adapterConfig.env as Record<string, unknown>;
+    expect(env.CODEX_HOME).toBe(sharedHome);
+  });
+
+  it("isolates CODEX_HOME when a codex_local agent sets its own OPENAI_API_KEY", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Keyed Codex",
+          adapterType: "codex_local",
+          adapterConfig: {
+            env: {
+              OPENAI_API_KEY: "sk-test-key",
+            },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const agentId = String(createInput.id);
+    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
+    const env = adapterConfig.env as Record<string, unknown>;
+    expect(env.OPENAI_API_KEY).toBe("sk-test-key");
+    expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
+  });
+
+  it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Missing Adapter",
+          adapterType: missingAdapterType,
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
+  });
+});

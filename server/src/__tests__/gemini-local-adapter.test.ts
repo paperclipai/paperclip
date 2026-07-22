@@ -1,0 +1,203 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  isGeminiTurnLimitResult,
+  isGeminiSessionUnrecoverableError,
+  parseGeminiJsonl,
+} from "@paperclipai/adapter-gemini-local/server";
+import { parseGeminiStdoutLine } from "@paperclipai/adapter-gemini-local/ui";
+import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
+
+describe("gemini_local parser", () => {
+  it("extracts session, summary, usage, cost, and terminal error message from v0.38 stream-json output", () => {
+    const stdout = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "gemini-session-1", model: "gemini-2.5-pro" }),
+      JSON.stringify({
+        type: "message",
+        role: "assistant",
+        content: "hello",
+      }),
+      JSON.stringify({
+        type: "result",
+        status: "success",
+        session_id: "gemini-session-1",
+        stats: {
+          input_tokens: 12,
+          cached_input_tokens: 3,
+          output_tokens: 7,
+        },
+        total_cost_usd: 0.00123,
+      }),
+      JSON.stringify({ type: "error", message: "model access denied" }),
+    ].join("\n");
+
+    const parsed = parseGeminiJsonl(stdout);
+    expect(parsed.sessionId).toBe("gemini-session-1");
+    expect(parsed.summary).toBe("hello");
+    expect(parsed.usage).toEqual({
+      inputTokens: 12,
+      cachedInputTokens: 3,
+      outputTokens: 7,
+    });
+    expect(parsed.costUsd).toBeCloseTo(0.00123, 6);
+    expect(parsed.errorMessage).toBe("model access denied");
+  });
+
+  it("extracts structured questions", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "output_text", text: "I have a question." },
+            {
+              type: "question",
+              prompt: "Which model?",
+              choices: [
+                { key: "pro", label: "Gemini Pro", description: "Better" },
+                { key: "flash", label: "Gemini Flash" },
+              ],
+            },
+          ],
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parseGeminiJsonl(stdout);
+    expect(parsed.summary).toBe("I have a question.");
+    expect(parsed.question).toEqual({
+      prompt: "Which model?",
+      choices: [
+        { key: "pro", label: "Gemini Pro", description: "Better" },
+        { key: "flash", label: "Gemini Flash", description: undefined },
+      ],
+    });
+  });
+});
+
+describe("gemini_local stale session detection", () => {
+  it("treats missing session messages as an unknown session error", () => {
+    expect(isGeminiSessionUnrecoverableError("", "unknown session id abc")).toBe(true);
+    expect(isGeminiSessionUnrecoverableError("", "checkpoint latest not found")).toBe(true);
+  });
+});
+
+describe("gemini_local turn-limit detection", () => {
+  it("detects structured turn-limit signals and exit code 53", () => {
+    expect(isGeminiTurnLimitResult({ status: "turn_limit" })).toBe(true);
+    expect(isGeminiTurnLimitResult({ stopReason: "max_turns_exhausted" })).toBe(true);
+    expect(isGeminiTurnLimitResult(null, 53)).toBe(true);
+  });
+
+  it("checks every structured stop field for turn-limit exhaustion", () => {
+    expect(
+      isGeminiTurnLimitResult({
+        status: "success",
+        stopReason: "turn_limit_exhausted",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not detect turn-limit exhaustion from unstructured error text", () => {
+    expect(isGeminiTurnLimitResult({ error: "max_turns reached" })).toBe(false);
+  });
+});
+
+describe("gemini_local ui stdout parser", () => {
+  it("parses v0.38 assistant message and result events", () => {
+    const ts = "2026-03-08T00:00:00.000Z";
+
+    expect(
+      parseGeminiStdoutLine(
+        JSON.stringify({
+          type: "message",
+          role: "assistant",
+          content: "I checked the repo.",
+        }),
+        ts,
+      ),
+    ).toEqual([
+      { kind: "assistant", ts, text: "I checked the repo." },
+    ]);
+
+    expect(
+      parseGeminiStdoutLine(
+        JSON.stringify({
+          type: "result",
+          status: "success",
+          text: "Done",
+          stats: {
+            input_tokens: 10,
+            output_tokens: 5,
+            cached_input_tokens: 2,
+          },
+          total_cost_usd: 0.00042,
+        }),
+        ts,
+      ),
+    ).toEqual([
+      {
+        kind: "result",
+        ts,
+        text: "Done",
+        inputTokens: 10,
+        outputTokens: 5,
+        cachedTokens: 2,
+        costUsd: 0.00042,
+        subtype: "success",
+        isError: false,
+        errors: [],
+      },
+    ]);
+  });
+});
+
+function stripAnsi(value: string): string {
+  return value.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+describe("gemini_local cli formatter", () => {
+  it("prints init, v0.38 assistant, result, and error events", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    let joined = "";
+
+    try {
+      printGeminiStreamEvent(
+        JSON.stringify({ type: "system", subtype: "init", session_id: "gemini-session-1", model: "gemini-2.5-pro" }),
+        false,
+      );
+      printGeminiStreamEvent(
+        JSON.stringify({
+          type: "message",
+          role: "assistant",
+          content: "hello",
+        }),
+        false,
+      );
+      printGeminiStreamEvent(
+        JSON.stringify({
+          type: "result",
+          status: "success",
+          stats: {
+            input_tokens: 10,
+            output_tokens: 5,
+            cached_input_tokens: 2,
+          },
+          total_cost_usd: 0.00042,
+        }),
+        false,
+      );
+      printGeminiStreamEvent(
+        JSON.stringify({ type: "error", message: "boom" }),
+        false,
+      );
+      joined = spy.mock.calls.map((call) => stripAnsi(call.join(" "))).join("\n");
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(joined).toContain("Gemini init");
+    expect(joined).toContain("assistant: hello");
+    expect(joined).toContain("tokens: in=10 out=5 cached=2 cost=$0.000420");
+    expect(joined).toContain("error: boom");
+  });
+});
