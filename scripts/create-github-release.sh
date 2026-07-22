@@ -80,6 +80,19 @@ if ! git -C "$REPO_ROOT" rev-parse "$tag" >/dev/null 2>&1; then
   exit 1
 fi
 
+# The catalog is derived from the checked-out sources, so it must be generated
+# from the exact commit the release tag points at, with no local edits.
+tag_commit="$(git -C "$REPO_ROOT" rev-parse "$tag^{commit}")"
+head_commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+if [ "$head_commit" != "$tag_commit" ]; then
+  echo "Error: HEAD ($head_commit) does not match tag $tag ($tag_commit). Check out the release tag before generating the feature catalog." >&2
+  exit 1
+fi
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]; then
+  echo "Error: working tree has uncommitted changes. The feature catalog must be generated from the pristine release commit." >&2
+  exit 1
+fi
+
 catalog_dir="$(mktemp -d)"
 trap 'rm -rf "$catalog_dir"' EXIT
 catalog_file="$catalog_dir/feature-catalog.json"
