@@ -12,16 +12,22 @@ import urllib.error
 import urllib.request
 
 VAULT_LOOKUP_URL = "http://127.0.0.1:7788/lookup"
-VALID_MODES = ("kontakt", "termin", "mail", "wissen")
+VALID_MODES = ("kontakt", "termin", "mail", "wissen", "dokument")
 
 
 class VaultError(Exception):
     """Vault-Lookup-Dienst nicht erreichbar oder Antwort unbrauchbar."""
 
 
-def lookup(mode, query, url=VAULT_LOOKUP_URL, timeout=30):
-    """Ruft den Vault-Lookup-Dienst auf und gibt das JSON-dict zurück."""
-    body = json.dumps({"mode": mode, "query": query}).encode("utf-8")
+def lookup(mode, query, vault=None, url=VAULT_LOOKUP_URL, timeout=30):
+    """Ruft den Vault-Lookup-Dienst auf und gibt das JSON-dict zurück.
+
+    `vault` (z.B. "clara") wählt den Mandanten-Vault; fehlt er, gilt serverseitig
+    der Default (whitestag)."""
+    payload = {"mode": mode, "query": query}
+    if vault:
+        payload["vault"] = vault
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url, data=body, headers={"Content-Type": "application/json"})
     try:

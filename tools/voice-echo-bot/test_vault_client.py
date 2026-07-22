@@ -57,6 +57,27 @@ class TestLookup(unittest.TestCase):
             with self.assertRaises(vault_client.VaultError):
                 vault_client.lookup("kontakt", "x")
 
+    def test_vault_added_to_body_when_set(self):
+        captured = {}
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _Resp({"mode": "kontakt", "query": "x", "treffer": []})
+        with mock.patch.object(vault_client.urllib.request, "urlopen", side_effect=fake_urlopen):
+            vault_client.lookup("kontakt", "x", vault="clara")
+        self.assertEqual(captured["body"], {"mode": "kontakt", "query": "x", "vault": "clara"})
+
+    def test_vault_omitted_when_none(self):
+        captured = {}
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _Resp({"mode": "kontakt", "query": "x", "treffer": []})
+        with mock.patch.object(vault_client.urllib.request, "urlopen", side_effect=fake_urlopen):
+            vault_client.lookup("kontakt", "x")
+        self.assertNotIn("vault", captured["body"])
+
+    def test_dokument_is_valid_mode(self):
+        self.assertIn("dokument", vault_client.VALID_MODES)
+
 
 if __name__ == "__main__":
     unittest.main()
