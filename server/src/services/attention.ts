@@ -6,6 +6,7 @@ import {
   assets,
   companies,
   decisionTrainingExamples,
+  decisions,
   heartbeatRunEvents,
   heartbeatRuns,
   inboxDismissals,
@@ -42,6 +43,7 @@ import { parseIssueExecutionState } from "./issue-execution-policy.js";
 
 const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "approval",
+  "decision",
   "issue_thread_interaction",
   "join_request",
   "recovery_action",
@@ -67,10 +69,11 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   budget_alert: 3,
   agent_error_alert: 4,
   approval: 5,
-  issue_thread_interaction: 6,
-  review: 7,
-  productivity_review: 8,
-  join_request: 9,
+  decision: 6,
+  issue_thread_interaction: 7,
+  review: 8,
+  productivity_review: 9,
+  join_request: 10,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -731,6 +734,40 @@ export function attentionService(db: Db) {
           relatedIssue: issue ? issueSubject(prefix, issue) : null,
           ...issueContext(issue),
           detail,
+        }));
+      }
+
+      const openDecisions = await db.select({
+        id: decisions.id,
+        title: decisions.title,
+        body: decisions.body,
+        status: decisions.status,
+        originIssueId: decisions.originIssueId,
+        createdAt: decisions.createdAt,
+        updatedAt: decisions.updatedAt,
+      }).from(decisions).where(and(eq(decisions.companyId, companyId), eq(decisions.status, "open")))
+        .orderBy(desc(decisions.updatedAt), desc(decisions.id));
+      const decisionIssueMap = await issueSummaryMap(db, companyId, openDecisions.map((decision) => decision.originIssueId));
+      for (const decision of openDecisions) {
+        const issue = decisionIssueMap.get(decision.originIssueId) ?? null;
+        add(createItem({
+          companyId,
+          sourceKind: "decision",
+          subject: { kind: "decision", id: decision.id, companyId, title: decision.title, identifier: null, status: decision.status,
+            href: `/${prefix}/decisions?decisionId=${decision.id}`, metadata: { originIssueId: decision.originIssueId } },
+          whyNow: "An agent decision is waiting for a board response.",
+          decisionVerbs: decisionVerbs({ id: "decide", label: "Review", description: "Review and choose an option." }),
+          inlineResolvable: false,
+          entryRule: "decisions.status = 'open'",
+          exitRule: "Decision is decided, expired, or cancelled.",
+          dedupKey: `decision:${decision.id}`,
+          severity: "medium",
+          activityAt: toIso(decision.updatedAt),
+          createdAt: toIso(decision.createdAt),
+          updatedAt: toIso(decision.updatedAt),
+          relatedIssue: issue ? issueSubject(prefix, issue) : null,
+          ...issueContext(issue),
+          detail: { kind: "generic", summaryExcerpt: decision.body.slice(0, DETAIL_EXCERPT_LENGTH), images: [] },
         }));
       }
 
