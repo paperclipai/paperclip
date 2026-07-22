@@ -48,11 +48,13 @@ const TRIGGER_ROWS: { key: TriggerKey; label: string; noisy?: boolean }[] = [
 function RadioRow({
   selected,
   title,
+  badge,
   onSelect,
   children,
 }: {
   selected: boolean;
   title: string;
+  badge?: React.ReactNode;
   onSelect: () => void;
   children?: React.ReactNode;
 }) {
@@ -73,6 +75,7 @@ function RadioRow({
           {selected ? <span className="h-2 w-2 rounded-full bg-primary" /> : null}
         </span>
         <span className="text-sm font-medium">{title}</span>
+        {badge}
       </button>
       {selected && children ? <div className="mt-2 pl-6">{children}</div> : null}
     </div>
@@ -89,6 +92,11 @@ export function StatusCardSettingsForm({
   showInstructions?: boolean;
 }) {
   const { refreshPolicy: policy } = value;
+  // Change triggers and the active-hours window only govern *automatic* updates;
+  // in Manual mode the card only refreshes on demand, so those controls are
+  // dimmed to signal they don't apply (they stay editable so a policy switch
+  // keeps the chosen values).
+  const autoUpdating = policy.mode !== "manual";
 
   const setPolicy = (patch: Partial<StatusCardRefreshPolicy>) =>
     onChange({ ...value, refreshPolicy: { ...policy, ...patch } });
@@ -160,7 +168,16 @@ export function StatusCardSettingsForm({
       <section className="space-y-2">
         <h3 className="text-sm font-semibold">Auto-update policy</h3>
         <div className="space-y-2">
-          <RadioRow selected={policy.mode === "manual"} title="Manual only — updates when I press refresh" onSelect={() => setMode("manual")} />
+          <RadioRow
+            selected={policy.mode === "manual"}
+            title="Manual only — updates when I press refresh"
+            badge={
+              <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Default
+              </span>
+            }
+            onSelect={() => setMode("manual")}
+          />
           <RadioRow
             selected={policy.mode === "interval"}
             title="On a schedule, only if something changed"
@@ -224,8 +241,13 @@ export function StatusCardSettingsForm({
         </div>
       </section>
 
-      <section className="space-y-2">
-        <h3 className="text-sm font-semibold">Count as a change</h3>
+      <section className={cn("space-y-2", !autoUpdating && "opacity-50")}>
+        <div className="flex items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold">Count as a change</h3>
+          {!autoUpdating ? (
+            <span className="text-xs text-muted-foreground">applies to automatic updates only</span>
+          ) : null}
+        </div>
         <div className="space-y-2">
           {TRIGGER_ROWS.map((row) => (
             <label key={row.key} className="flex items-start gap-2.5 text-sm">
@@ -243,9 +265,12 @@ export function StatusCardSettingsForm({
 
       <section className="space-y-3">
         <h3 className="text-sm font-semibold">Guardrails</h3>
-        <label className="flex items-start gap-2.5 text-sm">
+        <label className={cn("flex items-start gap-2.5 text-sm", !autoUpdating && "opacity-50")}>
           <Checkbox checked={Boolean(activeHours)} onCheckedChange={(checked) => setActiveHoursEnabled(Boolean(checked))} className="mt-0.5" aria-label="Limit to active hours" />
-          <span>Only auto-update during active hours</span>
+          <span>
+            Only auto-update during active hours
+            {!autoUpdating ? <span className="ml-1 text-xs text-muted-foreground">(automatic updates only)</span> : null}
+          </span>
         </label>
         {activeHours ? (
           <div className="flex flex-wrap items-center gap-2 pl-6 text-sm">

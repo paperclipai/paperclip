@@ -40,11 +40,14 @@ export function ArchivedStatusCardRow({
           {rollup ? ` · lifetime ${formatTokens(rollup.totalTokens)} / ${formatCents(rollup.totalCostCents)}` : ""}
         </p>
       </div>
+      {/* View is the more common intent on an archived row (reading the last
+          summary); Restore is safe but secondary — it brings the card back
+          stale and never auto-runs. */}
       <div className="flex shrink-0 gap-2">
-        <Button variant="outline" size="sm" onClick={onView}>
+        <Button size="sm" onClick={onView}>
           View
         </Button>
-        <Button size="sm" onClick={onRestore} disabled={restorePending}>
+        <Button variant="outline" size="sm" onClick={onRestore} disabled={restorePending}>
           {restorePending ? <Loader2 className="animate-spin" /> : null}
           Restore
         </Button>

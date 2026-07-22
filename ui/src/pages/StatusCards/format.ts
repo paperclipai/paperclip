@@ -54,14 +54,3 @@ export function updateKindLabel(kind: StatusCardUpdate["kind"]): string {
       return kind;
   }
 }
-
-/** Describe one ledger change row, e.g. "PAP-14882 · in_progress → blocked". */
-export function describeChange(change: StatusCardUpdate["changes"][number]): string {
-  const label = change.identifier || change.issueId.slice(0, 8);
-  if (change.from && change.to) return `${label} · ${change.from} → ${change.to}`;
-  if (change.changeKind === "entered_query" || change.changeKind === "new") {
-    return `${label} · new issue matched the query`;
-  }
-  if (change.changeKind === "left_query") return `${label} · left the query`;
-  return `${label} · ${change.changeKind.replace(/_/g, " ")}`;
-}

@@ -214,7 +214,10 @@ export function StatusCardTile({
             </>
           )}
         </span>
-        {lifecycle !== "compiling" && lifecycle !== "updating" ? (
+        {/* Stale and error tiles already carry an inline Refresh/Retry action in
+            their banner, so the footer icon is only shown for states that have
+            no other refresh affordance (fresh + both paused states). */}
+        {lifecycle === "fresh" || lifecycle === "paused_budget" || lifecycle === "paused_hours" ? (
           <Button
             variant="ghost"
             size="icon"

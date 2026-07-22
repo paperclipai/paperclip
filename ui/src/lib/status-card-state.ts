@@ -73,8 +73,10 @@ export const STATUS_CARD_LIFECYCLE_PRESENTATION: Record<
     keepsLastSummary: true,
   },
   updating: {
+    // Blue (distinct from fresh-emerald and compiling-cyan) so an in-flight
+    // update never reads as "fresh" on a glance-scan of the board.
     label: "Updating",
-    dotClassName: "bg-cyan-400 animate-pulse",
+    dotClassName: "bg-blue-500 animate-pulse",
     description: "An update is streaming in now.",
     dashedBorder: false,
     keepsLastSummary: true,

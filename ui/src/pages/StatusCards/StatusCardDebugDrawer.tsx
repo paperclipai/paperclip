@@ -103,6 +103,25 @@ export function StatusCardDebugDrawer({
                 ? `compiled by Summarizer · ${relativeTime(card.queryCompiledAt)} · query version ${card.queryVersion}`
                 : "not yet compiled"}
             </p>
+            {card.queryVersion > 1 ? (
+              <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                <span>query history</span>
+                {Array.from({ length: card.queryVersion }, (_, index) => card.queryVersion - index).map((version) => (
+                  <span
+                    key={version}
+                    className={
+                      version === card.queryVersion
+                        ? "rounded bg-muted px-1.5 py-0.5 font-medium text-foreground"
+                        : "rounded px-1.5 py-0.5"
+                    }
+                    title={version === card.queryVersion ? "current compiled query" : "earlier compiled version"}
+                  >
+                    v{version}
+                  </span>
+                ))}
+                <span className="text-muted-foreground/70">· only the current version is inspectable until P2 stores prior compilations</span>
+              </div>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
