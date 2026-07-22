@@ -1107,6 +1107,9 @@ instead of appending contradictory history.
   `83a293b` (`v2026.618.0`). Full ancestry is now available. The original work
   is preserved as logical commits on `ck/live-baseline-2026-07-22`, with local
   merge target `ck/integration-2026-07-22` rooted at the exact release base.
+  The series was merged locally into that target as merge commit `0bfda2c3`,
+  followed by UI verification correction `c009ddd6`. Neither branch has been
+  pushed.
   The `fork` remote points to `HenkDz/paperclip`, but its `master` is an older,
   independently advanced history and the historical
   `feat/externalize-hermes-adapter` branch is no longer advertised. Do not use
@@ -1125,6 +1128,11 @@ instead of appending contradictory history.
   do not make those warnings clean. A full build was intentionally not run
   because this checkout is mounted into the live runtime and building `ui/dist`
   would also change the served deployment.
+- Post-merge verification also passed the complete UI suite with one worker:
+  237 files and 1,653 tests. Parallel execution exposed nondeterministic
+  cross-test interference (different tests failed on successive runs while
+  passing in isolation); use the one-worker result as the reliable baseline and
+  retain the warning cleanup as separate test-harness work.
 - The live review audit found twelve outreach issues with exact one-to-one
   synchronization between a pending native interaction and a pending
   `ck_eval.pending_send` row. None was in `sending`, edited, or orphaned. CK-490
