@@ -1,0 +1,529 @@
+<!doctype html>
+<!--
+  PAP-15023 status cards wireframe review viewer.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PAP-15023 — Status cards wireframes</title>
+<style>
+  :root {
+    --bg: #fafaf8;
+    --panel: #ffffff;
+    --ink: #111111;
+    --muted: #666666;
+    --line: #e5e5e0;
+    --accent: #d33;
+    --maxw: 1200px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 15px/1.55 -apple-system, system-ui, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+
+  .shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+
+  .toc {
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; overflow: auto;
+    padding: 24px 16px 24px 24px;
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    font-size: 13px;
+    z-index: 20;
+  }
+  .toc h1 { font-size: 14px; margin: 0 0 4px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  .toc h2 { font-size: 12px; margin: 24px 0 6px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .toc a { display: block; text-decoration: none; padding: 6px 8px; margin-left: -8px; border-radius: 4px; color: var(--ink); }
+  .toc a:hover { background: var(--bg); }
+  .toc .num { display: inline-block; width: 22px; color: var(--muted); }
+  .toc .toc-summary { display: none; }
+  .toc .toc-body { display: block; }
+
+  main { padding: 48px 56px 96px; max-width: 1300px; min-width: 0; }
+
+  header.hero { max-width: var(--maxw); margin-bottom: 64px; }
+  header.hero .crumb { color: var(--muted); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+  header.hero h1 { font-size: 36px; line-height: 1.15; margin: 8px 0 16px; }
+  header.hero p { color: var(--muted); max-width: 720px; font-size: 16px; }
+  header.hero .pills { margin-top: 20px; display: flex; gap: 8px; flex-wrap: wrap; }
+  header.hero .pill { font-size: 12px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); }
+
+  section { scroll-margin-top: 24px; max-width: var(--maxw); margin-bottom: 96px; }
+  section .lede { color: var(--muted); margin: 0 0 12px; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 700; }
+  section h2 { font-size: 28px; line-height: 1.2; margin: 0 0 8px; }
+  section h2 .step-num { display: inline-block; width: 40px; color: var(--muted); }
+  section h3 { font-size: 16px; margin: 24px 0 8px; }
+  section .desc { color: var(--muted); margin: 0 0 24px; max-width: 760px; }
+
+  /* canvas: desktop wire (wide) on left, mobile wire (tall narrow) middle, notes right.
+     Mobile is a first-class deliverable — never tabbed, never stacked away. */
+  .grid {
+    display: grid; gap: 24px;
+    grid-template-columns: minmax(0, 1.4fr) 220px minmax(0, 0.9fr);
+    align-items: start;
+  }
+  @media (max-width: 1180px) {
+    .grid { grid-template-columns: minmax(0, 1fr) 200px; }
+    .grid > .notes-col { grid-column: 1 / -1; }
+  }
+  @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } .grid > .mobile-col { max-width: 280px; } }
+
+  /* tablet */
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: 1fr; }
+    .toc {
+      position: sticky; top: 0;
+      height: auto; max-height: 60vh;
+      padding: 12px 16px;
+      border-right: none;
+      border-bottom: 1px solid var(--line);
+    }
+    .toc .toc-summary {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      list-style: none;
+      padding: 4px 0;
+    }
+    .toc .toc-summary::-webkit-details-marker { display: none; }
+    .toc .toc-summary .title { font-size: 13px; font-weight: 600; }
+    .toc .toc-summary .crumb { font-size: 11px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+    .toc .toc-summary .chevron {
+      width: 10px; height: 10px;
+      border-right: 1.5px solid var(--ink);
+      border-bottom: 1.5px solid var(--ink);
+      transform: rotate(45deg);
+      transition: transform 120ms ease;
+      margin-right: 4px;
+    }
+    .toc[open] .toc-summary .chevron { transform: rotate(225deg) translate(-2px, -2px); }
+    .toc .toc-body { display: none; padding-top: 8px; border-top: 1px solid var(--line); margin-top: 8px; }
+    .toc[open] .toc-body { display: block; }
+    main { padding: 24px 20px 64px; }
+    header.hero { margin-bottom: 40px; }
+    header.hero h1 { font-size: 28px; }
+    header.hero p { font-size: 15px; }
+    section { margin-bottom: 64px; scroll-margin-top: 80px; }
+    section h2 { font-size: 24px; }
+    section h2 .step-num { width: 32px; }
+    .flow-section { padding: 20px; margin-bottom: 40px; scroll-margin-top: 80px; }
+  }
+
+  /* phone */
+  @media (max-width: 560px) {
+    main { padding: 16px 14px 56px; }
+    header.hero { margin-bottom: 32px; }
+    header.hero h1 { font-size: 24px; line-height: 1.2; }
+    header.hero p { font-size: 14px; }
+    section { margin-bottom: 48px; }
+    section h2 { font-size: 20px; line-height: 1.25; }
+    section h2 .step-num { width: 28px; }
+    section h3 { font-size: 15px; margin: 20px 0 6px; }
+    section .desc { font-size: 14px; }
+    .grid { gap: 16px; }
+    .flow-section { padding: 16px; border-radius: 8px; }
+    .wire .label { padding: 8px 10px; font-size: 11px; gap: 8px; }
+    body { font-size: 14px; }
+  }
+
+  .wire {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: zoom-in;
+    transition: transform 80ms ease, box-shadow 80ms ease;
+  }
+  .wire:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.08); }
+  .wire .label {
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .wire img { display: block; width: 100%; height: auto; background: #fff; }
+  /* mobile wire renders narrow inside its 220px column so it reads as a phone */
+  .wire.mobile-wire img { max-width: 220px; margin: 0 auto; }
+
+  .ref {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .ref .label { font-size: 12px; color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: baseline; }
+  .ref img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 4px; cursor: zoom-in; }
+
+  .notes ul { padding-left: 20px; margin: 8px 0; }
+  .notes li { margin-bottom: 6px; }
+  .notes .why {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--ink);
+    padding: 14px 18px;
+    border-radius: 4px;
+    margin-top: 12px;
+    font-size: 14px;
+  }
+
+  .flow-section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 32px; margin-bottom: 64px; max-width: var(--maxw); }
+  .flow-section h2 { margin-top: 0; }
+  .flow-section .wire { margin-top: 16px; }
+
+  /* lightbox */
+  .lightbox {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.86);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 100;
+    cursor: zoom-out;
+    padding: 32px;
+  }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 100%; max-height: 100%; background: #fff; box-shadow: 0 30px 80px rgba(0,0,0,0.4); border-radius: 4px; }
+  .lightbox .close { position: absolute; top: 16px; right: 24px; font-size: 28px; color: #fff; cursor: pointer; }
+  .lightbox .caption { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); color: #fff; font-size: 13px; opacity: 0.9; }
+
+  /* mobile lightbox — must come after the desktop rules to win the cascade */
+  @media (max-width: 560px) {
+    .lightbox { padding: 12px; overflow: auto; touch-action: pinch-zoom; }
+    .lightbox.open { display: block; }
+    .lightbox img { display: block; width: 100%; max-width: none; max-height: none; height: auto; margin: 40px auto 56px; box-shadow: none; }
+    .lightbox .close { position: fixed; top: 8px; right: 12px; font-size: 32px; }
+    .lightbox .caption { position: fixed; left: 50%; transform: translateX(-50%); font-size: 12px; bottom: 12px; text-align: center; background: rgba(0,0,0,0.7); border-radius: 4px; padding: 6px 12px; }
+  }
+
+  .footer { color: var(--muted); font-size: 12px; max-width: var(--maxw); border-top: 1px solid var(--line); padding-top: 24px; }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <details class="toc">
+      <summary class="toc-summary">
+        <span>
+          <span class="crumb">PAP-15023 · Status cards</span><br>
+          <span class="title">Jump to a screen</span>
+        </span>
+        <span class="chevron" aria-hidden="true"></span>
+      </summary>
+      <nav class="toc-body" aria-label="Section navigation">
+        <h1>PAP-15023</h1>
+        <div style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">Experimental status cards</div>
+
+        <h2>Flow</h2>
+        <a href="#flow"><span class="num">⤳</span>Flow diagram</a>
+
+        <h2>Screens</h2>
+        <a href="#s1"><span class="num">1</span>Status cards board</a>
+        <a href="#s2"><span class="num">2</span>Create a card</a>
+        <a href="#s3"><span class="num">3</span>Configure while compiling</a>
+        <a href="#s4"><span class="num">4</span>Card detail drawer</a>
+        <a href="#s5"><span class="num">5</span>Auto-update policy</a>
+        <a href="#s6"><span class="num">6</span>Query debug view</a>
+        <a href="#s7"><span class="num">7</span>Card anatomy &amp; states</a>
+        <a href="#s8"><span class="num">8</span>Archived cards</a>
+
+        <h2>Open questions</h2>
+        <a href="#open"><span class="num">?</span>For reviewer</a>
+      </nav>
+    </details>
+
+    <main>
+      <header class="hero">
+        <div class="crumb">PAP-15023 · Wireframes</div>
+        <h1>Status cards — configurable, agent-summarized watch cards</h1>
+        <p>An experimental page of configurable cards. Each card starts from a free-text prompt ("what do you want to keep an eye on?"), which the Summarizer built-in agent compiles into a persistent structured issue query. The harness watches that query for meaningful changes and updates the card's summary — incrementally, cheaply, and streamed live. This set covers the board, the create flow, detail/config, the refresh-policy model, the debug view for the compiled query, and archiving.</p>
+        <div class="pills">
+          <span class="pill">8 screens + flow</span><span class="pill">Gated by an Experimental toggle</span>
+          <span class="pill">Desktop + mobile</span>
+          <span class="pill">Lo-fi · monochrome</span>
+          <span class="pill">Click any wireframe to zoom</span>
+        </div>
+      </header>
+
+      <!-- ========== Flow diagram (optional) ========== -->
+      <section id="flow" class="flow-section">
+        <div class="lede">Flow</div>
+        <h2>Card lifecycle &amp; update loop</h2>
+        <p class="desc">Top row: creation pipeline (human text → compiled query → first summary → active watch). Bottom row: the update loop — change lands, a token-free policy gate decides, the issue-set diff picks incremental vs full rebuild. Solid arrows = happy path, dashed = branches.</p>
+        <div class="wire" data-zoom data-caption="Flow diagram">
+          <div class="label"><span>flow.svg</span><span>1600×560</span></div>
+          <img src="wireframes/flow.svg" alt="Flow diagram" />
+        </div>
+      </section>
+
+      <section id="s1">
+        <div class="lede">Board · the page</div>
+        <h2><span class="step-num">1.</span>Status cards board</h2>
+        <p class="desc">The new experimental page (sidebar entry appears only when the flag is on). A grid of cards, each an agent-maintained summary of an issue set you described in plain language. Six cards show the main states at a glance.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="1 · Status cards board (desktop)">
+            <div class="label"><span>01-board.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/01-board.svg" alt="Status cards board (desktop) wireframe" />
+          </div>
+          <div class="wire mobile-wire mobile-col" data-zoom data-caption="1 · Status cards board (mobile)">
+            <div class="label"><span>mobile</span><span>375×812</span></div>
+            <img src="wireframes/01-board-mobile.svg" alt="Status cards board (mobile) wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Page-level cost meter: today’s tokens/$ across all cards — cost visibility is a first-class requirement.</li>
+                <li><b>2</b> — New nav entry under the experimental section, next to Summaries and Briefs.</li>
+                <li><b>3</b> — Stale card: shows a “N changes since last update” strip instead of silently going out of date; click = refresh.</li>
+                <li><b>4</b> — Updating card: the old summary stays readable while the incremental delta streams in at the top.</li>
+                <li><b>5</b> — Card footer: freshness · policy · today’s tokens, plus one-tap manual refresh.</li>
+                <li><b>6</b> — Just-created card (dashed): query compiles in the background; the card is usable immediately.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> Summaries today are pinned to fixed scopes (project / workspaces overview). Cards make the scope a free-text, user-defined query set — this board is the container for arbitrarily many of them.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s2">
+        <div class="lede">Create · step 1</div>
+        <h2><span class="step-num">2.</span>Create a card</h2>
+        <p class="desc">One required field. The human describes the issue set in plain language; the Summarizer agent compiles it into a persistent structured query (a set of company-search queries) in the background. No query syntax is exposed here.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="2 · Create a card (desktop)">
+            <div class="label"><span>02-create-card.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/02-create-card.svg" alt="Create a card (desktop) wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Free-text interest prompt — the card’s source of truth. Editing it later triggers recompilation.</li>
+                <li><b>2</b> — Example chips seed the mental model of what’s expressible (topics, projects, goals, statuses).</li>
+                <li><b>3</b> — Create is instant and optimistic: the card exists immediately in “compiling” state; step 2 is optional.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> Keeps creation friction near zero — the agent, not the human, does the translation into hard query data.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s3">
+        <div class="lede">Create · step 2 (optional)</div>
+        <h2><span class="step-num">3.</span>Configure while compiling</h2>
+        <p class="desc">While the agent builds the query, the human can add summarizer instructions (append to the default prompt, or replace it entirely — both offered for the experiment) and pick an auto-update mode. A live strip shows compile progress and the agent-proposed title.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="3 · Configure while compiling (desktop)">
+            <div class="label"><span>03-create-review.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/03-create-review.svg" alt="Configure while compiling (desktop) wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Background progress strip: proposed title + matched-issue count appear as the agent works.</li>
+                <li><b>2</b> — Append vs replace instructions — append keeps the default “Decide / Recent work” format; replace hands over the whole prompt.</li>
+                <li><b>3</b> — Cost preview: the chosen policy translates into an estimated updates/day and $ range, plus the default daily cap.</li>
+                <li><b>4</b> — Everything here is editable later from card settings; Done just closes the modal.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> The summary agent currently has a fixed server-templated prompt. Cards need per-card instructions — append/replace is the simplest testable form.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s4">
+        <div class="lede">Detail</div>
+        <h2><span class="step-num">4.</span>Card detail drawer</h2>
+        <p class="desc">Click a card to open the full view: complete summary, the exact changes integrated into the latest update, watched-issues list, revision history, and per-update token/cost lines.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="4 · Card detail drawer (desktop)">
+            <div class="label"><span>04-card-detail.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/04-card-detail.svg" alt="Card detail drawer (desktop) wireframe" />
+          </div>
+          <div class="wire mobile-wire mobile-col" data-zoom data-caption="4 · Card detail drawer (mobile)">
+            <div class="label"><span>mobile</span><span>375×812</span></div>
+            <img src="wireframes/04-card-detail-mobile.svg" alt="Card detail drawer (mobile) wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Header meta: freshness, policy, watched-issue count, and a debug link (experiment-only).</li>
+                <li><b>2</b> — Summary keeps the existing Summarizer format (Decide: / Recent work:) unless instructions replaced it.</li>
+                <li><b>3</b> — “Integrated in this update” makes incremental updates auditable: exactly which transitions the agent saw.</li>
+                <li><b>4</b> — History &amp; cost: per-update model tier, tokens in/out, and $ — incremental vs full rebuild is visible.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> Trust in an auto-updating summary depends on seeing what changed and what it cost; this drawer is the audit surface.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s5">
+        <div class="lede">Configure</div>
+        <h2><span class="step-num">5.</span>Auto-update policy</h2>
+        <p class="desc">The Settings tab answers “how do these cards refresh automatically?”. Three modes, a change-significance filter, and two guardrails. All auto modes are change-gated: no change, no agent run, zero tokens.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="5 · Auto-update policy (desktop)">
+            <div class="label"><span>05-refresh-policy.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/05-refresh-policy.svg" alt="Auto-update policy (desktop) wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Three modes: manual · scheduled-if-changed (5/15/30/60&nbsp;min) · reactive with a 60s debounce and an updates/hour rate cap.</li>
+                <li><b>2</b> — “Count as a change”: meaningful transitions (blocked / review / done / new match) on by default; in-progress churn and raw updates off by default.</li>
+                <li><b>3</b> — Guardrails: active hours (outside them, changes batch into one morning update) and a per-card daily token cap that pauses the card visibly.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> Naive “update on every change” would be slow and expensive. Change-gating + significance filter + debounce + caps bound the spend while keeping the feel snappy.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s6">
+        <div class="lede">Debug</div>
+        <h2><span class="step-num">6.</span>Query debug view</h2>
+        <p class="desc">Experiment-only surface for tuning the text→query compiler. Shows the human text (source of truth), the compiled query set with version history, and a dry-run of current matches. Normally hidden behind the debug link.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="6 · Query debug view (desktop)">
+            <div class="label"><span>06-debug-query.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/06-debug-query.svg" alt="Query debug view (desktop) wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Interest text on top — editing it recompiles; the query is derived data, never the thing the human maintains.</li>
+                <li><b>2</b> — Compiled artifact: a set of structured company-search queries (union semantics), with compiler version + provenance.</li>
+                <li><b>3</b> — Dry run executes the stored query instantly (no LLM) so you can verify the agent compiled the right thing.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> The user explicitly asked for a temporary debug window so the team can verify query compilation quality before hiding it for good.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s7">
+        <div class="lede">Reference</div>
+        <h2><span class="step-num">7.</span>Card anatomy &amp; states</h2>
+        <p class="desc">Not a screen — a reference sheet. Left: every element of a card. Right: the seven lifecycle states (compiling, fresh, stale, updating, error, paused, archived) and how each renders.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="7 · Card anatomy &amp; states (desktop)">
+            <div class="label"><span>07-card-states.svg</span><span>1280×800 · reference</span></div>
+            <img src="wireframes/07-card-states.svg" alt="Card anatomy &amp; states (desktop) wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — State dot + agent-maintained title (auto-created at compile, re-titled on query change).</li>
+                <li><b>2</b> — Chips: update policy and watched-issue count.</li>
+                <li><b>3</b> — Latest summary in the standard format; delta strip when changes are pending.</li>
+                <li><b>4</b> — Error and paused states keep the last good summary visible — a card never goes blank.</li>
+                <li><b>5</b> — Footer is the cost surface: freshness, today’s tokens/$.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> A shared vocabulary of states keeps the implementation honest: every async path (compile, incremental, rebuild, failure, cap) has a defined rendering.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s8">
+        <div class="lede">Archive</div>
+        <h2><span class="step-num">8.</span>Archived cards</h2>
+        <p class="desc">Archiving fully disarms a card: watches dropped, no auto-updates, nothing spent. The Archived tab lists them with lifetime cost; Restore re-arms the query and brings the card back stale (never a surprise auto-run).</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="8 · Archived cards (desktop)">
+            <div class="label"><span>08-archived.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/08-archived.svg" alt="Archived cards (desktop) wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Explainer states the contract: archived = zero background activity.</li>
+                <li><b>2</b> — Restore is explicit and returns the card in the stale state — the next update only happens when you ask or the policy fires after you’ve seen it.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> The user’s requirement: archive must guarantee nothing ever auto-updates, while remaining recoverable.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== Open questions ========== -->
+      <section id="open">
+        <div class="lede">For reviewer</div>
+        <h2>Open questions</h2>
+        <div class="notes">
+          <ul>
+            <li><b>Default policy</b> — proposal: new cards default to "manual + stale indicator" (spends nothing until opted in). Or should the default be 15-min change-gated?</li>
+            <li><b>Model tiering</b> — incremental updates on the Summarizer's default haiku-class model; should full rebuilds use a bigger model, or stay uniform and cheap?</li>
+            <li><b>Sharing scope</b> — v1 cards are per-creator but visible company-wide on one shared board (like summary slots). Do you want private boards/per-user pages instead?</li>
+            <li><b>Reactive floor</b> — is a 60s debounce + 6 updates/hour cap the right "as fast as it gets" ceiling for v1?</li>
+            <li><b>Card sizes</b> — v1 is a uniform grid; do you want resizable/pinned cards (1×/2× widths) now or later?</li>
+            <li><b>Agent-created cards</b> — the API will allow agent authorship from day one but the UI won't expose it in v1. OK?</li>
+          </ul>
+        </div>
+      </section>
+
+      <div class="footer">
+        Wireframes follow the in-tree <code>wireframe</code> skill house style — black on white, 1.5pt strokes, 8px grid, type sizes 12/14/20/28. Red dashed annotations are the call-out layer only and not part of the proposed UI.
+      </div>
+    </main>
+  </div>
+
+  <div class="lightbox" id="lb" aria-hidden="true">
+    <span class="close" id="lbClose">×</span>
+    <img id="lbImg" alt="" />
+    <div class="caption" id="lbCap"></div>
+  </div>
+
+<script>
+  // Click-to-zoom: any element marked [data-zoom] OR any <img> inside [data-zoom]
+  const lb = document.getElementById('lb');
+  const lbImg = document.getElementById('lbImg');
+  const lbCap = document.getElementById('lbCap');
+  const lbClose = document.getElementById('lbClose');
+
+  document.querySelectorAll('[data-zoom]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const target = el.tagName === 'IMG' ? el : el.querySelector('img');
+      if (!target) return;
+      lbImg.src = target.src;
+      lbImg.alt = target.alt;
+      lbCap.textContent = el.dataset.caption || target.alt || '';
+      lb.classList.add('open');
+    });
+  });
+
+  function close() { lb.classList.remove('open'); }
+  lb.addEventListener('click', close);
+  lbClose.addEventListener('click', close);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  // TOC: open by default on desktop (<details> would otherwise hide body),
+  // closed by default on mobile so the long list doesn't dominate the viewport.
+  const toc = document.querySelector('details.toc');
+  if (toc) {
+    const mq = window.matchMedia('(max-width: 900px)');
+    const apply = () => { toc.open = !mq.matches; };
+    apply();
+    mq.addEventListener('change', apply);
+    // On mobile, collapse the TOC after the user taps a link.
+    toc.querySelectorAll('.toc-body a').forEach((a) => {
+      a.addEventListener('click', () => { if (mq.matches) toc.open = false; });
+    });
+  }
+</script>
+</body>
+</html>

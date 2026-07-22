@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="375" height="812" />
+
+  <!-- top bar -->
+  <rect x="0" y="0" width="375" height="56" />
+  <text x="16" y="35" font-size="14" stroke="none" fill="#000">←</text>
+  <circle cx="48" cy="28" r="5" fill="#000" />
+  <text x="64" y="33" font-size="14" font-weight="600" stroke="none" fill="#000">Cloud + ID + Content</text>
+  <text x="344" y="33" font-size="14" stroke="none" fill="#666">⋯</text>
+
+  <text x="16" y="80" font-size="12" stroke="none" fill="#666">Updated 28m ago · every 15m if changed · 23 issues</text>
+
+  <!-- tabs -->
+  <g transform="translate(16, 96)">
+    <line x1="0" y1="40" x2="343" y2="40" />
+    <text x="0" y="26" font-size="14" font-weight="600" stroke="none" fill="#000">Summary</text>
+    <line x1="0" y1="40" x2="64" y2="40" stroke-width="3" />
+    <text x="88" y="26" font-size="14" stroke="none" fill="#666">Updates</text>
+    <text x="160" y="26" font-size="14" stroke="none" fill="#666">Issues</text>
+    <text x="224" y="26" font-size="14" stroke="none" fill="#666">Settings</text>
+  </g>
+
+  <!-- summary body -->
+  <g transform="translate(16, 160)">
+    <text x="0" y="16" font-size="14" font-weight="600" stroke="none" fill="#000">Decide:</text>
+    <text x="0" y="40" font-size="14" stroke="none" fill="#000">• Unblock PAP-14882 — it gates two</text>
+    <text x="8" y="60" font-size="14" stroke="none" fill="#000">ID tracks. I suggest: reassign the</text>
+    <text x="8" y="80" font-size="14" stroke="none" fill="#000">review to CodexCoder today.</text>
+    <line x1="0" y1="104" x2="343" y2="104" stroke="#666" />
+    <line x1="0" y1="124" x2="343" y2="124" stroke="#666" />
+    <line x1="0" y1="144" x2="272" y2="144" stroke="#666" />
+    <text x="0" y="180" font-size="14" font-weight="600" stroke="none" fill="#000">Recent work:</text>
+    <line x1="0" y1="204" x2="343" y2="204" stroke="#666" />
+    <line x1="0" y1="224" x2="304" y2="224" stroke="#666" />
+    <line x1="0" y1="244" x2="240" y2="244" stroke="#666" />
+  </g>
+
+  <!-- changes -->
+  <g transform="translate(16, 432)">
+    <text x="0" y="16" font-size="12" font-weight="600" stroke="none" fill="#666">INTEGRATED IN THIS UPDATE (3)</text>
+    <g transform="translate(0, 28)">
+      <rect width="343" height="40" rx="4" />
+      <text x="12" y="25" font-size="12" stroke="none" fill="#000">PAP-14882 · in_progress → blocked · 31m</text>
+    </g>
+    <g transform="translate(0, 76)">
+      <rect width="343" height="40" rx="4" />
+      <text x="12" y="25" font-size="12" stroke="none" fill="#000">PAP-14990 · in_review → done · 42m</text>
+    </g>
+    <g transform="translate(0, 124)">
+      <rect width="343" height="40" rx="4" />
+      <text x="12" y="25" font-size="12" stroke="none" fill="#000">PAP-15001 · new match · 55m</text>
+    </g>
+  </g>
+
+  <!-- cost -->
+  <g transform="translate(16, 640)">
+    <line x1="0" y1="0" x2="343" y2="0" />
+    <text x="0" y="28" font-size="12" font-weight="600" stroke="none" fill="#666">TODAY</text>
+    <text x="0" y="52" font-size="12" stroke="none" fill="#000">12 updates · 9.4k tokens · ~$0.09</text>
+  </g>
+
+  <!-- sticky refresh button -->
+  <g transform="translate(16, 736)">
+    <rect width="343" height="48" rx="4" fill="#000" />
+    <text x="172" y="30" font-size="14" text-anchor="middle" stroke="none" fill="#fff">⟳ Refresh now</text>
+  </g>
+</svg>

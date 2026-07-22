@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- underlying board, simplified -->
+  <rect width="208" height="800" />
+  <text x="24" y="45" font-size="14" font-weight="600" stroke="none" fill="#000">Paperclip</text>
+  <text x="232" y="56" font-size="28" font-weight="700" stroke="none" fill="#000">Status cards</text>
+  <rect x="232" y="160" width="312" height="280" rx="6" />
+  <rect x="568" y="160" width="312" height="280" rx="6" />
+  <rect x="904" y="160" width="312" height="280" rx="6" />
+
+  <!-- backdrop -->
+  <rect x="0" y="0" width="1280" height="800" fill="#000" fill-opacity="0.4" stroke="none" />
+
+  <!-- ===== Modal: New status card — step 1 ===== -->
+  <g transform="translate(320, 144)">
+    <rect width="640" height="512" rx="6" />
+    <text x="24" y="44" font-size="20" font-weight="600" stroke="none" fill="#000">New status card</text>
+    <text x="608" y="44" font-size="14" stroke="none" fill="#666">×</text>
+    <text x="24" y="68" font-size="12" stroke="none" fill="#666">Step 1 of 2 — describe what you want to watch</text>
+    <line x1="0" y1="88" x2="640" y2="88" />
+
+    <!-- interest prompt -->
+    <text x="24" y="124" font-size="14" font-weight="600" stroke="none" fill="#000">What do you want to keep an eye on?</text>
+    <g transform="translate(24, 140)">
+      <rect width="592" height="144" rx="4" />
+      <text x="12" y="28" font-size="14" stroke="none" fill="#000">Issues in the Paperclip Cloud, Paperclip ID and Paperclip</text>
+      <text x="12" y="48" font-size="14" stroke="none" fill="#000">Content projects that were recently updated. Tell me what I</text>
+      <text x="12" y="68" font-size="14" stroke="none" fill="#000">need to do next and what your advice is.</text>
+    </g>
+    <text x="24" y="308" font-size="12" stroke="none" fill="#666">Plain language is fine. The summary agent turns this into a saved issue query and keeps it up to date.</text>
+
+    <!-- examples -->
+    <text x="24" y="348" font-size="12" font-weight="600" stroke="none" fill="#000">Examples</text>
+    <g transform="translate(24, 360)">
+      <rect width="184" height="32" rx="16" />
+      <text x="92" y="20" font-size="12" text-anchor="middle" stroke="none" fill="#666">issues about evals</text>
+    </g>
+    <g transform="translate(216, 360)">
+      <rect width="216" height="32" rx="16" />
+      <text x="108" y="20" font-size="12" text-anchor="middle" stroke="none" fill="#666">everything blocked this week</text>
+    </g>
+    <g transform="translate(440, 360)">
+      <rect width="176" height="32" rx="16" />
+      <text x="88" y="20" font-size="12" text-anchor="middle" stroke="none" fill="#666">ship feature X</text>
+    </g>
+
+    <line x1="0" y1="440" x2="640" y2="440" />
+    <!-- footer -->
+    <text x="24" y="480" font-size="12" stroke="none" fill="#666">Creates the card immediately; the query builds in the background.</text>
+    <g transform="translate(384, 456)">
+      <rect width="104" height="40" rx="4" />
+      <text x="52" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">Cancel</text>
+    </g>
+    <g transform="translate(504, 456)">
+      <rect width="112" height="40" rx="4" fill="#000" />
+      <text x="56" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#fff">Create →</text>
+    </g>
+  </g>
+
+  <!-- ===== Annotations ===== -->
+  <g data-region="annotations">
+    <g transform="translate(304, 260)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <g transform="translate(304, 500)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+    <g transform="translate(976, 616)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">3</text>
+    </g>
+  </g>
+</svg>

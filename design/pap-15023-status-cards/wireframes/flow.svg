@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="560" viewBox="0 0 1600 560"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1600" height="560" />
+  <text x="32" y="44" font-size="20" font-weight="600" stroke="none" fill="#000">Status card lifecycle — solid = happy path, dashed = branch</text>
+
+  <!-- Row 1: creation pipeline -->
+  <g transform="translate(32, 88)">
+    <rect width="224" height="112" rx="6" />
+    <text x="16" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">1 · Human creates card</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">free-text interest prompt</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">"issues about evals…"</text>
+    <text x="16" y="92" font-size="12" stroke="none" fill="#666">card appears instantly</text>
+  </g>
+  <g transform="translate(256, 144)">
+    <line x1="0" y1="0" x2="56" y2="0" />
+    <polygon points="56,0 46,-6 46,6" fill="#000" stroke="none" />
+  </g>
+  <g transform="translate(312, 88)">
+    <rect width="240" height="112" rx="6" />
+    <text x="16" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">2 · Summarizer compiles</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">hidden task → agent turns text</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">into query set + card title</text>
+    <text x="16" y="92" font-size="12" stroke="none" fill="#666">(query-authoring skill)</text>
+  </g>
+  <g transform="translate(552, 144)">
+    <line x1="0" y1="0" x2="56" y2="0" />
+    <polygon points="56,0 46,-6 46,6" fill="#000" stroke="none" />
+  </g>
+  <g transform="translate(608, 88)">
+    <rect width="240" height="112" rx="6" />
+    <text x="16" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">3 · First full summary</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">query results snapshot →</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">summary doc revision v1,</text>
+    <text x="16" y="92" font-size="12" stroke="none" fill="#666">streamed into the card</text>
+  </g>
+  <g transform="translate(848, 144)">
+    <line x1="0" y1="0" x2="56" y2="0" />
+    <polygon points="56,0 46,-6 46,6" fill="#000" stroke="none" />
+  </g>
+  <g transform="translate(904, 88)">
+    <rect width="240" height="112" rx="6" fill="#f4f4f4" />
+    <text x="16" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">4 · Card active (fresh)</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">harness watches the query:</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">issue-set fingerprint stored</text>
+    <text x="16" y="92" font-size="12" stroke="none" fill="#666">(id → status, updatedAt)</text>
+  </g>
+  <!-- archive branch -->
+  <g transform="translate(1144, 144)">
+    <line x1="0" y1="0" x2="56" y2="0" stroke-dasharray="6 3" />
+    <polygon points="56,0 46,-6 46,6" fill="#000" stroke="none" />
+  </g>
+  <g transform="translate(1200, 88)">
+    <rect width="192" height="112" rx="6" stroke-dasharray="6 3" />
+    <text x="16" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">Archive</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">watches dropped,</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">no auto-updates.</text>
+    <text x="16" y="92" font-size="12" stroke="none" fill="#666">Restore → stale</text>
+  </g>
+
+  <!-- Row 2: update loop -->
+  <text x="32" y="284" font-size="14" font-weight="600" stroke="none" fill="#000">Update loop</text>
+  <g transform="translate(32, 304)">
+    <rect width="240" height="128" rx="6" />
+    <text x="16" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">a · Issue change lands</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">activity log: became blocked /</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">done / review, new match, left</text>
+    <text x="16" y="92" font-size="12" stroke="none" fill="#666">query · in-progress churn</text>
+    <text x="16" y="112" font-size="12" stroke="none" fill="#666">ignored by default</text>
+  </g>
+  <g transform="translate(272, 368)">
+    <line x1="0" y1="0" x2="56" y2="0" />
+    <polygon points="56,0 46,-6 46,6" fill="#000" stroke="none" />
+  </g>
+  <g transform="translate(328, 304)">
+    <rect width="256" height="128" rx="6" />
+    <text x="16" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">b · Policy gate (cheap, no LLM)</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">manual → mark card stale only</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">interval → wait for next tick</text>
+    <text x="16" y="92" font-size="12" stroke="none" fill="#666">reactive → debounce 60s, rate cap</text>
+    <text x="16" y="112" font-size="12" stroke="none" fill="#666">+ active hours + daily token cap</text>
+  </g>
+  <g transform="translate(584, 368)">
+    <line x1="0" y1="0" x2="56" y2="0" />
+    <polygon points="56,0 46,-6 46,6" fill="#000" stroke="none" />
+  </g>
+  <g transform="translate(640, 304)">
+    <rect width="256" height="128" rx="6" />
+    <text x="16" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">c · Diff vs fingerprint</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">run stored query, compare:</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">3 changed, 1 new, 0 removed</text>
+    <text x="16" y="92" font-size="12" stroke="none" fill="#666">nothing changed → stop here,</text>
+    <text x="16" y="112" font-size="12" stroke="none" fill="#666">zero tokens spent</text>
+  </g>
+  <!-- branch: incremental vs full -->
+  <g transform="translate(896, 344)">
+    <line x1="0" y1="0" x2="56" y2="-8" />
+    <polygon points="56,-8 46,-13 47,-1" fill="#000" stroke="none" />
+  </g>
+  <g transform="translate(896, 400)">
+    <line x1="0" y1="0" x2="56" y2="8" stroke-dasharray="6 3" />
+    <polygon points="56,8 46,3 47,15" fill="#000" stroke="none" />
+  </g>
+  <g transform="translate(952, 280)">
+    <rect width="280" height="112" rx="6" />
+    <text x="16" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">d1 · Incremental update (default)</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">prompt = prev summary + only the</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">changed issues → patch summary</text>
+    <text x="16" y="92" font-size="12" stroke="none" fill="#666">haiku-class model · ~0.3–0.5k tok · fast</text>
+  </g>
+  <g transform="translate(952, 408)">
+    <rect width="280" height="112" rx="6" stroke-dasharray="6 3" />
+    <text x="16" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">d2 · Full rebuild (fallback)</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">when: delta &gt; K issues, query or</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">instructions changed, drift guard</text>
+    <text x="16" y="92" font-size="12" stroke="none" fill="#666">(every Nth), or manual full refresh</text>
+  </g>
+  <g transform="translate(1232, 344)">
+    <line x1="0" y1="0" x2="48" y2="16" />
+    <polygon points="48,16 38,11 39,23" fill="#000" stroke="none" />
+  </g>
+  <g transform="translate(1232, 456)">
+    <line x1="0" y1="0" x2="48" y2="-64" stroke-dasharray="6 3" />
+    <polygon points="48,-64 38,-66 42,-55" fill="#000" stroke="none" />
+  </g>
+  <g transform="translate(1280, 328)">
+    <rect width="288" height="112" rx="6" fill="#f4f4f4" />
+    <text x="16" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">e · New revision + cost event</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">document revision N+1, streamed to</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">the card live · tokens/cost recorded</text>
+    <text x="16" y="92" font-size="12" stroke="none" fill="#666">→ fingerprint updated → back to fresh</text>
+  </g>
+
+  <!-- loop back arrow -->
+  <g>
+    <line x1="1424" y1="440" x2="1424" y2="504" />
+    <line x1="1424" y1="504" x2="152" y2="504" />
+    <line x1="152" y1="504" x2="152" y2="440" />
+    <polygon points="152,440 146,450 158,450" fill="#000" stroke="none" />
+    <text x="720" y="496" font-size="12" stroke="none" fill="#666">loop: watch → gate → diff → update</text>
+  </g>
+</svg>

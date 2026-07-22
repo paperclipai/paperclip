@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- board behind -->
+  <rect width="208" height="800" />
+  <text x="24" y="45" font-size="14" font-weight="600" stroke="none" fill="#000">Paperclip</text>
+  <rect x="0" y="0" width="1280" height="800" fill="#000" fill-opacity="0.4" stroke="none" />
+
+  <!-- ===== Right drawer: card settings tab ===== -->
+  <g transform="translate(608, 0)">
+    <rect width="672" height="800" />
+    <text x="32" y="45" font-size="20" font-weight="600" stroke="none" fill="#000">Cloud + ID + Content projects</text>
+    <text x="648" y="45" font-size="14" stroke="none" fill="#666">×</text>
+    <line x1="0" y1="88" x2="672" y2="88" />
+    <g transform="translate(32, 96)">
+      <line x1="0" y1="40" x2="608" y2="40" />
+      <text x="0" y="26" font-size="14" stroke="none" fill="#666">Summary</text>
+      <text x="104" y="26" font-size="14" stroke="none" fill="#666">Updates (12)</text>
+      <text x="224" y="26" font-size="14" stroke="none" fill="#666">Watched issues (23)</text>
+      <text x="392" y="26" font-size="14" font-weight="600" stroke="none" fill="#000">Settings</text>
+      <line x1="392" y1="40" x2="456" y2="40" stroke-width="3" />
+    </g>
+
+    <!-- Auto-update policy -->
+    <g transform="translate(32, 168)">
+      <text x="0" y="16" font-size="14" font-weight="600" stroke="none" fill="#000">Auto-update policy</text>
+
+      <!-- option: manual -->
+      <g transform="translate(0, 32)">
+        <circle cx="10" cy="10" r="9" />
+        <text x="28" y="15" font-size="14" stroke="none" fill="#000">Manual only — updates when I press refresh</text>
+      </g>
+
+      <!-- option: interval, change-gated -->
+      <g transform="translate(0, 64)">
+        <circle cx="10" cy="10" r="9" />
+        <circle cx="10" cy="10" r="4" fill="#000" />
+        <text x="28" y="15" font-size="14" stroke="none" fill="#000">On a schedule, only if something changed</text>
+      </g>
+      <g transform="translate(56, 88)">
+        <text x="0" y="25" font-size="14" stroke="none" fill="#666">Check every</text>
+        <g transform="translate(96, 0)">
+          <rect width="112" height="40" rx="4" />
+          <text x="12" y="25" font-size="14" stroke="none" fill="#000">15 min ▾</text>
+        </g>
+        <text x="224" y="25" font-size="12" stroke="none" fill="#666">5 / 15 / 30 / 60 min · cheap check, no agent run if nothing changed</text>
+      </g>
+
+      <!-- option: reactive debounced -->
+      <g transform="translate(0, 144)">
+        <circle cx="10" cy="10" r="9" />
+        <text x="28" y="15" font-size="14" stroke="none" fill="#000">As soon as something changes (debounced)</text>
+      </g>
+      <g transform="translate(56, 168)">
+        <text x="0" y="25" font-size="14" stroke="none" fill="#666">Wait</text>
+        <g transform="translate(48, 0)">
+          <rect width="96" height="40" rx="4" />
+          <text x="12" y="25" font-size="14" stroke="none" fill="#000">60s ▾</text>
+        </g>
+        <text x="160" y="25" font-size="12" stroke="none" fill="#666">after the last change, then update once · max 6 updates/hour</text>
+      </g>
+    </g>
+
+    <!-- Triggers -->
+    <g transform="translate(32, 408)">
+      <text x="0" y="16" font-size="14" font-weight="600" stroke="none" fill="#000">Count as a change</text>
+      <g transform="translate(0, 32)">
+        <rect width="20" height="20" rx="2" fill="#000" />
+        <polyline points="4,11 9,16 16,6" stroke="#fff" fill="none" />
+        <text x="32" y="15" font-size="14" stroke="none" fill="#000">Became blocked / needs review / done / cancelled</text>
+      </g>
+      <g transform="translate(0, 64)">
+        <rect width="20" height="20" rx="2" fill="#000" />
+        <polyline points="4,11 9,16 16,6" stroke="#fff" fill="none" />
+        <text x="32" y="15" font-size="14" stroke="none" fill="#000">New issue matches the query · issue leaves the query</text>
+      </g>
+      <g transform="translate(0, 96)">
+        <rect width="20" height="20" rx="2" />
+        <text x="32" y="15" font-size="14" stroke="none" fill="#000">Human comments · assignee changes</text>
+      </g>
+      <g transform="translate(0, 128)">
+        <rect width="20" height="20" rx="2" />
+        <text x="32" y="15" font-size="14" stroke="none" fill="#666">Any update at all (noisy — includes in-progress churn)</text>
+      </g>
+    </g>
+
+    <!-- Active hours + budget -->
+    <g transform="translate(32, 600)">
+      <text x="0" y="16" font-size="14" font-weight="600" stroke="none" fill="#000">Guardrails</text>
+      <text x="0" y="44" font-size="14" stroke="none" fill="#000">Active hours</text>
+      <g transform="translate(160, 24)">
+        <rect width="176" height="40" rx="4" />
+        <text x="12" y="25" font-size="14" stroke="none" fill="#000">08:00 – 19:00 ▾</text>
+      </g>
+      <text x="352" y="44" font-size="12" stroke="none" fill="#666">outside these hours: batch into one morning update</text>
+      <text x="0" y="92" font-size="14" stroke="none" fill="#000">Daily token cap</text>
+      <g transform="translate(160, 72)">
+        <rect width="176" height="40" rx="4" />
+        <text x="12" y="25" font-size="14" stroke="none" fill="#000">100k tokens ▾</text>
+      </g>
+      <text x="352" y="92" font-size="12" stroke="none" fill="#666">card pauses + banner when the cap is hit</text>
+    </g>
+
+    <line x1="0" y1="728" x2="672" y2="728" />
+    <g transform="translate(504, 744)">
+      <rect width="136" height="40" rx="4" fill="#000" />
+      <text x="68" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#fff">Save</text>
+    </g>
+  </g>
+
+  <!-- ===== Annotations ===== -->
+  <g data-region="annotations">
+    <g transform="translate(592, 264)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <g transform="translate(592, 448)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+    <g transform="translate(592, 648)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">3</text>
+    </g>
+  </g>
+</svg>

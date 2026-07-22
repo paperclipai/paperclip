@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- sidebar -->
+  <rect width="208" height="800" />
+  <text x="24" y="45" font-size="14" font-weight="600" stroke="none" fill="#000">Paperclip</text>
+  <rect x="0" y="328" width="208" height="40" fill="#e6e6e6" />
+  <text x="24" y="353" font-size="14" font-weight="600" stroke="none" fill="#000">Status cards</text>
+
+  <!-- header -->
+  <g transform="translate(232, 0)">
+    <text x="0" y="56" font-size="28" font-weight="700" stroke="none" fill="#000">Status cards</text>
+    <rect x="200" y="32" width="112" height="28" rx="14" fill="#e6e6e6" />
+    <text x="256" y="51" font-size="12" text-anchor="middle" stroke="none" fill="#000">EXPERIMENTAL</text>
+    <g transform="translate(872, 24)">
+      <rect width="128" height="40" rx="4" fill="#000" />
+      <text x="64" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#fff">+ New card</text>
+    </g>
+  </g>
+
+  <!-- tabs: archived active -->
+  <g transform="translate(232, 88)">
+    <line x1="0" y1="48" x2="1000" y2="48" />
+    <text x="0" y="32" font-size="14" stroke="none" fill="#666">Active (6)</text>
+    <text x="104" y="32" font-size="14" font-weight="600" stroke="none" fill="#000">Archived (3)</text>
+    <line x1="104" y1="48" x2="192" y2="48" stroke-width="3" />
+  </g>
+
+  <!-- explainer -->
+  <text x="232" y="184" font-size="14" stroke="none" fill="#666">Archived cards never auto-update and hold no watches. Restore one to start watching again — it comes back stale.</text>
+
+  <!-- archived rows (list, not grid — cheaper to scan) -->
+  <g transform="translate(232, 216)">
+    <rect width="1000" height="72" rx="6" fill="#f4f4f4" />
+    <text x="24" y="32" font-size="14" font-weight="600" stroke="none" fill="#000">Secrets rollout follow-ups</text>
+    <text x="24" y="54" font-size="12" stroke="none" fill="#666">archived Jul 18 · last summary Jul 18 · watched 9 issues · lifetime 44k tok / $0.51</text>
+    <g transform="translate(768, 16)">
+      <rect width="104" height="40" rx="4" />
+      <text x="52" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">View</text>
+    </g>
+    <g transform="translate(880, 16)">
+      <rect width="104" height="40" rx="4" fill="#000" />
+      <text x="52" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#fff">Restore</text>
+    </g>
+  </g>
+  <g transform="translate(232, 304)">
+    <rect width="1000" height="72" rx="6" fill="#f4f4f4" />
+    <text x="24" y="32" font-size="14" font-weight="600" stroke="none" fill="#000">Connections v3 watchdog</text>
+    <text x="24" y="54" font-size="12" stroke="none" fill="#666">archived Jul 20 · last summary Jul 20 · watched 31 issues · lifetime 120k tok / $1.20</text>
+    <g transform="translate(768, 16)">
+      <rect width="104" height="40" rx="4" />
+      <text x="52" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">View</text>
+    </g>
+    <g transform="translate(880, 16)">
+      <rect width="104" height="40" rx="4" fill="#000" />
+      <text x="52" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#fff">Restore</text>
+    </g>
+  </g>
+  <g transform="translate(232, 392)">
+    <rect width="1000" height="72" rx="6" fill="#f4f4f4" />
+    <text x="24" y="32" font-size="14" font-weight="600" stroke="none" fill="#000">Q2 audit-log gaps</text>
+    <text x="24" y="54" font-size="12" stroke="none" fill="#666">archived Jul 12 · last summary Jul 11 · watched 14 issues · lifetime 202k tok / $2.10</text>
+    <g transform="translate(768, 16)">
+      <rect width="104" height="40" rx="4" />
+      <text x="52" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">View</text>
+    </g>
+    <g transform="translate(880, 16)">
+      <rect width="104" height="40" rx="4" fill="#000" />
+      <text x="52" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#fff">Restore</text>
+    </g>
+  </g>
+
+  <!-- annotations -->
+  <g data-region="annotations">
+    <g transform="translate(216, 180)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <g transform="translate(1248, 252)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+  </g>
+</svg>

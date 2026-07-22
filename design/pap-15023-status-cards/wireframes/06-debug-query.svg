@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- board behind -->
+  <rect width="208" height="800" />
+  <text x="24" y="45" font-size="14" font-weight="600" stroke="none" fill="#000">Paperclip</text>
+  <rect x="0" y="0" width="1280" height="800" fill="#000" fill-opacity="0.4" stroke="none" />
+
+  <!-- ===== Right drawer: debug view ===== -->
+  <g transform="translate(608, 0)">
+    <rect width="672" height="800" />
+    <text x="32" y="45" font-size="20" font-weight="600" stroke="none" fill="#000">Query debug</text>
+    <rect x="176" y="24" width="128" height="28" rx="14" fill="#e6e6e6" />
+    <text x="240" y="43" font-size="12" text-anchor="middle" stroke="none" fill="#000">DEBUG · TEMP</text>
+    <text x="648" y="45" font-size="14" stroke="none" fill="#666">×</text>
+    <text x="32" y="68" font-size="12" stroke="none" fill="#666">Cloud + ID + Content projects — the compiled query is normally hidden</text>
+    <line x1="0" y1="88" x2="672" y2="88" />
+
+    <!-- interest text -->
+    <g transform="translate(32, 112)">
+      <text x="0" y="16" font-size="12" font-weight="600" stroke="none" fill="#666">HUMAN INTEREST TEXT (SOURCE OF TRUTH)</text>
+      <g transform="translate(0, 24)">
+        <rect width="608" height="64" rx="4" />
+        <text x="12" y="26" font-size="14" stroke="none" fill="#000">Issues in the Paperclip Cloud, ID and Content projects that were</text>
+        <text x="12" y="46" font-size="14" stroke="none" fill="#000">recently updated. Tell me what to do next.</text>
+      </g>
+      <text x="0" y="112" font-size="12" stroke="none" fill="#666">Edit this text → the agent recompiles the query and re-titles the card.</text>
+    </g>
+
+    <!-- compiled query -->
+    <g transform="translate(32, 248)">
+      <text x="0" y="16" font-size="12" font-weight="600" stroke="none" fill="#666">COMPILED QUERY (AGENT-MAINTAINED, v3)</text>
+      <g transform="translate(0, 24)">
+        <rect width="608" height="176" rx="4" fill="#f4f4f4" />
+        <text x="16" y="28" font-size="12" stroke="none" fill="#000">{ "queries": [   // union of company-search queries</text>
+        <text x="16" y="48" font-size="12" stroke="none" fill="#000">&#160;&#160;{ "projectId": "…cloud", "updatedWithin": "14d", "sort": "updated" },</text>
+        <text x="16" y="68" font-size="12" stroke="none" fill="#000">&#160;&#160;{ "projectId": "…id", "updatedWithin": "14d", "sort": "updated" },</text>
+        <text x="16" y="88" font-size="12" stroke="none" fill="#000">&#160;&#160;{ "projectId": "…content", "updatedWithin": "14d" } ], "limit": 50 }</text>
+        <text x="16" y="120" font-size="12" stroke="none" fill="#666">compiled by Summarizer · 31m ago · from interest text v2</text>
+        <text x="16" y="144" font-size="12" stroke="none" fill="#666">query history: v3 (current) · v2 · v1</text>
+      </g>
+      <!-- actions -->
+      <g transform="translate(0, 216)">
+        <rect width="136" height="40" rx="4" />
+        <text x="68" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">Recompile</text>
+      </g>
+      <g transform="translate(152, 216)">
+        <rect width="120" height="40" rx="4" />
+        <text x="60" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">Dry run</text>
+      </g>
+      <g transform="translate(288, 216)">
+        <rect width="152" height="40" rx="4" />
+        <text x="76" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">Edit JSON (adv)</text>
+      </g>
+    </g>
+
+    <!-- dry run results -->
+    <g transform="translate(32, 536)">
+      <text x="0" y="16" font-size="12" font-weight="600" stroke="none" fill="#666">DRY RUN — 23 ISSUES MATCH NOW</text>
+      <g transform="translate(0, 32)">
+        <rect width="608" height="40" rx="4" />
+        <text x="12" y="25" font-size="12" stroke="none" fill="#000">PAP-14882 · blocked · Cloud · updated 31m ago</text>
+      </g>
+      <g transform="translate(0, 80)">
+        <rect width="608" height="40" rx="4" />
+        <text x="12" y="25" font-size="12" stroke="none" fill="#000">PAP-14990 · done · ID · updated 42m ago</text>
+      </g>
+      <g transform="translate(0, 128)">
+        <rect width="608" height="40" rx="4" />
+        <text x="12" y="25" font-size="12" stroke="none" fill="#666">PAP-15001 · in_progress · Content · updated 55m ago</text>
+      </g>
+      <text x="0" y="200" font-size="12" stroke="none" fill="#666">+ 20 more — open as an issue list ↗</text>
+    </g>
+  </g>
+
+  <!-- ===== Annotations ===== -->
+  <g data-region="annotations">
+    <g transform="translate(592, 160)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <g transform="translate(592, 328)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+    <g transform="translate(592, 592)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">3</text>
+    </g>
+  </g>
+</svg>

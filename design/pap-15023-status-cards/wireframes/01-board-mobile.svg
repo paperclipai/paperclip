@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="375" height="812" />
+
+  <!-- top bar -->
+  <rect x="0" y="0" width="375" height="56" />
+  <text x="16" y="35" font-size="14" stroke="none" fill="#000">☰</text>
+  <text x="48" y="35" font-size="14" font-weight="600" stroke="none" fill="#000">Status cards</text>
+  <rect x="152" y="16" width="48" height="24" rx="12" fill="#e6e6e6" />
+  <text x="176" y="32" font-size="12" text-anchor="middle" stroke="none" fill="#000">EXP</text>
+  <circle cx="344" cy="28" r="14" fill="#e6e6e6" />
+
+  <!-- tabs -->
+  <g transform="translate(16, 64)">
+    <line x1="0" y1="40" x2="343" y2="40" />
+    <text x="0" y="26" font-size="14" font-weight="600" stroke="none" fill="#000">Active (6)</text>
+    <line x1="0" y1="40" x2="64" y2="40" stroke-width="3" />
+    <text x="96" y="26" font-size="14" stroke="none" fill="#666">Archived (3)</text>
+    <text x="288" y="26" font-size="12" stroke="none" fill="#666">$0.62</text>
+  </g>
+
+  <!-- card 1: fresh -->
+  <g transform="translate(16, 120)">
+    <rect width="343" height="224" rx="6" />
+    <circle cx="20" cy="28" r="5" fill="#000" />
+    <text x="36" y="33" font-size="14" font-weight="600" stroke="none" fill="#000">Decisions v1 rollout</text>
+    <text x="320" y="33" font-size="14" text-anchor="middle" stroke="none" fill="#666">⋯</text>
+    <text x="20" y="60" font-size="12" stroke="none" fill="#666">All on track. PAP-15002 ready for PR after</text>
+    <text x="20" y="78" font-size="12" stroke="none" fill="#666">QA re-verify passed. Next: review the</text>
+    <text x="20" y="96" font-size="12" stroke="none" fill="#666">deep-link fix, then merge.</text>
+    <line x1="20" y1="116" x2="323" y2="116" stroke="#666" />
+    <line x1="20" y1="136" x2="288" y2="136" stroke="#666" />
+    <line x1="20" y1="156" x2="240" y2="156" stroke="#666" />
+    <line x1="0" y1="176" x2="343" y2="176" />
+    <text x="20" y="204" font-size="12" stroke="none" fill="#666">4m ago · every 15m · 1.1k tok</text>
+    <text x="304" y="204" font-size="14" stroke="none" fill="#000">⟳</text>
+  </g>
+
+  <!-- card 2: updating -->
+  <g transform="translate(16, 360)">
+    <rect width="343" height="224" rx="6" />
+    <circle cx="20" cy="28" r="5" fill="#e6e6e6" />
+    <text x="36" y="33" font-size="14" font-weight="600" stroke="none" fill="#000">Connections v3 PR lane</text>
+    <text x="320" y="33" font-size="14" text-anchor="middle" stroke="none" fill="#666">⋯</text>
+    <rect x="20" y="44" width="303" height="32" rx="4" fill="#e6e6e6" />
+    <text x="32" y="64" font-size="12" stroke="none" fill="#000">Integrating 3 changes… ▓▓▓░░</text>
+    <text x="20" y="100" font-size="12" stroke="none" fill="#666">#9987 went green, #9965 still conflicting,</text>
+    <text x="20" y="118" font-size="12" stroke="none" fill="#666">PAP-14986 moved to done —</text>
+    <line x1="20" y1="140" x2="323" y2="140" stroke="#666" />
+    <line x1="20" y1="160" x2="264" y2="160" stroke="#666" />
+    <line x1="0" y1="176" x2="343" y2="176" />
+    <text x="20" y="204" font-size="12" stroke="none" fill="#666">updating now · on change (60s)</text>
+  </g>
+
+  <!-- card 3: stale, partially visible -->
+  <g transform="translate(16, 600)">
+    <rect width="343" height="224" rx="6" />
+    <circle cx="20" cy="28" r="5" fill="#fff" />
+    <text x="36" y="33" font-size="14" font-weight="600" stroke="none" fill="#000">Eval-related issues</text>
+    <rect x="20" y="44" width="303" height="32" rx="4" />
+    <text x="32" y="64" font-size="12" stroke="none" fill="#000">5 changes since last update — Refresh</text>
+    <line x1="20" y1="100" x2="323" y2="100" stroke="#666" />
+    <line x1="20" y1="120" x2="288" y2="120" stroke="#666" />
+    <line x1="20" y1="140" x2="240" y2="140" stroke="#666" />
+  </g>
+
+  <!-- FAB -->
+  <g transform="translate(303, 728)">
+    <circle cx="28" cy="28" r="28" fill="#000" />
+    <line x1="16" y1="28" x2="40" y2="28" stroke="#fff" />
+    <line x1="28" y1="16" x2="28" y2="40" stroke="#fff" />
+  </g>
+</svg>

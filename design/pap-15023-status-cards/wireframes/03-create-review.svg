@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- underlying board, simplified -->
+  <rect width="208" height="800" />
+  <text x="24" y="45" font-size="14" font-weight="600" stroke="none" fill="#000">Paperclip</text>
+  <text x="232" y="56" font-size="28" font-weight="700" stroke="none" fill="#000">Status cards</text>
+
+  <!-- backdrop -->
+  <rect x="0" y="0" width="1280" height="800" fill="#000" fill-opacity="0.4" stroke="none" />
+
+  <!-- ===== Modal: New status card — step 2 ===== -->
+  <g transform="translate(272, 72)">
+    <rect width="736" height="656" rx="6" />
+    <text x="24" y="44" font-size="20" font-weight="600" stroke="none" fill="#000">Configure card</text>
+    <text x="704" y="44" font-size="14" stroke="none" fill="#666">×</text>
+    <text x="24" y="68" font-size="12" stroke="none" fill="#666">Step 2 of 2 — optional; the card already exists and is building in the background</text>
+    <line x1="0" y1="88" x2="736" y2="88" />
+
+    <!-- background progress strip -->
+    <g transform="translate(24, 104)">
+      <rect width="688" height="48" rx="4" fill="#e6e6e6" />
+      <text x="16" y="22" font-size="12" stroke="none" fill="#000">Building query… agent proposed title: "Cloud + ID + Content projects"  ▓▓░░░</text>
+      <text x="16" y="38" font-size="12" stroke="none" fill="#666">Matched 23 issues so far — first summary will follow automatically</text>
+    </g>
+
+    <!-- instructions -->
+    <text x="24" y="192" font-size="14" font-weight="600" stroke="none" fill="#000">Extra instructions for the summarizer</text>
+    <!-- append / replace radio -->
+    <g transform="translate(24, 208)">
+      <circle cx="10" cy="10" r="9" />
+      <circle cx="10" cy="10" r="4" fill="#000" />
+      <text x="28" y="15" font-size="14" stroke="none" fill="#000">Append to the default summary prompt</text>
+    </g>
+    <g transform="translate(384, 208)">
+      <circle cx="10" cy="10" r="9" />
+      <text x="28" y="15" font-size="14" stroke="none" fill="#000">Replace the default prompt entirely</text>
+    </g>
+    <g transform="translate(24, 240)">
+      <rect width="688" height="96" rx="4" />
+      <text x="12" y="26" font-size="14" stroke="none" fill="#666">e.g. Always end with "what should Dotta do next". Keep it under 8 bullets.</text>
+    </g>
+
+    <!-- update policy quick pick -->
+    <text x="24" y="376" font-size="14" font-weight="600" stroke="none" fill="#000">Auto-update</text>
+    <g transform="translate(24, 392)">
+      <rect width="160" height="40" rx="4" fill="#000" />
+      <text x="80" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#fff">Manual only</text>
+    </g>
+    <g transform="translate(192, 392)">
+      <rect width="200" height="40" rx="4" />
+      <text x="100" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">Every 15m if changed</text>
+    </g>
+    <g transform="translate(400, 392)">
+      <rect width="216" height="40" rx="4" />
+      <text x="108" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">On change (60s debounce)</text>
+    </g>
+    <text x="24" y="456" font-size="12" stroke="none" fill="#666">Auto-updates only trigger on meaningful transitions (blocked, done, needs review, new issue). In-progress churn is ignored.</text>
+    <text x="24" y="476" font-size="12" stroke="none" fill="#666">More options — schedules, active hours, budget caps — live in card settings.</text>
+
+    <!-- budget hint -->
+    <g transform="translate(24, 496)">
+      <rect width="688" height="48" rx="4" />
+      <text x="16" y="22" font-size="12" stroke="none" fill="#000">Estimated cost at this setting: ~8–20 updates/day · ~0.4k tok each ≈ $0.10–0.25/day</text>
+      <text x="16" y="38" font-size="12" stroke="none" fill="#666">Daily cap: 100k tokens per card (default) — card pauses and tells you when it hits the cap</text>
+    </g>
+
+    <line x1="0" y1="576" x2="736" y2="576" />
+    <text x="24" y="616" font-size="12" stroke="none" fill="#666">You can change all of this later from the card's ⋯ menu.</text>
+    <g transform="translate(576, 592)">
+      <rect width="136" height="40" rx="4" fill="#000" />
+      <text x="68" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#fff">Done</text>
+    </g>
+  </g>
+
+  <!-- ===== Annotations ===== -->
+  <g data-region="annotations">
+    <g transform="translate(256, 200)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <g transform="translate(256, 328)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+    <g transform="translate(256, 488)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">3</text>
+    </g>
+    <g transform="translate(1024, 592)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">4</text>
+    </g>
+  </g>
+</svg>
