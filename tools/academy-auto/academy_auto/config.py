@@ -15,6 +15,8 @@ class Config:
     max_diff_lines: int
     denied_globs: tuple[str, ...]
     triage_state_path: Path
+    secret_read_paths: tuple[str, ...]
+    sandbox_write_paths: tuple[str, ...]
 
     @classmethod
     def default(cls) -> "Config":
@@ -45,4 +47,14 @@ class Config:
                 "*supabase/migrations/*", ".git/*",
             ),
             triage_state_path=base / "triage-state.json",
+            secret_read_paths=(
+                str(home / ".ssh"), str(home / ".aws"), str(home / ".config/gcloud"),
+                str(home / ".whitestag.env"), str(home / ".n8n"), str(home / ".paperclip"),
+                str(home / "Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC"),
+            ),
+            sandbox_write_paths=(
+                "/private/tmp", "/private/var/folders",
+                str(home / ".npm"), str(home / "Library/Caches"),
+                str(home / ".cache"), str(home / ".expo"), str(home / ".claude"),
+            ),
         )

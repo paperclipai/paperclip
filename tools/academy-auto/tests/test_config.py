@@ -19,3 +19,4 @@ def test_default_config_has_expected_invariants():
     assert cfg.academy_repo.name == "WHITESTAG.ACADEMY"
     assert isinstance(cfg.denied_globs, tuple)
     assert cfg.triage_state_path.name == "triage-state.json"
+    assert isinstance(cfg.secret_read_paths, tuple)
