@@ -387,6 +387,38 @@ describe("AgentConfigForm environment selector", () => {
     expect(selector?.textContent).toContain("E2B · sandbox");
   });
 
+  it("prunes overlay entries that round-trip back to the saved value (no spurious no-op change)", async () => {
+    const dirtyStates: boolean[] = [];
+    const changesets: AgentConfigChange[][] = [];
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { name: "Cody" },
+      {
+        onDirtyChange: (dirty) => dirtyStates.push(dirty),
+        onChangesetChange: (changes) => changesets.push(changes),
+      },
+    );
+    roots.push(result.root);
+
+    const nameInput = [...result.container.querySelectorAll("input")].find(
+      (input) => input.getAttribute("placeholder") === "Agent name",
+    ) as HTMLInputElement;
+    expect(nameInput).toBeTruthy();
+
+    // Edit away from the saved value: dirty + one change row.
+    await act(async () => setInputValue(nameInput, "Rex"));
+    await flushReact();
+    expect(dirtyStates.at(-1)).toBe(true);
+    expect(changesets.at(-1)?.map((c) => [c.key, c.before, c.after])).toEqual([["name", "Cody", "Rex"]]);
+
+    // Restore the saved value: overlay entry is pruned, so no dirty flag and no
+    // spurious `Cody -> Cody` change survives.
+    await act(async () => setInputValue(nameInput, "Cody"));
+    await flushReact();
+    expect(dirtyStates.at(-1)).toBe(false);
+    expect(changesets.at(-1)).toEqual([]);
+  });
+
   it("re-parents environment and danger fields outside Runtime in the configuration shell", async () => {
     const result = await renderForm(
       [

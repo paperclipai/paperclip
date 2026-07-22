@@ -9,7 +9,30 @@ export type AgentConfigChange = {
   after: unknown;
 };
 
-type OverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "runtime";
+export type OverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "runtime";
+
+/**
+ * Structural value equality for overlay entries. Overlay values are plain config
+ * primitives / arrays / small JSON objects, so a deep compare is enough to tell
+ * "this edit restores the saved value" from a genuine change. Used to prune
+ * no-op overlay entries (e.g. toggling a danger switch off then back on to its
+ * saved value) so they don't surface as spurious `true -> true` History rows.
+ */
+export function agentConfigValuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null || typeof a !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((item, index) => agentConfigValuesEqual(item, b[index]));
+  }
+  const aObj = a as Record<string, unknown>;
+  const bObj = b as Record<string, unknown>;
+  const aKeys = Object.keys(aObj);
+  const bKeys = Object.keys(bObj);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => key in bObj && agentConfigValuesEqual(aObj[key], bObj[key]));
+}
 
 export function labelForAgentConfigKey(key: string): string {
   return key.replace(/^.*\./, "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (value) => value.toUpperCase());
@@ -22,7 +45,7 @@ function sectionForKey(key: string): AgentConfigChange["section"] {
   return "Runtime";
 }
 
-function originalValue(agent: Agent, group: OverlayGroup, field: string): unknown {
+export function originalValue(agent: Agent, group: OverlayGroup, field: string): unknown {
   if (group === "identity") return (agent as unknown as Record<string, unknown>)[field];
   if (group === "adapterConfig") return (agent.adapterConfig as Record<string, unknown> | null | undefined)?.[field];
   const runtimeConfig = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
@@ -53,7 +76,10 @@ export function buildAgentConfigChanges(agent: Agent, overlay: AgentConfigOverla
     const profiles = ((agent.runtimeConfig ?? {}) as Record<string, unknown>).modelProfiles as Record<string, unknown> | undefined;
     changes.push({ key: "runtimeConfig.modelProfiles.cheap", label: "Cost saver model", section: "Runtime", before: profiles?.cheap, after: overlay.modelProfiles.cheap });
   }
-  return changes;
+  // Drop entries that restore the saved value — a no-op is never a real change,
+  // regardless of which overlay path produced it (direct setOverlay writes for
+  // adapter-type switches / access-grant edits bypass the mark() prune).
+  return changes.filter((change) => !agentConfigValuesEqual(change.before, change.after));
 }
 
 export function revertAgentConfigChange(overlay: AgentConfigOverlay, key: string): AgentConfigOverlay {

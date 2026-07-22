@@ -64,7 +64,7 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
-import { buildAgentConfigChanges, revertAgentConfigChange, type AgentConfigChange } from "../lib/agent-config-changeset";
+import { agentConfigValuesEqual, buildAgentConfigChanges, originalValue, revertAgentConfigChange, type AgentConfigChange } from "../lib/agent-config-changeset";
 
 /* ---- Create mode values ---- */
 
@@ -409,10 +409,23 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   /** Mark field dirty in overlay */
   function mark(group: RecordOverlayGroup, field: string, value: unknown) {
-    setOverlay((prev) => ({
-      ...prev,
-      [group]: { ...prev[group], [field]: value },
-    }));
+    setOverlay((prev) => {
+      // Restoring a field to its saved value (e.g. toggling a danger switch off
+      // and back on) must not linger in the overlay — otherwise it counts as
+      // dirty and records a spurious `x -> x` no-op History row. Prune the entry
+      // instead of storing the round-trip. Create mode has no saved agent to
+      // compare against, so always store there.
+      if (!isCreate && agentConfigValuesEqual(value, originalValue(props.agent, group, field))) {
+        if (!(field in prev[group])) return prev;
+        const nextGroup = { ...prev[group] };
+        delete nextGroup[field];
+        return { ...prev, [group]: nextGroup };
+      }
+      return {
+        ...prev,
+        [group]: { ...prev[group], [field]: value },
+      };
+    });
   }
 
   function flushEnvironmentDraft() {
