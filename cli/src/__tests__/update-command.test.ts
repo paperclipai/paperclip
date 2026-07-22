@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flipCurrentAtomic, initializeInstallStore, payloadPathFor, readInstallManifest, resolveInstallStorePaths, writeInstallManifestAtomic, type InstallManifest, type InstallRecord } from "../install-store.js";
+import type { CommandRunner } from "../commands/install.js";
 import { detectInstallMode, resolveUpdateRequest, rollbackManagedInstall, updateCommand } from "../commands/update.js";
 
 let root: string;
@@ -27,6 +28,7 @@ beforeEach(() => {
   process.env.PAPERCLIP_HOME = path.join(root, "paperclip");
 });
 afterEach(() => {
+  vi.unstubAllEnvs();
   if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
   if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousPaperclipHome;
   fs.rmSync(root, { recursive: true, force: true });
@@ -88,6 +90,26 @@ describe("update command", () => {
     writeInstallManifestAtomic({ schemaVersion: 1, ...record(payload, "2.0.0"), previous: [] }, paths);
     const runCommand = vi.fn(async () => ({ stdout: '"1.0.0"\n', stderr: "" }));
     await expect(updateCommand({ version: "1.0.0", dryRun: true }, { paths, executablePath: entrypoint, runCommand, confirm: async () => false })).rejects.toThrow("Downgrade cancelled");
+  });
+
+  it("isolates global npm updates from hostile registry configuration", async () => {
+    const paths = resolveInstallStorePaths();
+    const executable = path.join(root, "lib", "node_modules", "paperclipai", "dist", "index.js");
+    vi.stubEnv("NPM_CONFIG_REGISTRY", "http://attacker-registry.invalid");
+    fs.mkdirSync(process.env.HOME!, { recursive: true });
+    fs.writeFileSync(path.join(process.env.HOME!, ".npmrc"), "registry=http://attacker-registry.invalid\n");
+    const runCommand = vi.fn(async (_file: string, args: string[], commandOptions?: Parameters<CommandRunner>[2]) => {
+      if (args[0] === "view") return { stdout: '"2.0.0"\n', stderr: "" };
+      expect(args).toContain("--registry=https://registry.npmjs.org");
+      expect(args).toContain("--@paperclipai:registry=https://registry.npmjs.org");
+      expect(commandOptions?.env?.NPM_CONFIG_REGISTRY).toBe("https://registry.npmjs.org");
+      expect(commandOptions?.env?.npm_config_registry).toBe("https://registry.npmjs.org");
+      expect(commandOptions?.env?.NPM_CONFIG_USERCONFIG).toBe(commandOptions?.env?.npm_config_userconfig);
+      expect(fs.readFileSync(commandOptions!.env!.NPM_CONFIG_USERCONFIG!, "utf8")).toContain("registry=https://registry.npmjs.org");
+      return { stdout: "", stderr: "" };
+    });
+    await updateCommand({}, { paths, executablePath: executable, runCommand });
+    expect(runCommand).toHaveBeenCalledTimes(2);
   });
 
   it("backs up, installs side-by-side, flips, and rolls back instantly", async () => {
