@@ -10,7 +10,9 @@
 
 ## Global Constraints
 
-- Alle neuen Python-Module liegen in `~/.paperclip/scripts/sekretaerin-mail-watcher/` (absolut: `/Users/walterschoenenbroecher.de/.paperclip/scripts/sekretaerin-mail-watcher/`). Tests colocated, `unittest`-Stil (wie `tools/n8n-workflow-watcher/test_*.py`).
+- **Dev-Root (im Repo):** Alle Quell- und Testdateien werden unter `tools/sekretaerin-mail-watcher/` im Paperclip-Repo entwickelt (Projekt-Muster wie `tools/seo-geo/`, `tools/vault-lookup/`) — **echte Git-Commits mit Diffs**, kein `--allow-empty`. Wo ein Task-Text unten noch `~/.paperclip/scripts/sekretaerin-mail-watcher/` als Quell-Pfad nennt, gilt stattdessen `tools/sekretaerin-mail-watcher/`. **Laufzeit-Pfade im Code** (`QUEUE_DIR=~/.paperclip/state/luna-approvals`, `SECRET_FILE`, `MAILDIR`, Webhook-URL) bleiben **exakt wie geschrieben** — sie zeigen auf die Deploy-/Runtime-Umgebung.
+- **Deploy (separater Schluss-Task):** Nach grünen Tests werden die Module nach `~/.paperclip/scripts/sekretaerin-mail-watcher/` und die Luna-Skripte (`luna_mail_render.py`, `luna-queue-approval.py`) in das Agent-`bin/` (`…/agents/e24b8d9d…/bin/`) kopiert. Der existierende `watcher.py` wird zu Beginn als Baseline ins Repo kopiert, dort modifiziert und am Ende zurück-deployt.
+- Tests colocated, `unittest`-Stil (wie `tools/n8n-workflow-watcher/test_*.py`).
 - Test-Kommando: `python3 -m pytest <datei> -v` (pytest 8.4.2 vorhanden).
 - Company-ID: `9cebf3cf-efe8-4597-a400-f06488900a87` · Luna-Agent-ID: `e24b8d9d-143e-4141-b413-4361aa618771` · Walter-User-ID: `18r34Ghx5N0LHRptMCT6Fp1WaoGqhvc9`.
 - Mailhub-Send-Webhook: `http://localhost:5678/webhook/mailhub/send`, Header `X-Mailhub-Secret: mailhub-812a27b07c73e64d7df192c98a3883eb`, Absender `office@whitestag.ai`, Walter `ws@whitestag.ai`.
@@ -19,7 +21,7 @@
 - TTL pending-Einträge: **7 Tage** → `expired`, kein Versand, keine Meldung.
 - n8n-Versionierung (Hausregel): `SMTP Relay V15` unangetastet, neue Version `V16` als Kopie, sauber publishen (deactivate→activate), `activeVersionId == versionId` verifizieren; neueste Version zusätzlich nach `~/Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC/n8n Workflows/` kopieren.
 - Luna bleibt read-only auf dem Postfach: kein Verschieben/Löschen.
-- Git nach jeder Task committen. Repo: `~/Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC/Paperclip` (Skripte unter `~/.paperclip/scripts/` sind außerhalb dieses Repos — separat sichern/committen falls dort ein Repo besteht; sonst als Arbeitskopie belassen und im Plan-Commit referenzieren).
+- Git nach jeder Task committen (echte Diffs unter `tools/sekretaerin-mail-watcher/`). Repo: `~/Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC/Paperclip`, Branch `feat/academy-lektor` (laufender Dev-Branch).
 
 ---
 
