@@ -14620,8 +14620,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             )
             .then((rows) => rows);
           deferredCommentWakeIsSelfAuthored =
+            deferred.agentId === run.agentId &&
             deferredComments.length > 0 &&
             deferredComments.every((comment) => comment.createdByRunId === run.id);
+        }
+        if (deferredCommentWakeIsSelfAuthored) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: "Deferred comment wake suppressed because every referenced comment was authored by the closing run",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
         }
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
