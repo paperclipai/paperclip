@@ -8,7 +8,7 @@ const COMMAND_CLI_SECRET_OPTION_RE = new RegExp(
   "gi",
 );
 const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
-  String.raw`(\b${SECRET_NAME_PATTERN}\s*=\s*)(?:(["'])([^"'` + "`" + String.raw`\r\n]*)\2|([^\s"'` + "`" + String.raw`]+))`,
+  String.raw`(\b${SECRET_NAME_PATTERN}\s*=\s*)(?:(['"])([^'"\\` + "`" + String.raw`\r\n]*)\2|([^\s'"\\` + "`" + String.raw`]+))`,
   "gi",
 );
 const COMMAND_AUTHORIZATION_BEARER_RE = /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;

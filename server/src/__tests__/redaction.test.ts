@@ -89,6 +89,18 @@ describe("redaction", () => {
     expect(result).not.toContain(jwt);
   });
 
+  it("preserves serialized JSON when redacting secrets inside string values", () => {
+    const input = JSON.stringify({
+      type: "result",
+      result: 'TOKEN=live-token "quoted output"',
+    });
+
+    const result = redactSensitiveText(input);
+    const parsed = JSON.parse(result) as { result: string };
+
+    expect(parsed.result).toBe(`TOKEN=${REDACTED_EVENT_VALUE} "quoted output"`);
+  });
+
   it("redacts inline secrets from command metadata without hiding safe command text", () => {
     const input = {
       command: "custom-acp --token ghp_example_secret env OPENAI_API_KEY=sk-live-example custom-acp",
