@@ -58,7 +58,7 @@ function galleryEntry(overrides: Record<string, unknown>) {
     logoUrl: "https://example.com/github.png",
     tagline: "Let agents open PRs and issues.",
     authKind: "oauth",
-    transportTemplate: { transport: "remote_http", url: "https://api.github.com/mcp" },
+    transportTemplate: { transport: "mcp_remote", url: "https://api.github.com/mcp" },
     credentialFields: [],
     recommendedDefaults: {},
     urlPatterns: [],

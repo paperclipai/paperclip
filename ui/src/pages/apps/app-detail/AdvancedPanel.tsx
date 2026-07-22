@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { ArrowUpRight, Loader2, Lock } from "lucide-react";
-import type { AppGalleryEntry, ToolConnection } from "@paperclipai/shared";
-import { humanizeConnectionDisplayName } from "@paperclipai/shared";
+import type { AppDefinition, ToolConnection } from "@paperclipai/shared";
+import { credentialConfigPath, getAvailableConnectionMethod, humanizeConnectionDisplayName } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,7 +37,7 @@ function KeySection({
   onReplaced,
 }: {
   connection: ToolConnection;
-  galleryEntry: AppGalleryEntry | null;
+  galleryEntry: AppDefinition | null;
   onReplaced: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -82,7 +82,7 @@ export function ReconnectCard({
   onReconnected,
 }: {
   connection: ToolConnection;
-  galleryEntry: AppGalleryEntry | null;
+  galleryEntry: AppDefinition | null;
   onReconnected: () => void;
 }) {
   return (
@@ -105,12 +105,19 @@ function ReconnectForm({
   onReconnected,
 }: {
   connection: ToolConnection;
-  galleryEntry: AppGalleryEntry | null;
+  galleryEntry: AppDefinition | null;
   onCancel?: () => void;
   onReconnected: () => void;
 }) {
   const { pushToast } = useToast();
-  const fields = galleryEntry?.credentialFields ?? [];
+  const method = galleryEntry && Array.isArray(galleryEntry.methods)
+    ? getAvailableConnectionMethod(galleryEntry)
+    : null;
+  const fields = (method?.credentialFields ?? []).map((field) => ({
+    ...field,
+    configPath: credentialConfigPath(field),
+    helpUrl: method?.consoleLinks?.keys ?? method?.consoleLinks?.docs ?? "",
+  }));
   const [values, setValues] = useState<Record<string, string>>({});
   const [single, setSingle] = useState("");
   const usesGallery = fields.length > 0 && !!galleryEntry;
@@ -268,7 +275,7 @@ export function connectionAddress(connection: ToolConnection): string {
 }
 
 export function connectionTransportLabel(transport: ToolConnection["transport"]): string {
-  if (transport === "remote_http") return "Remote HTTP";
+  if (transport === "mcp_remote") return "Remote HTTP";
   if (transport === "local_stdio") return "Local command";
   return "Unknown";
 }

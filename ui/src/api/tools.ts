@@ -34,7 +34,7 @@ import type {
   ToolRiskLevel,
   UpdateToolPolicy,
   ReorderToolPolicies,
-  AppGalleryEntry,
+  AppDefinition,
   ToolAppsAttentionResponse,
   ToolConnectionActivityResponse,
   ToolConnectionTestAgentsResponse,
@@ -70,7 +70,7 @@ export type ToolRuntimeHealthResponse = ToolRuntimeHealthSummary;
 export type ToolTrustRulesResponse = { trustRules: ToolPolicy[] };
 export type ToolPoliciesResponse = { policies: ToolPolicy[] };
 export type ToolProfilesResponse = { profiles: ToolProfileWithDetails[] };
-export type ToolGalleryResponse = { apps: AppGalleryEntry[] };
+export type ToolGalleryResponse = { apps: AppDefinition[] };
 export type ToolMcpGatewaysResponse = { gateways: ToolMcpGatewayWithTokens[] };
 export type CreateGatewayTokenInput = Omit<CreateToolMcpGatewayToken, "expiresAt"> & {
   expiresAt?: string | Date | null;

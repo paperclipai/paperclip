@@ -1,0 +1,57 @@
+--- a/dist/runtime.d.ts
++++ b/dist/runtime.d.ts
+@@ -266,6 +266,7 @@
+   timeoutMs?: number;
+   probeAgent?: string;
+   verbose?: boolean;
++  onAgentStderr?: (chunk: string) => void;
+   onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
+     signal: AbortSignal;
+   }) => Promise<AcpPermissionDecision | undefined>;
+--- a/dist/session-options-jkYbBxGE.d.ts
++++ b/dist/session-options-jkYbBxGE.d.ts
+@@ -84,6 +84,7 @@
+   terminal?: boolean;
+   suppressSdkConsoleErrors?: boolean;
+   verbose?: boolean;
++  onAgentStderr?: (chunk: string) => void;
+   sessionOptions?: {
+     model?: string;
+     allowedTools?: string[];
+--- a/dist/runtime.js
++++ b/dist/runtime.js
+@@ -744,7 +744,8 @@
+ 		this.deps = deps;
+ 	}
+ 	createClient(options) {
+-		return this.deps.clientFactory?.(options) ?? new AcpClient(options);
++		const clientOptions = { ...options, onAgentStderr: this.options.onAgentStderr };
++		return this.deps.clientFactory?.(clientOptions) ?? new AcpClient(clientOptions);
+ 	}
+ 	async readPendingPersistentClient(record, options) {
+ 		const pendingClient = this.pendingPersistentClients.get(record.acpxRecordId);
+--- a/dist/live-checkpoint-ClPCSdrW.js
++++ b/dist/live-checkpoint-ClPCSdrW.js
+@@ -1532,7 +1532,7 @@
+ 	"RedactedThinking",
+ 	"ToolUse"
+ ]);
+-const MAP_OBJECT_PATHS = /* @__PURE__ */ new Set(["request_token_usage", "messages.Agent.tool_results"]);
++const MAP_OBJECT_PATHS = /* @__PURE__ */ new Set(["request_token_usage", "messages.Agent.tool_results", "acpx.session_options.env"]);
+ const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
+ 	"agent_capabilities",
+ 	"messages.Agent.content.ToolUse.input",
+@@ -2562,1 +2562,1 @@
+-	if (state.ch === "\\" && state.quote !== "'") return {
++	if (process.platform !== "win32" && state.ch === "\\" && state.quote !== "'") return {
+@@ -3960,6 +3960,10 @@
+ 		const startupStderr = [];
+ 		child.stderr.on("data", (chunk) => {
+ 			this.captureStartupStderr(startupStderr, chunk);
++			if (this.options.onAgentStderr) {
++				this.options.onAgentStderr(chunk.toString());
++				return;
++			}
+ 			if (!this.options.verbose) return;
+ 			process.stderr.write(chunk);
+ 		});

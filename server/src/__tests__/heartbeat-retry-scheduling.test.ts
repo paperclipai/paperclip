@@ -99,37 +99,35 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await tempDb?.cleanup();
   });
 
-  function isHeartbeatRunDependentFkError(error: unknown) {
-    const message = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : String(error);
-    return (
-      message.includes("heartbeat_run_events_run_id_heartbeat_runs_id_fk") ||
-      message.includes("activity_log_run_id_heartbeat_runs_id_fk")
-    );
-  }
-
-  async function deleteHeartbeatRunsWithDependents() {
-    // Heartbeat finalization can still write activity_log / run events between the
-    // first dependent delete and heartbeat_runs delete; retry like other suites.
+  async function cleanupRetryFixture() {
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      await db.delete(heartbeatRunEvents);
-      await db.delete(activityLog);
       try {
-        await db.delete(heartbeatRuns);
+        await cleanupRetryFixtureOnce();
         return;
       } catch (error) {
-        if (!isHeartbeatRunDependentFkError(error) || attempt === 4) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
     }
   }
 
-  async function cleanupRetryFixture() {
+  async function cleanupHeartbeatRunDependents() {
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+  }
+
+  async function cleanupRetryFixtureOnce() {
+    await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projects);
-    await deleteHeartbeatRunsWithDependents();
+    await cleanupHeartbeatRunDependents();
+    await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(budgetPolicies);

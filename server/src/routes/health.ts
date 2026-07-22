@@ -5,6 +5,7 @@ import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
+import { isCloudManagedInstance } from "../middleware/auth.js";
 import { logger } from "../middleware/logger.js";
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../server-info.js";
 import {
@@ -148,7 +149,13 @@ export function healthRoutes(
 
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
     let bootstrapInviteActive = false;
-    if (opts.deploymentMode === "authenticated") {
+    // Cloud-managed instances have no first-admin concept: the control
+    // plane owns identity and its trusted-header users are deliberately
+    // never instance_admin, so the role-count gate below would report
+    // bootstrap_pending forever and lock every managed tenant out at the
+    // claim screen. Self-hosted deployments (no tenant server token) are
+    // unaffected.
+    if (opts.deploymentMode === "authenticated" && !isCloudManagedInstance()) {
       const roleCount = await db
         .select({ count: count() })
         .from(instanceUserRoles)

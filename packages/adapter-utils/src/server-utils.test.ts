@@ -2150,15 +2150,30 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
     refreshPaperclipWorkspaceEnvForExecution({
       env,
       envConfig: {
+        PAPERCLIP_CLOUD_PROVIDER_TOKEN: "cloud-token",
+      },
+      workspaceCwd: null,
+    });
+
+    // Paperclip did not assign this PAPERCLIP_*-named key for the run, so the
+    // configured value flows through to the spawned process.
+    expect(env.PAPERCLIP_CLOUD_PROVIDER_TOKEN).toBe("cloud-token");
+  });
+
+  it("never accepts PAPERCLIP_API_KEY from config env", () => {
+    const env: Record<string, string> = {};
+
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: {
         PAPERCLIP_API_KEY: "explicit-key",
       },
       workspaceCwd: null,
     });
 
-    // Paperclip did not assign PAPERCLIP_API_KEY before the merge, so an
-    // explicitly configured value is allowed through (adapters apply the run
-    // token here only when no explicit key was configured).
-    expect(env.PAPERCLIP_API_KEY).toBe("explicit-key");
+    // The harness-minted run token is the only PAPERCLIP_API_KEY source;
+    // a configured value is dropped even when Paperclip has not set one.
+    expect(env.PAPERCLIP_API_KEY).toBeUndefined();
   });
 });
 

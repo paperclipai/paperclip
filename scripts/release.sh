@@ -257,7 +257,16 @@ if [ "$dry_run" = true ]; then
     [ -z "$pkg_dir" ] && continue
     release_info "  --- $pkg_dir ---"
     cd "$REPO_ROOT/$pkg_dir"
-    pnpm publish --dry-run --no-git-checks --tag "$DIST_TAG" 2>&1 | tail -3
+    publish_tool="$(package_publish_tool)"
+    if [ "$publish_tool" = "npm" ]; then
+      publish_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-package.XXXXXX")"
+      node "$REPO_ROOT/scripts/prepare-bundled-package.mjs" "$REPO_ROOT/$pkg_dir" "$publish_dir"
+      cd "$publish_dir"
+      run_bundled_npm pack --pack-destination "$publish_dir" 2>&1 | tail -3
+      rm -rf "$publish_dir"
+    else
+      pnpm publish --dry-run --no-git-checks --tag "$DIST_TAG" 2>&1 | tail -3
+    fi
   done <<< "$VERSIONED_PACKAGE_INFO"
   release_info "  [dry-run] Would create git tag $tag_name on $CURRENT_SHA"
 else
@@ -266,7 +275,16 @@ else
     [ -z "$pkg_dir" ] && continue
     release_info "  Publishing $pkg_name@$pkg_version"
     cd "$REPO_ROOT/$pkg_dir"
-    publish_package_to_npm "$DIST_TAG" "$pkg_name" "$pkg_version"
+    publish_tool="$(package_publish_tool)"
+    if [ "$publish_tool" = "npm" ]; then
+      publish_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-package.XXXXXX")"
+      node "$REPO_ROOT/scripts/prepare-bundled-package.mjs" "$REPO_ROOT/$pkg_dir" "$publish_dir"
+      cd "$publish_dir"
+    fi
+    publish_package_to_npm "$DIST_TAG" "$pkg_name" "$pkg_version" "$publish_tool"
+    if [ "$publish_tool" = "npm" ]; then
+      rm -rf "$publish_dir"
+    fi
   done <<< "$VERSIONED_PACKAGE_INFO"
   release_info "  ✓ Published all packages under dist-tag $DIST_TAG"
 fi

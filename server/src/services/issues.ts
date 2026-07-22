@@ -356,6 +356,25 @@ type DerivedIssueCommentAttribution = {
 };
 
 /**
+ * Resolve a `created_by_run_id` safe for the heartbeat_runs FK; returns null for
+ * missing/invalid ids so an unknown run id never 500s a comment insert.
+ */
+async function resolveCommentCreatedByRunId(
+  dbOrTx: any,
+  companyId: string,
+  runId: string | null | undefined,
+): Promise<string | null> {
+  const normalized = typeof runId === "string" ? runId.trim() : "";
+  if (!normalized || !isUuidLike(normalized)) return null;
+  const existing = await dbOrTx
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, normalized), eq(heartbeatRuns.companyId, companyId)))
+    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+  return existing?.id ?? null;
+}
+
+/**
  * Best-effort agent attribution for comments whose stored author is a non-human
  * sentinel (e.g. `local-board`). Callers MUST pre-filter `comments` to drop any
  * comment whose `authorUserId` maps to a genuine user profile so a real board /
@@ -1295,36 +1314,6 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
   `;
 }
 
-function lastExternalCommentAtExpr(companyId: string, userId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${issueComments.createdAt})
-      FROM ${issueComments}
-      WHERE ${issueComments.issueId} = ${issues.id}
-        AND ${issueComments.companyId} = ${companyId}
-        AND (
-          ${issueComments.authorUserId} IS NULL
-          OR ${issueComments.authorUserId} <> ${userId}
-        )
-    )
-  `;
-}
-
-function issueLastActivityAtExpr(companyId: string, userId: string) {
-  const lastExternalCommentAt = lastExternalCommentAtExpr(companyId, userId);
-  const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
-  return sql<Date>`
-    GREATEST(
-      COALESCE(${lastExternalCommentAt}, to_timestamp(0)),
-      CASE
-        WHEN ${issues.updatedAt} > COALESCE(${myLastTouchAt}, to_timestamp(0))
-        THEN ${issues.updatedAt}
-        ELSE to_timestamp(0)
-      END
-    )
-  `;
-}
-
 const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
   "issue.read_marked",
   "issue.read_unmarked",
@@ -1393,7 +1382,6 @@ function unreadForUserCondition(companyId: string, userId: string) {
 }
 
 function inboxVisibleForUserCondition(companyId: string, userId: string) {
-  const issueLastActivityAt = issueLastActivityAtExpr(companyId, userId);
   return sql<boolean>`
     NOT EXISTS (
       SELECT 1
@@ -1401,7 +1389,49 @@ function inboxVisibleForUserCondition(companyId: string, userId: string) {
       WHERE ${issueInboxArchives.issueId} = ${issues.id}
         AND ${issueInboxArchives.companyId} = ${companyId}
         AND ${issueInboxArchives.userId} = ${userId}
-        AND ${issueInboxArchives.archivedAt} >= ${issueLastActivityAt}
+        AND NOT (
+          EXISTS (
+            SELECT 1
+            FROM ${issueThreadInteractions}
+            WHERE ${issueThreadInteractions.issueId} = ${issues.id}
+              AND ${issueThreadInteractions.companyId} = ${companyId}
+              AND ${issueThreadInteractions.kind} IN (
+                'suggest_tasks',
+                'ask_user_questions',
+                'request_confirmation'
+              )
+              AND ${issueThreadInteractions.createdAt} > ${issueInboxArchives.archivedAt}
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM ${activityLog}
+            WHERE ${activityLog.companyId} = ${companyId}
+              AND ${activityLog.entityType} = 'issue'
+              AND ${activityLog.entityId} = ${issues.id}::text
+              AND ${activityLog.action} = 'issue.updated'
+              AND ${activityLog.createdAt} > ${issueInboxArchives.archivedAt}
+              AND ${activityLog.details}->>'status' IN ('in_review', 'blocked', 'done')
+              AND ${activityLog.details}->'_previous'->>'status'
+                IS DISTINCT FROM ${activityLog.details}->>'status'
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM ${issueComments}
+            WHERE ${issueComments.issueId} = ${issues.id}
+              AND ${issueComments.companyId} = ${companyId}
+              AND ${issueComments.createdAt} > ${issueInboxArchives.archivedAt}
+              AND ${issueComments.deletedAt} IS NULL
+              AND (
+                (
+                  ${issueComments.authorUserId} IS NOT NULL
+                  AND ${issueComments.authorUserId} <> ${userId}
+                  AND ${issueComments.authorAgentId} IS NULL
+                  AND ${issueComments.derivedAuthorAgentId} IS NULL
+                )
+                OR POSITION(${`](user://${userId})`} IN ${issueComments.body}) > 0
+              )
+          )
+        )
     )
   `;
 }
@@ -7128,10 +7158,12 @@ export function issueService(db: Db) {
           }
         }
 
+        // Release clears checkout/assignee locks; only in_progress work re-queues to todo.
+        const releaseStatus = existing.status === "in_progress" ? "todo" : existing.status;
         const updated = await tx
           .update(issues)
           .set({
-            status: "todo",
+            status: releaseStatus,
             assigneeAgentId: null,
             checkoutRunId: null,
             executionRunId: null,
@@ -7428,6 +7460,14 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+      // Invalid/stale run ids must not 500 the insert — null out unknowns.
+      const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
+      if (actor.runId && !createdByRunId) {
+        logger.warn(
+          { issueId, companyId: issue.companyId, runId: actor.runId },
+          "dropping invalid createdByRunId for issue comment insert",
+        );
+      }
       const [comment] = await dbOrTx
         .insert(issueComments)
         .values({
@@ -7436,7 +7476,7 @@ export function issueService(db: Db) {
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
           authorType,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId,
           body: redactedBody,
           presentation,
           metadata,

@@ -103,6 +103,28 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 startedAt,
               };
             },
+            // Expose the native file-sync capability only when the provider's
+            // worker advertises BOTH sync verbs; otherwise leave syncIn/syncOut
+            // undefined so the orchestrator keeps the byte-identical base64 path.
+            ...(input.environmentRuntime.supportsSync({
+              environment: input.environment as Environment,
+              lease: input.lease,
+            })
+              ? {
+                  syncIn: (operations) =>
+                    input.environmentRuntime!.syncIn({
+                      environment: input.environment as Environment,
+                      lease: input.lease!,
+                      operations,
+                    }),
+                  syncOut: (operations) =>
+                    input.environmentRuntime!.syncOut({
+                      environment: input.environment as Environment,
+                      lease: input.lease!,
+                      operations,
+                    }),
+                }
+              : {}),
           }
         : undefined,
     };

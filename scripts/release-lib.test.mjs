@@ -11,7 +11,13 @@ function writeExecutable(path, body) {
   writeFileSync(path, body, { mode: 0o755 });
 }
 
-function runPublishHelper({ pnpmMode, npmVersionExists = false, distTag = "canary", callerPipefail = true }) {
+function runPublishHelper({
+  pnpmMode,
+  npmVersionExists = false,
+  distTag = "canary",
+  callerPipefail = true,
+  publishTool = "pnpm",
+}) {
   const fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-release-lib-"));
   const binDir = join(fixtureDir, "bin");
   const stateDir = join(fixtureDir, "state");
@@ -71,7 +77,22 @@ if [ "$1" = "view" ] && [ "$NPM_VERSION_EXISTS" = "true" ]; then
   echo "1.2.3"
   exit 0
 fi
+if [ "$1" = "publish" ]; then
+  echo "published"
+  exit 0
+fi
 exit 1
+`,
+  );
+
+  writeExecutable(
+    join(binDir, "npx"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf 'npx %s\n' "$*" >> "$FAKE_CALL_LOG"
+[ "$1" = "--yes" ] && shift
+[ "$1" = "npm@10.9.7" ] && shift
+exec npm "$@"
 `,
   );
 
@@ -79,7 +100,7 @@ exit 1
   const script = `
 ${shellOptions}
 source "${repoRoot}/scripts/release-lib.sh"
-publish_package_to_npm ${distTag} @paperclipai/example 1.2.3
+publish_package_to_npm ${distTag} @paperclipai/example 1.2.3 ${publishTool}
 `;
 
   let status = 0;
@@ -118,6 +139,15 @@ test("publish_package_to_npm returns after a successful pnpm publish", () => {
   assert.match(result.calls, /^pnpm publish --no-git-checks --tag canary --access public$/m);
   assert.doesNotMatch(result.calls, /npm view/);
   assert.doesNotMatch(result.calls, /--provenance=false/);
+});
+
+test("publish_package_to_npm uses npm for bundled dependencies", () => {
+  const result = runPublishHelper({ pnpmMode: "success", publishTool: "npm" });
+
+  assert.equal(result.status, 0);
+  assert.match(result.calls, /^npx --yes npm@10\.9\.7 publish --tag canary --access public$/m);
+  assert.match(result.calls, /^npm publish --tag canary --access public$/m);
+  assert.doesNotMatch(result.calls, /^pnpm publish/m);
 });
 
 test("publish_package_to_npm retries duplicate tlog failures without provenance", () => {
