@@ -67,6 +67,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
@@ -104,6 +105,7 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import { logger } from "../middleware/logger.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
   agentInstructionsChangeTargetKey,
@@ -1128,7 +1130,15 @@ export function agentRoutes(
     const parsedModelProfiles = asRecord(normalizedRuntimeConfig.modelProfiles);
     const modelProfiles = parsedModelProfiles ? { ...parsedModelProfiles } : {};
     if (!Object.prototype.hasOwnProperty.call(modelProfiles, "cheap")) {
-      const adapterModelProfiles = await listAdapterModelProfiles(adapterType);
+      let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
+      try {
+        adapterModelProfiles = await listAdapterModelProfiles(adapterType);
+      } catch (error) {
+        logger.warn(
+          { err: error, adapterType },
+          "Failed to discover adapter model profiles while normalizing a new agent; leaving profiles unchanged",
+        );
+      }
       if (adapterModelProfiles.some((profile) => profile.key === "cheap")) {
         modelProfiles.cheap = { enabled: false };
       }
