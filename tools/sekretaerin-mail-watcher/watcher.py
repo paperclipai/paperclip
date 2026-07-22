@@ -57,7 +57,7 @@ def _triage_in_flight() -> bool:
         import json as _json
         data = _json.load(urllib.request.urlopen(req, timeout=15))
         issues = data if isinstance(data, list) else data.get("issues", data.get("data", []))
-        return any(str(i.get("title", "")).startswith("Mail-Triage") for i in issues)
+        return any(str(i.get("title", "")).startswith("Neue Mails") for i in issues)
     except Exception as e:  # noqa: BLE001 — im Zweifel anlegen, nicht blockieren
         print(f"WARN: In-Flight-Check fehlgeschlagen ({e}) — lege trotzdem an", file=sys.stderr)
         return False
@@ -247,7 +247,7 @@ def build_description(new: list[str], capped: int) -> str:
                  f"Limit von {MAX_PER_ISSUE} gekürzt und kommen im nächsten Lauf.")
     return f"""## Auftrag
 
-Neue ws@-Mails im Vault. Triagiere **genau diese {len(new)} Datei(en)** aus
+Neue ws@-Mails im Vault. Bearbeite **genau diese {len(new)} Datei(en)** aus
 `{MAILDIR}/`:
 
 {lines}{extra}
@@ -255,17 +255,20 @@ Neue ws@-Mails im Vault. Triagiere **genau diese {len(new)} Datei(en)** aus
 Kein Datum selbst ermitteln, keinen anderen Zeitraum absuchen — die Liste oben
 ist abschliessend.
 
-## Vorgehen
+## Vorgehen (Vier-Augen)
 
-Es gilt unveraendert deine Routine-Anweisung aus der AGENTS.md:
-
-1. **Triage-Tabelle** als Issue-Kommentar (Datei | From | Subject | Klassifikation | Empfehlung).
-2. **Antwort-Entwuerfe** fuer jede Mail mit `actionable` oder `unklar` — eine
-   eigene Mail je Entwurf via `bin/send-walter-report.sh`, Betreff
-   `[Sekretaerin] Entwurf — <Original-Betreff>`. Siehe Abschnitt
-   **Schattenbetrieb: Antwort-Entwuerfe an Walter**. Kein Versand an Externe.
-3. **Stoerung erkannt** (Sync tot, Workflow-Fehler)? Subtask an den CTO anlegen,
-   nicht nur kommentieren.
+1. **Klassifiziere** jede Mail (spam / fyi / actionable / unklar). Spam→`cancelled`,
+   FYI→still archivieren (kein Kommentar-Zwang). **Keine Triage-Übersichtsmail an
+   Walter** — die Original-Mails liegen ohnehin in seinem Postfach.
+2. **Antwort-Entwurf zur Freigabe** für jede `actionable`/`unklar`-Mail — genau
+   ein Skript, das rendert, in die Freigabe-Queue legt und Walter EINE Freigabe-Mail
+   schickt:
+   `bin/luna-queue-approval.py --area <AI|FILM|SORBART> --to <Absender-Adresse> \\
+     --subject "AW: <Original-Betreff>" --body /tmp/entwurf.md --original-file "<Dateiname>"`
+   Du sendest **nie** selbst an Externe. Walters „Okay" auf die Freigabe-Mail löst
+   den Versand aus (deterministisch, ohne dich). Bei Korrektur weckt dich ein
+   „Korrektur Entwurf #…"-Issue → überarbeiten und mit `luna-queue-approval.py` neu vorlegen.
+3. **Störung erkannt** (Sync tot, Workflow-Fehler)? Subtask an den CTO, nicht nur kommentieren.
 4. **Abschluss:** Issue auf `in_review`, `assigneeUserId` =
    `18r34Ghx5N0LHRptMCT6Fp1WaoGqhvc9`, `assigneeAgentId` = null. **Nicht `done`.**
 """
@@ -341,7 +344,7 @@ def main() -> None:
         return
 
     token = pc.load_token()
-    title = f"Mail-Triage: {len(batch)} neue Mail(s) — {datetime.now():%Y-%m-%d %H:%M}"
+    title = f"Neue Mails: {len(batch)} — Antwort-Entwürfe — {datetime.now():%Y-%m-%d %H:%M}"
     issue_id = pc.create_issue(
         BASE, token, COMPANY,
         title=title,
