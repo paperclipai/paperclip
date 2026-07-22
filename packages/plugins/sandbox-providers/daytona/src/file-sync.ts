@@ -114,7 +114,71 @@ async function createHostTarball(input: {
   );
 }
 
+/**
+ * True when `relative` (a POSIX path) escapes its anchoring directory once
+ * normalized: an absolute path, `..`, or a `..`-leading traversal all break out.
+ */
+function posixPathEscapes(relative: string): boolean {
+  const normalized = path.posix.normalize(relative);
+  return normalized === ".." || normalized.startsWith("../") || path.posix.isAbsolute(normalized);
+}
+
+/**
+ * Reject a sandbox-authored tarball before extraction if any member would land
+ * outside the extraction dir. The archive is produced by the (untrusted) sandbox,
+ * so `tar -xf` on the host must never be handed an archive whose entries carry
+ * absolute paths or `../` traversal, nor a symlink/hardlink member whose target
+ * escapes the tree — the latter would let a follow-up member be written through
+ * the link to an arbitrary host path. Legitimate in-tree relative links (targets
+ * that resolve back inside the archive, e.g. `shortcut -> nested/data.txt`) are
+ * preserved. Parses the `-tvf` verbose listing so both member names and link
+ * targets are inspected; any unparseable line fails closed.
+ */
+async function assertTarballEntriesConfined(archivePath: string): Promise<void> {
+  const { stdout } = await execFileAsync("tar", ["-tvf", archivePath], {
+    env: { ...process.env, COPYFILE_DISABLE: "1" },
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
+  for (const line of lines) {
+    // GNU tar -tvf: "<perms> <owner>/<group> <size> <date> <time> <name>[ -> target]".
+    const match = line.match(/^(\S+)\s+\S+\s+\d+\s+\S+\s+\S+\s+(.*)$/);
+    if (!match) {
+      throw new Error(`Daytona syncOut refusing tarball with an unparseable entry listing: ${line}`);
+    }
+    const typeFlag = match[1][0];
+    let name = match[2];
+    let linkTarget: string | null = null;
+    if (typeFlag === "l") {
+      const idx = name.indexOf(" -> ");
+      if (idx === -1) throw new Error(`Daytona syncOut refusing unparseable symlink entry: ${line}`);
+      linkTarget = name.slice(idx + " -> ".length);
+      name = name.slice(0, idx);
+    } else if (typeFlag === "h") {
+      const idx = name.indexOf(" link to ");
+      if (idx === -1) throw new Error(`Daytona syncOut refusing unparseable hardlink entry: ${line}`);
+      linkTarget = name.slice(idx + " link to ".length);
+      name = name.slice(0, idx);
+    }
+    const cleanName = name.replace(/\/+$/, "");
+    if (cleanName.length > 0 && posixPathEscapes(cleanName)) {
+      throw new Error(`Daytona syncOut refusing tarball member that escapes the extraction dir: ${name}`);
+    }
+    if (linkTarget !== null) {
+      const resolved = path.posix.join(path.posix.dirname(cleanName), linkTarget);
+      if (path.posix.isAbsolute(linkTarget) || posixPathEscapes(resolved)) {
+        throw new Error(
+          `Daytona syncOut refusing tarball link whose target escapes the extraction dir: ${name} -> ${linkTarget}`,
+        );
+      }
+    }
+  }
+}
+
 async function extractHostTarball(input: { archivePath: string; localDir: string }): Promise<void> {
+  // The archive is sandbox-authored and untrusted: validate every member (and
+  // link target) is confined before letting host-side tar write a single byte.
+  await assertTarballEntriesConfined(input.archivePath);
   await fs.mkdir(input.localDir, { recursive: true });
   await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
@@ -155,42 +219,108 @@ async function assertSandboxCommandOk(
 }
 
 /**
- * Reject an outbound source that resolves (through symlinks) outside the workspace
- * remote dir. The sandbox is untrusted relative to the host, so a sandbox-planted
- * symlink must never widen an outbound read past the confinement root. Runs as a
- * single batched precheck: any source whose realpath escapes fails the whole sync
- * fail-closed before `downloadFiles`/`tar` touch a byte.
+ * POSIX-sh preamble defining a `_pc_resolve` canonicalizer (prefer `realpath`,
+ * fall back to `readlink -f`; fail closed with exit 40 if neither exists so the
+ * host-side lexical check is never the only line of defense) and `_pc_root` =
+ * the resolved workspace remote dir. Shared by every sandbox-side symlink-escape
+ * guard. The caller wraps the assembled script in `sh -c` so it runs under a
+ * POSIX shell regardless of the sandbox's default login shell.
  */
-async function assertOutboundSourcesNoSymlinkEscape(
-  sandbox: Sandbox,
-  remoteDir: string,
-  sources: string[],
-  timeoutSeconds: number,
-): Promise<void> {
-  if (sources.length === 0) return;
-  const quotedRoot = shellQuote(remoteDir);
-  const quotedSources = sources.map(shellQuote).join(" ");
-  // POSIX-sh realpath probe: prefer `realpath`, fall back to `readlink -f`. If
-  // neither canonicalizer exists we fail closed rather than silently skipping the
-  // guard, since the host-side string check alone cannot see sandbox symlinks.
-  // Wrapped in `sh -c` so the multi-statement probe runs under a POSIX shell
-  // regardless of the sandbox's default login shell.
-  const script = [
+function canonicalizerPreamble(quotedRoot: string): string[] {
+  return [
     'if command -v realpath >/dev/null 2>&1; then _pc_resolve() { realpath -- "$1"; };',
     'elif command -v readlink >/dev/null 2>&1; then _pc_resolve() { readlink -f -- "$1"; };',
     'else echo "no path canonicalizer available"; exit 40; fi;',
     `_pc_root=$(_pc_resolve ${quotedRoot}) || { echo "cannot resolve root"; exit 41; };`,
-    `for _pc_src in ${quotedSources}; do`,
-    '  _pc_real=$(_pc_resolve "$_pc_src") || { echo "ESCAPE:$_pc_src"; exit 42; };',
-    '  case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE:$_pc_src"; exit 42 ;; esac;',
+  ];
+}
+
+/**
+ * Fail-closed guard: assert that every supplied sandbox path canonicalizes
+ * (through symlinks) inside the workspace remote dir. The sandbox is untrusted
+ * relative to the host, so a sandbox-planted symlink on an inbound target parent
+ * or an outbound source must never widen a transfer past the confinement root.
+ * Runs as a single batched `sh -c` precheck: any path whose realpath escapes
+ * fails the whole sync (exit 42) before any bytes move. `label` distinguishes
+ * the inbound vs outbound call site in the surfaced error.
+ */
+async function assertSandboxPathsConfined(input: {
+  sandbox: Sandbox;
+  remoteDir: string;
+  paths: string[];
+  timeoutSeconds: number;
+  label: string;
+}): Promise<void> {
+  const { sandbox, remoteDir, paths, timeoutSeconds, label } = input;
+  if (paths.length === 0) return;
+  const quotedPaths = paths.map(shellQuote).join(" ");
+  const script = [
+    ...canonicalizerPreamble(shellQuote(remoteDir)),
+    `for _pc_p in ${quotedPaths}; do`,
+    '  _pc_real=$(_pc_resolve "$_pc_p") || { echo "ESCAPE:$_pc_p"; exit 42; };',
+    '  case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE:$_pc_p"; exit 42 ;; esac;',
     "done",
   ].join("\n");
+  await assertSandboxCommandOk(sandbox, `sh -c ${shellQuote(script)}`, timeoutSeconds, label);
+}
+
+/**
+ * Validate every outbound source AND capture a protected snapshot of it in one
+ * atomic sandbox-side step, then hand the snapshot paths to `downloadFiles`. This
+ * closes the TOCTOU window between validation and download: the guard resolves
+ * each source's realpath, confirms it is inside the remote dir, and `cp`s those
+ * exact bytes to a reserved temp inside the root — all in a single `sh -c`
+ * invocation. Even if the sandbox repoints the original path to a symlink after
+ * the check, the host reads the immutable snapshot, never the mutable source.
+ * Returns the reserved snapshot paths, index-aligned with `sources`; the caller
+ * downloads and then removes them.
+ */
+async function snapshotOutboundFileSources(input: {
+  sandbox: Sandbox;
+  remoteDir: string;
+  sources: string[];
+  timeoutSeconds: number;
+}): Promise<string[]> {
+  const { sandbox, remoteDir, sources, timeoutSeconds } = input;
+  const snapshots = sources.map(() => path.posix.join(remoteDir, scratchName()));
+  if (sources.length === 0) return snapshots;
+  const lines = [...canonicalizerPreamble(shellQuote(remoteDir))];
+  sources.forEach((source, index) => {
+    const quotedSource = shellQuote(source);
+    const quotedSnapshot = shellQuote(snapshots[index]);
+    lines.push(
+      `_pc_real=$(_pc_resolve ${quotedSource}) || { echo "ESCAPE"; exit 42; };`,
+      `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
+      // Copy the resolved bytes (already confined) into the reserved snapshot so
+      // the subsequent download reads an immutable file, not the live source.
+      `cp -- "$_pc_real" ${quotedSnapshot} || { echo "snapshot copy failed"; exit 43; };`,
+    );
+  });
   await assertSandboxCommandOk(
     sandbox,
-    `sh -c ${shellQuote(script)}`,
+    `sh -c ${shellQuote(lines.join("\n"))}`,
     timeoutSeconds,
     "outbound symlink-escape guard",
   );
+  return snapshots;
+}
+
+/**
+ * Best-effort removal of reserved sandbox-side scratch files (upload/download
+ * snapshots or partially promoted temps) on both the happy path and error paths,
+ * so a failed transfer never accumulates `.paperclip-upload-*` scratch in the
+ * sandbox. Swallows its own failure — cleanup must never mask the original error.
+ */
+async function removeSandboxScratch(
+  sandbox: Sandbox,
+  paths: string[],
+  timeoutSeconds: number,
+): Promise<void> {
+  if (paths.length === 0) return;
+  const script = paths.map((entry) => `rm -f ${shellQuote(entry)}`).join(" ; ");
+  await sandbox.process
+    .executeCommand(`sh -c ${shellQuote(script)}`, undefined, undefined, timeoutSeconds)
+    .catch(() => undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -234,21 +364,41 @@ async function syncInFileMappings(input: {
   const mkdirCommand = [...parentDirs].map((dir) => `mkdir -p ${shellQuote(dir)}`).join(" && ");
   await assertSandboxCommandOk(sandbox, mkdirCommand, timeoutSeconds, "syncIn mkdir");
 
-  // One batched bulk upload (single /files/bulk-upload) for all file mappings.
-  await sandbox.fs.uploadFiles(uploads, timeoutSeconds);
+  // Defense-in-depth beyond the lexical `assertConfinedSandboxPath`: a sandbox
+  // can replace a target parent with a symlink to `/etc` so the string check
+  // passes but the upload + `mv -f` resolve through it. Canonicalize every parent
+  // dir (now materialized) and fail closed if any escapes, BEFORE any bytes land.
+  await assertSandboxPathsConfined({
+    sandbox,
+    remoteDir,
+    paths: [...parentDirs],
+    timeoutSeconds,
+    label: "inbound symlink-escape guard",
+  });
 
-  // Apply the requested mode on the temp file BEFORE the rename so the target
-  // never appears at a widened window — a secret lands `0600` at targetPath from
-  // the instant it exists there.
-  for (const apply of modeApplies) {
-    await sandbox.fs.setFilePermissions(apply.temp, { mode: toOctalModeString(apply.mode) });
+  // A failed upload or a mid-batch `mv -f` failure leaves reserved temps (some
+  // targets promoted, others not) — sweep every staged temp on any error so a
+  // retry never accumulates stale `.paperclip-upload-*` scratch.
+  try {
+    // One batched bulk upload (single /files/bulk-upload) for all file mappings.
+    await sandbox.fs.uploadFiles(uploads, timeoutSeconds);
+
+    // Apply the requested mode on the temp file BEFORE the rename so the target
+    // never appears at a widened window — a secret lands `0600` at targetPath from
+    // the instant it exists there.
+    for (const apply of modeApplies) {
+      await sandbox.fs.setFilePermissions(apply.temp, { mode: toOctalModeString(apply.mode) });
+    }
+
+    // One batched rename promoting every staged temp onto its final target.
+    const mvCommand = renames
+      .map((rename) => `mv -f ${shellQuote(rename.temp)} ${shellQuote(rename.target)}`)
+      .join(" && ");
+    await assertSandboxCommandOk(sandbox, mvCommand, timeoutSeconds, "syncIn rename");
+  } catch (error) {
+    await removeSandboxScratch(sandbox, renames.map((rename) => rename.temp), timeoutSeconds);
+    throw error;
   }
-
-  // One batched rename promoting every staged temp onto its final target.
-  const mvCommand = renames
-    .map((rename) => `mv -f ${shellQuote(rename.temp)} ${shellQuote(rename.target)}`)
-    .join(" && ");
-  await assertSandboxCommandOk(sandbox, mvCommand, timeoutSeconds, "syncIn rename");
 
   return { filesTransferred: mappings.length, bytesTransferred };
 }
@@ -273,9 +423,25 @@ async function syncInDirectoryMapping(input: {
     // The tar bytes ride the native bulk channel (string source ⇒ streamed);
     // only the extract/cleanup control commands use exec.
     const remoteTar = path.posix.join(remoteDir, scratchName(".tar"));
+    // Materialize the target dir first so the realpath guard resolves real
+    // components, then confirm it (and any existing parent) canonicalizes inside
+    // the remote dir — `tar -C` would otherwise follow a sandbox-planted symlink
+    // and extract our archive outside the workspace root.
+    await assertSandboxCommandOk(
+      sandbox,
+      `mkdir -p ${shellQuote(mapping.targetPath)}`,
+      timeoutSeconds,
+      "syncIn mkdir",
+    );
+    await assertSandboxPathsConfined({
+      sandbox,
+      remoteDir,
+      paths: [mapping.targetPath],
+      timeoutSeconds,
+      label: "inbound symlink-escape guard",
+    });
     await sandbox.fs.uploadFiles([{ source: archivePath, destination: remoteTar }], timeoutSeconds);
     const extractCommand = [
-      `mkdir -p ${shellQuote(mapping.targetPath)}`,
       `tar -xf ${shellQuote(remoteTar)} -C ${shellQuote(mapping.targetPath)}`,
       `rm -f ${shellQuote(remoteTar)}`,
     ].join(" && ");
@@ -340,46 +506,62 @@ async function syncOutFileMappings(input: {
   for (const mapping of mappings) {
     assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
   }
-  await assertOutboundSourcesNoSymlinkEscape(
+  // Close the validation→download TOCTOU: instead of re-opening each mutable
+  // source, validate-and-snapshot it in one atomic sandbox-side step and download
+  // the immutable snapshot. `snapshots` is index-aligned with `mappings`.
+  const snapshots = await snapshotOutboundFileSources({
     sandbox,
     remoteDir,
-    mappings.map((mapping) => mapping.sourcePath),
+    sources: mappings.map((mapping) => mapping.sourcePath),
     timeoutSeconds,
-  );
+  });
 
   const requests: FileDownloadRequest[] = [];
-  const finalize: { temp: string; target: string; mode?: number }[] = [];
-  for (const mapping of mappings) {
+  const finalize: { temp: string; target: string; source: string; snapshot: string; mode?: number }[] = [];
+  mappings.forEach((mapping, index) => {
     const dir = path.dirname(mapping.targetPath);
-    await fs.mkdir(dir, { recursive: true });
-    // Stream each file into a reserved host temp sibling, then atomic-rename onto
-    // the host targetPath so an interrupted download never truncates the target.
+    // Stream each snapshot into a reserved host temp sibling, then atomic-rename
+    // onto the host targetPath so an interrupted download never truncates it.
     const temp = path.join(dir, scratchName());
-    requests.push({ source: mapping.sourcePath, destination: temp });
-    finalize.push({ temp, target: mapping.targetPath, mode: mapping.mode });
-  }
+    requests.push({ source: snapshots[index], destination: temp });
+    finalize.push({ temp, target: mapping.targetPath, source: mapping.sourcePath, snapshot: snapshots[index], mode: mapping.mode });
+  });
 
-  const cleanupTemps = async (): Promise<void> => {
+  const cleanup = async (): Promise<void> => {
     await Promise.all(finalize.map((entry) => fs.rm(entry.temp, { force: true }).catch(() => undefined)));
+    await removeSandboxScratch(sandbox, snapshots, timeoutSeconds);
   };
+
+  // mkdir host target dirs up front (outside the download try) so a mkdir failure
+  // still runs snapshot cleanup below.
+  try {
+    for (const entry of finalize) {
+      await fs.mkdir(path.dirname(entry.target), { recursive: true });
+    }
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
 
   let responses: FileDownloadResponse[];
   try {
-    // One batched bulk download for all file mappings.
+    // One batched bulk download for all file mappings, reading the snapshots.
     responses = await sandbox.fs.downloadFiles(requests, timeoutSeconds);
   } catch (error) {
-    await cleanupTemps();
+    await cleanup();
     throw error;
   }
 
   // Per-file failures surface in `.error`, not a thrown batch — fail loud on any.
+  // Responses are keyed by the (snapshot) request source; report the original
+  // sourcePath in the surfaced error for a caller-meaningful message.
   const bySource = new Map(responses.map((response) => [response.source, response]));
-  for (const mapping of mappings) {
-    const response = bySource.get(mapping.sourcePath);
+  for (const entry of finalize) {
+    const response = bySource.get(entry.snapshot);
     if (!response || response.error) {
-      await cleanupTemps();
+      await cleanup();
       throw new Error(
-        `Daytona syncOut download failed for ${mapping.sourcePath}: ${response?.error ?? "no response returned"}`,
+        `Daytona syncOut download failed for ${entry.source}: ${response?.error ?? "no response returned"}`,
       );
     }
   }
@@ -396,10 +578,13 @@ async function syncOutFileMappings(input: {
       await fs.rename(entry.temp, entry.target);
     }
   } catch (error) {
-    await cleanupTemps();
+    await cleanup();
     throw error;
   }
 
+  // Success: the host temps have been renamed onto their targets; remove the
+  // sandbox-side snapshots so no reserved scratch lingers.
+  await removeSandboxScratch(sandbox, snapshots, timeoutSeconds);
   return { filesTransferred: mappings.length, bytesTransferred };
 }
 
@@ -411,7 +596,13 @@ async function syncOutDirectoryMapping(input: {
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
   const { sandbox, mapping, remoteDir, timeoutSeconds } = input;
   assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
-  await assertOutboundSourcesNoSymlinkEscape(sandbox, remoteDir, [mapping.sourcePath], timeoutSeconds);
+  await assertSandboxPathsConfined({
+    sandbox,
+    remoteDir,
+    paths: [mapping.sourcePath],
+    timeoutSeconds,
+    label: "outbound symlink-escape guard",
+  });
 
   return withHostTempDir(async (tmp) => {
     const remoteTar = path.posix.join(remoteDir, scratchName(".tar"));
