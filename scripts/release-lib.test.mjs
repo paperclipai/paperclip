@@ -77,14 +77,6 @@ if [ "$1" = "view" ] && [ "$NPM_VERSION_EXISTS" = "true" ]; then
   echo "1.2.3"
   exit 0
 fi
-if [ "$1" = "pack" ]; then
-  if [ "$PNPM_MODE" = "pack-failure" ]; then
-    echo "npm error pack failed" >&2
-    exit 1
-  fi
-  echo "paperclipai-example-1.2.3.tgz"
-  exit 0
-fi
 if [ "$1" = "publish" ]; then
   case "$PNPM_MODE" in
     success)
@@ -178,43 +170,31 @@ test("publish_package_to_npm returns after a successful pnpm publish", () => {
   assert.doesNotMatch(result.calls, /--provenance=false/);
 });
 
-test("publish_package_to_npm packs bundled dependencies before trusted publishing", () => {
+test("publish_package_to_npm uses trusted publishing from the bundled staging directory", () => {
   const result = runPublishHelper({ pnpmMode: "success", publishTool: "npm" });
 
   assert.equal(result.status, 0);
-  assert.match(result.calls, /^npx --yes npm@10\.9\.7 pack --pack-destination \.$/m);
-  assert.match(result.calls, /^npm pack --pack-destination \.$/m);
   assert.match(
     result.calls,
-    /^npx --yes npm@11\.18\.0 publish \.\/paperclipai-example-1\.2\.3\.tgz --tag canary --access public --loglevel verbose$/m,
+    /^npx --yes npm@11\.18\.0 publish --tag canary --access public --loglevel verbose$/m,
   );
   assert.match(
     result.calls,
-    /^npm publish \.\/paperclipai-example-1\.2\.3\.tgz --tag canary --access public --loglevel verbose$/m,
+    /^npm publish --tag canary --access public --loglevel verbose$/m,
   );
+  assert.doesNotMatch(result.calls, / pack /);
   assert.doesNotMatch(result.calls, /^pnpm publish/m);
 });
 
-test("publish_package_to_npm retries bundled tarball tlog failures without provenance", () => {
+test("publish_package_to_npm retries bundled directory tlog failures without provenance", () => {
   const result = runPublishHelper({ pnpmMode: "tlog-then-success", publishTool: "npm" });
 
   assert.equal(result.status, 0);
   assert.match(result.calls, /^npm view @paperclipai\/example@1\.2\.3 version$/m);
   assert.match(
     result.calls,
-    /^npm publish \.\/paperclipai-example-1\.2\.3\.tgz --tag canary --access public --provenance=false --loglevel verbose$/m,
+    /^npm publish --tag canary --access public --provenance=false --loglevel verbose$/m,
   );
-});
-
-test("publish_package_to_npm does not mask bundled pack failures without caller pipefail", () => {
-  const result = runPublishHelper({
-    pnpmMode: "pack-failure",
-    publishTool: "npm",
-    callerPipefail: false,
-  });
-
-  assert.notEqual(result.status, 0);
-  assert.doesNotMatch(result.calls, / publish /);
 });
 
 test("publish_package_to_npm retries duplicate tlog failures without provenance", () => {

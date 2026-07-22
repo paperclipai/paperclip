@@ -327,16 +327,10 @@ run_package_publish() {
   local disable_provenance="${3:-false}"
 
   if [ "$publish_tool" = "npm" ]; then
-    local tarball
-    if ! tarball="$(set -o pipefail; run_bundled_npm_pack pack --pack-destination . 2>/dev/null | tail -1)"; then
-      return 1
-    fi
-    [ -n "$tarball" ] || return 1
-
     if [ "$disable_provenance" = "true" ]; then
-      run_bundled_npm_publish publish "./$tarball" --tag "$dist_tag" --access public --provenance=false
+      run_bundled_npm_publish publish --tag "$dist_tag" --access public --provenance=false
     else
-      run_bundled_npm_publish publish "./$tarball" --tag "$dist_tag" --access public
+      run_bundled_npm_publish publish --tag "$dist_tag" --access public
     fi
     return
   fi

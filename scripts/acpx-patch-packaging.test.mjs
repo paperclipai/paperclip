@@ -133,5 +133,6 @@ test("bundled package dry runs preview without querying published versions", () 
   assert.match(releaseLib, /npx --yes "npm@\$BUNDLED_NPM_PACK_VERSION"/);
   assert.match(releaseLib, /npx --yes "npm@\$BUNDLED_NPM_PUBLISH_VERSION"/);
   assert.match(releaseLib, /"\$@" --loglevel verbose/);
-  assert.match(releaseLib, /publish "\.\/\$tarball" --tag "\$dist_tag"/);
+  assert.match(releaseLib, /run_bundled_npm_publish publish --tag "\$dist_tag"/);
+  assert.doesNotMatch(releaseLib, /run_bundled_npm_publish publish "\.\/\$tarball"/);
 });
