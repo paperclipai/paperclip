@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { managedInstallChecks } from "../checks/managed-install-check.js";
 import {
+  MANAGED_STORE_MARKER,
   buildNextManifest,
   flipCurrentAtomic,
   resolveInstallStorePaths,
@@ -51,9 +52,24 @@ describe("managed install doctor checks", () => {
       homeDir: root,
     });
     fs.mkdirSync(paths.cliRoot, { recursive: true });
+    fs.writeFileSync(paths.markerPath, MANAGED_STORE_MARKER);
 
     expect(managedInstallChecks(paths)).toEqual([
       expect.objectContaining({ name: "Managed install manifest", status: "fail" }),
+    ]);
+  });
+
+  it("ignores the shared CLI directory when it only contains update notice state", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-install-doctor-"));
+    const paths = resolveInstallStorePaths({
+      paperclipHome: path.join(root, ".paperclip"),
+      homeDir: root,
+    });
+    fs.mkdirSync(paths.cliRoot, { recursive: true });
+    fs.writeFileSync(path.join(paths.cliRoot, "update-check.json"), "{}\n");
+
+    expect(managedInstallChecks(paths)).toEqual([
+      expect.objectContaining({ name: "Managed install", status: "pass" }),
     ]);
   });
 });
