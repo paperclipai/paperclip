@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { serviceHealthChecks } from "../checks/service-health-check.js";
+import { resolveRestartExpectedVersion } from "../commands/service.js";
 import type { PaperclipConfig } from "../config/schema.js";
+import { packageVersion } from "../version.js";
 
 const config = {
   server: { host: "127.0.0.1", port: 3100 },
@@ -38,6 +40,11 @@ function managerFixture(active = true) {
 }
 
 describe("service health doctor checks", () => {
+  it("uses the bare package version when restart health has no prior server version", () => {
+    expect(resolveRestartExpectedVersion(null)).toBe(packageVersion);
+    expect(resolveRestartExpectedVersion("1.2.3")).toBe("1.2.3");
+  });
+
   it("passes for a current, active, healthy service", async () => {
     const manager = managerFixture();
     const results = await serviceHealthChecks(config, {
