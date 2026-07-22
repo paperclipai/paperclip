@@ -70,13 +70,25 @@ assert_line "$RESULTS_DIR/with-node.args" "install"
 assert_line "$RESULTS_DIR/with-node.args" "--yes"
 
 echo "==> --ref master"
-run_with_node ref-master bash /paperclip-scripts/install.sh --ref master --no-onboard
-assert_no_line "$RESULTS_DIR/ref-master.args" "--ref"
-assert_no_line "$RESULTS_DIR/ref-master.args" "master"
+if run_with_node ref-master bash /paperclip-scripts/install.sh --ref master --no-onboard; then
+  echo "Expected --ref to fail until git-ref installation support is integrated" >&2
+  exit 1
+fi
+[ ! -e "$RESULTS_DIR/ref-master.args" ] || {
+  echo "Expected --ref failure before invoking npx" >&2
+  exit 1
+}
 
 echo "==> piped --no-prompt"
 run_with_node piped bash -c 'cat /paperclip-scripts/install.sh | bash -s -- --no-prompt --no-onboard'
 assert_line "$RESULTS_DIR/piped.args" "--yes"
+
+echo "==> dry run"
+run_with_node dry-run bash /paperclip-scripts/install.sh --dry-run --no-onboard
+[ ! -e "$RESULTS_DIR/dry-run.args" ] || {
+  echo "Expected --dry-run to avoid invoking npx" >&2
+  exit 1
+}
 
 echo "==> environment twins"
 docker run --rm \
@@ -84,7 +96,6 @@ docker run --rm \
   -v "$RESULTS_DIR:/results" \
   -e PAPERCLIP_INSTALL_TEST_LOG=/results/env.args \
   -e PAPERCLIP_INSTALL_VERSION=2026.722.0 \
-  -e PAPERCLIP_INSTALL_REPO=example/paperclip \
   -e PAPERCLIP_INSTALL_INSTALL_SERVICE=1 \
   -e PAPERCLIP_INSTALL_NO_ONBOARD=1 \
   -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
@@ -94,8 +105,8 @@ assert_line "$RESULTS_DIR/env.args" "paperclipai@2026.722.0"
 assert_line "$RESULTS_DIR/env.args" "--version"
 assert_line "$RESULTS_DIR/env.args" "2026.722.0"
 assert_no_line "$RESULTS_DIR/env.args" "--repo"
-assert_no_line "$RESULTS_DIR/env.args" "example/paperclip"
 assert_no_line "$RESULTS_DIR/env.args" "--install-service"
+assert_line "$RESULTS_DIR/env.args" "service"
 
 echo "==> no Node, apt bootstrap"
 docker run --rm \
