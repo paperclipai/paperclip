@@ -13,6 +13,7 @@ import {
   findAncestorBinWithRetry,
   geminiVersionSupportsNativeAcpFlag,
   parseGeminiVersionParts,
+  resolveBuiltInAgentCommand,
   rewriteGeminiAcpFlagForVersion,
   summarizeAcpxTurnUsage,
 } from "./execute.js";
@@ -1456,6 +1457,25 @@ describe("findAncestorBinWithRetry", () => {
     const resolved = await findAncestorBinWithRetry(packageDir, "claude-agent-acp");
 
     expect(resolved).toBeNull();
+  });
+});
+
+describe("resolveBuiltInAgentCommand", () => {
+  it("still falls back to the bare command when the diagnostic onLog call rejects", async () => {
+    const root = await makeTempRoot();
+    const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-utils");
+    await fs.mkdir(packageDir, { recursive: true });
+
+    const result = await resolveBuiltInAgentCommand({
+      agent: "claude",
+      packageRootDir: packageDir,
+      executionTargetIsRemote: false,
+      onLog: async () => {
+        throw new Error("log sink unavailable");
+      },
+    });
+
+    expect(result).toEqual({ command: "claude-agent-acp", shellCommand: "'claude-agent-acp'" });
   });
 });
 

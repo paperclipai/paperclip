@@ -232,7 +232,7 @@ interface BuiltInAgentCommand {
   shellCommand: string;
 }
 
-async function resolveBuiltInAgentCommand(input: {
+export async function resolveBuiltInAgentCommand(input: {
   agent: string;
   packageRootDir: string;
   executionTargetIsRemote: boolean;
@@ -252,7 +252,7 @@ async function resolveBuiltInAgentCommand(input: {
     await onLog(
       "stderr",
       `[paperclip] Could not find "${binName}" under any node_modules/.bin ancestor of ${packageRootDir}; falling back to ambient PATH resolution for exec. If the spawned process exits with 127, the host process's PATH is missing the directory that hoists this binary.\n`,
-    );
+    ).catch(() => {});
   }
   const resolved = ancestorBin ?? binName;
   return { command: resolved, shellCommand: shellQuote(resolved) };
