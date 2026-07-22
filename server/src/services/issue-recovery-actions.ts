@@ -182,6 +182,14 @@ export function issueRecoveryActionService(db: Db) {
     const now = new Date();
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
+      // Stable source-scoped incidents should coalesce rather than look like a
+      // fresh recovery attempt on every recovery scan. Keeping the attempt count
+      // and idempotency material stable prevents retry storms while the adapter
+      // or runtime remains unhealthy with the same deterministic fingerprint.
+      if (existing.fingerprint === input.fingerprint) {
+        return existing;
+      }
+
       const [updated] = await db
         .update(issueRecoveryActions)
         .set({
