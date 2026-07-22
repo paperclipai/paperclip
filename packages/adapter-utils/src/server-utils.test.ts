@@ -390,6 +390,35 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it("can disable inherited process environment variables", async () => {
+    const previous = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "must-not-reach-child";
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          "process.stdout.write(JSON.stringify({inherited: process.env.DATABASE_URL ?? null, explicit: process.env.EXPLICIT_CHILD_VALUE ?? null}));",
+        ],
+        {
+          cwd: process.cwd(),
+          env: { EXPLICIT_CHILD_VALUE: "kept" },
+          inheritProcessEnv: false,
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ inherited: null, explicit: "kept" });
+    } finally {
+      if (previous === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous;
+    }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),

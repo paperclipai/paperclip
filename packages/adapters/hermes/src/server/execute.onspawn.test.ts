@@ -136,4 +136,39 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       else process.env.PAPERCLIP_API_KEY = previousApiKey;
     }
   });
+
+  it("does not forward server-only environment variables to Hermes", async () => {
+    const previous = {
+      databaseUrl: process.env.DATABASE_URL,
+      jwtSecret: process.env.PAPERCLIP_AGENT_JWT_SECRET,
+      hermesHome: process.env.HERMES_HOME,
+    };
+    process.env.DATABASE_URL = "postgres://server-only";
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "server-signing-secret";
+    process.env.HERMES_HOME = "/server/control-plane-profile";
+
+    try {
+      const { ctx } = makeCtx();
+      await execute(ctx as any);
+
+      const mocked = vi.mocked(serverUtils.runChildProcess);
+      const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+      const opts = lastCall[3] as {
+        env: Record<string, string>;
+        inheritProcessEnv?: boolean;
+      };
+      expect(opts.inheritProcessEnv).toBe(false);
+      expect(opts.env.DATABASE_URL).toBeUndefined();
+      expect(opts.env.PAPERCLIP_AGENT_JWT_SECRET).toBeUndefined();
+      expect(opts.env.HERMES_HOME).toBeUndefined();
+      expect(opts.env.PATH).toBe(process.env.PATH);
+    } finally {
+      if (previous.databaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous.databaseUrl;
+      if (previous.jwtSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previous.jwtSecret;
+      if (previous.hermesHome === undefined) delete process.env.HERMES_HOME;
+      else process.env.HERMES_HOME = previous.hermesHome;
+    }
+  });
 });
