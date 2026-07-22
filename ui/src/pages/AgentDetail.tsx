@@ -1061,14 +1061,6 @@ export function AgentDetail() {
     });
   }, [resolvedAgentId, agentMembershipState]);
 
-  useBeforeUnload(
-    useCallback((event) => {
-      if (!configDirty) return;
-      event.preventDefault();
-      event.returnValue = "";
-    }, [configDirty]),
-  );
-
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
