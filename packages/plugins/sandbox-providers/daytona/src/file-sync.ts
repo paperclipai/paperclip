@@ -287,6 +287,18 @@ async function assertSandboxPathsConfined(input: {
  * defense-in-depth for the privileged host-mediated download. Returns the
  * reserved snapshot paths, index-aligned with `sources`; the caller downloads
  * and then removes them.
+ *
+ * Accepted residual risk (copy→download leaf swap): the sandbox user runs this
+ * `cp`, so it knows the reserved snapshot path and could overwrite that leaf with
+ * different bytes after `cp` returns but before the privileged `downloadFiles`
+ * opens it. This is informational, not a privilege-boundary crossing: the sandbox
+ * user can only substitute bytes it can already produce, and the host download
+ * would then receive bytes that same user could equally have written into the real
+ * source before the snapshot ran. The swap cannot redirect the read outside the
+ * confinement root — the leaf is a direct child of the resolved root with no
+ * swappable intermediate dir, and the sandbox user cannot use it to exfiltrate any
+ * file it lacks read access to — so no privilege escalation is possible and the
+ * window is accepted rather than closed.
  */
 async function snapshotOutboundFileSources(input: {
   sandbox: Sandbox;
@@ -416,11 +428,30 @@ async function syncInFileMappings(input: {
       await sandbox.fs.setFilePermissions(apply.temp, { mode: toOctalModeString(apply.mode) });
     }
 
-    // One batched rename promoting every staged temp onto its final target.
-    const mvCommand = renames
-      .map((rename) => `mv -f ${shellQuote(rename.temp)} ${shellQuote(rename.target)}`)
-      .join(" && ");
-    await assertSandboxCommandOk(sandbox, mvCommand, timeoutSeconds, "syncIn rename");
+    // Promote every staged temp onto its final target. The `mv -f` traverses the
+    // target's PARENT dir, which is sandbox-writable and could be swapped for a
+    // symlink after the earlier parent guard ran but before the rename opens it —
+    // redirecting the promotion outside the root. Bind the confinement re-check and
+    // the rename into ONE sandbox invocation: for each target, re-canonicalize its
+    // parent dir, confirm the resolved parent is still inside the workspace root,
+    // then `mv` into that resolved parent by basename. Check and promotion now share
+    // a single shell, so a parent swap cannot slip between them.
+    const renameScript = [...canonicalizerPreamble(shellQuote(remoteDir))];
+    for (const rename of renames) {
+      const parentDir = path.posix.dirname(rename.target);
+      const base = path.posix.basename(rename.target);
+      renameScript.push(
+        `_pc_tgt_dir=$(_pc_resolve ${shellQuote(parentDir)}) || { echo "ESCAPE"; exit 42; };`,
+        `case "$_pc_tgt_dir/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
+        `mv -f ${shellQuote(rename.temp)} "$_pc_tgt_dir"/${shellQuote(base)} || { echo "rename failed"; exit 43; };`,
+      );
+    }
+    await assertSandboxCommandOk(
+      sandbox,
+      `sh -c ${shellQuote(renameScript.join("\n"))}`,
+      timeoutSeconds,
+      "syncIn rename",
+    );
   } catch (error) {
     await removeSandboxScratch(sandbox, renames.map((rename) => rename.temp), timeoutSeconds);
     throw error;
@@ -468,18 +499,23 @@ async function syncInDirectoryMapping(input: {
     });
     await sandbox.fs.uploadFiles([{ source: archivePath, destination: remoteTar }], timeoutSeconds);
     // Bind validation and extraction into ONE sandbox invocation: re-canonicalize
-    // the target and confirm it is confined, then `tar -x` into that resolved path
-    // (`$_pc_real`), all in the same `sh -c`. The earlier standalone guard fails
-    // closed before the tarball is even uploaded; this re-check closes the window
-    // between that guard and the extract, so a sandbox symlink swap of the target
-    // (or an ancestor) cannot redirect extraction outside the workspace root after
-    // validation. Extracting into `$_pc_real` (the canonical path) rather than the
-    // literal target avoids re-following any ancestor symlink at extract time.
+    // the target and confirm it is confined, then `tar -x` into that resolved
+    // directory, all in the same `sh -c`. The earlier standalone guard fails closed
+    // before the tarball is even uploaded; this re-check closes the window between
+    // that guard and the extract, so a sandbox symlink swap of the target (or an
+    // ancestor) cannot redirect extraction outside the workspace root after
+    // validation. Resolving `$_pc_real` still opens a PATH STRING at `tar` time, so
+    // an ancestor above `$_pc_root` could be swapped between `_pc_resolve` returning
+    // and `tar` opening it. Open the canonical dir as an fd first (`exec 9<`), then
+    // extract via `/proc/self/fd/9`: `tar -C` chdir's through that magic symlink to
+    // the already-open inode, binding extraction to the directory inode rather than
+    // the path string, so a post-open ancestor swap cannot redirect the write.
     const extractScript = [
       ...canonicalizerPreamble(shellQuote(remoteDir)),
       `_pc_real=$(_pc_resolve ${shellQuote(mapping.targetPath)}) || { echo "ESCAPE"; exit 42; };`,
       `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
-      `tar -xf ${shellQuote(remoteTar)} -C "$_pc_real" || { echo "extract failed"; exit 43; };`,
+      `exec 9<"$_pc_real" || { echo "open failed"; exit 46; };`,
+      `tar -xf ${shellQuote(remoteTar)} -C /proc/self/fd/9 || { echo "extract failed"; exit 43; };`,
       `rm -f ${shellQuote(remoteTar)};`,
     ].join("\n");
     await assertSandboxCommandOk(

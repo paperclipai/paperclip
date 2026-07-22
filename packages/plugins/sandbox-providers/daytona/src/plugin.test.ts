@@ -1328,9 +1328,19 @@ describe("daytona native file-sync hooks", () => {
     const mvCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("mv -f"));
     expect(mvCall).toBeDefined();
     const mvCommand = String(mvCall?.[0]);
-    // Single batched rename covering both temps → their final targets, quoted.
-    expect(mvCommand).toContain(`mv -f '${secretTemp}' '${REMOTE_DIR}/.secret/auth.json'`);
-    expect(mvCommand).toMatch(/&& mv -f/);
+    // TOCTOU-hardened rename: each promotion re-canonicalizes the target's parent
+    // dir, confirms it is still confined, and `mv`s into that resolved parent by
+    // basename — all in ONE sh invocation, so a parent swap cannot slip between the
+    // confinement check and the rename. The rename is wrapped in `sh -c '...'`, so
+    // inner single-quotes are shell-escaped; assert on the un-escaped components.
+    expect(mvCommand).toContain("_pc_resolve");
+    // The secret temp is promoted by basename into the resolved parent
+    // ($_pc_tgt_dir), not by the literal (swappable) target path.
+    expect(mvCommand).toContain(secretTemp);
+    expect(mvCommand).toContain(`"$_pc_tgt_dir"/`);
+    expect(mvCommand).toContain("auth.json");
+    // Both temps are promoted (one mv line per rename).
+    expect(mvCommand.match(/mv -f /g)).toHaveLength(2);
 
     expect(result).toEqual({
       operations: [{ operationId: "sync-op-1", filesTransferred: 2, bytesTransferred: "credential-material".length + "plain".length }],
@@ -1407,12 +1417,14 @@ describe("daytona native file-sync hooks", () => {
     expect(extractCall).toBeDefined();
     const extractCommand = String(extractCall?.[0]);
     // The extract binds validation and extraction into one sandbox invocation: it
-    // re-canonicalizes the target and extracts into the RESOLVED path ($_pc_real),
-    // closing the window between the earlier guard and the extract.
+    // re-canonicalizes the target, opens the resolved dir as an fd, then extracts
+    // via /proc/self/fd/9 — binding extraction to the directory inode rather than
+    // the path string, so a post-open ancestor swap cannot redirect the write.
     expect(extractCommand).toContain("_pc_resolve");
     expect(extractCommand).toContain(".paperclip-runtime/assets");
     expect(extractCommand).toContain("tar -xf");
-    expect(extractCommand).toContain('-C "$_pc_real"');
+    expect(extractCommand).toContain('exec 9<"$_pc_real"');
+    expect(extractCommand).toContain("-C /proc/self/fd/9");
     expect(extractCommand).toMatch(/rm -f .*\.paperclip-upload-.*\.tar/);
   });
 
