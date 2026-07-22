@@ -13,6 +13,7 @@ class Config:
     gate_commands: list[list[str]]
     max_tasks_per_run: int
     max_diff_lines: int
+    denied_globs: tuple[str, ...]
 
     @classmethod
     def default(cls) -> "Config":
@@ -35,4 +36,11 @@ class Config:
             ],
             max_tasks_per_run=1,
             max_diff_lines=800,
+            denied_globs=(
+                ".env", ".env.*", "*.env",
+                "*.pem", "*.key", "*.keystore", "*.jks", "*.p12", "*.p8",
+                "*.mobileprovision",
+                "google-services.json", "GoogleService-Info.plist",
+                "supabase/migrations/*", ".git/*",
+            ),
         )
