@@ -84,7 +84,8 @@ jobs:
           shopt -s nullglob
           for f in "$HOME"/.npm/_logs/*.log; do
             echo "===== $f ====="
-            tail -n 300 "$f"
+            tail -n 300 "$f" | sed -E \
+              -e 's#((authorization|_authToken|_auth|node_auth_token|npm_token)"?[[:space:]]*[:=][[:space:]]*"?)(Bearer[[:space:]]+)?[^",[:space:]]+#\1***REDACTED***#Ig'
           done
 
       - name: Push canary tag
@@ -199,7 +200,8 @@ jobs:
           shopt -s nullglob
           for f in "$HOME"/.npm/_logs/*.log; do
             echo "===== $f ====="
-            tail -n 300 "$f"
+            tail -n 300 "$f" | sed -E \
+              -e 's#((authorization|_authToken|_auth|node_auth_token|npm_token)"?[[:space:]]*[:=][[:space:]]*"?)(Bearer[[:space:]]+)?[^",[:space:]]+#\1***REDACTED***#Ig'
           done
 
       - name: Push stable tag
