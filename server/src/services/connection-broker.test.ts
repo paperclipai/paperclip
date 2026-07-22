@@ -1,9 +1,12 @@
 import { generateKeyPairSync } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { verifyRequestEnvelope, type ReplayStore } from "@paperclip/connect-protocol";
+import { companies, createDb, toolApplications, toolConnections } from "@paperclipai/db";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import {
   ConnectClaimInterceptionError,
   ConnectServiceResponseError,
+  connectionBrokerStore,
   connectionBrokerService,
   createSignedConnectBrokerClient,
   type ConnectionBrokerStore,
@@ -129,5 +132,50 @@ describe("connection broker", () => {
     });
     await expect(service.claimOAuth({ companyId: "company", connectionId: CONNECTION_ID, claimCode: "claim-code-at-least-22-chars", kind: "user", subjectUserId: "user-1" })).rejects.toMatchObject({ status: 403, code: "user_not_company_member" });
     expect(f.claims.get("claim-code-at-least-22-chars")?.consumed).toBe(false);
+  });
+});
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("connection broker claim recovery persistence", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-connection-broker-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("preserves independent concurrent claim recovery records", async () => {
+    const company = await db.insert(companies).values({ name: "Broker Claims", issuePrefix: "BCL" }).returning().then((rows) => rows[0]!);
+    const application = await db.insert(toolApplications).values({ companyId: company.id, name: "Broker App", type: "mcp_http" }).returning().then((rows) => rows[0]!);
+    const connection = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Broker Connection",
+      uid: "broker-claim-recovery",
+      transport: "rest_api",
+      enabled: true,
+      config: {},
+    }).returning().then((rows) => rows[0]!);
+    const store = connectionBrokerStore(db);
+    const claimA = { custodyMode: "B2" as const, grantSealed: "sealed-a", tokenMeta: { scopes: ["read"], expiresAt: null } };
+    const claimB = { custodyMode: "B2" as const, grantSealed: "sealed-b", tokenMeta: { scopes: ["write"], expiresAt: null } };
+
+    await Promise.all([
+      store.saveClaimState({ companyId: company.id, connectionId: connection.id, claimCodeHash: "hash-a", claim: claimA }),
+      store.saveClaimState({ companyId: company.id, connectionId: connection.id, claimCodeHash: "hash-b", claim: claimB }),
+    ]);
+
+    await expect(store.loadClaimState({ companyId: company.id, connectionId: connection.id, claimCodeHash: "hash-a" })).resolves.toEqual({ claim: claimA });
+    await expect(store.loadClaimState({ companyId: company.id, connectionId: connection.id, claimCodeHash: "hash-b" })).resolves.toEqual({ claim: claimB });
+    await store.clearClaimState({ companyId: company.id, connectionId: connection.id, claimCodeHash: "hash-a" });
+    await expect(store.loadClaimState({ companyId: company.id, connectionId: connection.id, claimCodeHash: "hash-a" })).resolves.toBeNull();
+    await expect(store.loadClaimState({ companyId: company.id, connectionId: connection.id, claimCodeHash: "hash-b" })).resolves.toEqual({ claim: claimB });
   });
 });

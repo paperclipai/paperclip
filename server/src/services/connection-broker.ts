@@ -1,5 +1,5 @@
 import { createHash, randomBytes, type KeyObject } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companyMemberships, connectionGrants, toolConnections } from "@paperclipai/db";
 import {
@@ -64,21 +64,39 @@ export function connectionBrokerStore(db: Db): ConnectionBrokerStore {
     },
     async loadClaimState({ companyId, connectionId, claimCodeHash }) {
       const row = await db.select({ config: toolConnections.config }).from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId))).limit(1).then((rows) => rows[0]);
-      const state = (row?.config as { brokerClaimState?: { claimCodeHash: string; claim: ReturnType<typeof claimResponseSchema.parse> } } | undefined)?.brokerClaimState;
-      return state?.claimCodeHash === claimCodeHash ? { claim: state.claim } : null;
+      const config = row?.config as {
+        brokerClaimStates?: Record<string, { claim: ReturnType<typeof claimResponseSchema.parse> }>;
+        brokerClaimState?: { claimCodeHash: string; claim: ReturnType<typeof claimResponseSchema.parse> };
+      } | undefined;
+      const keyedState = config?.brokerClaimStates?.[claimCodeHash];
+      if (keyedState) return keyedState;
+      return config?.brokerClaimState?.claimCodeHash === claimCodeHash ? { claim: config.brokerClaimState.claim } : null;
     },
     async saveClaimState({ companyId, connectionId, claimCodeHash, claim }) {
-      const row = await db.select({ config: toolConnections.config }).from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId))).limit(1).then((rows) => rows[0]);
-      if (!row) throw new Error("Tool connection not found");
-      await db.update(toolConnections).set({ config: { ...row.config, brokerClaimState: { claimCodeHash, claim } }, updatedAt: new Date() }).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId)));
+      await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(sql`select id from ${toolConnections} where ${toolConnections.companyId} = ${companyId} and ${toolConnections.id} = ${connectionId} for update`);
+        const row = await txDb.select({ config: toolConnections.config }).from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId))).limit(1).then((rows) => rows[0]);
+        if (!row) throw new Error("Tool connection not found");
+        const config = { ...(row.config ?? {}) } as Record<string, unknown>;
+        const brokerClaimStates = { ...(config.brokerClaimStates as Record<string, unknown> | undefined) };
+        brokerClaimStates[claimCodeHash] = { claim };
+        await txDb.update(toolConnections).set({ config: { ...config, brokerClaimStates }, updatedAt: new Date() }).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId)));
+      });
     },
     async clearClaimState({ companyId, connectionId, claimCodeHash }) {
-      const row = await db.select({ config: toolConnections.config }).from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId))).limit(1).then((rows) => rows[0]);
-      const config = { ...(row?.config ?? {}) } as Record<string, unknown>;
-      const state = config.brokerClaimState as { claimCodeHash?: string } | undefined;
-      if (state?.claimCodeHash !== claimCodeHash) return;
-      delete config.brokerClaimState;
-      await db.update(toolConnections).set({ config, updatedAt: new Date() }).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId)));
+      await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(sql`select id from ${toolConnections} where ${toolConnections.companyId} = ${companyId} and ${toolConnections.id} = ${connectionId} for update`);
+        const row = await txDb.select({ config: toolConnections.config }).from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId))).limit(1).then((rows) => rows[0]);
+        if (!row) return;
+        const config = { ...(row.config ?? {}) } as Record<string, unknown>;
+        const brokerClaimStates = { ...(config.brokerClaimStates as Record<string, unknown> | undefined) };
+        delete brokerClaimStates[claimCodeHash];
+        const legacyState = config.brokerClaimState as { claimCodeHash?: string } | undefined;
+        if (legacyState?.claimCodeHash === claimCodeHash) delete config.brokerClaimState;
+        await txDb.update(toolConnections).set({ config: { ...config, brokerClaimStates }, updatedAt: new Date() }).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId)));
+      });
     },
   };
 }
