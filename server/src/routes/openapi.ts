@@ -14,6 +14,8 @@ import {
   builtInAgentProvisionSchema,
   generateSummarySlotSchema,
   writeSummarySlotSchema,
+  createStatusCardSchema,
+  patchStatusCardSchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
@@ -1434,6 +1436,40 @@ registry.registerPath({
     409: r.conflict,
     422: r.unprocessable,
   },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/status-cards",
+  tags: ["status-cards"],
+  summary: "List status cards",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/status-cards",
+  tags: ["status-cards"],
+  summary: "Create a status card",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(createStatusCardSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+for (const route of [
+  ["get", "/api/status-cards/{id}", "Get a status card"],
+  ["delete", "/api/status-cards/{id}", "Delete a status card"],
+  ["get", "/api/status-cards/{id}/updates", "List status card updates"],
+] as const) {
+  registerCurrentRoute({ method: route[0], path: route[1], tags: ["status-cards"], summary: route[2] });
+}
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/status-cards/{id}",
+  tags: ["status-cards"],
+  summary: "Update, archive, or restore a status card",
+  body: patchStatusCardSchema,
 });
 
 registry.registerPath({

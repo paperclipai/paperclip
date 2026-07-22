@@ -23,6 +23,7 @@ export {
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
+export { statusCardService } from "./status-cards.js";
 export { documentAnnotationService } from "./document-annotations.js";
 export {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,

@@ -58,6 +58,8 @@ const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
 const APPS_TOGGLE_SELECTOR = 'button[aria-label="Toggle apps experimental setting"]';
 const SUMMARIES_TOGGLE_SELECTOR =
   'button[aria-label="Toggle summaries experimental setting"]';
+const STATUS_CARDS_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle status cards experimental setting"]';
 const AUTO_RECOVERY_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task graph liveness auto-recovery"]';
 
@@ -75,6 +77,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableExternalObjects: false,
     enableBuiltInAgents: false,
     enableSummaries: false,
+    enableStatusCards: false,
     enableDecisions: false,
     enableGoalsSidebarLink: false,
     enableTaskWatchdogs: false,
@@ -458,6 +461,24 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableSummaries: true,
     });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("renders and patches the Status Cards experimental toggle", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Status Cards");
+    expect(container.textContent).toContain("experimental shared status-card board");
+
+    const toggle = container.querySelector<HTMLButtonElement>(STATUS_CARDS_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableStatusCards: true });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 

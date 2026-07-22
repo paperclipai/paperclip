@@ -297,6 +297,7 @@ export function InstanceExperimentalSettings() {
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
   const enableSummaries = experimentalQuery.data?.enableSummaries === true;
+  const enableStatusCards = experimentalQuery.data?.enableStatusCards === true;
   const enableDecisions = experimentalQuery.data?.enableDecisions === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
@@ -544,6 +545,24 @@ export function InstanceExperimentalSettings() {
             }
             disabled={toggleMutation.isPending}
             aria-label="Toggle experimental file viewer setting"
+          />
+        </div>
+      </Card>
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Status Cards</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Enable the experimental shared status-card board and its gated API. Existing card data is kept when
+              this is disabled.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableStatusCards}
+            onCheckedChange={() => toggleMutation.mutate({ enableStatusCards: !enableStatusCards })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle status cards experimental setting"
           />
         </div>
       </Card>

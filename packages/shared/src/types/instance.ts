@@ -60,6 +60,7 @@ export interface InstanceExperimentalSettings {
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
   enableSummaries: boolean;
+  enableStatusCards: boolean;
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;

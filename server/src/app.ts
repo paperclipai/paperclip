@@ -19,6 +19,7 @@ import { inboxAgentPolicyRoutes } from "./routes/inbox-agent-policy.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { folderRoutes } from "./routes/folders.js";
 import { summarySlotRoutes } from "./routes/summary-slots.js";
+import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
@@ -245,6 +246,7 @@ export async function createApp(
   api.use(inboxAgentPolicyRoutes(db));
   api.use(builtInAgentRoutes(db));
   api.use(summarySlotRoutes(db));
+  api.use(statusCardRoutes(db));
   api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
