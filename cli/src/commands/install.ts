@@ -21,7 +21,7 @@ import {
 } from "../install-store.js";
 
 const execFileAsync = promisify(execFile);
-const PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org";
+export const PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org";
 const DEFAULT_GITHUB_REPO = "paperclipai/paperclip";
 const EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 

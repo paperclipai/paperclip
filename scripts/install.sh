@@ -4,6 +4,7 @@ set -euo pipefail
 MIN_NODE_MAJOR=20
 DEFAULT_NODE_MAJOR=22
 PAPERCLIP_PACKAGE="paperclipai"
+PUBLIC_NPM_REGISTRY="https://registry.npmjs.org"
 HOMEBREW_INSTALL_COMMIT="99e13e96cbbdc1ac1ac09c0a40b450bf219ef3aa"
 HOMEBREW_INSTALL_SHA256="99287f194a8b3c9e6b0203a11a5fa54518be57209343e6bb954dec4635796d9d"
 NODESOURCE_DEB_SHA256="575583bbac2fccc0b5edd0dbc03e222d9f9dc8d724da996d22754d6411104fd1"
@@ -354,7 +355,12 @@ INSTALL_ARGS=(install)
 [ "$CANARY" = "1" ] && INSTALL_ARGS+=(--canary)
 [ -n "$VERSION" ] && INSTALL_ARGS+=(--version "$VERSION")
 [ "$NO_PROMPT" = "1" ] && INSTALL_ARGS+=(--yes)
-INSTALL_COMMAND=(npx --yes "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}")
+ensure_temp_dir
+NPM_USERCONFIG="$TEMP_DIR/npmrc"
+printf 'registry=%s\n@paperclipai:registry=%s\n' "$PUBLIC_NPM_REGISTRY" "$PUBLIC_NPM_REGISTRY" >"$NPM_USERCONFIG"
+chmod 600 "$NPM_USERCONFIG"
+NPM_ENV=(env "NPM_CONFIG_REGISTRY=$PUBLIC_NPM_REGISTRY" "npm_config_registry=$PUBLIC_NPM_REGISTRY" "NPM_CONFIG_USERCONFIG=$NPM_USERCONFIG" "npm_config_userconfig=$NPM_USERCONFIG")
+INSTALL_COMMAND=("${NPM_ENV[@]}" npx --yes "--registry=$PUBLIC_NPM_REGISTRY" "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}")
 
 log "Delegating to the Paperclip CLI"
 if [ "$DRY_RUN" = "1" ]; then
@@ -367,8 +373,8 @@ print_command "${INSTALL_COMMAND[@]}"
 
 if [ "$INSTALL_SERVICE" = "1" ]; then
   log "Installing the Paperclip service"
-  print_command npx --yes "$PACKAGE_SPEC" service install
-  npx --yes "$PACKAGE_SPEC" service install
+  print_command "${NPM_ENV[@]}" npx --yes "--registry=$PUBLIC_NPM_REGISTRY" "$PACKAGE_SPEC" service install
+  "${NPM_ENV[@]}" npx --yes "--registry=$PUBLIC_NPM_REGISTRY" "$PACKAGE_SPEC" service install
 fi
 
 if [ "$NO_ONBOARD" = "0" ] && [ -t 0 ] && [ -t 1 ]; then

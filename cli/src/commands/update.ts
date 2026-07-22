@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -6,7 +7,7 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { buildNextManifest, flipCurrentAtomic, isManagedExecutable, pruneInstallPayloads, readInstallManifest, resolveInstallStorePaths, withInstallStoreLock, writeInstallManifestAtomic, type InstallChannel, type InstallManifest, type InstallRecord, type InstallStorePaths } from "../install-store.js";
 import { dbBackupCommand } from "./db-backup.js";
-import { installGitPayload, installNpmPayload, resolveGitHubRef, resolvePublishedVersion, type CommandRunner } from "./install.js";
+import { installGitPayload, installNpmPayload, PUBLIC_NPM_REGISTRY, resolveGitHubRef, resolvePublishedVersion, type CommandRunner } from "./install.js";
 
 const execFileAsync = promisify(execFile);
 export type InstallMode = "managed" | "global-npm" | "npx" | "source" | "unknown";
@@ -108,8 +109,26 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
   const comparison = currentVersion ? compareVersions(targetVersion, currentVersion) : 1;
   if (options.check) { emit(options, { mode, currentVersion: currentVersion ?? null, targetVersion, updateAvailable: comparison > 0, downgrade: comparison < 0, channel: request.channel }, comparison > 0 ? `Update available: ${targetVersion}` : comparison < 0 ? `Target ${targetVersion} is older than ${currentVersion}.` : `paperclipai ${targetVersion} is current.`); if (comparison > 0) process.exitCode = 10; return; }
   if (mode === "global-npm") {
-    const args = ["install", "-g", `paperclipai@${targetVersion}`]; console.log(`Running: npm ${args.join(" ")}`);
-    if (!options.dryRun) await runCommand("npm", args, { maxBuffer: 16 * 1024 * 1024 });
+    const args = ["install", "-g", `paperclipai@${targetVersion}`, `--registry=${PUBLIC_NPM_REGISTRY}`, `--@paperclipai:registry=${PUBLIC_NPM_REGISTRY}`]; console.log(`Running: npm ${args.join(" ")}`);
+    if (!options.dryRun) {
+      const npmConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-npm-"));
+      const npmUserConfigPath = path.join(npmConfigDir, "npmrc");
+      try {
+        fs.writeFileSync(npmUserConfigPath, `registry=${PUBLIC_NPM_REGISTRY}\n@paperclipai:registry=${PUBLIC_NPM_REGISTRY}\n`, { mode: 0o600 });
+        await runCommand("npm", args, {
+          env: {
+            ...process.env,
+            npm_config_registry: PUBLIC_NPM_REGISTRY,
+            NPM_CONFIG_REGISTRY: PUBLIC_NPM_REGISTRY,
+            npm_config_userconfig: npmUserConfigPath,
+            NPM_CONFIG_USERCONFIG: npmUserConfigPath,
+          },
+          maxBuffer: 16 * 1024 * 1024,
+        });
+      } finally {
+        fs.rmSync(npmConfigDir, { recursive: true, force: true });
+      }
+    }
     emit(options, { mode, action: "update", targetVersion, dryRun: Boolean(options.dryRun), command: ["npm", ...args] }, options.dryRun ? "Dry run complete." : pc.green(`Updated global npm install to ${targetVersion}.`)); return;
   }
   if (!manifest) throw new Error("Managed install metadata is missing.");
