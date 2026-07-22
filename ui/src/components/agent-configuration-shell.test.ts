@@ -8,6 +8,7 @@ import {
 
 describe("agent configuration shell", () => {
   it("matches both section names and field labels", () => {
+    expect([...filterAgentConfigurationSections("")].slice(0, 2)).toEqual(["environment", "runtime"]);
     expect([...filterAgentConfigurationSections("heartbeat")]).toEqual(["schedule"]);
     expect([...filterAgentConfigurationSections("API Keys")]).toEqual(["keys"]);
     expect([...filterAgentConfigurationSections("sandbox")]).toEqual(["danger"]);
