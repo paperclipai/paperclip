@@ -46,6 +46,7 @@ import {
   PLUGIN_STATUSES,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
+import { deliverStoredCompanyConfig } from "../services/plugin-config-delivery.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import {
   getPluginUiContributionMetadata,
@@ -2350,13 +2351,20 @@ export function pluginRoutes(
       // If the worker implements onConfigChanged, send the new config via RPC.
       // If it doesn't (METHOD_NOT_IMPLEMENTED), restart the worker so it picks
       // up the new config on re-initialize. If no worker is running, skip.
+      //
+      // Delivery goes through deliverStoredCompanyConfig rather than sending
+      // body.configJson directly: it re-reads the just-persisted row inside a
+      // per-plugin critical section shared with the loader's startup replay,
+      // so a save landing while a freshly-started worker is still replaying
+      // stored configs can't be overwritten by the replay's older snapshot.
       if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
         try {
-          await bridgeDeps.workerManager.call(
-            plugin.id,
-            "configChanged",
-            { config: body.configJson, companyId },
-          );
+          await deliverStoredCompanyConfig({
+            registry,
+            workerManager: bridgeDeps.workerManager,
+            pluginId: plugin.id,
+            companyId,
+          });
         } catch (rpcErr) {
           if (
             rpcErr instanceof JsonRpcCallError &&

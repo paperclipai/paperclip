@@ -320,9 +320,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   let initialized = false;
   let manifest: PaperclipPluginManifestV1 | null = null;
   let currentConfig: Record<string, unknown> = {};
-  // The company whose config was last applied via configChanged. Used to fail
-  // closed when a single-tenant plugin would be collapsed onto a second,
-  // distinct company's config. `null` until the first company-scoped delivery.
+  // The company whose config was first *successfully applied* via
+  // configChanged. Used to fail closed when a single-tenant plugin would be
+  // collapsed onto a second, distinct company's config. `null` until a
+  // company-scoped delivery is accepted by the plugin; never transferred to
+  // another company afterwards (deliveries that merely replay the applied
+  // config under a different scope row are acknowledged as no-ops).
   let configCompanyId: string | null = null;
   let databaseNamespace: string | null = null;
   const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
@@ -1627,17 +1630,23 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     // secret confusion bug (one company's bot token applied to another's work).
     //
     // Reject the second, distinct company unless the plugin explicitly declares
-    // it handles multiple companies in one worker (multiCompanyConfig). An
-    // idempotent replay of the *same* config for a different company id is
-    // harmless (single-tenant plugins commonly have duplicate scope rows that
-    // all embed the same config), so it is allowed.
+    // it handles multiple companies in one worker (multiCompanyConfig).
     if (
       !plugin.definition.multiCompanyConfig &&
       incomingCompanyId !== null &&
       configCompanyId !== null &&
-      configCompanyId !== incomingCompanyId &&
-      !configsEqual(params.config, currentConfig)
+      configCompanyId !== incomingCompanyId
     ) {
+      // An idempotent replay of the *same* config under a different company id
+      // is harmless — single-tenant plugins commonly have duplicate scope rows
+      // that all embed the same config. Acknowledge it as a no-op: the config
+      // is already applied, and neither the tenant binding nor the plugin
+      // callback may see the second company id, otherwise duplicate startup
+      // rows would transfer the binding away from the company delivered first
+      // and lock it out of future updates.
+      if (configsEqual(params.config, currentConfig)) {
+        return;
+      }
       throw Object.assign(
         new Error(
           `configChanged: refusing to overwrite configuration for company ` +
@@ -1651,15 +1660,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       );
     }
 
-    currentConfig = params.config;
-    if (incomingCompanyId !== null) {
-      configCompanyId = incomingCompanyId;
-    }
-
     if (plugin.definition.onConfigChanged) {
       await plugin.definition.onConfigChanged(params.config, {
         companyId: incomingCompanyId,
       });
+    }
+
+    // Commit only after the plugin accepted the config. Committing before the
+    // callback would let a config the plugin rejected (onConfigChanged threw)
+    // establish the tenant binding, leaving the worker bound to a company
+    // whose config was never applied — and rejecting every other company's
+    // delivery as cross-tenant afterwards.
+    currentConfig = params.config;
+    if (incomingCompanyId !== null && configCompanyId === null) {
+      configCompanyId = incomingCompanyId;
     }
   }
 
