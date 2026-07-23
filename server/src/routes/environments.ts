@@ -12,6 +12,7 @@ import {
   redactEnvironmentCustomImageTemplate,
   startEnvironmentCustomImageSetupSessionSchema,
   type EnvironmentDeleteBlastRadius,
+  type EnvironmentCustomImageSetupSessionStatus,
   updateEnvironmentSchema,
 } from "@paperclipai/shared";
 import { conflict, forbidden, unprocessable } from "../errors.js";
@@ -47,8 +48,12 @@ import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environmen
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { environmentService } from "../services/environments.js";
+import { environmentService, ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES } from "../services/environments.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+
+function isActiveCustomImageSetupStatus(status: EnvironmentCustomImageSetupSessionStatus): boolean {
+  return (ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES as readonly string[]).includes(status);
+}
 
 export function environmentRoutes(
   db: Db,
@@ -827,8 +832,35 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    if (!impact.canDelete) {
+
+    const hasStaticBlocker = impact.deleteBlockedReasons.some(
+      (r) => r === "managed_local" || r === "instance_default",
+    );
+    if (hasStaticBlocker) {
       rejectEnvironmentDelete({ actor, environment: existing, impact });
+    }
+
+    const hasRuntimeBlocker = impact.deleteBlockedReasons.includes("active_runtime_use");
+    const forceDelete = req.query.force === "true";
+    if (hasRuntimeBlocker && !forceDelete) {
+      rejectEnvironmentDelete({ actor, environment: existing, impact });
+    }
+
+    if (hasRuntimeBlocker && forceDelete) {
+      const overview = await customImages.getOverview({ environmentId: existing.id });
+      if (overview.activeSession) {
+        const cancelled = await customImages.cancelSetupSession({
+          sessionId: overview.activeSession.id,
+          reason: "environment_force_delete",
+        });
+        if (isActiveCustomImageSetupStatus(cancelled.status)) {
+          throw conflict(
+            "Active custom image setup session could not be cancelled. Retry or wait for setup to complete before deleting.",
+            { deleteBlockedReasons: ["active_runtime_use"] },
+          );
+        }
+      }
+      await svc.releaseActiveLeasesForEnvironment(existing.id);
     }
 
     const removed = await svc.removeIfDeletable(existing.id);
