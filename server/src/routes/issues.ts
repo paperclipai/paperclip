@@ -3605,6 +3605,58 @@ export function issueRoutes(
     return true;
   }
 
+  async function assertAgentIssuePatchMutationAllowed(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+      parentId: string | null;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    },
+    patch: Record<string, unknown>,
+  ) {
+    const patchKeys = Object.keys(patch);
+    const isBlockerReplacementOnly =
+      patchKeys.length === 1 &&
+      patchKeys[0] === "blockedByIssueIds" &&
+      Array.isArray(patch.blockedByIssueIds);
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : null;
+    if (
+      typeof actorAgentId === "string" &&
+      isBlockerReplacementOnly &&
+      issue.assigneeAgentId &&
+      issue.assigneeAgentId !== actorAgentId
+    ) {
+      const ordinaryBoundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (
+        !ordinaryBoundaryDecision.allowed &&
+        await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)
+      ) {
+        if (issue.status === "in_progress") {
+          res.status(409).json({
+            error: "Issue is checked out by another agent",
+            details: {
+              issueId: issue.id,
+              assigneeAgentId: issue.assigneeAgentId,
+              actorAgentId,
+            },
+          });
+          return false;
+        }
+        // This grant authorizes relation replacement only. Keep it distinct from
+        // ordinary issue mutation so downstream reconciliation cannot widen the
+        // granted effect to status, assignment, execution state, or checkout data.
+        return "manager_blocker_replacement" as const;
+      }
+    }
+    const standardMutationAllowed = await assertAgentIssueMutationAllowed(req, res, issue);
+    return standardMutationAllowed ? "standard" as const : false;
+  }
+
   async function assertFreshTaskWatchdogSourceMutation(
     res: Response,
     scope: Awaited<ReturnType<typeof resolveTaskWatchdogMutationScope>>,
@@ -7625,7 +7677,9 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const patchAuthorization = await assertAgentIssuePatchMutationAllowed(req, res, existing, req.body);
+    if (!patchAuthorization) return;
+    const isManagerBlockerReplacement = patchAuthorization === "manager_blocker_replacement";
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -7840,24 +7894,28 @@ export function issueRoutes(
       req.body.executionPolicy !== undefined && monitorChanged,
     );
 
-    const transition = applyIssueExecutionPolicyTransition({
-      issue: existing,
-      policy: nextExecutionPolicy,
-      previousPolicy: previousExecutionPolicy,
-      requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
-      requestedAssigneePatch: {
-        assigneeAgentId: normalizedAssigneeAgentId,
-        assigneeUserId:
-          req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
-      },
-      actor: {
-        agentId: actor.agentId ?? null,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      },
-      commentBody,
-      reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
-      monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
-    });
+    // Manager-only blocker authority is effect-limited: do not run execution
+    // policy reconciliation, which may repair drift by changing unrelated fields.
+    const transition = isManagerBlockerReplacement
+      ? { patch: {}, decision: undefined, workflowControlledAssignment: false }
+      : applyIssueExecutionPolicyTransition({
+          issue: existing,
+          policy: nextExecutionPolicy,
+          previousPolicy: previousExecutionPolicy,
+          requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+          requestedAssigneePatch: {
+            assigneeAgentId: normalizedAssigneeAgentId,
+            assigneeUserId:
+              req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
+          },
+          actor: {
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          commentBody,
+          reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+          monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
+        });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
       const nextExecutionState = transition.patch.executionState;
@@ -7959,6 +8017,15 @@ export function issueRoutes(
 
           return updated;
         });
+      } else if (isManagerBlockerReplacement) {
+        issue = await svc.replaceBlockers(
+          id,
+          req.body.blockedByIssueIds as string[],
+          {
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        );
       } else {
         issue = await svc.update(id, {
           ...updateFields,
@@ -8058,6 +8125,66 @@ export function issueRoutes(
         blocks: updatedRelations.blocks,
       };
     }
+
+    const logBlockerReplacementActivity = async () => {
+      if (!Array.isArray(req.body.blockedByIssueIds)) return;
+      const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));
+      const nextBlockedByIds = new Set(req.body.blockedByIssueIds as string[]);
+      const addedBlockedByIssueIds = [...nextBlockedByIds].filter((candidate) => !previousBlockedByIds.has(candidate));
+      const removedBlockedByIssueIds = [...previousBlockedByIds].filter((candidate) => !nextBlockedByIds.has(candidate));
+      if (addedBlockedByIssueIds.length === 0 && removedBlockedByIssueIds.length === 0) return;
+
+      const nextBlockedByRelations = updatedRelations?.blockedBy ?? [];
+      const previousBlockedByRelations = existingRelations?.blockedBy ?? [];
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.blockers_updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          blockedByIssueIds: req.body.blockedByIssueIds,
+          addedBlockedByIssueIds,
+          removedBlockedByIssueIds,
+          blockedByIssues: nextBlockedByRelations.map(summarizeIssueRelationForActivity),
+          addedBlockedByIssues: nextBlockedByRelations
+            .filter((relation) => addedBlockedByIssueIds.includes(relation.id))
+            .map(summarizeIssueRelationForActivity),
+          removedBlockedByIssues: previousBlockedByRelations
+            .filter((relation) => removedBlockedByIssueIds.includes(relation.id))
+            .map(summarizeIssueRelationForActivity),
+        },
+      });
+    };
+
+    if (isManagerBlockerReplacement) {
+      const previousBlockedByIssueIds = existingRelations?.blockedBy.map((relation) => relation.id) ?? [];
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          blockedByIssueIds: req.body.blockedByIssueIds,
+          _previous: { blockedByIssueIds: previousBlockedByIssueIds },
+        },
+      });
+      await logBlockerReplacementActivity();
+      res.json({ ...issueResponse, comment: null });
+      return;
+    }
+
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
     if (actor.runId) {
@@ -8195,40 +8322,7 @@ export function issueRoutes(
         });
     }
 
-    if (Array.isArray(req.body.blockedByIssueIds)) {
-      const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));
-      const nextBlockedByIds = new Set(req.body.blockedByIssueIds as string[]);
-      const addedBlockedByIssueIds = [...nextBlockedByIds].filter((candidate) => !previousBlockedByIds.has(candidate));
-      const removedBlockedByIssueIds = [...previousBlockedByIds].filter((candidate) => !nextBlockedByIds.has(candidate));
-      const nextBlockedByRelations = updatedRelations?.blockedBy ?? [];
-      const previousBlockedByRelations = existingRelations?.blockedBy ?? [];
-      if (addedBlockedByIssueIds.length > 0 || removedBlockedByIssueIds.length > 0) {
-        await logActivity(db, {
-          companyId: issue.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          agentApiKeyId: actor.agentApiKeyId,
-          action: "issue.blockers_updated",
-          entityType: "issue",
-          entityId: issue.id,
-          details: {
-            identifier: issue.identifier,
-            blockedByIssueIds: req.body.blockedByIssueIds,
-            addedBlockedByIssueIds,
-            removedBlockedByIssueIds,
-            blockedByIssues: nextBlockedByRelations.map(summarizeIssueRelationForActivity),
-            addedBlockedByIssues: nextBlockedByRelations
-              .filter((relation) => addedBlockedByIssueIds.includes(relation.id))
-              .map(summarizeIssueRelationForActivity),
-            removedBlockedByIssues: previousBlockedByRelations
-              .filter((relation) => removedBlockedByIssueIds.includes(relation.id))
-              .map(summarizeIssueRelationForActivity),
-          },
-        });
-      }
-    }
+    await logBlockerReplacementActivity();
 
     const reviewerChanges = diffExecutionParticipants(previousExecutionPolicy, nextExecutionPolicy, "review");
     if (reviewerChanges.addedParticipants.length > 0 || reviewerChanges.removedParticipants.length > 0) {

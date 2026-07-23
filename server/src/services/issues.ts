@@ -6717,6 +6717,41 @@ export function issueService(db: Db) {
       return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
     },
 
+    replaceBlockers: async (
+      id: string,
+      blockedByIssueIds: string[],
+      actor: { agentId?: string | null; userId?: string | null } = {},
+      dbOrTx: any = db,
+    ) => {
+      const runReplacement = async (tx: any) => {
+        const existing = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!existing) return null;
+
+        await syncBlockedByIssueIds(
+          existing.id,
+          existing.companyId,
+          blockedByIssueIds,
+          actor,
+          tx,
+        );
+        const updated = await tx
+          .update(issues)
+          .set({ updatedAt: new Date() })
+          .where(eq(issues.id, existing.id))
+          .returning()
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!updated) return null;
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return enriched;
+      };
+
+      return dbOrTx === db ? db.transaction(runReplacement) : runReplacement(dbOrTx);
+    },
+
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
       const rows = await db
         .select({

@@ -48,6 +48,15 @@ describe("issue validators", () => {
     expect(parsed.comment).toBe("Done\n\n- Verified the route");
   });
 
+  it("rejects the read-model blockedBy key instead of silently ignoring blocker updates", () => {
+    const blockerId = "11111111-1111-4111-8111-111111111111";
+
+    expect(updateIssueSchema.safeParse({ blockedBy: [blockerId] }).success).toBe(false);
+    expect(updateIssueSchema.parse({ blockedByIssueIds: [blockerId] })).toEqual({
+      blockedByIssueIds: [blockerId],
+    });
+  });
+
   it("keeps issue attribution fields create-only", () => {
     const created = createIssueSchema.parse({
       title: "Preserve attribution input for route checks",

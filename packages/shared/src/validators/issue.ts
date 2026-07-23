@@ -466,6 +466,11 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   responsibleUserId: true,
   watchdog: true,
 }).partial().extend({
+  // `blockedBy` is the read-model relation summary. Mutations must use
+  // `blockedByIssueIds`; recognizing the read-model key here prevents Zod's
+  // default unknown-key stripping from turning a mistyped blocker update into
+  // a misleading 200 with no relation change.
+  blockedBy: z.never().optional(),
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
