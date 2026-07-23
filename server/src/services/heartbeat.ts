@@ -100,6 +100,12 @@ import {
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
 import {
+  buildZeroTokenDiagnosticComment,
+  isZeroTokenDiagnosticMetadata,
+  isZeroTokenTermination,
+  sniffOverloadCause,
+} from "./heartbeat-zero-token-diagnostic.js";
+import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
@@ -8330,6 +8336,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  // Newest non-deleted comment on an issue (id + metadata only). Used to dedup
+  // the zero-token diagnostic: if the thread's newest comment is already an
+  // unresolved zero-token diagnostic, the silent loop is already announced and
+  // we skip; any later real comment lets a new incident re-announce. Uses the
+  // issue_comments_company_issue_created_at_idx index.
+  async function findNewestIssueCommentMetadata(companyId: string, issueId: string) {
+    return db
+      .select({
+        id: issueComments.id,
+        metadata: issueComments.metadata,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+          isNull(issueComments.deletedAt),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function refreshContinuationSummaryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -13917,6 +13947,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               "stderr",
               `[paperclip] Failed to post run summary comment: ${err instanceof Error ? err.message : String(err)}\n`,
             );
+          }
+
+          // Zero-token diagnostic: a "succeeded" run that consumed zero tokens is
+          // almost always an upstream gateway overload (HTTP 529) or an empty model
+          // response. It is invisible to liveness/retry (which key on non-success
+          // status), so post exactly one clearly-marked diagnostic comment naming
+          // the cause. Dedup per issue: skip when the thread's newest comment is
+          // already an unresolved zero-token diagnostic; a later real comment lets
+          // a new incident re-announce.
+          if (isZeroTokenTermination(rawUsage)) {
+            try {
+              const newest = await findNewestIssueCommentMetadata(livenessRun.companyId, issueId);
+              if (!isZeroTokenDiagnosticMetadata(newest?.metadata ?? null)) {
+                const cause = sniffOverloadCause([
+                  stderrExcerpt,
+                  stdoutExcerpt,
+                  persistedResultJson ? JSON.stringify(persistedResultJson) : "",
+                ]);
+                const diagnostic = buildZeroTokenDiagnosticComment({
+                  runId: livenessRun.id,
+                  provider: readNonEmptyString(adapterResult.provider),
+                  model: readNonEmptyString(adapterResult.model),
+                  usage: rawUsage,
+                  cause,
+                });
+                await issuesSvc.addComment(
+                  issueId,
+                  diagnostic.body,
+                  { agentId: agent.id, runId: livenessRun.id },
+                  { presentation: diagnostic.presentation, metadata: diagnostic.metadata },
+                );
+              }
+            } catch (err) {
+              await onLog(
+                "stderr",
+                `[paperclip] Failed to post zero-token diagnostic: ${err instanceof Error ? err.message : String(err)}\n`,
+              );
+            }
           }
         }
         if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
