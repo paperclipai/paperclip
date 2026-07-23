@@ -69,7 +69,7 @@ export function Sidebar() {
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!selectedCompanyId,
-    // Event-sourced via LiveUpdatesProvider (#9627) + reconnect reconcile — no
+    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627) + reconnect reconcile — no
     // interval poll needed. Polling here also re-armed React Query's timer on
     // every live-event cache write, a major source of steady-state churn.
     refetchInterval: false,
