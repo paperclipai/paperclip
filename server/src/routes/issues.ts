@@ -59,6 +59,7 @@ import {
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  extractIssueReferenceIdentifiers,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   isUuidLike,
@@ -8636,8 +8637,44 @@ export function issueRoutes(
           logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
         }
 
+        // Identify mentioned agents who own at least one active issue referenced in this
+        // comment body. When an agent is not this issue's assignee but does own a
+        // referenced issue, the mention-wake on the current issue is structural noise
+        // (auth-routing bypass pattern) — the agent will be woken via the referenced
+        // issue's own wake path, so we suppress the redundant mention-wake here.
+        const mentionedAgentsWithOwnedRefs = new Set<string>();
+        if (mentionedIds.length > 0) {
+          try {
+            const refIdentifiers = extractIssueReferenceIdentifiers(commentBody);
+            if (refIdentifiers.length > 0) {
+              const refRows = await db
+                .select({ assigneeAgentId: issueRows.assigneeAgentId })
+                .from(issueRows)
+                .where(
+                  and(
+                    eq(issueRows.companyId, issue.companyId),
+                    inArray(issueRows.identifier, refIdentifiers.map((i) => i.toUpperCase())),
+                    notInArray(issueRows.status, ["done", "cancelled"]),
+                  ),
+                );
+              const mentionedSet = new Set(mentionedIds);
+              for (const row of refRows) {
+                if (row.assigneeAgentId && mentionedSet.has(row.assigneeAgentId)) {
+                  mentionedAgentsWithOwnedRefs.add(row.assigneeAgentId);
+                }
+              }
+            }
+          } catch (err) {
+            logger.warn({ err, issueId: id }, "failed to resolve referenced issues for mention-wake dedup");
+          }
+        }
+
         for (const mentionedId of mentionedIds) {
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+          const isAssignee = issue.assigneeAgentId === mentionedId;
+          // Suppress mention-wake when the agent is not this issue's assignee but owns
+          // an active issue referenced in the comment — they'll be woken via that issue.
+          if (!isAssignee && mentionedAgentsWithOwnedRefs.has(mentionedId)) continue;
           addWakeup(mentionedId, {
             source: "automation",
             triggerDetail: "system",
@@ -8652,6 +8689,7 @@ export function issueRoutes(
               wakeCommentId: comment.id,
               wakeReason: "issue_comment_mentioned",
               source: "comment.mention",
+              ...(!isAssignee ? { mentionedOnExternalIssue: true } : {}),
             },
           });
         }
@@ -10191,8 +10229,44 @@ export function issueRoutes(
         logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
       }
 
+      // Identify mentioned agents who own at least one active issue referenced in this
+      // comment body. When an agent is not this issue's assignee but does own a
+      // referenced issue, the mention-wake on the current issue is structural noise
+      // (auth-routing bypass pattern) — the agent will be woken via the referenced
+      // issue's own wake path, so we suppress the redundant mention-wake here.
+      const mentionedAgentsWithOwnedRefs = new Set<string>();
+      if (mentionedIds.length > 0) {
+        try {
+          const refIdentifiers = extractIssueReferenceIdentifiers(req.body.body as string);
+          if (refIdentifiers.length > 0) {
+            const refRows = await db
+              .select({ assigneeAgentId: issueRows.assigneeAgentId })
+              .from(issueRows)
+              .where(
+                and(
+                  eq(issueRows.companyId, issue.companyId),
+                  inArray(issueRows.identifier, refIdentifiers.map((i) => i.toUpperCase())),
+                  notInArray(issueRows.status, ["done", "cancelled"]),
+                ),
+              );
+            const mentionedSet = new Set(mentionedIds);
+            for (const row of refRows) {
+              if (row.assigneeAgentId && mentionedSet.has(row.assigneeAgentId)) {
+                mentionedAgentsWithOwnedRefs.add(row.assigneeAgentId);
+              }
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: id }, "failed to resolve referenced issues for mention-wake dedup");
+        }
+      }
+
       for (const mentionedId of mentionedIds) {
         if (actorIsAgent && actor.actorId === mentionedId) continue;
+        const isAssignee = currentIssue.assigneeAgentId === mentionedId;
+        // Suppress mention-wake when the agent is not this issue's assignee but owns
+        // an active issue referenced in the comment — they'll be woken via that issue.
+        if (!isAssignee && mentionedAgentsWithOwnedRefs.has(mentionedId)) continue;
         addWakeup(mentionedId, {
           source: "automation",
           triggerDetail: "system",
@@ -10207,6 +10281,7 @@ export function issueRoutes(
             wakeCommentId: comment.id,
             wakeReason: "issue_comment_mentioned",
             source: "comment.mention",
+            ...(!isAssignee ? { mentionedOnExternalIssue: true } : {}),
           },
         });
       }
