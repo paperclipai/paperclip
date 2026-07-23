@@ -266,16 +266,46 @@ export function pluginRegistryService(db: Db) {
           .then((rows) => rows[0] ?? null);
       }
 
-      // Soft delete – mark as uninstalled
-      return db
-        .update(plugins)
-        .set({
-          status: "uninstalled" as PluginStatus,
-          updatedAt: new Date(),
-        })
-        .where(eq(plugins.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      // Soft delete – mark plugin as uninstalled and pause its jobs.
+      //
+      // PLUGIN_SPEC §25.1 lists `plugin_jobs` as plugin-owned data with a
+      // 30-day grace period; deleting on soft uninstall would violate that.
+      // Pausing instead:
+      //   - Honors the spec (data retained for the grace period and recoverable
+      //     on reinstall).
+      //   - Stops the scheduler tick from picking these jobs up — the tick
+      //     query is `WHERE status = 'active'`, so paused rows are silently
+      //     skipped at the SQL layer rather than at the runtime "worker not
+      //     running" debug log.
+      //   - Mirrors the existing pattern in plugin-job-store.ts
+      //     `syncJobDeclarations()`, which pauses jobs when a manifest no
+      //     longer declares them and reactivates them on reinstall.
+      //   - Leaves plugin_job_runs untouched: in-flight runs are cancelled by
+      //     `onPluginUnloaded` → `unregisterPlugin()` → `completeRun(...,
+      //     status: "cancelled")`, and historical runs are preserved per spec.
+      //
+      // The host's grace-period purge (§25.1, point 5) is the path that
+      // eventually deletes plugin_jobs / plugin_job_runs after 30 days.
+      return db.transaction(async (tx) => {
+        await tx
+          .update(pluginJobs)
+          .set({ status: "paused" as const, updatedAt: new Date() })
+          .where(
+            and(
+              eq(pluginJobs.pluginId, id),
+              ne(pluginJobs.status, "paused"),
+            ),
+          );
+        return tx
+          .update(plugins)
+          .set({
+            status: "uninstalled" as PluginStatus,
+            updatedAt: new Date(),
+          })
+          .where(eq(plugins.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
     },
 
     // ----- Config ---------------------------------------------------------
