@@ -68,6 +68,17 @@ describe("rollupUpdatesToday", () => {
     expect(rollup.totalTokens).toBe(2000 + 600 + 400 + 100);
     expect(rollup.totalCostCents).toBe(3 + 1);
   });
+
+  it("uses the UTC day boundary used by the server token cap", () => {
+    const now = new Date("2026-07-23T01:00:00.000Z");
+    const rollup = rollupUpdatesToday([
+      update({ startedAt: "2026-07-23T00:30:00.000Z", inputTokens: 200, outputTokens: 50 }),
+      update({ startedAt: "2026-07-22T23:30:00.000Z", inputTokens: 900, outputTokens: 100 }),
+    ], now);
+
+    expect(rollup.updateCount).toBe(1);
+    expect(rollup.totalTokens).toBe(250);
+  });
 });
 
 describe("estimateStatusCardCost", () => {

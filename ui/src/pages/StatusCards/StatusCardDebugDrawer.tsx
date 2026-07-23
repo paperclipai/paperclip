@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 
 import { statusCardsApi } from "@/api/statusCards";
@@ -15,9 +15,8 @@ import type { StatusCardView } from "./types";
 /**
  * Temporary debug surface (plan §5). Exposes the raw interest → compiled-query
  * pipeline that is normally hidden: the source-of-truth interest text, the
- * agent-maintained compiled query JSON + version, and an advanced raw view.
- * Dry-run + direct query authoring arrive with P2; those affordances are shown
- * disabled with a note until the endpoints exist.
+ * agent-maintained compiled query JSON + version, an advanced raw view, and an
+ * on-demand dry run that executes the compiled queries against live data.
  */
 export function StatusCardDebugDrawer({
   card,
@@ -32,10 +31,20 @@ export function StatusCardDebugDrawer({
   const [interest, setInterest] = useState("");
   const [showRaw, setShowRaw] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dryRunRequested, setDryRunRequested] = useState(false);
 
   useEffect(() => {
-    if (card) setInterest(card.interestPrompt);
+    if (card) {
+      setInterest(card.interestPrompt);
+      setDryRunRequested(false);
+    }
   }, [card]);
+
+  const dryRunQuery = useQuery({
+    queryKey: card ? queryKeys.statusCards.dryRun(card.id) : ["status-cards", "detail", "none", "dry-run"],
+    queryFn: () => statusCardsApi.dryRun(card!.id),
+    enabled: Boolean(card && open && dryRunRequested && card.queries.length > 0),
+  });
 
   const recompileMutation = useMutation({
     mutationFn: (nextInterest: string) => statusCardsApi.patch(card!.id, { interestPrompt: nextInterest }),
@@ -119,7 +128,7 @@ export function StatusCardDebugDrawer({
                     v{version}
                   </span>
                 ))}
-                <span className="text-muted-foreground/70">· only the current version is inspectable until P2 stores prior compilations</span>
+                <span className="text-muted-foreground/70">· only the current compiled version is stored and inspectable</span>
               </div>
             ) : null}
             <div className="flex flex-wrap gap-2">
@@ -131,7 +140,14 @@ export function StatusCardDebugDrawer({
               >
                 Recompile
               </Button>
-              <Button variant="outline" size="sm" disabled title="Available when the P2 compile pipeline lands">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => (dryRunRequested ? dryRunQuery.refetch() : setDryRunRequested(true))}
+                disabled={card.queries.length === 0 || dryRunQuery.isFetching}
+                title={card.queries.length === 0 ? "Compile the query first" : "Execute the compiled queries now"}
+              >
+                {dryRunQuery.isFetching ? <Loader2 className="animate-spin" /> : null}
                 Dry run
               </Button>
               <Button variant="outline" size="sm" onClick={() => setShowRaw((value) => !value)}>
@@ -142,7 +158,7 @@ export function StatusCardDebugDrawer({
               <div className="space-y-1">
                 <Textarea value={queryJson} readOnly rows={8} className="font-mono text-xs" aria-label="Raw compiled query JSON" />
                 <p className="text-xs text-muted-foreground">
-                  Direct query authoring is agent-level and lands with P2 — read-only here for now.
+                  The compiled query is agent-maintained (the Summarizer writes it from its generation task) — read-only here.
                 </p>
               </div>
             ) : null}
@@ -150,10 +166,45 @@ export function StatusCardDebugDrawer({
 
           <section className="space-y-2">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Dry run</h3>
-            <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-              Live dry-run matching arrives with the P2 compile pipeline. Until then the compiled query above is the
-              source of truth for what the card watches.
-            </div>
+            {!dryRunRequested ? (
+              <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+                {card.queries.length === 0
+                  ? "The query has not compiled yet — dry run becomes available once compilation finishes."
+                  : "Run a dry run to see which issues the compiled query matches right now."}
+              </div>
+            ) : dryRunQuery.isLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Executing compiled queries…
+              </div>
+            ) : dryRunQuery.isError ? (
+              <InlineBanner tone="danger" title="Dry run failed">
+                {dryRunQuery.error instanceof Error ? dryRunQuery.error.message : "Try again."}
+              </InlineBanner>
+            ) : (
+              <div className="space-y-3">
+                {(dryRunQuery.data?.queries ?? []).map(({ result }, index) => (
+                  <div key={index} className="space-y-1.5">
+                    <p className="text-xs text-muted-foreground">
+                      Query {index + 1} · {result.results.length} {result.results.length === 1 ? "match" : "matches"}
+                      {result.hasMore ? " (more beyond the query limit)" : ""}
+                    </p>
+                    {result.results.length > 0 ? (
+                      <ul className="space-y-1 rounded-md bg-muted p-3 text-xs">
+                        {result.results.map((item) => (
+                          <li key={item.id} className="flex items-center gap-2">
+                            <span className="shrink-0 font-medium text-muted-foreground">
+                              {item.issue?.identifier ?? item.type}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                            {item.issue ? <span className="shrink-0 text-muted-foreground">{item.issue.status}</span> : null}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
         </div>
       </SheetContent>

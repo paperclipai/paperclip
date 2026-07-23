@@ -468,7 +468,7 @@ describeEmbeddedPostgres("status card routes", () => {
     });
     expect(refresh.generatingIssue).toBeTruthy();
     expect(await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.cardId, card.id)).then((rows) => rows[0])).toMatchObject({
-      status: "ok",
+      status: "running",
       finishedAt: null,
     });
 
@@ -487,6 +487,39 @@ describeEmbeddedPostgres("status card routes", () => {
     });
   });
 
+
+  it("fails the pending summary ledger row when compilation finishes without a summary", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const boardApp = createApp(db, localBoardActor());
+    const created = await request(boardApp)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Blocked launch tasks" });
+    const generationIssueId = created.body.generatingIssueId as string;
+    const run = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ checkoutRunId: run.id }).where(eq(issues.id, generationIssueId));
+
+    const queryWrite = await request(createApp(db, agentActor(company.id, summarizer.id, run.id)))
+      .put(`/api/status-cards/${created.body.id}/query`)
+      .send({
+        queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }],
+        title: "Recent launch blockers",
+        changeSummary: "Compiled one bounded blocker query.",
+        generationIssueId,
+      });
+    expect(queryWrite.status).toBe(200);
+
+    await issueService(db).update(generationIssueId, { status: "cancelled" });
+
+    const ledger = await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.cardId, created.body.id));
+    expect(ledger.find((row) => row.kind === "compile")).toMatchObject({ status: "ok", finishedAt: expect.any(Date) });
+    expect(ledger.find((row) => row.kind === "full")).toMatchObject({
+      status: "failed",
+      finishedAt: expect.any(Date),
+      error: expect.stringContaining("cancelled"),
+    });
+  });
   it("prevents agents from managing cards authored by the board", async () => {
     const company = await seedCompany();
     await enableStatusCards();
@@ -671,9 +704,17 @@ describeEmbeddedPostgres("status card routes", () => {
     const queryWrite = await request(writerApp).put(`/api/status-cards/${created.body.id}/query`).send(queryPayload);
     expect(queryWrite.status).toBe(200);
     expect(queryWrite.body).toMatchObject({ queryVersion: 1, title: "Recent launch blockers", state: "compiling" });
+    expect(await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.kind === "full"))).toMatchObject({
+      status: "running",
+      finishedAt: null,
+      generationIssueId,
+    });
     const dryRun = await request(boardApp).get(`/api/status-cards/${created.body.id}/dry-run`);
     expect(dryRun.status).toBe(200);
     expect(dryRun.body.queries[0].result.results).toEqual(expect.arrayContaining([expect.objectContaining({ title: "Launch is blocked on approval" })]));
+    const revisionsBeforeSummary = await request(boardApp).get(`/api/status-cards/${created.body.id}/summary-revisions`);
+    expect(revisionsBeforeSummary.status).toBe(200);
+    expect(revisionsBeforeSummary.body).toEqual([]);
 
     await db.insert(costEvents).values({
       companyId: company.id,
@@ -697,7 +738,7 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(summaryWrite.status).toBe(200);
     expect(summaryWrite.body.card).toMatchObject({ state: "active", queryVersion: 1, generatingIssueId: null });
     expect(summaryWrite.body.document.latestBody).toContain("**Decide:**");
-    expect(await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.kind === "full"))).toMatchObject({ inputTokens: 5200, outputTokens: 980 });
+    expect(await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.kind === "full"))).toMatchObject({ status: "ok", finishedAt: expect.any(Date), inputTokens: 5200, outputTokens: 980 });
 
     const yesterday = new Date();
     yesterday.setUTCDate(yesterday.getUTCDate() - 1);
@@ -762,6 +803,14 @@ describeEmbeddedPostgres("status card routes", () => {
       });
     expect(incrementalWrite.status).toBe(200);
     expect(await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.kind === "incremental"))).toMatchObject({ inputTokens: 1300, outputTokens: 410 });
+    const revisions = await request(boardApp).get(`/api/status-cards/${created.body.id}/summary-revisions`);
+    expect(revisions.status).toBe(200);
+    expect(revisions.body.map((row: { revisionNumber: number }) => row.revisionNumber)).toEqual([2, 1]);
+    expect(revisions.body[0]).toMatchObject({
+      changeSummary: "Integrated the launch issue moving to done.",
+    });
+    expect(revisions.body[0].body).toContain("close the launch loop");
+    expect(revisions.body[1].body).toContain("unblock launch approval");
 
     const issueCountBeforeNoChangeTick = (await db.select().from(issues)).length;
     const dueAt = new Date(Date.now() - 1000);

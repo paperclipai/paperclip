@@ -48,13 +48,12 @@ export function rollupUpdates(updates: StatusCardUpdate[]): StatusCardRollup {
 }
 
 /**
- * Today-scoped rollup — only updates started since the start of the local
- * calendar day. Used for the drawer "Today" footer so it does not silently
- * report the lifetime total on any day after the card's first activity.
+ * Today-scoped rollup — only updates started since the start of the UTC
+ * calendar day, matching the server-side daily token cap boundary.
  */
-export function rollupUpdatesToday(updates: StatusCardUpdate[]): StatusCardRollup {
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
+export function rollupUpdatesToday(updates: StatusCardUpdate[], now = new Date()): StatusCardRollup {
+  const startOfDay = new Date(now);
+  startOfDay.setUTCHours(0, 0, 0, 0);
   const startMs = startOfDay.getTime();
   return accumulate(updates.filter((update) => new Date(update.startedAt).getTime() >= startMs));
 }

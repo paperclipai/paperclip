@@ -38,6 +38,16 @@ export function defaultSettingsValue(): StatusCardSettingsValue {
 const INTERVAL_OPTIONS = [5, 15, 30, 60];
 const DEBOUNCE_OPTIONS = [30, 60, 120, 300];
 
+/**
+ * The house-format instructions the Summarizer runs with by default (mirrors
+ * the server-side compile/update prompt). Shown read-only so the board can see
+ * what "Append" adds to, or "Replace" swaps out, without being able to edit it.
+ */
+const DEFAULT_SUMMARY_PROMPT =
+  "Rebuild the status summary from the matched issues (or patch the previous summary for incremental updates). " +
+  "Keep the Summarizer house format: start with **Decide:**, then **Recent work:**. " +
+  "Use few links, stay colloquial and action-oriented, and target roughly 300–500 output tokens.";
+
 type TriggerKey = keyof StatusCardRefreshPolicy["triggers"];
 
 const TRIGGER_ROWS: { key: TriggerKey; label: string; noisy?: boolean }[] = [
@@ -165,6 +175,14 @@ export function StatusCardSettingsForm({
             rows={3}
             className="text-sm"
           />
+          {value.instructionsMode !== "none" ? (
+            <div className="rounded-md border border-border bg-muted/40 px-3 py-2">
+              <p className="text-xs font-medium text-muted-foreground">
+                {value.instructionsMode === "append" ? "Added on top of the default prompt:" : "Replaces the default prompt:"}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">{DEFAULT_SUMMARY_PROMPT}</p>
+            </div>
+          ) : null}
         </section>
       ) : null}
 

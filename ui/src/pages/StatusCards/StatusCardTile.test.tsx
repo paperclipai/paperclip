@@ -92,6 +92,7 @@ function tile(card: StatusCardView) {
       companyId="company-1"
       onOpen={noop}
       onRefresh={noop}
+      onRecompile={noop}
       onEditInterest={noop}
       onOpenDebug={noop}
       onArchive={noop}

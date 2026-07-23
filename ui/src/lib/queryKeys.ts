@@ -123,6 +123,8 @@ export const queryKeys = {
       ["status-cards", companyId, archived ? "archived" : "active"] as const,
     detail: (id: string) => ["status-cards", "detail", id] as const,
     updates: (id: string) => ["status-cards", "detail", id, "updates"] as const,
+    summaryRevisions: (id: string) => ["status-cards", "detail", id, "summary-revisions"] as const,
+    dryRun: (id: string) => ["status-cards", "detail", id, "dry-run"] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,

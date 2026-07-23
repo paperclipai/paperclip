@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, type MouseEvent } from "react";
 import type { SummarySlotIssueRef } from "@paperclipai/shared";
-import { AlertTriangle, Loader2, MoreHorizontal, PauseCircle, RefreshCw } from "lucide-react";
+import { AlertTriangle, Loader2, MoreHorizontal, PauseCircle, RefreshCw, Wand2 } from "lucide-react";
 
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSummaryDraftStream } from "@/components/useSummaryDraftStream";
@@ -26,14 +26,24 @@ export interface StatusCardTileProps {
   companyId: string | null | undefined;
   onOpen: () => void;
   onRefresh: () => void;
+  onRecompile: () => void;
   onEditInterest: () => void;
   onOpenDebug: () => void;
   onArchive: () => void;
   refreshPending?: boolean;
+  recompilePending?: boolean;
 }
 
 function StateDot({ className }: { className: string }) {
   return <span className={cn("mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full", className)} aria-hidden="true" />;
+}
+
+/** Stop a nested control's click from also triggering the card-open handler. */
+function stopClick(handler: () => void) {
+  return (event: MouseEvent) => {
+    event.stopPropagation();
+    handler();
+  };
 }
 
 export function StatusCardTile({
@@ -41,10 +51,12 @@ export function StatusCardTile({
   companyId,
   onOpen,
   onRefresh,
+  onRecompile,
   onEditInterest,
   onOpenDebug,
   onArchive,
   refreshPending,
+  recompilePending,
 }: StatusCardTileProps) {
   const lifecycle = deriveStatusCardLifecycle(card);
   const presentation = STATUS_CARD_LIFECYCLE_PRESENTATION[lifecycle];
@@ -68,8 +80,17 @@ export function StatusCardTile({
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
       className={cn(
-        "group flex h-72 flex-col rounded-lg border border-border bg-card text-card-foreground transition-colors",
+        "group flex h-72 cursor-pointer flex-col rounded-lg border border-border bg-card text-card-foreground transition-colors hover:border-muted-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         presentation.dashedBorder && "border-dashed",
       )}
       data-testid="status-card-tile"
@@ -78,40 +99,41 @@ export function StatusCardTile({
       {/* Header */}
       <div className="flex items-start gap-2 px-4 pt-4">
         {lifecycle === "compiling" ? null : <StateDot className={presentation.dotClassName} />}
-        <button
-          type="button"
-          onClick={onOpen}
-          className="min-w-0 flex-1 text-left"
+        <span
+          className={cn(
+            "line-clamp-1 min-w-0 flex-1 text-sm font-semibold",
+            lifecycle === "compiling" && "text-muted-foreground",
+          )}
           title={card.title ?? card.interestPrompt}
         >
-          <span
-            className={cn(
-              "line-clamp-1 text-sm font-semibold",
-              lifecycle === "compiling" && "text-muted-foreground",
-            )}
-          >
-            {card.title ?? "New card"}
-          </span>
-        </button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="-mr-1 -mt-1 h-7 w-7 text-muted-foreground" aria-label="Card actions">
-              <MoreHorizontal className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onOpen}>Open detail</DropdownMenuItem>
-            <DropdownMenuItem onSelect={onRefresh} disabled={refreshPending || lifecycle === "updating"}>
-              Refresh now
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onEditInterest}>Edit interest &amp; settings</DropdownMenuItem>
-            <DropdownMenuItem onSelect={onOpenDebug}>Query debug</DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={onArchive} variant="destructive">
-              Archive
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+          {card.title ?? "New card"}
+        </span>
+        <div onClick={(event) => event.stopPropagation()}>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="-mr-1 -mt-1 h-7 w-7 text-muted-foreground" aria-label="Card actions">
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={onOpen}>Open detail</DropdownMenuItem>
+              <DropdownMenuItem onSelect={onRefresh} disabled={refreshPending || lifecycle === "updating"}>
+                Refresh now
+              </DropdownMenuItem>
+              {lifecycle === "compiling" || lifecycle === "error" ? (
+                <DropdownMenuItem onSelect={onRecompile} disabled={recompilePending}>
+                  Build query now
+                </DropdownMenuItem>
+              ) : null}
+              <DropdownMenuItem onSelect={onEditInterest}>Edit interest &amp; settings</DropdownMenuItem>
+              <DropdownMenuItem onSelect={onOpenDebug}>Query debug</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={onArchive} variant="destructive">
+                Archive
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
       {/* State banner */}
@@ -123,6 +145,17 @@ export function StatusCardTile({
               <span>Agent is building your query…</span>
             </div>
             <p className="mt-1 line-clamp-2 text-muted-foreground">“{card.interestPrompt}”</p>
+            {/* If the compile task stalled (agent run died mid-build) the card can
+                sit here forever, so always offer a manual re-kick. */}
+            <button
+              type="button"
+              onClick={stopClick(onRecompile)}
+              disabled={recompilePending}
+              className="mt-2 inline-flex items-center gap-1.5 font-medium text-foreground underline-offset-2 hover:underline disabled:opacity-60"
+            >
+              <Wand2 className={cn("h-3.5 w-3.5", recompilePending && "animate-pulse")} />
+              {recompilePending ? "Starting…" : "Build query now"}
+            </button>
           </div>
         ) : null}
 
@@ -143,7 +176,7 @@ export function StatusCardTile({
         {lifecycle === "stale" ? (
           <button
             type="button"
-            onClick={onRefresh}
+            onClick={stopClick(onRefresh)}
             disabled={refreshPending}
             className="flex w-full items-center justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-amber-500/10 disabled:opacity-60"
           >
@@ -161,10 +194,10 @@ export function StatusCardTile({
               Last update failed
             </span>
             <span className="flex shrink-0 items-center gap-3">
-              <button type="button" onClick={onRefresh} disabled={refreshPending} className="font-medium text-destructive hover:underline disabled:opacity-60">
+              <button type="button" onClick={stopClick(onRefresh)} disabled={refreshPending} className="font-medium text-destructive hover:underline disabled:opacity-60">
                 Retry
               </button>
-              <button type="button" onClick={onOpen} className="text-muted-foreground hover:underline">
+              <button type="button" onClick={stopClick(onOpen)} className="text-muted-foreground hover:underline">
                 Details
               </button>
             </span>
@@ -222,7 +255,7 @@ export function StatusCardTile({
             variant="ghost"
             size="icon"
             className="h-7 w-7 shrink-0 text-muted-foreground"
-            onClick={onRefresh}
+            onClick={stopClick(onRefresh)}
             disabled={refreshPending}
             aria-label="Refresh card"
           >

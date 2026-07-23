@@ -78,7 +78,13 @@ export function StatusCards() {
     mutationFn: (id: string) => statusCardsApi.refresh(id),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: () => setActionError("Manual refresh will be available when the update engine (P4) is enabled."),
+    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not refresh the card."),
+  });
+  const recompileMutation = useMutation({
+    mutationFn: (id: string) => statusCardsApi.recompile(id),
+    onMutate: () => setActionError(null),
+    onSuccess: () => invalidateLists(),
+    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not rebuild the query."),
   });
   const archiveMutation = useMutation({
     mutationFn: (id: string) => statusCardsApi.patch(id, { archived: true }),
@@ -148,7 +154,7 @@ export function StatusCards() {
           onAction={() => setCreateOpen(true)}
         />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2">
           {activeCards.map((card) => (
             <StatusCardTile
               key={card.id}
@@ -156,10 +162,12 @@ export function StatusCards() {
               companyId={selectedCompanyId}
               onOpen={() => openDetail(card.id)}
               onRefresh={() => refreshMutation.mutate(card.id)}
+              onRecompile={() => recompileMutation.mutate(card.id)}
               onEditInterest={() => openDetail(card.id)}
               onOpenDebug={() => setDebugCardId(card.id)}
               onArchive={() => archiveMutation.mutate(card.id)}
               refreshPending={refreshMutation.isPending && refreshMutation.variables === card.id}
+              recompilePending={recompileMutation.isPending && recompileMutation.variables === card.id}
             />
           ))}
         </div>

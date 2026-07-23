@@ -213,6 +213,13 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     res.json(await service.listUpdates(card.id));
   });
 
+  router.get("/status-cards/:id/summary-revisions", async (req, res) => {
+    await assertStatusCardsEnabled();
+    const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
+    if (!card) return;
+    res.json(await service.listSummaryRevisions(card));
+  });
+
   router.post("/status-cards/:id/recompile", async (req, res) => {
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");

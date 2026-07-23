@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   agents,
   costEvents,
@@ -281,6 +281,22 @@ export function statusCardService(db: Db) {
     return db.select().from(statusCardUpdates).where(eq(statusCardUpdates.cardId, cardId)).orderBy(desc(statusCardUpdates.startedAt));
   }
 
+  async function listSummaryRevisions(card: Pick<StatusCardRow, "companyId" | "documentId">) {
+    if (!card.documentId) return [];
+    return db
+      .select({
+        id: documentRevisions.id,
+        revisionNumber: documentRevisions.revisionNumber,
+        title: documentRevisions.title,
+        body: documentRevisions.body,
+        changeSummary: documentRevisions.changeSummary,
+        createdAt: documentRevisions.createdAt,
+      })
+      .from(documentRevisions)
+      .where(and(eq(documentRevisions.documentId, card.documentId), eq(documentRevisions.companyId, card.companyId)))
+      .orderBy(desc(documentRevisions.revisionNumber));
+  }
+
   async function requestCompile(cardId: string, actor: StatusCardActor) {
     const card = await getById(cardId);
     if (!card) throw notFound("Status card not found");
@@ -403,6 +419,26 @@ export function statusCardService(db: Db) {
         queryVersion,
         changeSummary: input.changeSummary,
       });
+      const pendingSummary = await tx
+        .select({ id: statusCardUpdates.id })
+        .from(statusCardUpdates)
+        .where(and(
+          eq(statusCardUpdates.generationIssueId, input.generationIssueId),
+          ne(statusCardUpdates.kind, "compile"),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!pendingSummary) {
+        await tx.insert(statusCardUpdates).values({
+          cardId: current.id,
+          kind: "full",
+          trigger: "manual",
+          generationIssueId: input.generationIssueId,
+          runId: actor.runId,
+          status: "running",
+          queryVersion,
+        });
+      }
       return next;
     });
   }
@@ -563,7 +599,7 @@ export function statusCardService(db: Db) {
         generationIssueId: generationIssue!.id,
         changes: changes.map(({ issueId, identifier, from, to, changeKind }) => ({ issueId, identifier, from, to, changeKind })),
         queryVersion: card.queryVersion,
-        status: "ok",
+        status: "running",
       });
     }
     return { card: next, generatingIssue: generationIssue!, alreadyGenerating: deduplicated, enqueued: true, kind, changes };
@@ -678,6 +714,7 @@ export function statusCardService(db: Db) {
       const updateValues = {
         runId: actor.runId,
         finishedAt: now,
+        status: "ok" as const,
         model: input.model ?? null,
         queryVersion: current.queryVersion,
         changeSummary: input.changeSummary,
@@ -693,7 +730,6 @@ export function statusCardService(db: Db) {
           kind: updateKind,
           trigger,
           generationIssueId: input.generationIssueId,
-          status: "ok",
           ...updateValues,
         });
       }
@@ -705,5 +741,5 @@ export function statusCardService(db: Db) {
     return Promise.all(card.queries.map(async (query) => ({ query, result: await searchSvc.search(card.companyId, query) })));
   }
 
-  return { list, getById, hydrate, create, update, remove, listUpdates, requestCompile, requestRefresh, tickDueStatusCards, writeQuery, writeSummary, dryRun };
+  return { list, getById, hydrate, create, update, remove, listUpdates, listSummaryRevisions, requestCompile, requestRefresh, tickDueStatusCards, writeQuery, writeSummary, dryRun };
 }

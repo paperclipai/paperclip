@@ -17,7 +17,7 @@ export const statusCardInstructionsModeSchema = z.enum(["none", "append", "repla
 export const statusCardStateSchema = z.enum(["compiling", "active", "error", "paused_budget", "paused_hours"]);
 export const statusCardUpdateKindSchema = z.enum(["compile", "full", "incremental"]);
 export const statusCardUpdateTriggerSchema = z.enum(["manual", "interval", "reactive", "restore"]);
-export const statusCardUpdateStatusSchema = z.enum(["ok", "failed"]);
+export const statusCardUpdateStatusSchema = z.enum(["running", "ok", "failed"]);
 
 export const statusCardRefreshTriggersSchema = z.object({
   statusTransitions: z.boolean().default(true),
@@ -133,6 +133,15 @@ export const statusCardUpdateSchema = z.object({
   error: z.string().nullable(),
 });
 
+export const statusCardSummaryRevisionSchema = z.object({
+  id: z.string().uuid(),
+  revisionNumber: z.number().int().positive(),
+  title: z.string().nullable(),
+  body: z.string(),
+  changeSummary: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+
 export const listStatusCardsQuerySchema = z.object({
   archived: z.preprocess(
     (value) => (value === "true" ? true : value === "false" ? false : value),
@@ -183,6 +192,7 @@ export const writeStatusCardSummarySchema = z.object({
 export type StatusCard = z.infer<typeof statusCardSchema>;
 export type StatusCardRefreshPolicy = z.infer<typeof statusCardRefreshPolicySchema>;
 export type StatusCardUpdate = z.infer<typeof statusCardUpdateSchema>;
+export type StatusCardSummaryRevision = z.infer<typeof statusCardSummaryRevisionSchema>;
 export type CreateStatusCard = z.infer<typeof createStatusCardSchema>;
 export type PatchStatusCard = z.infer<typeof patchStatusCardSchema>;
 export type RefreshStatusCard = z.infer<typeof refreshStatusCardSchema>;

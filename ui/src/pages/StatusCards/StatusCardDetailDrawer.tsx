@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { StatusCardUpdate, SummarySlotIssueRef } from "@paperclipai/shared";
-import { History, Loader2, RefreshCw } from "lucide-react";
+import type { CompanySearchIssueSummary, StatusCardUpdate, SummarySlotIssueRef } from "@paperclipai/shared";
+import { History, Loader2, RefreshCw, Wand2 } from "lucide-react";
 
-import { statusCardsApi } from "@/api/statusCards";
+import { statusCardsApi, type StatusCardDryRun } from "@/api/statusCards";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSummaryDraftStream } from "@/components/useSummaryDraftStream";
 import { Badge } from "@/components/ui/badge";
@@ -72,6 +72,16 @@ export function StatusCardDetailDrawer({
     queryFn: () => statusCardsApi.updates(card!.id),
     enabled: Boolean(card && open),
   });
+  const summaryRevisionsQuery = useQuery({
+    queryKey: card ? queryKeys.statusCards.summaryRevisions(card.id) : ["status-cards", "detail", "none", "summary-revisions"],
+    queryFn: () => statusCardsApi.summaryRevisions(card!.id),
+    enabled: Boolean(card && open && card.documentId),
+  });
+  const dryRunQuery = useQuery({
+    queryKey: card ? queryKeys.statusCards.dryRun(card.id) : ["status-cards", "detail", "none", "dry-run"],
+    queryFn: () => statusCardsApi.dryRun(card!.id),
+    enabled: Boolean(card && open && tab === "watched" && card.queries.length > 0),
+  });
 
   const lifecycle = card ? deriveStatusCardLifecycle(card) : "fresh";
   const generatingIssue = useMemo<SummarySlotIssueRef | null>(
@@ -91,6 +101,16 @@ export function StatusCardDetailDrawer({
       await queryClient.invalidateQueries({ queryKey: queryKeys.statusCards.list(card.companyId, false) });
     },
     onError: (err) => setActionError(err instanceof Error ? err.message : "Could not refresh the card."),
+  });
+
+  const recompileMutation = useMutation({
+    mutationFn: () => statusCardsApi.recompile(card!.id),
+    onMutate: () => setActionError(null),
+    onSuccess: async () => {
+      if (!card) return;
+      await queryClient.invalidateQueries({ queryKey: queryKeys.statusCards.list(card.companyId, false) });
+    },
+    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not rebuild the query."),
   });
 
   const saveSettingsMutation = useMutation({
@@ -115,15 +135,22 @@ export function StatusCardDetailDrawer({
   const todayRollup = rollupUpdatesToday(updates);
 
   // Each successful summary-producing update is a summary revision (reuses the
-  // SummarySlotCard revision-history pattern). The full per-revision summary
-  // body lands with the summary-document store (P4); until then a historical
-  // pick surfaces that revision's change summary + integrated changes, which
-  // are real P1 ledger data.
+  // SummarySlotCard revision-history pattern). The finishedAt check excludes
+  // updates whose generation is still in flight — their document revision does
+  // not exist yet.
   const summaryRevisions = updates.filter(
-    (update) => update.status === "ok" && (update.kind === "full" || update.kind === "incremental"),
+    (update) => update.status === "ok" && update.finishedAt && (update.kind === "full" || update.kind === "incremental"),
   );
   const selectedRevision = selectedRevisionId
     ? summaryRevisions.find((update) => update.id === selectedRevisionId) ?? null
+    : null;
+  // Updates (newest-first, completed content updates only) correspond 1:1 with
+  // the card's summary-document revisions (newest-first): writeSummary creates
+  // both in one transaction. Positional matching recovers the full summary
+  // body for a historical pick; the change-summary fallback covers any gap.
+  const documentRevisions = summaryRevisionsQuery.data ?? [];
+  const selectedRevisionBody = selectedRevision
+    ? documentRevisions[summaryRevisions.indexOf(selectedRevision)]?.body ?? null
     : null;
   const latestRevisionNumber = summaryRevisions.length;
   const revisionNumberOf = (update: StatusCardUpdate) => latestRevisionNumber - summaryRevisions.indexOf(update);
@@ -140,15 +167,27 @@ export function StatusCardDetailDrawer({
             <span className={cn("inline-block h-2.5 w-2.5 shrink-0 rounded-full", presentation.dotClassName)} aria-hidden="true" />
             <SheetTitle className="min-w-0 flex-1 truncate text-lg">{card.title ?? "Untitled card"}</SheetTitle>
             <Badge variant="outline">{presentation.label}</Badge>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => refreshMutation.mutate()}
-              disabled={refreshMutation.isPending || lifecycle === "updating"}
-            >
-              <RefreshCw className={cn("h-3.5 w-3.5", refreshMutation.isPending && "animate-spin")} />
-              Refresh
-            </Button>
+            {lifecycle === "compiling" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => recompileMutation.mutate()}
+                disabled={recompileMutation.isPending}
+              >
+                <Wand2 className={cn("h-3.5 w-3.5", recompileMutation.isPending && "animate-pulse")} />
+                Build query
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => refreshMutation.mutate()}
+                disabled={refreshMutation.isPending || lifecycle === "updating"}
+              >
+                <RefreshCw className={cn("h-3.5 w-3.5", refreshMutation.isPending && "animate-spin")} />
+                Refresh
+              </Button>
+            )}
           </div>
           <p className="text-xs text-muted-foreground">
             {card.lastGeneratedAt ? `Updated ${relativeTime(card.lastGeneratedAt)}` : "No summary yet"} ·{" "}
@@ -163,7 +202,7 @@ export function StatusCardDetailDrawer({
         <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col gap-0">
           <TabsList variant="line" className="w-full justify-start gap-4 border-b border-border px-4">
             <TabsTrigger value="summary">Summary</TabsTrigger>
-            <TabsTrigger value="updates">Updates ({updates.length})</TabsTrigger>
+            <TabsTrigger value="history">History</TabsTrigger>
             <TabsTrigger value="watched">Watched issues{watchedCount !== null ? ` (${watchedCount})` : ""}</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
@@ -176,26 +215,11 @@ export function StatusCardDetailDrawer({
 
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             <TabsContent value="summary" className="mt-0 space-y-5">
+              {/* Revision picker lives on the right, unpilled. A single-revision
+                  card shows a plain label; multi-revision cards get a dropdown
+                  capped at the 30 most recent revisions. */}
               {(hasSummary || summaryRevisions.length > 0) && lifecycle !== "compiling" ? (
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline">
-                      {selectedRevision
-                        ? `Revision ${revisionNumberOf(selectedRevision)}`
-                        : latestRevisionNumber > 0
-                          ? `Revision ${latestRevisionNumber} · latest`
-                          : "Latest"}
-                    </Badge>
-                    {selectedRevision ? (
-                      <button
-                        type="button"
-                        onClick={() => setSelectedRevisionId(null)}
-                        className="text-xs text-muted-foreground underline hover:text-foreground"
-                      >
-                        Back to latest
-                      </button>
-                    ) : null}
-                  </div>
+                <div className="flex items-center justify-end gap-2">
                   {summaryRevisions.length > 1 ? (
                     <Select
                       value={selectedRevisionId ?? "__latest__"}
@@ -207,10 +231,10 @@ export function StatusCardDetailDrawer({
                       </SelectTrigger>
                       <SelectContent align="end" position="popper">
                         <SelectItem value="__latest__" className="text-xs">
-                          Latest (Rev {latestRevisionNumber})
+                          Revision {latestRevisionNumber} · latest
                         </SelectItem>
                         <SelectSeparator />
-                        {summaryRevisions.map((update) => (
+                        {summaryRevisions.slice(0, 30).map((update) => (
                           <SelectItem
                             key={update.id}
                             value={update.id}
@@ -222,6 +246,8 @@ export function StatusCardDetailDrawer({
                         ))}
                       </SelectContent>
                     </Select>
+                  ) : latestRevisionNumber > 0 ? (
+                    <span className="text-xs text-muted-foreground">Revision {latestRevisionNumber} · latest</span>
                   ) : null}
                 </div>
               ) : null}
@@ -234,17 +260,21 @@ export function StatusCardDetailDrawer({
                     Revision {revisionNumberOf(selectedRevision)} · {updateKindLabel(selectedRevision.kind)} ·{" "}
                     {relativeTime(selectedRevision.startedAt)}
                   </p>
-                  {selectedRevision.changeSummary ? (
-                    <MarkdownBody className="text-sm leading-7">{selectedRevision.changeSummary}</MarkdownBody>
+                  {selectedRevisionBody ? (
+                    <MarkdownBody className="text-sm leading-7">{selectedRevisionBody}</MarkdownBody>
+                  ) : selectedRevision.changeSummary ? (
+                    <>
+                      <MarkdownBody className="text-sm leading-7">{selectedRevision.changeSummary}</MarkdownBody>
+                      <p className="text-xs text-muted-foreground/70">
+                        The full summary text for this revision is unavailable — showing its change summary. The
+                        integrated changes below are the live ledger for this revision.
+                      </p>
+                    </>
                   ) : (
                     <p className="text-sm text-muted-foreground">
                       No change summary was recorded for this revision.
                     </p>
                   )}
-                  <p className="text-xs text-muted-foreground/70">
-                    The full summary text for past revisions renders once the summary-document history store lands (P4).
-                    The integrated changes below are the live ledger for this revision.
-                  </p>
                 </div>
               ) : hasSummary ? (
                 <MarkdownBody className="text-sm leading-7">{card.summaryBody!}</MarkdownBody>
@@ -267,74 +297,73 @@ export function StatusCardDetailDrawer({
                   </div>
                 </section>
               ) : null}
-
-              <section className="space-y-1 border-t border-border pt-4">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">History &amp; cost</h3>
-                {updates.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No updates recorded yet.</p>
-                ) : (
-                  <>
-                    {updates.slice(0, 4).map((update) => (
-                      <p key={update.id} className="text-xs text-muted-foreground">
-                        {relativeTime(update.startedAt)} · {updateKindLabel(update.kind)} ·{" "}
-                        {formatTokenSplit(update.inputTokens, update.outputTokens)} · {formatCents(update.costCents)}
-                        {update.status === "failed" ? " · failed" : ""}
-                      </p>
-                    ))}
-                    <p className="pt-1 text-xs text-foreground">
-                      Today: {todayRollup.updateCount}{" "}
-                      {todayRollup.updateCount === 1 ? "update" : "updates"} ·{" "}
-                      {formatTokens(todayRollup.totalTokens)} · {formatCents(todayRollup.totalCostCents)}
-                      {card.refreshPolicy.dailyTokenCap ? ` · daily cap ${formatTokens(card.refreshPolicy.dailyTokenCap)}` : ""}
-                    </p>
-                  </>
-                )}
-              </section>
             </TabsContent>
 
-            <TabsContent value="updates" className="mt-0 space-y-2">
+            <TabsContent value="history" className="mt-0 space-y-3">
+              {/* History and cost live together: the today rollup up top, then
+                  every recorded update (each update is one summary revision). */}
               {updatesQuery.isLoading ? (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Loading updates…
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading history…
                 </div>
               ) : updates.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No updates recorded yet.</p>
               ) : (
-                updates.map((update) => (
-                  <div key={update.id} className="rounded-md border border-border p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="flex items-center gap-2 text-sm font-medium">
-                        {updateKindLabel(update.kind)}
-                        <Badge variant={update.status === "failed" ? "destructive" : "secondary"}>
-                          {update.status === "failed" ? "failed" : update.trigger}
-                        </Badge>
-                      </span>
-                      <span className="text-xs text-muted-foreground" title={formatDateTime(update.startedAt)}>
-                        {relativeTime(update.startedAt)}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {formatTokenSplit(update.inputTokens, update.outputTokens)} · {formatCents(update.costCents)}
-                      {update.model ? ` · ${update.model}` : ""}
-                      {update.changes.length > 0 ? ` · ${update.changes.length} changes` : ""}
-                    </p>
-                    {update.error ? <p className="mt-1 text-xs text-destructive">{update.error}</p> : null}
+                <>
+                  <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-foreground">
+                    Today: {todayRollup.updateCount}{" "}
+                    {todayRollup.updateCount === 1 ? "update" : "updates"} ·{" "}
+                    {formatTokens(todayRollup.totalTokens)} · {formatCents(todayRollup.totalCostCents)}
+                    {card.refreshPolicy.dailyTokenCap ? ` · daily cap ${formatTokens(card.refreshPolicy.dailyTokenCap)}` : ""}
                   </div>
-                ))
+                  {updates.map((update) => (
+                    <div key={update.id} className="rounded-md border border-border p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="flex items-center gap-2 text-sm font-medium">
+                          {updateKindLabel(update.kind)}
+                          <Badge variant={update.status === "failed" ? "destructive" : "secondary"}>
+                            {update.status === "ok" ? update.trigger : update.status}
+                          </Badge>
+                        </span>
+                        <span className="text-xs text-muted-foreground" title={formatDateTime(update.startedAt)}>
+                          {relativeTime(update.startedAt)}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {formatTokenSplit(update.inputTokens, update.outputTokens)} · {formatCents(update.costCents)}
+                        {update.model ? ` · ${update.model}` : ""}
+                        {update.changes.length > 0 ? ` · ${update.changes.length} changes` : ""}
+                      </p>
+                      {update.error ? <p className="mt-1 text-xs text-destructive">{update.error}</p> : null}
+                    </div>
+                  ))}
+                </>
               )}
             </TabsContent>
 
             <TabsContent value="watched" className="mt-0 space-y-3">
               <p className="text-sm text-muted-foreground">
-                This card watches issues matched by its compiled query{watchedCount !== null ? ` (${watchedCount} right now)` : ""}.
-              </p>
-              <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                The live matched-issue list is provided by the P2 compile pipeline. Open{" "}
+                This card watches issues matched by its compiled query{watchedCount !== null ? ` (${watchedCount} right now)` : ""}. Open{" "}
                 <button type="button" onClick={onOpenDebug} className="underline hover:text-foreground">
                   Query debug
                 </button>{" "}
-                to inspect the compiled query.
-              </div>
+                to inspect or edit the query itself.
+              </p>
+              {card.queries.length === 0 ? (
+                <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+                  The query has not compiled yet — matched issues appear here once compilation finishes.
+                </div>
+              ) : dryRunQuery.isLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Matching issues…
+                </div>
+              ) : dryRunQuery.isError ? (
+                <InlineBanner tone="danger" title="Could not load matched issues">
+                  {dryRunQuery.error instanceof Error ? dryRunQuery.error.message : "Try again."}
+                </InlineBanner>
+              ) : (
+                <MatchedIssueList queries={dryRunQuery.data?.queries ?? []} />
+              )}
             </TabsContent>
 
             <TabsContent value="settings" className="mt-0 space-y-5">
@@ -350,6 +379,47 @@ export function StatusCardDetailDrawer({
         </Tabs>
       </SheetContent>
     </Sheet>
+  );
+}
+
+/**
+ * Live matched-issue list for the Watched tab, fed by the dry-run endpoint.
+ * Queries in the compiled array are a union, so issues matched by more than
+ * one query are deduplicated by id.
+ */
+function MatchedIssueList({ queries }: { queries: StatusCardDryRun["queries"] }) {
+  const seen = new Set<string>();
+  const matched: CompanySearchIssueSummary[] = [];
+  for (const { result } of queries) {
+    for (const item of result.results) {
+      if (!item.issue || seen.has(item.issue.id)) continue;
+      seen.add(item.issue.id);
+      matched.push(item.issue);
+    }
+  }
+  if (matched.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+        The compiled query matches no issues right now.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      {matched.map((issue) => (
+        <div key={issue.id} className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs">
+          <Link
+            to={`/issues/${issue.identifier ?? issue.id}`}
+            className="shrink-0 font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            {issue.identifier ?? issue.id.slice(0, 8)}
+          </Link>
+          <IssueStatusBadge status={issue.status} />
+          <span className="min-w-0 flex-1 truncate">{issue.title}</span>
+          <span className="shrink-0 text-muted-foreground">{relativeTime(issue.updatedAt)}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 

@@ -84,7 +84,7 @@ export const statusCardUpdates = pgTable(
     changeSummary: text("change_summary"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
-    status: text("status").$type<"ok" | "failed">().notNull(),
+    status: text("status").$type<"running" | "ok" | "failed">().notNull(),
     error: text("error"),
   },
   (table) => ({
