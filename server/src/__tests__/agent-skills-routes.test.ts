@@ -275,11 +275,28 @@ describe.sequential("agent skill routes", () => {
         ),
     );
     mockCompanySkillService.resolveRequestedSkillEntries.mockImplementation(
-      async (_companyId: string, requested: Array<{ key: string; versionId?: string | null }>) =>
-        requested.map((entry) => ({
-          key: entry.key === "paperclip" ? "paperclipai/paperclip/paperclip" : entry.key,
-          versionId: entry.versionId ?? null,
-        })),
+      async (
+        _companyId: string,
+        requested: Array<{ key: string; versionId?: string | null }>,
+        options: { tolerateUnknownReferences?: boolean } = {},
+      ) => {
+        const knownKeys = new Set(["paperclip", "paperclipai/paperclip/paperclip"]);
+        const resolved: Array<{ key: string; versionId: string | null }> = [];
+        const unresolved: string[] = [];
+        for (const entry of requested) {
+          if (knownKeys.has(entry.key)) {
+            resolved.push({
+              key: entry.key === "paperclip" ? "paperclipai/paperclip/paperclip" : entry.key,
+              versionId: entry.versionId ?? null,
+            });
+          } else if (options.tolerateUnknownReferences) {
+            unresolved.push(entry.key);
+          } else {
+            resolved.push({ key: entry.key, versionId: entry.versionId ?? null });
+          }
+        }
+        return { resolved, unresolved };
+      },
     );
     mockAdapter.listSkills.mockResolvedValue({
       adapterType: "claude_local",
@@ -542,6 +559,35 @@ describe.sequential("agent skill routes", () => {
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: expect.objectContaining({
             desiredSkills: ["paperclipai/paperclip/paperclip"],
+          }),
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("tolerates and preserves an unresolvable desired skill key when syncing", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: ["paperclip", "not-a-real-skill"] }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.resolveRequestedSkillEntries).toHaveBeenCalledWith(
+      "company-1",
+      expect.any(Array),
+      expect.objectContaining({ tolerateUnknownReferences: true }),
+    );
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: expect.arrayContaining([
+              "paperclipai/paperclip/paperclip",
+              "not-a-real-skill",
+            ]),
           }),
         }),
       }),

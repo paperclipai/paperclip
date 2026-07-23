@@ -672,22 +672,31 @@ describeEmbeddedPostgres("companySkillService.list", () => {
 
     await expect(svc.resolveRequestedSkillEntries(companyId, [
       "pinned-skill",
-    ])).resolves.toEqual([
-      { key: `company/${companyId}/pinned-skill`, versionId: null },
-    ]);
+    ])).resolves.toEqual({
+      resolved: [{ key: `company/${companyId}/pinned-skill`, versionId: null }],
+      unresolved: [],
+    });
     await expect(svc.resolveRequestedSkillEntries(companyId, [
       { key: "pinned-skill", versionId: null },
-    ])).resolves.toEqual([
-      { key: `company/${companyId}/pinned-skill`, versionId: null },
-    ]);
+    ])).resolves.toEqual({
+      resolved: [{ key: `company/${companyId}/pinned-skill`, versionId: null }],
+      unresolved: [],
+    });
     await expect(svc.resolveRequestedSkillEntries(companyId, [
       { key: "pinned-skill", versionId: version.id },
-    ])).resolves.toEqual([
-      { key: `company/${companyId}/pinned-skill`, versionId: version.id },
-    ]);
+    ])).resolves.toEqual({
+      resolved: [{ key: `company/${companyId}/pinned-skill`, versionId: version.id }],
+      unresolved: [],
+    });
     await expect(svc.resolveRequestedSkillEntries(companyId, [
       { key: "other-skill", versionId: version.id },
     ])).rejects.toMatchObject({ status: 422 });
+    await expect(svc.resolveRequestedSkillEntries(companyId, [
+      { key: "not-a-real-skill", versionId: null },
+    ], { tolerateUnknownReferences: true })).resolves.toEqual({
+      resolved: [],
+      unresolved: ["not-a-real-skill"],
+    });
   });
 
   it("preserves missing local-path skills that active agents still desire", async () => {
