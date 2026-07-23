@@ -36,8 +36,8 @@ import {
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
-import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
-import { performSyncIn, performSyncOut, base64CapBytes, type PodExec } from "./file-sync.js";
+import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js";
+import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
   deriveCompanySlug,
@@ -127,7 +127,7 @@ function resolveSyncRemoteDir(lease: PluginEnvironmentLease): string {
 
 /**
  * Resolve the running Sandbox-CR pod for a native file-sync operation and return
- * a `PodExec` bound to it, exactly like `onEnvironmentExecute` resolves its exec
+ * a `PodStreamExec` bound to it, exactly like `onEnvironmentExecute` resolves its exec
  * target: parse config, derive the namespace, wait for the Sandbox pod to reach
  * Ready (cached per lease), and find the pod name. The `job` backend carries no
  * file path and is out of scope — file sync is only supported on `sandbox-cr`.
@@ -136,7 +136,7 @@ async function resolveSyncPodExec(
   params:
     | PluginEnvironmentSyncInParams
     | PluginEnvironmentSyncOutParams,
-): Promise<{ exec: PodExec; timeoutMs: number }> {
+): Promise<{ exec: PodStreamExec; timeoutMs: number }> {
   const { lease } = params;
   if (!lease.providerLeaseId) {
     throw new Error("Kubernetes file sync requires a provider lease ID.");
@@ -183,23 +183,15 @@ async function resolveSyncPodExec(
     throw new Error("Kubernetes file sync could not resolve the Sandbox pod name.");
   }
 
-  // Bound host-side stdout AND stderr accumulation to the same base64 cap the
-  // transport enforces: on syncOut the pod authors both streams and could
-  // otherwise emit unbounded bytes on either channel, exhausting the worker (see
-  // execInPod's maxStdoutBytes/maxStderrBytes).
-  const maxStreamBytes = base64CapBytes();
-  const exec: PodExec = (command, stdin, execTimeoutMs) =>
-    execInPod(
-      kc,
-      namespace,
-      podName,
-      "agent",
-      command,
-      stdin,
-      execTimeoutMs ?? timeoutMs,
-      maxStreamBytes,
-      maxStreamBytes,
-    );
+  // Bind the streaming exec: raw tar bytes move over stdin/stdout straight to and
+  // from a host file, so neither side buffers the whole payload. The file-sync
+  // module bounds the untrusted pod's stdout with its own streamed-bytes disk
+  // guard and passes the stderr cap through `io`.
+  const exec: PodStreamExec = (command, io) =>
+    execInPodStreaming(kc, namespace, podName, "agent", command, {
+      ...io,
+      timeoutMs: io.timeoutMs ?? timeoutMs,
+    });
   return { exec, timeoutMs };
 }
 
@@ -964,8 +956,8 @@ const plugin = definePlugin({
   // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)
   // makes the worker advertise `environmentSyncIn`/`environmentSyncOut`, so the
   // host runner routes workspace/asset transfers through a single pod exec per
-  // operation (host tar → base64 over the exec stdin → in-pod `base64 -d | tar -x`
-  // → stage-then-atomic-`mv -f`) instead of the base64-over-exec chunk loop.
+  // operation (host tar streamed over the exec stdin → in-pod `head -c <N> | tar
+  // -x` → stage-then-atomic-`mv -f`) instead of the base64-over-exec chunk loop.
   // Only the sandbox-cr backend is supported; the job backend carries no file
   // path. Providers that do not define these keep the byte-identical fallback.
   async onEnvironmentSyncIn(

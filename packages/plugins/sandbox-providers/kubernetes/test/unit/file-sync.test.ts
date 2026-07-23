@@ -7,64 +7,77 @@ import {
   assertConfinedSandboxPath,
   performSyncIn,
   performSyncOut,
-  type PodExec,
+  type PodStreamExec,
 } from "../../src/file-sync.js";
 
 // ---------------------------------------------------------------------------
 // Test harness
 //
-// The K8s hooks transfer files over a single `execInPod` per operation. In
-// production that exec streams bytes over the pod's exec WebSocket; here the
-// injected `PodExec` runs the generated `sh -c` script against the REAL host
-// shell, using a host temp dir as the stand-in "sandbox" workspace root. This
-// exercises the actual tar/base64/mv/realpath command shapes end-to-end (a true
-// round-trip) while recording every exec so we can assert the single-exec
-// contract and command shape.
+// The K8s hooks transfer files over a single streaming exec per operation. In
+// production that exec streams raw tar bytes over the pod's exec WebSocket
+// (stdin from a host file, stdout into a host file); here the injected
+// `PodStreamExec` runs the generated `sh -c` script against the REAL host shell,
+// piping the caller's `stdin` Readable into the child and the child's stdout into
+// the caller's `stdout` Writable, using a host temp dir as the stand-in "sandbox"
+// workspace root. This exercises the actual tar/head/mv/realpath command shapes
+// end-to-end (a true round-trip) while recording every exec so we can assert the
+// single-exec contract and command shape.
 // ---------------------------------------------------------------------------
 
 interface RecordedCall {
   command: string[];
   script: string;
-  stdin: Buffer | null;
 }
 
-function makeRealExec(): { exec: PodExec; calls: RecordedCall[] } {
+function makeRealExec(): { exec: PodStreamExec; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
-  const exec: PodExec = async (command, stdin) => {
-    const stdinBuf =
-      stdin == null ? null : Buffer.isBuffer(stdin) ? stdin : Buffer.from(stdin, "utf-8");
-    calls.push({ command, script: command[2] ?? "", stdin: stdinBuf });
+  const exec: PodStreamExec = async (command, io) => {
+    calls.push({ command, script: command[2] ?? "" });
     return await new Promise((resolve, reject) => {
       const child = spawn(command[0], command.slice(1));
-      let out = Buffer.alloc(0);
       let err = "";
-      child.stdout.on("data", (chunk: Buffer) => {
-        out = Buffer.concat([out, chunk]);
-      });
       child.stderr.on("data", (chunk: Buffer) => {
         err += chunk.toString("utf-8");
       });
       child.on("error", reject);
+      if (io.stdout) {
+        io.stdout.on("error", reject);
+        child.stdout.pipe(io.stdout);
+      } else {
+        child.stdout.resume();
+      }
+      if (io.stdin) {
+        io.stdin.on("error", reject);
+        io.stdin.pipe(child.stdin);
+      } else {
+        child.stdin.end();
+      }
       child.on("close", (code) => {
-        resolve({ exitCode: code ?? 0, stdout: out.toString("utf-8"), stderr: err });
+        resolve({ exitCode: code ?? 0, stderr: err });
       });
-      if (stdinBuf) child.stdin.write(stdinBuf);
-      child.stdin.end();
     });
   };
   return { exec, calls };
 }
 
-// A stub exec that returns a fixed stdout without running any shell — used to
-// drive the outbound buffer-cap recheck with a pod-authored payload the host did
-// not build. Records calls so a test can assert the exec actually ran.
-function makeStubExec(stdout: string): { exec: PodExec; calls: RecordedCall[] } {
+// A stub exec that emits a controlled number of bytes to the caller's stdout
+// sink without running any shell — used to drive the outbound disk-guard trip
+// with a pod-authored payload larger than the host allows. Rejects if the sink
+// errors (the guard fired). Records calls so a test can assert the exec ran.
+function makeOutputExec(totalBytes: number): { exec: PodStreamExec; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
-  const exec: PodExec = async (command, stdin) => {
-    const stdinBuf =
-      stdin == null ? null : Buffer.isBuffer(stdin) ? stdin : Buffer.from(stdin, "utf-8");
-    calls.push({ command, script: command[2] ?? "", stdin: stdinBuf });
-    return { exitCode: 0, stdout, stderr: "" };
+  const exec: PodStreamExec = async (command, io) => {
+    calls.push({ command, script: command[2] ?? "" });
+    return await new Promise((resolve, reject) => {
+      const sink = io.stdout;
+      if (!sink) {
+        resolve({ exitCode: 0, stderr: "" });
+        return;
+      }
+      sink.on("error", reject);
+      sink.on("finish", () => resolve({ exitCode: 0, stderr: "" }));
+      sink.end(Buffer.alloc(totalBytes, 0x41));
+    });
   };
   return { exec, calls };
 }
@@ -131,9 +144,12 @@ describe("kubernetes onEnvironmentSyncIn (native single-exec transfer)", () => {
 
     // Single exec for the whole file operation — NOT one exec per file/chunk.
     expect(calls).toHaveLength(1);
-    // Atomic-replace shape and quoted paths present in the script.
+    // Atomic-replace shape and raw streamed-extract shape present in the script.
     expect(calls[0].script).toContain("mv -f");
-    expect(calls[0].script).toContain("base64 -d");
+    expect(calls[0].script).toContain("head -c");
+    expect(calls[0].script).toContain("tar -xf -");
+    // Streaming transport: no base64 round-trip anywhere in the script.
+    expect(calls[0].script).not.toContain("base64");
     // Files landed with correct contents.
     expect(await fs.readFile(path.join(remoteDir, "plain.txt"), "utf-8")).toBe("hello world");
     expect(await fs.readFile(path.join(remoteDir, "nested/auth.json"), "utf-8")).toBe(
@@ -329,27 +345,34 @@ describe("kubernetes onEnvironmentSyncIn (native single-exec transfer)", () => {
     expect(await fs.readdir(outside)).toEqual([]);
   });
 
-  it("fails closed when the transfer exceeds the buffer cap", async () => {
+  it("streams a payload with no in-memory cap: a file larger than the former 100 MB ceiling transfers in one exec", async () => {
+    // The streaming transport moves raw tar bytes over stdin straight to disk, so
+    // there is no whole-payload buffer to bound. A payload the old base64-buffered
+    // transport would have rejected now transfers fine. We assert the shape (one
+    // exec, byte-exact `head -c`) on a modestly large file — enough to prove the
+    // path never accumulates the payload as a string.
     const remoteDir = await makeTmp("k8s-sandbox-");
     const host = await makeTmp("k8s-host-");
     const src = path.join(host, "big.bin");
-    await fs.writeFile(src, Buffer.alloc(4096, 1));
+    const payload = Buffer.alloc(2 * 1024 * 1024, 7); // 2 MiB
+    await fs.writeFile(src, payload);
     const { exec, calls } = makeRealExec();
-    await expect(
-      performSyncIn({
-        exec,
-        remoteDir,
-        timeoutMs: 30_000,
-        maxBufferBytes: 1024, // 1KB cap, well below the 4KB payload
-        operations: [
-          {
-            operationId: "op",
-            files: [{ sourcePath: src, targetPath: path.join(remoteDir, "big.bin"), kind: "file" }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/buffer cap|exceeds/i);
-    expect(calls).toHaveLength(0);
+    const result = await performSyncIn({
+      exec,
+      remoteDir,
+      timeoutMs: 30_000,
+      operations: [
+        {
+          operationId: "op",
+          files: [{ sourcePath: src, targetPath: path.join(remoteDir, "big.bin"), kind: "file" }],
+        },
+      ],
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].script).toMatch(/head -c \d+/);
+    const landed = await fs.readFile(path.join(remoteDir, "big.bin"));
+    expect(landed.equals(payload)).toBe(true);
+    expect(result.operations[0].bytesTransferred).toBe(payload.length);
   });
 });
 
@@ -505,20 +528,21 @@ describe("kubernetes onEnvironmentSyncOut (native single-exec transfer)", () => 
     await expect(fs.stat(target)).rejects.toThrow();
   });
 
-  it("fails closed when the outbound payload exceeds the buffer cap, writing no target", async () => {
+  it("fails closed when the outbound payload exceeds the streamed-output disk guard, writing no target", async () => {
     const remoteDir = await makeTmp("k8s-sandbox-");
     const hostOut = await makeTmp("k8s-hostout-");
     await fs.writeFile(path.join(remoteDir, "result.txt"), "computed output");
     const target = path.join(hostOut, "result.txt");
-    // The (untrusted) pod returns far more base64 than a 1KB cap allows
-    // (ceil(1024*4/3) = 1366 bytes); the host must reject before decoding.
-    const { exec, calls } = makeStubExec("A".repeat(4096));
+    // The (untrusted) pod streams far more than a 1KB guard allows; the host must
+    // trip the streamed-bytes guard and abort before it can fill the disk, never
+    // extracting a target.
+    const { exec, calls } = makeOutputExec(4096);
     await expect(
       performSyncOut({
         exec,
         remoteDir,
         timeoutMs: 30_000,
-        maxBufferBytes: 1024,
+        maxOutputBytes: 1024,
         operations: [
           {
             operationId: "op",
@@ -528,9 +552,9 @@ describe("kubernetes onEnvironmentSyncOut (native single-exec transfer)", () => 
           },
         ],
       }),
-    ).rejects.toThrow(/buffer cap|exceeds/i);
-    // The exec ran (source was confined), but the oversize stdout is rejected
-    // before decode, so nothing lands at the host target.
+    ).rejects.toThrow(/disk guard|exceeded/i);
+    // The exec ran (source was confined), but the oversize stream is aborted, so
+    // nothing lands at the host target.
     expect(calls).toHaveLength(1);
     await expect(fs.stat(target)).rejects.toThrow();
   });

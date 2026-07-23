@@ -6,16 +6,23 @@
  * SINGLE exec per operation instead of the default base64 chunk loop (which
  * costs one exec per ~4 MB chunk — see `upload-interceptor.ts`).
  *
- *   - syncIn:  build one host tarball of the operation's payload, stream it as
- *              base64 over the exec's stdin into `base64 -d | tar -x` inside the
- *              pod, then stage-then-`mv -f` each single file onto its target so
- *              an interrupted transfer never leaves a truncated file.
- *   - syncOut: run `tar -c … | base64` inside the pod over one exec, capturing
- *              the archive on stdout, and reassemble it on the host.
+ * The transport is pure streaming: raw tar bytes move over the exec's stdin /
+ * stdout channels straight to and from a host file on disk, so neither the host
+ * nor the pod ever holds the whole payload in memory.
  *
- * The exec primitive is injected as `PodExec` so this module stays free of any
- * `@kubernetes/client-node` coupling and is unit-testable against a shell-backed
- * fake. `plugin.ts` binds it to `execInPod` for a resolved pod.
+ *   - syncIn:  build one host tarball of the operation's payload on disk, stream
+ *              its raw bytes over the exec's stdin into `head -c <N> | tar -x`
+ *              inside the pod (N is the exact archive size, known host-side, so
+ *              the pod command self-terminates without depending on stdin EOF),
+ *              then stage-then-`mv -f` each single file onto its target so an
+ *              interrupted transfer never leaves a truncated file.
+ *   - syncOut: run `tar -c … -f -` inside the pod over one exec, streaming the
+ *              archive on stdout straight into a host file, then reassemble it.
+ *
+ * The exec primitive is injected as `PodStreamExec` so this module stays free of
+ * any `@kubernetes/client-node` coupling and is unit-testable against a
+ * shell-backed fake. `plugin.ts` binds it to `execInPodStreaming` for a resolved
+ * pod.
  *
  * Security model (carried from the seam's design review): every sandbox path is
  * confined to the workspace remote dir both lexically on the host AND via an
@@ -26,19 +33,22 @@
  * the rename). All interpolated paths are single-quoted. Sandbox-authored
  * tarballs (outbound) are member-confined before host extraction.
  *
- * Buffer cap: a single exec holds the whole base64 payload in memory on both the
- * host and the pod, so every transfer is bounded by `MAX_BUFFER_BYTES` and fails
- * closed above it (the orchestrator falls back to the chunked transport).
- * Inbound the host pre-flights the archive it built. Outbound the payload is
- * authored by the untrusted pod, which controls how many bytes it emits on BOTH
- * stdout and stderr, so the bound is enforced host-side DURING accumulation of
- * each channel in `execInPod` (both bound in `plugin.ts` via `base64CapBytes`) —
- * an in-pod check would be worthless — and this module re-checks the returned
- * stdout length before decoding.
+ * Memory + disk posture: because the archive streams to/from disk, a transfer of
+ * any size keeps host and pod memory flat — there is no whole-payload buffer and
+ * therefore no 100 MB in-memory cap (the old base64-buffered transport needed
+ * one). Inbound bytes are host-authored (the tar this module builds), so they
+ * need no untrusted-size bound. Outbound bytes are authored by the untrusted
+ * pod, which controls how much it emits, so the sink `Writable` is wrapped in a
+ * streamed-bytes guard that fails the transfer closed above `maxOutputBytes`
+ * before it can fill the host's disk; the pod's stderr is separately capped in
+ * `execInPodStreaming`.
  */
 import path from "node:path";
 import os from "node:os";
-import { promises as fs } from "node:fs";
+import { promises as fs, createReadStream, createWriteStream } from "node:fs";
+import { Transform } from "node:stream";
+import { finished } from "node:stream/promises";
+import type { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -51,16 +61,22 @@ import type {
 const execFileAsync = promisify(execFile);
 
 /**
- * Injected pod-exec primitive. `command` is always `["/bin/sh", "-c", <script>]`;
- * `stdin` (when present) is streamed to the command's stdin over the exec data
- * channel. Returns the command's exit code plus captured stdout/stderr. `plugin.ts`
- * binds this to `execInPod(kc, namespace, podName, "agent", …)`.
+ * Injected streaming pod-exec primitive. `command` is always
+ * `["/bin/sh", "-c", <script>]`; `io.stdin` (when present) is streamed to the
+ * command's stdin over the exec data channel, and `io.stdout` (when present)
+ * receives the command's stdout. Returns the command's exit code plus its
+ * captured (bounded) stderr. `plugin.ts` binds this to
+ * `execInPodStreaming(kc, namespace, podName, "agent", …)`.
  */
-export type PodExec = (
+export type PodStreamExec = (
   command: string[],
-  stdin?: Buffer | string,
-  timeoutMs?: number,
-) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  io: {
+    stdin?: Readable;
+    stdout?: Writable;
+    timeoutMs?: number;
+    maxStderrBytes?: number;
+  },
+) => Promise<{ exitCode: number; stderr: string }>;
 
 // Reserved scratch-name stem for staged transfers and remote tarballs. The
 // runtime's base64 fallback stages to `<path>.paperclip-upload`; the native
@@ -68,11 +84,19 @@ export type PodExec = (
 // with a real target or with the fallback's scratch name.
 const SCRATCH_PREFIX = ".paperclip-upload";
 
-// Match the FastUploadInterceptor buffer cap (`upload-interceptor.ts`). A single
-// exec buffers the whole base64 payload in memory on both the host and the pod,
-// so a transfer larger than this falls closed to the orchestrator (which can
-// retry via the base64 fallback) rather than silently exceeding the cap.
-const MAX_BUFFER_BYTES = 100 * 1024 * 1024;
+// Fail-closed guard on the number of bytes an outbound (`syncOut`) transfer will
+// stream to host disk. The archive is authored by the untrusted pod, which
+// controls how many bytes it emits on stdout; streaming keeps memory flat but a
+// hostile pod could still try to exhaust the worker's ephemeral disk. The
+// transfer aborts the instant the pod exceeds this bound. It is deliberately
+// generous (real workspace/asset syncs are far smaller) and overridable per
+// call so operators can tune it to the worker's actual disk budget.
+const MAX_SYNC_OUTPUT_BYTES = 8 * 1024 * 1024 * 1024;
+
+// Bound on the pod's stderr for a sync exec. stderr carries only the in-pod
+// script's fail-loud diagnostics, so a modest cap is ample; it exists solely so
+// a pod that floods stderr cannot grow the host accumulator without limit.
+const SYNC_STDERR_CAP_BYTES = 1024 * 1024;
 
 function scratchName(suffix = ""): string {
   return `${SCRATCH_PREFIX}-${randomUUID()}${suffix}`;
@@ -170,23 +194,92 @@ function canonicalizerPreamble(quotedRoot: string): string[] {
 }
 
 /**
- * Assert the exec returned exit 0; otherwise throw with the captured stderr so a
- * failed transfer surfaces fail-loud to the orchestrator (never a silent partial
- * success). Returns the captured stdout for callers that stream data back.
+ * Stream a host file's raw bytes into the pod command's stdin over one exec and
+ * assert it exited 0; otherwise throw with the captured stderr so a failed
+ * transfer surfaces fail-loud to the orchestrator (never a silent partial
+ * success). The pod command bounds its own read (`head -c <N>`), so stdin EOF is
+ * never load-bearing.
  */
-async function execOk(
-  exec: PodExec,
-  script: string,
-  stdin: Buffer | string | undefined,
-  timeoutMs: number,
-  label: string,
-): Promise<string> {
-  const result = await exec(["/bin/sh", "-c", script], stdin, timeoutMs);
-  if (result.exitCode !== 0) {
-    const detail = (result.stderr || result.stdout || "").trim();
-    throw new Error(`Kubernetes ${label} failed (exit ${result.exitCode})${detail ? `: ${detail}` : ""}`);
+async function streamFileToPodStdin(input: {
+  exec: PodStreamExec;
+  script: string;
+  filePath: string;
+  timeoutMs: number;
+  label: string;
+}): Promise<void> {
+  const source = createReadStream(input.filePath);
+  try {
+    const result = await input.exec(["/bin/sh", "-c", input.script], {
+      stdin: source,
+      timeoutMs: input.timeoutMs,
+      maxStderrBytes: SYNC_STDERR_CAP_BYTES,
+    });
+    if (result.exitCode !== 0) {
+      const detail = (result.stderr || "").trim();
+      throw new Error(
+        `Kubernetes ${input.label} failed (exit ${result.exitCode})${detail ? `: ${detail}` : ""}`,
+      );
+    }
+  } finally {
+    source.destroy();
   }
-  return result.stdout;
+}
+
+/**
+ * Run the pod command over one exec and stream its stdout straight into a host
+ * file, guarding the byte count against `maxOutputBytes` so an untrusted pod
+ * cannot fill the host disk. Resolves only after the file is fully flushed, so a
+ * caller that reads it back always sees the complete archive; throws fail-loud on
+ * a non-zero exit, a tripped disk guard, or a stream error, writing no file the
+ * caller then trusts.
+ */
+async function streamPodStdoutToFile(input: {
+  exec: PodStreamExec;
+  script: string;
+  filePath: string;
+  maxOutputBytes: number;
+  timeoutMs: number;
+  label: string;
+}): Promise<void> {
+  const fileStream = createWriteStream(input.filePath);
+  let written = 0;
+  const guard = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      written += chunk.length;
+      if (input.maxOutputBytes >= 0 && written > input.maxOutputBytes) {
+        cb(
+          new Error(
+            `Kubernetes ${input.label} payload exceeded the ${input.maxOutputBytes}-byte streamed-output disk guard; the sandbox emitted more bytes than allowed.`,
+          ),
+        );
+        return;
+      }
+      cb(null, chunk);
+    },
+  });
+  guard.pipe(fileStream);
+  const flushed = finished(fileStream);
+  try {
+    const result = await input.exec(["/bin/sh", "-c", input.script], {
+      stdout: guard,
+      timeoutMs: input.timeoutMs,
+      maxStderrBytes: SYNC_STDERR_CAP_BYTES,
+    });
+    await flushed;
+    if (result.exitCode !== 0) {
+      const detail = (result.stderr || "").trim();
+      throw new Error(
+        `Kubernetes ${input.label} failed (exit ${result.exitCode})${detail ? `: ${detail}` : ""}`,
+      );
+    }
+  } catch (err) {
+    // Tear the sink down so a tripped guard / rejected exec never leaves the
+    // file stream open (and its `finished` promise dangling as unhandled).
+    guard.destroy();
+    fileStream.destroy();
+    await flushed.catch(() => undefined);
+    throw err;
+  }
 }
 
 /**
@@ -308,52 +401,26 @@ async function countHostFiles(root: string, exclude?: string[]): Promise<number>
   return total;
 }
 
-/**
- * The maximum base64 length that encodes a payload within `maxBufferBytes` of
- * binary. base64 inflates by ~4/3, so this is the wire-size ceiling both the host
- * and the pod must hold in memory for a single exec. Exported so `plugin.ts` binds
- * `execInPod`'s stdout cap to the identical bound the inbound pre-flight uses.
- */
-export function base64CapBytes(maxBufferBytes: number = MAX_BUFFER_BYTES): number {
-  return Math.ceil((maxBufferBytes * 4) / 3);
-}
-
-/**
- * Assert a base64 payload fits under the buffer cap. On inbound this pre-flights
- * the host-built archive before it streams over stdin; on outbound it re-checks
- * the pod-returned base64 stdout before it is decoded (defense in depth — the
- * authoritative bound is enforced host-side during accumulation in `execInPod`,
- * since the pod controls how many bytes it emits). Either way, exceeding the cap
- * fails closed so the orchestrator falls back to the chunked transport.
- */
-function assertUnderBufferCap(base64Length: number, maxBufferBytes: number): void {
-  if (base64Length > base64CapBytes(maxBufferBytes)) {
-    throw new Error(
-      `Kubernetes sync payload exceeds the ${maxBufferBytes}-byte buffer cap; the orchestrator must fall back to the chunked transport.`,
-    );
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Inbound (host → sandbox)
 // ---------------------------------------------------------------------------
 
 /**
  * Transfer all `kind:"file"` mappings of an operation in ONE exec. The host tars
- * the sources under stable index names, streams the archive as base64 over the
- * exec's stdin, and a single in-pod script extracts into a reserved `0700`
- * staging dir, applies each requested mode BEFORE the rename (no widened window),
- * then atomic-`mv -f`s each file onto its target through a `/proc/self/fd`-pinned
+ * the sources under stable index names on disk, streams the archive's raw bytes
+ * over the exec's stdin, and a single in-pod script reads exactly the archive's
+ * byte count (`head -c <N>`), extracts into a reserved `0700` staging dir,
+ * applies each requested mode BEFORE the rename (no widened window), then
+ * atomic-`mv -f`s each file onto its target through a `/proc/self/fd`-pinned
  * parent directory so a symlink swap cannot redirect the write outside the root.
  */
 async function syncInFileMappings(input: {
-  exec: PodExec;
+  exec: PodStreamExec;
   mappings: PluginSyncFileMapping[];
   remoteDir: string;
   timeoutMs: number;
-  maxBufferBytes: number;
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
-  const { exec, mappings, remoteDir, timeoutMs, maxBufferBytes } = input;
+  const { exec, mappings, remoteDir, timeoutMs } = input;
   if (mappings.length === 0) return { filesTransferred: 0, bytesTransferred: 0 };
 
   for (const mapping of mappings) {
@@ -376,8 +443,9 @@ async function syncInFileMappings(input: {
 
     const archivePath = path.join(tmp, "sync-in.tar");
     await createHostTarball({ localDir: stage, archivePath, entries: indexNames });
-    const base64Body = (await fs.readFile(archivePath)).toString("base64");
-    assertUnderBufferCap(base64Body.length, maxBufferBytes);
+    // Exact archive size: the pod reads precisely this many bytes so its extract
+    // pipeline self-terminates without depending on stdin EOF delivery.
+    const archiveBytes = (await fs.stat(archivePath)).size;
 
     // Reserved staging dir is a DIRECT child of the workspace root (created
     // `0700`), so a secret is never world-readable and the closing `mv -f` is an
@@ -407,10 +475,10 @@ async function syncInFileMappings(input: {
         `case "$_pc_d/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
       );
     }
-    // Decode + extract the whole payload into the staging dir in one pipeline
-    // reading the exec stdin.
+    // Read exactly the archive's bytes off stdin and extract the whole payload
+    // into the staging dir in one pipeline.
     script.push(
-      `base64 -d | tar -xf - -C ${shQuote(remoteStage)} || { echo "extract failed" >&2; exit 43; };`,
+      `head -c ${archiveBytes} | tar -xf - -C ${shQuote(remoteStage)} || { echo "extract failed" >&2; exit 43; };`,
     );
     // Promote each staged file onto its target: chmod the temp first (secret
     // lands at its mode from the instant it exists at targetPath), then bind the
@@ -436,26 +504,32 @@ async function syncInFileMappings(input: {
       );
     });
 
-    await execOk(exec, script.join("\n"), base64Body, timeoutMs, "syncIn file transfer");
+    await streamFileToPodStdin({
+      exec,
+      script: script.join("\n"),
+      filePath: archivePath,
+      timeoutMs,
+      label: "syncIn file transfer",
+    });
     return { filesTransferred: mappings.length, bytesTransferred };
   });
 }
 
 /**
  * Transfer one `kind:"directory"` mapping in ONE exec: the host tars the source
- * (reproducing `followSymlinks` → `-h` and `exclude`), streams it as base64 over
- * stdin, and the pod extracts into the target through a `/proc/self/fd`-pinned
- * directory inode. Directory extraction is destroy-into (non-atomic), matching
- * the base64 fallback's tar; only single files are atomic.
+ * on disk (reproducing `followSymlinks` → `-h` and `exclude`), streams its raw
+ * bytes over stdin, and the pod reads exactly that byte count and extracts into
+ * the target through a `/proc/self/fd`-pinned directory inode. Directory
+ * extraction is destroy-into (non-atomic), matching the base64 fallback's tar;
+ * only single files are atomic.
  */
 async function syncInDirectoryMapping(input: {
-  exec: PodExec;
+  exec: PodStreamExec;
   mapping: PluginSyncFileMapping;
   remoteDir: string;
   timeoutMs: number;
-  maxBufferBytes: number;
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
-  const { exec, mapping, remoteDir, timeoutMs, maxBufferBytes } = input;
+  const { exec, mapping, remoteDir, timeoutMs } = input;
   assertConfinedSandboxPath(remoteDir, mapping.targetPath, "target");
   return withHostTempDir(async (tmp) => {
     const archivePath = path.join(tmp, "sync-in.tar");
@@ -465,8 +539,7 @@ async function syncInDirectoryMapping(input: {
       exclude: mapping.exclude,
       followSymlinks: mapping.followSymlinks,
     });
-    const base64Body = (await fs.readFile(archivePath)).toString("base64");
-    assertUnderBufferCap(base64Body.length, maxBufferBytes);
+    const archiveBytes = (await fs.stat(archivePath)).size;
 
     const target = mapping.targetPath;
     const script = [
@@ -485,24 +558,28 @@ async function syncInDirectoryMapping(input: {
       `exec 9<"$_pc_real" || { echo "open failed" >&2; exit 46; };`,
       `_pc_fd_real=$(_pc_resolve /proc/self/fd/9) || { echo "ESCAPE" >&2; exit 42; };`,
       `case "$_pc_fd_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
-      `base64 -d | tar -xf - -C /proc/self/fd/9 || { echo "extract failed" >&2; exit 43; };`,
+      `head -c ${archiveBytes} | tar -xf - -C /proc/self/fd/9 || { echo "extract failed" >&2; exit 43; };`,
       `exec 9>&-;`,
     ].join("\n");
 
-    await execOk(exec, script, base64Body, timeoutMs, "syncIn directory transfer");
+    await streamFileToPodStdin({
+      exec,
+      script,
+      filePath: archivePath,
+      timeoutMs,
+      label: "syncIn directory transfer",
+    });
     const filesTransferred = await countHostFiles(mapping.sourcePath, mapping.exclude);
-    return { filesTransferred, bytesTransferred: base64Body.length };
+    return { filesTransferred, bytesTransferred: archiveBytes };
   });
 }
 
 export async function performSyncIn(input: {
-  exec: PodExec;
+  exec: PodStreamExec;
   operations: PluginSyncOperation[];
   remoteDir: string;
   timeoutMs: number;
-  maxBufferBytes?: number;
 }): Promise<PluginEnvironmentSyncResult> {
-  const maxBufferBytes = input.maxBufferBytes ?? MAX_BUFFER_BYTES;
   const operations: PluginEnvironmentSyncResult["operations"] = [];
   for (const operation of input.operations) {
     let filesTransferred = 0;
@@ -516,7 +593,6 @@ export async function performSyncIn(input: {
       mappings: fileMappings,
       remoteDir: input.remoteDir,
       timeoutMs: input.timeoutMs,
-      maxBufferBytes,
     });
     filesTransferred += fileResult.filesTransferred;
     bytesTransferred += fileResult.bytesTransferred;
@@ -527,7 +603,6 @@ export async function performSyncIn(input: {
         mapping,
         remoteDir: input.remoteDir,
         timeoutMs: input.timeoutMs,
-        maxBufferBytes,
       });
       filesTransferred += dirResult.filesTransferred;
       bytesTransferred += dirResult.bytesTransferred;
@@ -547,18 +622,19 @@ export async function performSyncIn(input: {
  * script validates + snapshots each source (confinement realpath check, then a
  * non-symlink regular-file re-check immediately before `cp` closes the
  * validation→copy window), tars the immutable snapshots under index names, and
- * emits the archive as base64 on stdout. The host decodes, extracts to a temp,
- * and atomic-renames each file onto its host target (chmod-before-rename for
- * secret modes) so an interrupted reassembly never truncates a target.
+ * streams the archive on stdout straight into a host file. The host decodes,
+ * extracts to a temp, and atomic-renames each file onto its host target
+ * (chmod-before-rename for secret modes) so an interrupted reassembly never
+ * truncates a target.
  */
 async function syncOutFileMappings(input: {
-  exec: PodExec;
+  exec: PodStreamExec;
   mappings: PluginSyncFileMapping[];
   remoteDir: string;
   timeoutMs: number;
-  maxBufferBytes: number;
+  maxOutputBytes: number;
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
-  const { exec, mappings, remoteDir, timeoutMs, maxBufferBytes } = input;
+  const { exec, mappings, remoteDir, timeoutMs, maxOutputBytes } = input;
   if (mappings.length === 0) return { filesTransferred: 0, bytesTransferred: 0 };
 
   for (const mapping of mappings) {
@@ -567,11 +643,10 @@ async function syncOutFileMappings(input: {
 
   return withHostTempDir(async (tmp) => {
     const remoteStage = path.posix.join(remoteDir, scratchName());
-    const remoteTar = path.posix.join(remoteDir, scratchName(".tar"));
     const indexNames = mappings.map((_, i) => String(i));
 
     const script: string[] = [...canonicalizerPreamble(shQuote(remoteDir))];
-    script.push(`trap 'rm -rf ${shQuote(remoteStage)} ${shQuote(remoteTar)}' EXIT;`);
+    script.push(`trap 'rm -rf ${shQuote(remoteStage)}' EXIT;`);
     script.push(`mkdir -p -m 700 ${shQuote(remoteStage)} || { echo "stage mkdir failed" >&2; exit 46; };`);
     mappings.forEach((mapping, i) => {
       const snapshot = path.posix.join(remoteStage, indexNames[i]);
@@ -594,23 +669,25 @@ async function syncOutFileMappings(input: {
         `exec 7>&-;`,
       );
     });
-    // Tar the immutable snapshots and stream them out as base64 on stdout.
+    // Tar the immutable snapshots straight to stdout (streamed to a host file).
     script.push(
-      `tar -c --no-xattrs -f ${shQuote(remoteTar)} -C ${shQuote(remoteStage)} -- ${indexNames
+      `tar -c --no-xattrs -f - -C ${shQuote(remoteStage)} -- ${indexNames
         .map(shQuote)
         .join(" ")} || { echo "tar failed" >&2; exit 43; };`,
-      `base64 < ${shQuote(remoteTar)} || { echo "encode failed" >&2; exit 43; };`,
     );
 
-    const stdout = await execOk(exec, script.join("\n"), undefined, timeoutMs, "syncOut file transfer");
-    // The pod authored this base64 stream; re-check it fits the buffer cap before
-    // decoding (the hard bound is enforced during accumulation in `execInPod`).
-    assertUnderBufferCap(stdout.length, maxBufferBytes);
-
-    // Reassemble on the host: decode → extract to a temp → atomic-rename each
-    // index file onto its host target.
     const localTar = path.join(tmp, "sync-out.tar");
-    await fs.writeFile(localTar, Buffer.from(stdout, "base64"));
+    await streamPodStdoutToFile({
+      exec,
+      script: script.join("\n"),
+      filePath: localTar,
+      maxOutputBytes,
+      timeoutMs,
+      label: "syncOut file transfer",
+    });
+
+    // Reassemble on the host: member-confine the sandbox-authored archive,
+    // extract to a temp, then atomic-rename each index file onto its host target.
     const extractDir = path.join(tmp, "extract");
     await extractHostTarball({ archivePath: localTar, localDir: extractDir });
 
@@ -633,26 +710,24 @@ async function syncOutFileMappings(input: {
  * Stream one `kind:"directory"` mapping back in ONE exec: the in-pod script
  * confines the source (realpath through `/proc/self/fd`), tars it (reproducing
  * `followSymlinks` → `-h` and `exclude`, naming top-level entries so no "." self
- * entry is embedded), and emits the archive as base64 on stdout. The host decodes,
+ * entry is embedded) straight to stdout, and the host streams that into a file,
  * member-confines the sandbox-authored tar, and extracts into the target dir.
  */
 async function syncOutDirectoryMapping(input: {
-  exec: PodExec;
+  exec: PodStreamExec;
   mapping: PluginSyncFileMapping;
   remoteDir: string;
   timeoutMs: number;
-  maxBufferBytes: number;
+  maxOutputBytes: number;
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
-  const { exec, mapping, remoteDir, timeoutMs, maxBufferBytes } = input;
+  const { exec, mapping, remoteDir, timeoutMs, maxOutputBytes } = input;
   assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
   return withHostTempDir(async (tmp) => {
-    const remoteTar = path.posix.join(remoteDir, scratchName(".tar"));
     const excludeFlags = ["._*", ...(mapping.exclude ?? [])]
       .map((entry) => `--exclude ${shQuote(entry)}`)
       .join(" ");
     const script = [
       ...canonicalizerPreamble(shQuote(remoteDir)),
-      `trap 'rm -f ${shQuote(remoteTar)}' EXIT;`,
       // Confine the source dir through an open-then-verify pinned fd before taring.
       `_pc_real=$(_pc_resolve ${shQuote(mapping.sourcePath)}) || { echo "ESCAPE" >&2; exit 42; };`,
       `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
@@ -661,22 +736,24 @@ async function syncOutDirectoryMapping(input: {
       `case "$_pc_fd_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
       `cd /proc/self/fd/9 || { echo "cd failed" >&2; exit 46; };`,
       // Collect top-level entries (incl. dotfiles) without a "." self-entry, then
-      // tar with the `followSymlinks` → `-h` mapping.
+      // tar with the `followSymlinks` → `-h` mapping, streaming to stdout.
       "set -- *",
       'if [ "$#" -eq 1 ] && [ "$1" = "*" ] && [ ! -e "$1" ] && [ ! -L "$1" ]; then set --; fi',
       'for entry in .[!.]* ..?*; do [ -e "$entry" ] || [ -L "$entry" ] || continue; set -- "$@" "$entry"; done',
-      `if [ "$#" -eq 0 ]; then dd if=/dev/zero of=${shQuote(remoteTar)} bs=1024 count=1 2>/dev/null; ` +
-        `else tar -c --no-xattrs ${mapping.followSymlinks ? "-h " : ""}${excludeFlags} -f ${shQuote(remoteTar)} -- "$@" || { echo "tar failed" >&2; exit 43; }; fi`,
+      `if [ "$#" -eq 0 ]; then dd if=/dev/zero bs=1024 count=1 2>/dev/null; ` +
+        `else tar -c --no-xattrs ${mapping.followSymlinks ? "-h " : ""}${excludeFlags} -f - -- "$@" || { echo "tar failed" >&2; exit 43; }; fi`,
       `exec 9>&-;`,
-      `base64 < ${shQuote(remoteTar)} || { echo "encode failed" >&2; exit 43; };`,
     ].join("\n");
 
-    const stdout = await execOk(exec, script, undefined, timeoutMs, "syncOut directory transfer");
-    // Pod-authored base64; re-check the cap before decoding (hard bound enforced
-    // during accumulation in `execInPod`).
-    assertUnderBufferCap(stdout.length, maxBufferBytes);
     const localTar = path.join(tmp, "sync-out.tar");
-    await fs.writeFile(localTar, Buffer.from(stdout, "base64"));
+    await streamPodStdoutToFile({
+      exec,
+      script,
+      filePath: localTar,
+      maxOutputBytes,
+      timeoutMs,
+      label: "syncOut directory transfer",
+    });
     const bytesTransferred = (await fs.stat(localTar)).size;
     await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath });
     const filesTransferred = await countHostFiles(mapping.targetPath, mapping.exclude);
@@ -685,13 +762,13 @@ async function syncOutDirectoryMapping(input: {
 }
 
 export async function performSyncOut(input: {
-  exec: PodExec;
+  exec: PodStreamExec;
   operations: PluginSyncOperation[];
   remoteDir: string;
   timeoutMs: number;
-  maxBufferBytes?: number;
+  maxOutputBytes?: number;
 }): Promise<PluginEnvironmentSyncResult> {
-  const maxBufferBytes = input.maxBufferBytes ?? MAX_BUFFER_BYTES;
+  const maxOutputBytes = input.maxOutputBytes ?? MAX_SYNC_OUTPUT_BYTES;
   const operations: PluginEnvironmentSyncResult["operations"] = [];
   for (const operation of input.operations) {
     let filesTransferred = 0;
@@ -705,7 +782,7 @@ export async function performSyncOut(input: {
       mappings: fileMappings,
       remoteDir: input.remoteDir,
       timeoutMs: input.timeoutMs,
-      maxBufferBytes,
+      maxOutputBytes,
     });
     filesTransferred += fileResult.filesTransferred;
     bytesTransferred += fileResult.bytesTransferred;
@@ -716,7 +793,7 @@ export async function performSyncOut(input: {
         mapping,
         remoteDir: input.remoteDir,
         timeoutMs: input.timeoutMs,
-        maxBufferBytes,
+        maxOutputBytes,
       });
       filesTransferred += dirResult.filesTransferred;
       bytesTransferred += dirResult.bytesTransferred;
