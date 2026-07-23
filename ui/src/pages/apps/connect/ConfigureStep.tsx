@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { ExternalLink, KeyRound, Loader2, Plus, RefreshCw, Settings2, Trash2 } from "lucide-react";
-import type {
-  AppDefinition,
-  ConnectionMethodDef,
-  FieldDef,
-  ToolConnectionOwnership,
+import {
+  DEFAULT_OWNERSHIP_AVAILABILITY,
+  type AppDefinition,
+  type ConnectionMethodDef,
+  type FieldDef,
+  type ToolConnectionOwnership,
 } from "@paperclipai/shared";
 
 import { Button } from "@/components/ui/button";
@@ -63,10 +64,17 @@ function namespaceFor(def: AppDefinition, method: ConnectionMethodDef): string {
   return def.slug;
 }
 
-/** Ownership modes that are actually available (managed modes gated by availability). */
+/**
+ * Ownership modes that are actually available. Managed modes (platform_shared,
+ * platform_provisioned) stay hidden until the connector service + provider app
+ * exist for the provider (plan-catalog §5). When a def declares no availability
+ * we fall back to the shared rails default, which keeps managed modes off — the
+ * same gate {@link getAvailableConnectionMethod} applies — so an undefined
+ * availability never accidentally surfaces a managed mode in the wizard.
+ */
 function availableOwnership(def: AppDefinition, method: ConnectionMethodDef): ToolConnectionOwnership[] {
-  const avail = def.ownershipAvailability;
-  return method.ownershipModes.filter((mode) => !avail || avail[mode] !== false);
+  const avail = def.ownershipAvailability ?? DEFAULT_OWNERSHIP_AVAILABILITY;
+  return method.ownershipModes.filter((mode) => avail[mode] !== false);
 }
 
 function isByoOAuth(method: ConnectionMethodDef, ownership: ToolConnectionOwnership): boolean {
@@ -140,6 +148,10 @@ export function ConfigureStep({
 
   const ctaLabel = useMemo(() => {
     const verb = method.auth === "oauth" ? "Register OAuth Connector for" : "Create";
+    // Assisted setup: the customer signs in and Paperclip creates the app for them.
+    if (method.auth === "oauth" && ownership === "platform_provisioned") {
+      return `Sign in & set up ${def.name}`;
+    }
     if (method.auth === "oauth" && ownership !== "customer" && ownership !== "dcr") {
       return `Connect ${def.name}`;
     }
@@ -432,11 +444,17 @@ export function ConfigureStep({
         </div>
       ))}
 
-      {/* Ownership footer */}
+      {/* Ownership footer — honest copy about what gets created where (plan-wizard-ux §5.4) */}
       {!rotation && (
         <p className="text-xs text-muted-foreground">
           {ownership === "customer" || ownership === "dcr" ? (
             <>You are responsible for managing your {def.name} client credentials.</>
+          ) : ownership === "platform_provisioned" ? (
+            <>
+              You sign in to {def.name} and Paperclip creates a dedicated {def.name} app in your own
+              workspace. You won't copy or manage any keys — Paperclip securely holds the created
+              app's credentials for you.
+            </>
           ) : (
             <>
               You authorize Paperclip's {def.name} app; the consent screen will show Paperclip.

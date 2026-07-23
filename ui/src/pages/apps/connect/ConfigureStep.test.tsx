@@ -84,4 +84,30 @@ describe("ConfigureStep grammar", () => {
       "You authorize Paperclip's Slack app; the consent screen will show Paperclip.",
     );
   });
+
+  it("provisioned (assisted setup) states honest workspace-app copy — distinct from platform_shared", () => {
+    // Linear's OAuth method ships ownershipModes ['platform_provisioned','customer','dcr'].
+    const def = {
+      ...bySlug("linear"),
+      ownershipAvailability: { platform_provisioned: true, customer: false, dcr: false },
+    };
+    act(() => root.render(<ConfigureStep def={def} method={def.methods[0]!} />));
+    // Honest: the app is created in the CUSTOMER's workspace and they copy no keys.
+    expect(container.textContent).toContain("Paperclip creates a dedicated Linear app in your own");
+    expect(container.textContent).toContain("You won't copy or manage any keys");
+    // Must NOT reuse the platform_shared "consent screen will show Paperclip" copy.
+    expect(container.textContent).not.toContain("the consent screen will show Paperclip");
+    // Assisted-setup CTA reflects sign-in + create.
+    expect(container.textContent).toContain("Sign in & set up Linear");
+  });
+
+  it("provisioned ownership label reads 'Provisioned by Paperclip' when tabs render", () => {
+    const def = {
+      ...bySlug("linear"),
+      ownershipAvailability: { platform_provisioned: true },
+    };
+    act(() => root.render(<ConfigureStep def={def} method={def.methods[0]!} />));
+    expect(container.textContent).toContain("Credential ownership");
+    expect(container.textContent).toContain("Provisioned by Paperclip");
+  });
 });
