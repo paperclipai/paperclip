@@ -265,6 +265,7 @@ function createRunContextDb(
   contextSnapshot: Record<string, unknown> = {},
   runAgentOrRows: string | Record<string, unknown>[] = ownerAgentId,
   runId: string = ownerRunId,
+  runStatus: string = "running",
 ) {
   const runRows = Array.isArray(runAgentOrRows)
     ? runAgentOrRows
@@ -273,6 +274,7 @@ function createRunContextDb(
         companyId,
         agentId: runAgentOrRows,
         agentCompanyId: companyId,
+        status: runStatus,
         contextSnapshot,
       }];
   const firstRun = runRows[0] ?? {};
@@ -1191,6 +1193,36 @@ describe("agent issue mutation checkout ownership", () => {
       companyId,
       expect.objectContaining({
         title: "Follow-up in same worktree",
+        inheritExecutionWorkspaceFromIssueId: issueId,
+      }),
+    );
+  });
+
+  it("does not inherit the run workspace when the creating run has already finished", async () => {
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb(
+        {
+          issueId,
+          executionWorkspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        },
+        ownerAgentId,
+        ownerRunId,
+        "succeeded",
+      ),
+    );
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Created from a stale console run id",
+        projectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.not.objectContaining({
         inheritExecutionWorkspaceFromIssueId: issueId,
       }),
     );

@@ -2668,6 +2668,7 @@ export function issueRoutes(
     const run = await db
       .select({
         agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
@@ -2677,6 +2678,12 @@ export function issueRoutes(
       ))
       .then((rows) => rows[0] ?? null);
     if (!run || run.agentId !== actor.agentId) return null;
+    // Only a live run may confer implicit workspace inheritance. Agent API keys
+    // accept X-Paperclip-Run-Id without binding it to the credential, so a stale
+    // run id replayed from an old shell environment (e.g. a long-lived local
+    // console session) would otherwise bind every new issue to that finished
+    // run's worktree.
+    if (run.status !== "queued" && run.status !== "running") return null;
     const context = run.contextSnapshot && typeof run.contextSnapshot === "object"
       ? run.contextSnapshot as Record<string, unknown>
       : null;
