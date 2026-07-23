@@ -61,6 +61,9 @@ function BreakablePath({ text }: { text: string }) {
 function CopyableInline({ value, label, mono }: { value: string; label?: string; mono?: boolean }) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(value);
@@ -81,6 +84,7 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
         className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 focus:opacity-100"
         onClick={handleCopy}
         title={copied ? "Copied!" : "Copy"}
+        aria-label={copied ? "Copied to clipboard" : `Copy ${label ?? "value"}`}
       >
         {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
       </button>
