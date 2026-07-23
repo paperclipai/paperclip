@@ -664,12 +664,27 @@ export function buildHostServices(
    * plugin attribute a mutation to them. Mirrors the authorization bar the
    * web app's own board routes apply — a plugin can only ever attribute an
    * action to an identity that could have taken it in the web app itself.
-   * Used by any plugin capability that accepts an `actorUserId` (currently
-   * `createComment`'s human-attributed path).
+   * Used by any plugin capability that accepts an `actorUserId`
+   * (`createComment`'s human-attributed path, `respondInteraction`, and
+   * `approvals.decide`).
+   *
+   * All current call sites are non-safe (write) actions, so by default this
+   * also rejects a `viewer`-role member — the web app's board write-routes
+   * treat `membershipRole === "viewer"` as read-only and 403 it ("Viewer
+   * access is read-only", routes/authz.ts:115-116). Without this bar a plugin
+   * holding `approvals.respond` / `issue.interactions.respond` could attribute
+   * a decision to a viewer who is denied that same action in the web UI —
+   * strictly more authority than the paired user has (privilege escalation).
+   * A future *read-only* attribution path can opt into allowing viewers with
+   * `{ allowViewer: true }`; the default is failure-closed.
    */
-  const requireActiveHumanMember = async (companyId: string, userId: string): Promise<void> => {
+  const requireActiveHumanMember = async (
+    companyId: string,
+    userId: string,
+    { allowViewer = false }: { allowViewer?: boolean } = {},
+  ): Promise<void> => {
     const [membership] = await db
-      .select({ id: companyMemberships.id })
+      .select({ id: companyMemberships.id, membershipRole: companyMemberships.membershipRole })
       .from(companyMemberships)
       .where(and(
         eq(companyMemberships.companyId, companyId),
@@ -680,6 +695,9 @@ export function buildHostServices(
       .limit(1);
     if (!membership) {
       throw new Error(`actorUserId "${userId}" is not an active human member of this company`);
+    }
+    if (!allowViewer && membership.membershipRole === "viewer") {
+      throw new Error(`actorUserId "${userId}" has viewer (read-only) access and cannot take this write action`);
     }
   };
 

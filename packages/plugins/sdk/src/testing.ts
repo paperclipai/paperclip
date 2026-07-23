@@ -536,6 +536,31 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     }
     return stamped;
   }
+
+  /**
+   * Mirror the host's `requireActiveHumanMember` write bar so the harness
+   * rejects the same forged/over-privileged attributions production does: the
+   * actor must be an active `user` member of the company whose `membershipRole`
+   * is not the read-only `viewer` role (the web app 403s viewers on these same
+   * board write-routes). Keeps the harness a faithful mirror so a plugin test
+   * cannot pass an attribution production would reject. Seed members via
+   * `createTestPluginHost({ accessMembers: [...] })`.
+   */
+  function assertActiveHumanMemberCanWrite(companyId: string, actorUserId: string) {
+    const member = [...accessMembers.values()].find(
+      (entry) =>
+        entry.companyId === companyId
+        && entry.principalType === "user"
+        && entry.principalId === actorUserId
+        && entry.status === "active",
+    );
+    if (!member) {
+      throw new Error(`actorUserId "${actorUserId}" is not an active human member of this company`);
+    }
+    if (member.membershipRole === "viewer") {
+      throw new Error(`actorUserId "${actorUserId}" has viewer (read-only) access and cannot take this write action`);
+    }
+  }
   const projectWorkspaces = new Map<string, PluginWorkspace[]>();
   const executionWorkspaces = new Map<string, PluginExecutionWorkspaceMetadata>();
   const localFolderStatuses = new Map<string, PluginLocalFolderStatus>();
@@ -1689,23 +1714,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           throw new Error(`Issue not found: ${issueId}`);
         }
         if (options?.actorUserId) {
-          // Mirror the host's `requireActiveHumanMember` check so the harness
-          // rejects the same forged attributions production does: the actor
-          // must be an active `user` member of the issue's company. Seed
-          // members via `createTestPluginHost({ accessMembers: [...] })`.
-          const actorUserId = options.actorUserId;
-          const isActiveHumanMember = [...accessMembers.values()].some(
-            (member) =>
-              member.companyId === companyId
-              && member.principalType === "user"
-              && member.principalId === actorUserId
-              && member.status === "active",
-          );
-          if (!isActiveHumanMember) {
-            throw new Error(
-              `actorUserId "${actorUserId}" is not an active human member of this company`,
-            );
-          }
+          assertActiveHumanMemberCanWrite(companyId, options.actorUserId);
         }
         const now = new Date();
         const comment: IssueComment = {
@@ -1788,17 +1797,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           throw new Error("actorUserId is required to respond to an interaction on behalf of a board user");
         }
         const actorUserId = input.actorUserId;
-        // Mirror the host's active-human-member re-verification.
-        const isActiveHumanMember = [...accessMembers.values()].some(
-          (member) =>
-            member.companyId === companyId
-            && member.principalType === "user"
-            && member.principalId === actorUserId
-            && member.status === "active",
-        );
-        if (!isActiveHumanMember) {
-          throw new Error(`actorUserId "${actorUserId}" is not an active human member of this company`);
-        }
+        // Mirror the host's active-human-member write re-verification.
+        assertActiveHumanMemberCanWrite(companyId, actorUserId);
         const list = issueInteractions.get(issueId) ?? [];
         const current = list.find((entry) => entry.id === interactionId);
         if (!current) {
@@ -2018,16 +2018,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           throw new Error("actorUserId is required to decide an approval on behalf of a board user");
         }
         const actorUserId = input.actorUserId;
-        const isActiveHumanMember = [...accessMembers.values()].some(
-          (member) =>
-            member.companyId === companyId
-            && member.principalType === "user"
-            && member.principalId === actorUserId
-            && member.status === "active",
-        );
-        if (!isActiveHumanMember) {
-          throw new Error(`actorUserId "${actorUserId}" is not an active human member of this company`);
-        }
+        assertActiveHumanMemberCanWrite(companyId, actorUserId);
         if (approval.status !== "pending") {
           return { approval, applied: false };
         }
