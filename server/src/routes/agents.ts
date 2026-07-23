@@ -10,6 +10,7 @@ import {
   ADAPTER_AGNOSTIC_KEYS,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   createAgentKeySchema,
+  createRelayAuditRunSchema,
   createAgentHireSchema,
   createAgentSchema,
   deriveAgentUrlKey,
@@ -3473,6 +3474,35 @@ export function agentRoutes(
       source: req.body.source,
       skippedResponse: (agent) => buildSkippedWakeupResponse(agent, req.body.payload ?? null),
     });
+  });
+
+  router.post("/agents/:id/relay-audit-run", validate(createRelayAuditRunSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    if (req.actor.type === "agent") {
+      if (req.actor.agentId !== id) {
+        res.status(403).json({ error: "Agent can only create relay audit runs for itself" });
+        return;
+      }
+    } else {
+      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    }
+
+    const actor = getActorInfo(req);
+    const run = await heartbeat.createRelayAuditRun(id, {
+      triggerDetail: req.body.triggerDetail,
+      reason: req.body.reason ?? null,
+      payload: req.body.payload ?? null,
+      actor,
+    });
+
+    res.status(201).json(run);
   });
 
   router.post("/agents/:id/heartbeat/invoke", async (req, res) => {

@@ -813,6 +813,7 @@ export const HEARTBEAT_INVOCATION_SOURCES = [
   "assignment",
   "on_demand",
   "automation",
+  "relay_audit",
 ] as const;
 export type HeartbeatInvocationSource = (typeof HEARTBEAT_INVOCATION_SOURCES)[number];
 

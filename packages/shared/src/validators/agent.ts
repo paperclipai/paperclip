@@ -203,6 +203,14 @@ export const wakeAgentSchema = z.object({
 
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;
 
+export const createRelayAuditRunSchema = z.object({
+  triggerDetail: z.enum(["manual", "ping", "callback", "system"]).optional().default("callback"),
+  reason: z.string().trim().min(1).max(200).optional().nullable(),
+  payload: z.record(z.string(), z.unknown()).optional().nullable(),
+});
+
+export type CreateRelayAuditRun = z.infer<typeof createRelayAuditRunSchema>;
+
 export const resetAgentSessionSchema = z.object({
   taskKey: z.string().min(1).optional().nullable(),
 });

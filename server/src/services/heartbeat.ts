@@ -16926,6 +16926,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         requestedByActorId: actor?.actorId ?? null,
       }),
 
+    createRelayAuditRun: async (
+      agentId: string,
+      opts?: {
+        triggerDetail?: "manual" | "ping" | "callback" | "system";
+        reason?: string | null;
+        payload?: Record<string, unknown> | null;
+        actor?: { actorType?: "user" | "agent" | "system"; actorId?: string | null };
+      },
+    ) => {
+      const agent = await getAgent(agentId);
+      if (!agent) throw notFound("Agent not found");
+
+      const now = new Date();
+      const contextSnapshot = {
+        source: "relay_audit",
+        sideEffectFree: true,
+        triggeredBy: opts?.actor?.actorType ?? "system",
+        actorId: opts?.actor?.actorId ?? null,
+        payload: opts?.payload ?? null,
+      };
+      const [run] = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          invocationSource: "relay_audit",
+          triggerDetail: opts?.triggerDetail ?? "callback",
+          status: "succeeded",
+          startedAt: now,
+          finishedAt: now,
+          exitCode: 0,
+          resultJson: {
+            kind: "relay_audit_run",
+            reason: opts?.reason ?? null,
+            sideEffectFree: true,
+          },
+          contextSnapshot,
+          issueCommentStatus: "not_applicable",
+          updatedAt: now,
+        })
+        .returning();
+      return run;
+    },
+
     wakeup: enqueueWakeup,
     triggerIssueMonitor,
 
