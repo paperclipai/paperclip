@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { companySearchQuerySchema } from "./search.js";
 
+export const STATUS_CARD_AGENT_MAX_CARDS = 20;
+export const STATUS_CARD_AGENT_MAX_INTEREST_PROMPT_LENGTH = 4_000;
+
 export const statusCardInstructionsModeSchema = z.enum(["none", "append", "replace"]);
 export const statusCardStateSchema = z.enum(["compiling", "active", "error", "paused_budget", "paused_hours"]);
 export const statusCardUpdateKindSchema = z.enum(["compile", "full", "incremental"]);

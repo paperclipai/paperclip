@@ -17,6 +17,7 @@ import type {
   WriteStatusCardQuery,
   WriteStatusCardSummary,
 } from "@paperclipai/shared";
+import { STATUS_CARD_AGENT_MAX_CARDS } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { builtInAgentService } from "./built-in-agents.js";
@@ -167,22 +168,43 @@ export function statusCardService(db: Db) {
   }
 
   async function create(companyId: string, input: CreateStatusCard, actor: StatusCardActor) {
-    return db
-      .insert(statusCards)
-      .values({
-        companyId,
-        createdByAgentId: actor.agentId,
-        createdByUserId: actor.userId,
-        title: input.title ?? null,
-        titlePinned: input.titlePinned,
-        interestPrompt: input.interestPrompt,
-        instructionsMode: input.instructionsMode,
-        instructions: input.instructions ?? null,
-        refreshPolicy: input.refreshPolicy,
-        state: "compiling",
-      })
-      .returning()
-      .then((rows) => rows[0]!);
+    const values = {
+      companyId,
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.userId,
+      title: input.title ?? null,
+      titlePinned: input.titlePinned,
+      interestPrompt: input.interestPrompt,
+      instructionsMode: input.instructionsMode,
+      instructions: input.instructions ?? null,
+      refreshPolicy: input.refreshPolicy,
+      state: "compiling" as const,
+    };
+    const agentId = actor.agentId;
+    if (!agentId) {
+      return db.insert(statusCards).values(values).returning().then((rows) => rows[0]!);
+    }
+
+    return db.transaction(async (tx) => {
+      const author = await tx
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!author) throw forbidden("Agent cannot author status cards for this company");
+
+      const authoredCount = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(statusCards)
+        .where(and(eq(statusCards.companyId, companyId), eq(statusCards.createdByAgentId, agentId)))
+        .then((rows) => rows[0]?.count ?? 0);
+      if (authoredCount >= STATUS_CARD_AGENT_MAX_CARDS) {
+        throw unprocessable(`Agents can author at most ${STATUS_CARD_AGENT_MAX_CARDS} status cards`);
+      }
+
+      return tx.insert(statusCards).values(values).returning().then((rows) => rows[0]!);
+    });
   }
 
   async function update(card: StatusCardRow, input: PatchStatusCard, actor: StatusCardActor) {

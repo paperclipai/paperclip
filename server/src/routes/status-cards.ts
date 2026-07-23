@@ -5,10 +5,11 @@ import {
   listStatusCardsQuerySchema,
   patchStatusCardSchema,
   refreshStatusCardSchema,
+  STATUS_CARD_AGENT_MAX_INTEREST_PROMPT_LENGTH,
   writeStatusCardQuerySchema,
   writeStatusCardSummarySchema,
 } from "@paperclipai/shared";
-import { forbidden, notFound } from "../errors.js";
+import { forbidden, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService, heartbeatService, instanceSettingsService, logActivity, statusCardService } from "../services/index.js";
@@ -43,6 +44,25 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       },
     });
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
+  async function assertCanManageCard(req: Request, card: { companyId: string; createdByAgentId: string | null }) {
+    await assertCanMutate(req, card.companyId);
+    if (req.actor.type === "agent" && card.createdByAgentId !== req.actor.agentId) {
+      throw forbidden("Agents can only manage status cards they authored");
+    }
+  }
+
+  function assertAgentPromptLimit(req: Request, interestPrompt: string | undefined) {
+    if (
+      req.actor.type === "agent" &&
+      interestPrompt !== undefined &&
+      interestPrompt.length > STATUS_CARD_AGENT_MAX_INTEREST_PROMPT_LENGTH
+    ) {
+      throw unprocessable(
+        `Agent-authored status card prompts cannot exceed ${STATUS_CARD_AGENT_MAX_INTEREST_PROMPT_LENGTH} characters`,
+      );
+    }
   }
 
   async function logMutation(req: Request, companyId: string, action: string, cardId: string, details?: Record<string, unknown>) {
@@ -120,6 +140,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     const companyId = req.params.companyId as string;
     await assertStatusCardsEnabled();
     await assertCanMutate(req, companyId);
+    assertAgentPromptLimit(req, req.body.interestPrompt);
     const actor = getActorInfo(req);
     const card = await service.create(companyId, req.body, {
       agentId: actor.actorType === "agent" ? actor.actorId : null,
@@ -141,7 +162,8 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
-    await assertCanMutate(req, card.companyId);
+    await assertCanManageCard(req, card);
+    assertAgentPromptLimit(req, req.body.interestPrompt);
     const actor = getActorInfo(req);
     const updated = await service.update(card, req.body, {
       agentId: actor.actorType === "agent" ? actor.actorId : null,
@@ -162,7 +184,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
-    await assertCanMutate(req, card.companyId);
+    await assertCanManageCard(req, card);
     await service.remove(card.id);
     await logMutation(req, card.companyId, "status_card.deleted", card.id);
     res.status(204).send();
@@ -179,7 +201,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
-    await assertCanMutate(req, card.companyId);
+    await assertCanManageCard(req, card);
     const result = await enqueueCompile(req, card.id);
     await logMutation(req, card.companyId, "status_card.recompile_requested", card.id, {
       generatingIssueId: result.generatingIssue.id,
@@ -192,7 +214,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
-    await assertCanMutate(req, card.companyId);
+    await assertCanManageCard(req, card);
     const result = await enqueueRefresh(req, card.id, req.body.full);
     await logMutation(req, card.companyId, "status_card.refresh_requested", card.id, {
       full: req.body.full,

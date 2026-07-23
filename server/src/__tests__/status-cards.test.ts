@@ -17,7 +17,12 @@ import {
   statusCards,
   statusCardUpdates,
 } from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import {
+  defaultStatusCardRefreshPolicy,
+  LOW_TRUST_REVIEW_PRESET,
+  STATUS_CARD_AGENT_MAX_CARDS,
+  STATUS_CARD_AGENT_MAX_INTEREST_PROMPT_LENGTH,
+} from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { statusCardRoutes } from "../routes/status-cards.js";
 import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
@@ -115,7 +120,7 @@ describeEmbeddedPostgres("status card routes", () => {
     return db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning().then((rows) => rows[0]!);
   }
 
-  function agentActor(companyId: string, agentId: string, runId: string): Express.Request["actor"] {
+  function agentActor(companyId: string, agentId: string, runId: string | null): Express.Request["actor"] {
     return { type: "agent", companyId, agentId, runId, source: "agent_jwt" };
   }
 
@@ -211,6 +216,71 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(response.status).toBe(201);
     expect(response.body.createdByAgentId).toBe(agent.id);
     expect(response.body.createdByUserId).toBeNull();
+
+    const patched = await request(app)
+      .patch(`/api/status-cards/${response.body.id}`)
+      .send({ title: "My monitored work", titlePinned: true });
+    expect(patched.status).toBe(200);
+    expect(patched.body).toMatchObject({ title: "My monitored work", titlePinned: true });
+  });
+
+  it("limits agent prompt length and total authored cards", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    const agent = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Bounded Author",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    const app = createApp(db, agentActor(company.id, agent.id, null));
+
+    const tooLong = await request(app)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "x".repeat(STATUS_CARD_AGENT_MAX_INTEREST_PROMPT_LENGTH + 1) });
+    expect(tooLong.status).toBe(422);
+    expect(tooLong.body.error).toContain(`${STATUS_CARD_AGENT_MAX_INTEREST_PROMPT_LENGTH}`);
+
+    await db.insert(statusCards).values(Array.from({ length: STATUS_CARD_AGENT_MAX_CARDS }, (_, index) => ({
+      companyId: company.id,
+      createdByAgentId: agent.id,
+      interestPrompt: `Existing card ${index + 1}`,
+      refreshPolicy: defaultStatusCardRefreshPolicy,
+    })));
+    const overCap = await request(app)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "One card too many" });
+    expect(overCap.status).toBe(422);
+    expect(overCap.body.error).toContain(`${STATUS_CARD_AGENT_MAX_CARDS}`);
+  });
+
+  it("prevents agents from managing cards authored by the board", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    const boardApp = createApp(db, localBoardActor());
+    const boardCard = await request(boardApp)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Board-owned status" });
+    const agent = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Scoped Author",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    const app = createApp(db, agentActor(company.id, agent.id, null));
+
+    const patch = await request(app).patch(`/api/status-cards/${boardCard.body.id}`).send({ title: "Hijacked" });
+    expect(patch.status).toBe(403);
+    const refresh = await request(app).post(`/api/status-cards/${boardCard.body.id}/refresh`).send({});
+    expect(refresh.status).toBe(403);
+    const remove = await request(app).delete(`/api/status-cards/${boardCard.body.id}`);
+    expect(remove.status).toBe(403);
   });
 
   it("deduplicates active compile tasks for the same prompt", async () => {
