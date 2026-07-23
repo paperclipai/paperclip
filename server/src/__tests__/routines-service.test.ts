@@ -1144,6 +1144,85 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
   });
 
+  it.each(["blocked", "in_review"] as const)(
+    "coalesces scheduled routine runs into an existing %s issue without a live heartbeat",
+    async (status) => {
+      const { companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+      const previousRunId = randomUUID();
+      const previousIssue = await issueSvc.create(companyId, {
+        projectId: routine.projectId,
+        title: routine.title,
+        description: routine.description,
+        status,
+        priority: routine.priority,
+        assigneeAgentId: routine.assigneeAgentId,
+        originKind: "routine_execution",
+        originId: routine.id,
+        originRunId: previousRunId,
+      });
+
+      await db.insert(routineRuns).values({
+        id: previousRunId,
+        companyId,
+        routineId: routine.id,
+        triggerId: null,
+        source: "schedule",
+        status: "issue_created",
+        triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+        linkedIssueId: previousIssue.id,
+        completedAt: new Date("2026-03-20T12:00:00.000Z"),
+      });
+
+      const { trigger } = await svc.createTrigger(
+        routine.id,
+        {
+          kind: "schedule",
+          label: "every two hours",
+          cronExpression: "0 */2 * * *",
+          timezone: "UTC",
+        },
+        {},
+      );
+      await db
+        .update(routineTriggers)
+        .set({ nextRunAt: new Date("2026-03-20T14:00:00.000Z") })
+        .where(eq(routineTriggers.id, trigger.id));
+
+      const result = await svc.tickScheduledTriggers(new Date("2026-03-20T14:00:00.000Z"));
+
+      expect(result.triggered).toBe(1);
+      expect(wakeups).toHaveLength(0);
+
+      const routineIssues = await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toEqual([{ id: previousIssue.id, status }]);
+
+      const runs = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toHaveLength(2);
+      const coalescedRun = runs.find((run) => run.id !== previousRunId);
+      expect(coalescedRun).toMatchObject({
+        source: "schedule",
+        status: "coalesced",
+        linkedIssueId: previousIssue.id,
+        coalescedIntoRunId: previousRunId,
+      });
+
+      const [updatedTrigger] = await db
+        .select({ lastResult: routineTriggers.lastResult, nextRunAt: routineTriggers.nextRunAt })
+        .from(routineTriggers)
+        .where(eq(routineTriggers.id, trigger.id));
+      expect(updatedTrigger?.lastResult).toMatch(/coalesced/i);
+      expect(updatedTrigger?.nextRunAt?.getTime()).toBeGreaterThan(
+        new Date("2026-03-20T14:00:00.000Z").getTime(),
+      );
+    },
+  );
+
   it("touches a coalesced routine issue for the manual runner's inbox", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const userId = randomUUID();
