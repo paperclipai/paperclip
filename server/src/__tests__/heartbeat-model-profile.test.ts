@@ -137,6 +137,86 @@ describe("heartbeat model profile application", () => {
     expect(merged).toEqual({ model: "primary" });
   });
 
+  it("keeps repeated monitor-style heartbeats on the primary model when cheap is disabled", () => {
+    const baseConfig = {
+      model: "gpt-5.3-codex",
+      modelReasoningEffort: "high",
+    };
+    const agentRuntimeConfig = {
+      modelProfiles: {
+        cheap: {
+          enabled: false,
+          adapterConfig: {
+            model: "gpt-5.3-codex-spark",
+          },
+        },
+      },
+    };
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const contextSnapshot = normalizeModelProfileWakeContext({
+        contextSnapshot: {},
+        payload: {
+          issueId: "issue-1",
+          monitorAttemptCount: attempt + 1,
+        },
+      });
+      const modelProfile = resolveModelProfileApplication({
+        adapterModelProfiles: [cheapProfile],
+        agentRuntimeConfig,
+        issueModelProfile: null,
+        contextSnapshot,
+      });
+      const merged = mergeModelProfileAdapterConfig({
+        baseConfig,
+        modelProfile,
+        issueAdapterConfig: null,
+      });
+
+      expect(contextSnapshot).not.toHaveProperty("modelProfile");
+      expect(modelProfile).toMatchObject({
+        requested: null,
+        applied: null,
+        adapterConfig: null,
+      });
+      expect(merged).toEqual(baseConfig);
+      expect(merged.model).toBe("gpt-5.3-codex");
+    }
+  });
+
+  it("does not apply the spark cheap profile when an explicit cheap request is disabled", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [cheapProfile],
+      agentRuntimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: false,
+            adapterConfig: {
+              model: "gpt-5.3-codex-spark",
+            },
+          },
+        },
+      },
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "cheap" },
+    });
+    const merged = mergeModelProfileAdapterConfig({
+      baseConfig: {
+        model: "gpt-5.3-codex",
+      },
+      modelProfile,
+      issueAdapterConfig: null,
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      applied: null,
+      fallbackReason: "agent_runtime_profile_disabled",
+      adapterConfig: null,
+    });
+    expect(merged).toEqual({ model: "gpt-5.3-codex" });
+  });
+
   it("normalizes a wake payload model profile into run context", () => {
     const contextSnapshot = normalizeModelProfileWakeContext({
       contextSnapshot: {},

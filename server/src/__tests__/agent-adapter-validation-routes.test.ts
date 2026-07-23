@@ -337,6 +337,73 @@ describe("agent routes adapter validation", () => {
     expect(env.CODEX_HOME).toBeUndefined();
   });
 
+  it("preserves the codex_local primary model when patching only runtimeConfig", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      name: "Codex",
+      urlKey: "codex",
+      role: "engineer",
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "codex_local",
+      adapterConfig: {
+        model: "gpt-5.3-codex",
+        modelReasoningEffort: "high",
+      },
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({
+          runtimeConfig: {
+            modelProfiles: {
+              cheap: {
+                enabled: false,
+                adapterConfig: {
+                  model: "gpt-5.3-codex-spark",
+                },
+              },
+            },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.adapterConfig).toMatchObject({
+      model: "gpt-5.3-codex",
+      modelReasoningEffort: "high",
+    });
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        runtimeConfig: expect.objectContaining({
+          modelProfiles: expect.objectContaining({
+            cheap: expect.objectContaining({ enabled: false }),
+          }),
+        }),
+      }),
+      expect.anything(),
+    );
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(patch).not.toHaveProperty("adapterConfig");
+  });
+
   it("isolates CODEX_HOME when updating a codex_local agent to set its own OPENAI_API_KEY", async () => {
     const agentId = "11111111-1111-4111-8111-111111111111";
     const app = await createApp();
