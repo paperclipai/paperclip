@@ -11,7 +11,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/EmptyState";
 import { InlineBanner } from "@/components/InlineBanner";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatCents, formatTokens } from "./format";
 import { StatusCardTile } from "./StatusCardTile";
 import { ArchivedStatusCardRow } from "./ArchivedStatusCardRow";
@@ -27,7 +26,7 @@ export function StatusCards() {
   const queryClient = useQueryClient();
   const { cardId } = useParams<{ cardId?: string }>();
 
-  const [tab, setTab] = useState<"active" | "archived">("active");
+  const [showArchived, setShowArchived] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [debugCardId, setDebugCardId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -130,73 +129,64 @@ export function StatusCards() {
         </div>
       </div>
 
-      <p className="max-w-3xl text-sm text-muted-foreground">
-        A shared board of always-on status summaries. Describe what you want to watch in plain language; the Summarizer
-        compiles a query and keeps a living summary up to date.
-      </p>
-
       {actionError ? <InlineBanner tone="warning" title="Heads up">{actionError}</InlineBanner> : null}
 
-      <Tabs value={tab} onValueChange={(value) => setTab(value as "active" | "archived")}>
-        <TabsList variant="line" className="w-full justify-start gap-4 border-b border-border">
-          <TabsTrigger value="active">Active ({activeCards.length})</TabsTrigger>
-          <TabsTrigger value="archived">Archived ({archivedCards.length})</TabsTrigger>
-        </TabsList>
-      </Tabs>
-
-      {tab === "active" ? (
-        activeQuery.isLoading ? (
-          <div className="flex items-center gap-2 py-12 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading cards…
-          </div>
-        ) : activeQuery.isError ? (
-          <InlineBanner tone="danger" title="Could not load status cards">
-            {activeQuery.error instanceof Error ? activeQuery.error.message : "Try again."}
-          </InlineBanner>
-        ) : activeCards.length === 0 ? (
-          <EmptyState
-            icon={FlaskConical}
-            title="No status cards yet"
-            message="Create a card to keep a living summary of the issues you care about."
-            action={selectedCompanyId ? "New card" : undefined}
-            onAction={() => setCreateOpen(true)}
-          />
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {activeCards.map((card) => (
-              <StatusCardTile
-                key={card.id}
-                card={card}
-                companyId={selectedCompanyId}
-                onOpen={() => openDetail(card.id)}
-                onRefresh={() => refreshMutation.mutate(card.id)}
-                onEditInterest={() => openDetail(card.id)}
-                onOpenDebug={() => setDebugCardId(card.id)}
-                onArchive={() => archiveMutation.mutate(card.id)}
-                refreshPending={refreshMutation.isPending && refreshMutation.variables === card.id}
-              />
-            ))}
-          </div>
-        )
-      ) : archivedCards.length === 0 ? (
-        <EmptyState icon={FlaskConical} title="No archived cards" message="Cards you archive show up here with their lifetime cost." />
+      {activeQuery.isLoading ? (
+        <div className="flex items-center gap-2 py-12 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading cards…
+        </div>
+      ) : activeQuery.isError ? (
+        <InlineBanner tone="danger" title="Could not load status cards">
+          {activeQuery.error instanceof Error ? activeQuery.error.message : "Try again."}
+        </InlineBanner>
+      ) : activeCards.length === 0 ? (
+        <EmptyState
+          icon={FlaskConical}
+          title="No status cards yet"
+          message="Create a card to keep a living summary of the issues you care about."
+          action={selectedCompanyId ? "New card" : undefined}
+          onAction={() => setCreateOpen(true)}
+        />
       ) : (
-        <div className="space-y-3">
-          <p className="text-sm text-muted-foreground">
-            Archived cards never auto-update and hold no watches. Restore one to start watching again — it comes back
-            stale.
-          </p>
-          {archivedCards.map((card) => (
-            <ArchivedStatusCardRow
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {activeCards.map((card) => (
+            <StatusCardTile
               key={card.id}
               card={card}
-              onView={() => openDetail(card.id)}
-              onRestore={() => restoreMutation.mutate(card.id)}
-              restorePending={restoreMutation.isPending && restoreMutation.variables === card.id}
+              companyId={selectedCompanyId}
+              onOpen={() => openDetail(card.id)}
+              onRefresh={() => refreshMutation.mutate(card.id)}
+              onEditInterest={() => openDetail(card.id)}
+              onOpenDebug={() => setDebugCardId(card.id)}
+              onArchive={() => archiveMutation.mutate(card.id)}
+              refreshPending={refreshMutation.isPending && refreshMutation.variables === card.id}
             />
           ))}
         </div>
       )}
+
+      {archivedCards.length > 0 ? (
+        <div className="space-y-3 pt-2">
+          <button
+            type="button"
+            onClick={() => setShowArchived((prev) => !prev)}
+            className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            {showArchived ? "Hide archived" : `Show archived (${archivedCards.length})`}
+          </button>
+          {showArchived
+            ? archivedCards.map((card) => (
+                <ArchivedStatusCardRow
+                  key={card.id}
+                  card={card}
+                  onView={() => openDetail(card.id)}
+                  onRestore={() => restoreMutation.mutate(card.id)}
+                  restorePending={restoreMutation.isPending && restoreMutation.variables === card.id}
+                />
+              ))
+            : null}
+        </div>
+      ) : null}
 
       {selectedCompanyId ? (
         <CreateStatusCardDialog companyId={selectedCompanyId} open={createOpen} onOpenChange={setCreateOpen} />
