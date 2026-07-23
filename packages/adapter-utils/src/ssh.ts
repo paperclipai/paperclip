@@ -475,7 +475,7 @@ async function probeRemoteDirSize(input: {
       { timeoutMs: 15_000, maxBuffer: 16 * 1024 },
     );
     const kilobytes = Number.parseInt(result.stdout.trim(), 10);
-    return Number.isFinite(kilobytes) && kilobytes > 0 ? kilobytes * 1024 : null;
+    return Number.isFinite(kilobytes) && kilobytes >= 0 ? kilobytes * 1024 : null;
   } catch {
     return null;
   }
@@ -601,6 +601,50 @@ async function copyDirectoryContents(sourceDir: string, targetDir: string): Prom
       preserveTimestamps: true,
     });
   }));
+}
+
+export async function createSshSyncBackStagingDir(localDir: string): Promise<string> {
+  // Keep the complete pre-restore copy beside the workspace. SSH workspaces can
+  // be several gigabytes, while the host's shared /tmp may have a much smaller
+  // user quota. A sibling also stays on the workspace filesystem, preserving
+  // the existing "stage fully before replacing local state" safety boundary.
+  const stagingRoot = path.dirname(path.resolve(localDir));
+  await fs.mkdir(stagingRoot, { recursive: true });
+  return await fs.mkdtemp(path.join(stagingRoot, ".paperclip-ssh-sync-back-"));
+}
+
+const SSH_SYNC_BACK_MIN_HEADROOM_BYTES = 512n * 1024n * 1024n;
+
+export function assertSshSyncBackCapacity(input: {
+  availableBytes: bigint;
+  remoteBytes: bigint;
+  stagingDir: string;
+}): void {
+  const proportionalHeadroom = (input.remoteBytes + 9n) / 10n;
+  const headroomBytes = proportionalHeadroom > SSH_SYNC_BACK_MIN_HEADROOM_BYTES
+    ? proportionalHeadroom
+    : SSH_SYNC_BACK_MIN_HEADROOM_BYTES;
+  const requiredBytes = input.remoteBytes + headroomBytes;
+  if (input.availableBytes >= requiredBytes) return;
+
+  const formatGiB = (bytes: bigint) => (Number(bytes) / (1024 ** 3)).toFixed(2);
+  throw new Error(
+    `Insufficient capacity for SSH workspace restore on ${input.stagingDir}: ` +
+    `${formatGiB(input.availableBytes)} GiB available, ${formatGiB(requiredBytes)} GiB required ` +
+    `(${formatGiB(input.remoteBytes)} GiB snapshot plus safe headroom).`,
+  );
+}
+
+async function preflightSshSyncBackCapacity(input: {
+  stagingDir: string;
+  remoteBytes: number;
+}): Promise<void> {
+  const stats = await fs.statfs(input.stagingDir, { bigint: true });
+  assertSshSyncBackCapacity({
+    availableBytes: stats.bavail * stats.bsize,
+    remoteBytes: BigInt(input.remoteBytes),
+    stagingDir: input.stagingDir,
+  });
 }
 
 async function readLocalGitWorkspaceSnapshot(localDir: string): Promise<LocalGitWorkspaceSnapshot | null> {
@@ -1376,13 +1420,43 @@ export async function syncDirectoryFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   remoteDir: string;
   localDir: string;
+  stagingDir?: string;
   exclude?: string[];
   preserveLocalEntries?: string[];
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
-  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+  const ownsStagingDir = input.stagingDir == null;
+  let stagingDir: string;
+  try {
+    stagingDir = input.stagingDir ?? await createSshSyncBackStagingDir(input.localDir);
+  } catch (error) {
+    await auth.cleanup();
+    throw error;
+  }
+  const remoteBytes = await probeRemoteDirSize({
+    spec: input.spec,
+    remoteDir: input.remoteDir,
+  });
+  if (remoteBytes == null) {
+    await auth.cleanup();
+    if (ownsStagingDir) {
+      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    throw new Error(
+      `Unable to determine SSH workspace size for capacity preflight: ${input.remoteDir}`,
+    );
+  }
+  try {
+    await preflightSshSyncBackCapacity({ stagingDir, remoteBytes });
+  } catch (error) {
+    await auth.cleanup();
+    if (ownsStagingDir) {
+      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    throw error;
+  }
   const remoteTarScript = [
     `cd ${shellQuote(input.remoteDir)}`,
     `tar ${[...tarExcludeArgs(input.exclude).map(shellQuote), "-cf", "-", "."].join(" ")}`,
@@ -1395,17 +1469,15 @@ export async function syncDirectoryFromSsh(input: {
     `sh -c ${shellQuote(remoteTarScript)}`,
   ];
 
-  // The remote tar size isn't known locally, so probe the remote directory for
-  // an estimate (clamped to 99%). The probe runs concurrently with the transfer
-  // so its round-trip never delays the restore; when it is unavailable we report
-  // bytes received in MB mode with a terminal completion line.
+  // Capacity admission requires a size probe before the transfer starts. Reuse
+  // that conservative estimate for progress and clamp it to 99% until complete.
   const progress = input.onProgress
     ? createTransferProgress({
       onProgress: input.onProgress,
       phase: "Restoring",
       direction: "from",
       label: input.progressLabel,
-      totalBytes: probeRemoteDirSize({ spec: input.spec, remoteDir: input.remoteDir }),
+      totalBytes: remoteBytes,
       estimated: true,
     })
     : null;
@@ -1478,13 +1550,17 @@ export async function syncDirectoryFromSsh(input: {
     });
     await progress?.finish();
 
-    await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
-    await copyDirectoryContents(stagingDir, input.localDir);
+    if (ownsStagingDir) {
+      await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
+      await copyDirectoryContents(stagingDir, input.localDir);
+    }
   } catch (error) {
     await progress?.fail();
     throw error;
   } finally {
-    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    if (ownsStagingDir) {
+      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    }
     await auth.cleanup();
   }
 }
@@ -1548,7 +1624,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   if (input.baselineSnapshot) {
-    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+    const stagingDir = await createSshSyncBackStagingDir(input.localDir);
     const importedRef = input.restoreGitHistory
       ? `refs/paperclip/ssh-sync/imported/${randomUUID()}`
       : null;
@@ -1566,7 +1642,8 @@ export async function restoreWorkspaceFromSshExecution(input: {
       await syncDirectoryFromSsh({
         spec: input.spec,
         remoteDir,
-        localDir: stagingDir,
+        localDir: input.localDir,
+        stagingDir,
         exclude: input.baselineSnapshot.exclude,
         onProgress: input.onProgress,
         progressLabel: "workspace",
