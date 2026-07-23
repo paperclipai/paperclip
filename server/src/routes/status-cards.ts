@@ -14,7 +14,7 @@ import { validate } from "../middleware/validate.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService, heartbeatService, instanceSettingsService, logActivity, statusCardService } from "../services/index.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
-import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 
 export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
   const router = Router();
@@ -244,6 +244,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
+    if (!hasCompanyAccess(req, card.companyId)) throw notFound("Status card not found");
     assertCompanyAccess(req, card.companyId);
     const actor = getActorInfo(req);
     const updated = await service.writeQuery(card.id, req.body, {
@@ -262,6 +263,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
+    if (!hasCompanyAccess(req, card.companyId)) throw notFound("Status card not found");
     assertCompanyAccess(req, card.companyId);
     const actor = getActorInfo(req);
     const result = await service.writeSummary(card.id, req.body, {
