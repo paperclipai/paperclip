@@ -361,6 +361,41 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
   });
 
+  it("completes first-time setup of a needs_setup built-in without a fresh board approval", async () => {
+    const companyId = await seedCompany({ requireApproval: true });
+    const builtIns = builtInAgentService(db);
+
+    // A hired-but-unconfigured built-in row: exists (its hire was already
+    // sanctioned) but its adapter config is still empty → `needs_setup`.
+    const seeded = await builtIns.ensure(companyId, "briefs");
+    expect(seeded.status).toBe("needs_setup");
+
+    // Configuring the adapter for the first time must apply directly instead of
+    // throwing "adapter changes require board approval".
+    const result = await builtIns.provision(companyId, "briefs", {
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      budgetMonthlyCents: 2500,
+    }, { requestedByUserId: "board-user" });
+
+    expect(result.approval).toBeNull();
+    expect(result.state).toMatchObject({
+      status: "ready",
+      agentId: seeded.agentId,
+      agent: {
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        budgetMonthlyCents: 2500,
+      },
+    });
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    const noApprovals = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
+    expect(noApprovals).toHaveLength(0);
+  });
+
   it("rejects adapter types outside the built-in definition allowlist", async () => {
     const companyId = await seedCompany();
 

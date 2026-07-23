@@ -1683,7 +1683,23 @@ export function builtInAgentService(db: Db) {
         };
       }
 
-      if (input.adapterType !== undefined || input.adapterConfig !== undefined) {
+      const providesAdapterSetup = input.adapterType !== undefined || input.adapterConfig !== undefined;
+
+      // A built-in row that has never completed adapter setup (incomplete
+      // config, i.e. `needs_setup`) is still first-time configuration, not a
+      // reconfiguration of a live agent. Its existence was already sanctioned
+      // when the row was created — e.g. the auto-provisioned Reflection Coach
+      // hire approval resolves (`activatePendingApproval`) to an idle row whose
+      // adapterConfig is still empty. Completing that setup applies directly, as
+      // it does when board approval is not required, instead of dead-ending on a
+      // fresh board-approval requirement the operator can never satisfy.
+      if (providesAdapterSetup && !hasCompleteAdapterConfig(existing.adapterType, existing.adapterConfig)) {
+        return { state: await ensure(companyId, key, input), approval: null };
+      }
+
+      // Changing the adapter of an already-configured (`ready`/`paused`)
+      // built-in agent is a genuine reconfiguration and stays gated.
+      if (providesAdapterSetup) {
         throw conflict("Built-in agent adapter changes require board approval before they can be applied.", {
           code: "built_in_agent_reconfiguration_requires_approval",
           key: definition.key,
