@@ -237,6 +237,7 @@ vi.mock("../services/index.js", () => ({
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
+  statusCardService: vi.fn(() => ({})),
   toolAccessService: vi.fn(() => ({
     sweepConnectionHealth: vi.fn(async () => ({
       checked: 0,

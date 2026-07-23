@@ -41,6 +41,7 @@ describe("instance settings service", () => {
       enableSmokeLab: false,
       enableBuiltInAgents: true,
       enableSummaries: false,
+      enableStatusCards: false,
       enableDecisions: false,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
