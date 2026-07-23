@@ -1,0 +1,174 @@
+# Default values for paperclip.
+# Every value is annotated for helm-docs. If you add or rename a value, run
+# `pre-commit run helm-docs` (or the chart-lint CI will fail).
+
+# -- Container image settings.
+image:
+  # -- Image repository. Upstream publishes to `ghcr.io/paperclipai/paperclip` on every master push and stable tag.
+  repository: ghcr.io/paperclipai/paperclip
+  # -- Image tag. Override to a specific stable release (e.g. `v2026.416.0`) or pin to a `sha-<commit>` tag.
+  tag: "latest"
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# -- Image pull secrets. Only needed if the GHCR package is private.
+# Example: `[{name: ghcr-pull}]`.
+imagePullSecrets: []
+
+# -- Override the chart name used in resource names.
+nameOverride: ""
+# -- Override the full name used as the prefix for every resource.
+fullnameOverride: ""
+
+# -- Persistent volume settings for `/paperclip`.
+persistence:
+  # -- Whether to create a PVC for `/paperclip`. Required for any real use — disabling loses all state on pod restart.
+  enabled: true
+  # -- StorageClass for the PVC. Empty string uses the cluster's default StorageClass; set explicitly (e.g. `local-path` on Talos) to pin one.
+  storageClassName: ""
+  # -- Access mode for the PVC. ReadWriteOnce is correct for the single-replica StatefulSet.
+  accessMode: ReadWriteOnce
+  # -- PVC size. Sized for live state + ~30 days of hourly pg_dumps.
+  size: 20Gi
+  # -- Mount path inside the container. Paperclip's `PAPERCLIP_HOME` defaults to `/paperclip`; keep these aligned.
+  mountPath: /paperclip
+
+# -- Kubernetes Service exposing the HTTP UI/API.
+service:
+  # -- Service type. Keep `ClusterIP`; cloudflared or Ingress handle external exposure.
+  type: ClusterIP
+  # -- Service port. Must match `env.port`.
+  port: 3100
+
+# -- Optional Ingress. Leave disabled if fronting via cloudflared only.
+ingress:
+  # -- Enable an Ingress resource.
+  enabled: false
+  # -- Ingress class name. `nginx` matches the cluster's ingress-nginx install.
+  className: nginx
+  # -- Annotations on the Ingress (e.g. cert-manager, rate limits).
+  annotations: {}
+  # -- Hosts and paths served by the Ingress.
+  # @default -- single host at `paperclip.example.com` serving `/`.
+  hosts:
+    - host: paperclip.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS configuration. Leave empty to serve HTTP only.
+  # Example: `[{hosts: [paperclip.example.com], secretName: paperclip-tls}]`.
+  tls: []
+
+# -- Paperclip runtime environment.
+env:
+  # -- Bind address.
+  host: "0.0.0.0"
+  # -- HTTP port inside the container (must match `service.port`).
+  port: 3100
+  # -- Serve the bundled web UI alongside the API.
+  serveUi: true
+  # -- Paperclip instance identifier. Directory under `/paperclip/instances/` is named after this.
+  instanceId: default
+  # -- Extra hostnames the server accepts on its `Host` header (e.g. public ingress hosts). Rendered as `PAPERCLIP_ALLOWED_HOSTNAMES`, with `127.0.0.1` **always prepended by the chart** so spawned agents get `http://127.0.0.1:{{ env.port }}` as `PAPERCLIP_API_URL` (the server picks `allowedHostnames[0] + env.port` to build that URL). Do not list public hosts here expecting them to be reachable from inside the pod — they're served on `:443`/HTTPS via an ingress, but the URL the server constructs always uses `http://` and `env.port`, so they'd be unreachable as `allowedHostnames[0]`. The leading `127.0.0.1` neutralises that. Example: `["paperclip.example.com"]`.
+  extraAllowedHostnames: []
+  # -- Extra environment variables merged verbatim into the container spec. Example: `[{name: NODE_OPTIONS, value: --max-old-space-size=3072}]`.
+  extra: []
+
+# -- Secret containing `agentJwtSecret` and optional `masterKey` seed.
+secret:
+  # -- Name of a pre-existing Secret to read credentials from. Leave empty to let the chart render a Secret with an auto-generated `agentJwtSecret` on first install. **Set this under GitOps** — the templated Secret uses `randAlphaNum`, which re-rolls on every render, keeping the app perpetually OutOfSync and thrashing pods under `selfHeal`. Create the Secret with `kubectl create secret generic <name> --from-literal=agentJwtSecret=$(openssl rand -hex 32)` and point `existingSecret` at it.
+  existingSecret: ""
+  # -- JWT secret for the Paperclip agent. Only used when `existingSecret` is empty — avoid under GitOps (non-deterministic render).
+  agentJwtSecret: ""
+  # -- Base64-encoded master key to seed `/paperclip/instances/<instanceId>/secrets/master.key` on first boot. Ignored if the file already exists on the PVC. Only used when `existingSecret` is empty. Leave empty to let Paperclip generate its own on first run.
+  masterKey: ""
+
+# -- Pod spec knobs.
+pod:
+  # -- Share the process namespace so tini (pid 1) reaps orphaned child processes spawned by Claude agents.
+  shareProcessNamespace: true
+  # -- Pod-level security context.
+  # @default -- `{fsGroup: 1000, fsGroupChangePolicy: OnRootMismatch}`.
+  securityContext:
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+  # -- Container-level security context.
+  # @default -- `{runAsUser: 1000, runAsGroup: 1000, runAsNonRoot: true}`.
+  containerSecurityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    runAsNonRoot: true
+  # -- Extra annotations on the pod template.
+  annotations: {}
+  # -- Extra labels on the pod template.
+  labels: {}
+
+# -- Container resource requests/limits.
+# @default -- requests `500m/1Gi`, limits `2/4Gi`.
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+# -- Health probe tuning. The chart templates each probe's `httpGet` (to
+# `/healthz` on the `http` port) with a `Host` header set to `allowedHostnames[0]`
+# — the loopback the private-hostname guard always accepts (see
+# server/src/middleware/private-hostname-guard.ts), derived from the same source
+# as `PAPERCLIP_ALLOWED_HOSTNAMES`. Only the timing fields below are tunable.
+probes:
+  # -- Liveness probe timings. Paperclip serves HTTP on the configured port once the embedded Postgres is up.
+  liveness:
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    failureThreshold: 3
+  # -- Readiness probe timings. Shorter cadence pulls the pod out of rotation quickly on transient failures.
+  readiness:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    failureThreshold: 3
+  # -- Startup probe timings. Long timeout tolerates first-run DB init + 45 migrations.
+  startup:
+    periodSeconds: 10
+    failureThreshold: 30
+
+# -- Node selector.
+nodeSelector: {}
+# -- Tolerations.
+tolerations: []
+# -- Affinity rules.
+affinity: {}
+# -- Priority class name.
+priorityClassName: ""
+
+# -- PodDisruptionBudget. Uses `maxUnavailable` rather than `minAvailable` so node drains and cluster upgrades remain possible on the single-replica StatefulSet (a `minAvailable: 1` budget would block every voluntary eviction).
+pdb:
+  # -- Create a PodDisruptionBudget.
+  enabled: true
+  # -- Maximum number of pods that may be unavailable during voluntary disruptions. `1` lets a single-replica StatefulSet be drained.
+  maxUnavailable: 1
+
+# -- Ingress NetworkPolicy restricting which namespaces may reach the pod.
+networkPolicy:
+  # -- Create a NetworkPolicy. Defaults to allowing from `ingress-nginx` and `cloudflare` namespaces only — **same-namespace pods (sidecars, scrapers, `kubectl debug` pods) are also blocked**, so extend `allowFromNamespaces` or disable the policy for any in-cluster tooling that needs to reach the service.
+  enabled: true
+  # -- Namespaces whose pods may reach the Paperclip service port. Add an entry for the release namespace if you need same-namespace traffic (e.g. Prometheus scrape, debug pods).
+  # @default -- `ingress-nginx` and `cloudflare` namespaces.
+  allowFromNamespaces:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: cloudflare
+
+# -- Dedicated ServiceAccount for the pod.
+serviceAccount:
+  # -- Create a dedicated ServiceAccount.
+  create: true
+  # -- Name override. Defaults to the full release name when empty.
+  name: ""
+  # -- Annotations on the ServiceAccount.
+  annotations: {}

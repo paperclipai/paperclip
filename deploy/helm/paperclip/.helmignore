@@ -1,0 +1,7 @@
+.DS_Store
+.git/
+.gitignore
+.vscode/
+*.tgz
+README.md.gotmpl
+tests/

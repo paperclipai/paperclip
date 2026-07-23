@@ -1,0 +1,151 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "paperclip.fullname" . }}
+  labels:
+    {{- include "paperclip.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ include "paperclip.headlessServiceName" . }}
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "paperclip.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "paperclip.selectorLabels" . | nindent 8 }}
+        {{- with .Values.pod.labels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.pod.annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "paperclip.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      shareProcessNamespace: {{ .Values.pod.shareProcessNamespace }}
+      securityContext:
+        {{- toYaml .Values.pod.securityContext | nindent 8 }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      initContainers:
+        - name: seed
+          image: {{ include "paperclip.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.pod.containerSecurityContext | nindent 12 }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              BASE={{ .Values.persistence.mountPath | quote }}
+              INST="${BASE}/instances/{{ .Values.env.instanceId }}"
+              mkdir -p "${INST}/secrets"
+              if [ -n "${PAPERCLIP_MASTER_KEY_SEED:-}" ] && [ ! -f "${INST}/secrets/master.key" ]; then
+                printf '%s' "${PAPERCLIP_MASTER_KEY_SEED}" | base64 -d > "${INST}/secrets/master.key"
+                chmod 0600 "${INST}/secrets/master.key"
+              fi
+          env:
+            {{- if .Values.secret.masterKey }}
+            - name: PAPERCLIP_MASTER_KEY_SEED
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "paperclip.secretName" . }}
+                  key: masterKey
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+      containers:
+        - name: paperclip
+          image: {{ include "paperclip.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.pod.containerSecurityContext | nindent 12 }}
+          workingDir: /app
+          command: ["node"]
+          args:
+            - --import
+            - ./server/node_modules/tsx/dist/loader.mjs
+            - server/dist/index.js
+          ports:
+            - name: http
+              containerPort: {{ .Values.env.port }}
+              protocol: TCP
+          env:
+            - name: HOST
+              value: {{ .Values.env.host | quote }}
+            - name: PORT
+              value: {{ .Values.env.port | quote }}
+            - name: SERVE_UI
+              value: {{ .Values.env.serveUi | quote }}
+            - name: PAPERCLIP_HOME
+              value: {{ .Values.persistence.mountPath | quote }}
+            - name: PAPERCLIP_INSTANCE_ID
+              value: {{ .Values.env.instanceId | quote }}
+            - name: PAPERCLIP_ALLOWED_HOSTNAMES
+              value: {{ include "paperclip.allowedHostnames" . | quote }}
+            - name: PAPERCLIP_AGENT_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "paperclip.secretName" . }}
+                  key: agentJwtSecret
+            {{- with .Values.env.extra }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            {{- include "paperclip.probeHttpGet" . | nindent 12 }}
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- include "paperclip.probeHttpGet" . | nindent 12 }}
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          startupProbe:
+            {{- include "paperclip.probeHttpGet" . | nindent 12 }}
+            {{- toYaml .Values.probes.startup | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if not .Values.persistence.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "paperclip.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - {{ .Values.persistence.accessMode }}
+        {{- with .Values.persistence.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}
