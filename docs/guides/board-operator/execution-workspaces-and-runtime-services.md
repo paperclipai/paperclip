@@ -54,6 +54,17 @@ Execution workspaces are durable until a human closes them.
 - Closing an execution workspace stops its runtime services and cleans up its workspace artifacts when allowed.
 - Shared workspaces that point at the project primary checkout are treated more conservatively during cleanup than disposable isolated workspaces.
 
+### Archived-workspace lockout (POLA-5646)
+
+**Root cause**: When an execution workspace was un-archived (status changed from `archived` or `cleanup_failed` back to `active`/`idle`), the `closedAt` timestamp was not cleared. The `isClosedIsolatedExecutionWorkspace` guard (in `packages/shared/src/execution-workspace-guards.ts`) considers a workspace closed when either the status is `archived`/`cleanup_failed` **or** `closedAt` is non-null. A reactivated workspace with a stale `closedAt` therefore remained blocked, preventing checkout for any issue linked to that workspace.
+
+**Fix**: The `PATCH /api/execution-workspaces/:id` route now clears `closedAt`, `cleanupReason`, and `cleanupEligibleAt` to `null` when the requested status transition is away from `archived`/`cleanup_failed` and the existing `closedAt` is set.
+
+**Prevention guidance**:
+- When adding new closure-related fields to execution workspaces, ensure all fields are cleared on re-activation to avoid ghost-locks.
+- The `isClosedIsolatedExecutionWorkspace` guard and the PATCH route lifecycle logic are coupled -- changes to either must be reviewed together.
+- Test re-activation paths explicitly: archive a workspace, un-archive it, and verify checkout succeeds for a linked issue.
+
 ## Resolved workspace logic during heartbeat runs
 
 Heartbeat still resolves a workspace for the run, but that is about code location and session continuity, not runtime-service control.
