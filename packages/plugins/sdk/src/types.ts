@@ -1374,6 +1374,7 @@ export interface PluginIssuesClient {
     projectId?: string;
     goalId?: string;
     parentId?: string;
+    createdFromIssueId?: string | null;
     inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
     description?: string;

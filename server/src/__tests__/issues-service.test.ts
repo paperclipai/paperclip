@@ -3326,6 +3326,275 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(child.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
   });
+
+  it("stamps the issue checked out by the creating run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const sourceIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Checked out source",
+      status: "in_progress",
+      priority: "medium",
+      checkoutRunId: runId,
+    });
+
+    const created = await svc.create(companyId, {
+      title: "Created by checked out run",
+      actorRunId: runId,
+    });
+
+    expect(created.createdFromIssueId).toBe(sourceIssueId);
+  });
+
+  it("rejects run-derived provenance that would self-reference", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checked out source",
+      status: "in_progress",
+      priority: "medium",
+      checkoutRunId: runId,
+    });
+
+    await expect(svc.create(companyId, {
+      id: issueId,
+      title: "Self-referencing run-derived issue",
+      actorRunId: runId,
+    })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("prefers an explicit originating issue over the run-derived issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const explicitSourceIssueId = randomUUID();
+    const checkedOutIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+    });
+    await db.insert(issues).values([
+      {
+        id: explicitSourceIssueId,
+        companyId,
+        title: "Explicit source",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: checkedOutIssueId,
+        companyId,
+        title: "Checked out source",
+        status: "in_progress",
+        priority: "medium",
+        checkoutRunId: runId,
+      },
+    ]);
+
+    const created = await svc.create(companyId, {
+      title: "Created with explicit source",
+      createdFromIssueId: explicitSourceIssueId,
+      actorRunId: runId,
+    });
+
+    expect(created.createdFromIssueId).toBe(explicitSourceIssueId);
+  });
+
+  it("rejects a self-referencing originating issue", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(svc.create(companyId, {
+      id: issueId,
+      title: "Self-referencing issue",
+      createdFromIssueId: issueId,
+    })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("rejects an originating issue from another company", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const otherIssueId = randomUUID();
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other company",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId: otherCompanyId,
+      title: "Foreign source",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.create(companyId, {
+      title: "Cross-company provenance",
+      createdFromIssueId: otherIssueId,
+    })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("expands originating issues for detail and list reads, including null provenance", async () => {
+    const companyId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const derivedIssueId = randomUUID();
+    const standaloneIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Originating issue",
+        status: "in_progress",
+        priority: "high",
+      },
+      {
+        id: derivedIssueId,
+        companyId,
+        createdFromIssueId: sourceIssueId,
+        title: "Derived issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: standaloneIssueId,
+        companyId,
+        title: "Standalone issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const derivedDetail = await svc.getById(derivedIssueId);
+    const standaloneDetail = await svc.getById(standaloneIssueId);
+    const listById = new Map((await svc.list(companyId)).map((issue) => [issue.id, issue]));
+
+    expect(derivedDetail).toMatchObject({
+      createdFromIssueId: sourceIssueId,
+      createdFromIssue: {
+        id: sourceIssueId,
+        identifier: null,
+        title: "Originating issue",
+        status: "in_progress",
+      },
+    });
+    expect(standaloneDetail).toMatchObject({
+      createdFromIssueId: null,
+      createdFromIssue: null,
+    });
+    expect(listById.get(derivedIssueId)?.createdFromIssue).toEqual(derivedDetail?.createdFromIssue);
+    expect(listById.get(standaloneIssueId)?.createdFromIssue).toBeNull();
+  });
+
+  it("leaves originating issue null without run or explicit context", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const created = await svc.create(companyId, { title: "Board-created issue" });
+
+    expect(created.createdFromIssueId).toBeNull();
+  });
+
 });
 
 describeEmbeddedPostgres("issueService blockers and dependency wake readiness", () => {

@@ -1247,6 +1247,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         assigneeAgentId: input.watchdog.watchdogAgentId,
         originKind: TASK_WATCHDOG_ORIGIN_KIND,
         originId: input.sourceIssue.id,
+        createdFromIssueId: input.sourceIssue.id,
         originFingerprint: input.classification.stopFingerprint,
         billingCode: input.sourceIssue.billingCode,
         inheritExecutionWorkspaceFromIssueId: input.sourceIssue.id,

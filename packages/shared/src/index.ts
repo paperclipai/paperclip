@@ -857,6 +857,7 @@ export type {
   IssueExecutionMonitorPolicy,
   IssueExecutionMonitorState,
   IssueRelation,
+  IssueCreatedFromIssueSummary,
   IssueRelationIssueSummary,
   IssueExecutionPolicy,
   IssueExecutionState,

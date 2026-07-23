@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -48,6 +48,7 @@ import type {
   IssueBlockedInboxIssueRef,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
+  IssueCreatedFromIssueSummary,
   IssueRelationIssueSummary,
   IssueWatchdogSummary,
   LowTrustBoundary,
@@ -283,6 +284,46 @@ async function resolveResponsibleUserIdForIssueCreate(
   }
 
   return input.createdByUserId ?? null;
+}
+
+async function resolveCreatedFromIssueIdForCreate(
+  reader: DbReader,
+  companyId: string,
+  input: {
+    issueId: string;
+    createdFromIssueId?: string | null;
+    actorRunId?: string | null;
+  },
+) {
+  const explicitCreatedFromIssueId = readStringFromRecord(input, "createdFromIssueId");
+  if (explicitCreatedFromIssueId) {
+    if (explicitCreatedFromIssueId === input.issueId) {
+      throw unprocessable("Issue cannot be its own originating issue");
+    }
+
+    const sourceIssue = await reader
+      .select({ companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, explicitCreatedFromIssueId))
+      .then((rows) => rows[0] ?? null);
+    if (!sourceIssue) throw unprocessable("Originating issue not found");
+    if (sourceIssue.companyId !== companyId) {
+      throw unprocessable("Originating issue must belong to the same company");
+    }
+    return explicitCreatedFromIssueId;
+  }
+
+  if (!input.actorRunId) return null;
+  const runDerivedSourceIssueId = await reader
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.checkoutRunId, input.actorRunId)))
+    .limit(1)
+    .then((rows) => rows[0]?.id ?? null);
+  if (runDerivedSourceIssueId === input.issueId) {
+    throw unprocessable("Issue cannot be its own originating issue");
+  }
+  return runDerivedSourceIssueId;
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -628,6 +669,48 @@ type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
 };
+
+async function withCreatedFromIssueSummaries<
+  T extends { id: string; createdFromIssueId: string | null },
+>(
+  dbOrTx: DbReader,
+  companyId: string,
+  rows: T[],
+): Promise<Array<T & { createdFromIssue?: IssueCreatedFromIssueSummary | null }>> {
+  const sourceIssueIds = [
+    ...new Set(rows.flatMap((row) => (row.createdFromIssueId ? [row.createdFromIssueId] : []))),
+  ];
+  if (sourceIssueIds.length === 0) {
+    return rows.map((row) => ({ ...row, createdFromIssue: null }));
+  }
+
+  const sourceRows = await dbOrTx
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      status: issues.status,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, sourceIssueIds)));
+  const sourceById = new Map(
+    sourceRows.map((row) => [
+      row.id,
+      {
+        ...row,
+        status: row.status as IssueCreatedFromIssueSummary["status"],
+      },
+    ]),
+  );
+
+  return rows.map((row) => ({
+    ...row,
+    createdFromIssue: row.createdFromIssueId
+      ? sourceById.get(row.createdFromIssueId) ?? null
+      : null,
+  }));
+}
+
 type IssueBlockerDiagnosticsIssueRow = {
   id: string;
   companyId: string;
@@ -2505,6 +2588,7 @@ const issueListSelect = {
   projectWorkspaceId: issues.projectWorkspaceId,
   goalId: issues.goalId,
   parentId: issues.parentId,
+  createdFromIssueId: issues.createdFromIssueId,
   title: issues.title,
   description: sql<string | null>`
     CASE
@@ -3619,7 +3703,11 @@ async function listBlockedInboxIssues(
       description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
     }));
   const withLabels = await withIssueLabels(dbOrTx, rows);
-  const withRuns = withActiveRuns(withLabels, await activeRunMapForIssues(dbOrTx, withLabels));
+  const withCreatedFromIssues = await withCreatedFromIssueSummaries(dbOrTx, companyId, withLabels);
+  const withRuns = withActiveRuns(
+    withCreatedFromIssues,
+    await activeRunMapForIssues(dbOrTx, withCreatedFromIssues),
+  );
   if (withRuns.length === 0) return [];
 
   const issueIds = withRuns.map((row) => row.id);
@@ -3770,7 +3858,8 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    const [withCreatedFromIssue] = await withCreatedFromIssueSummaries(db, row.companyId, [enriched]);
+    return withCreatedFromIssue;
   }
 
   async function getIssueByIdentifier(identifier: string) {
@@ -3781,7 +3870,8 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    const [withCreatedFromIssue] = await withCreatedFromIssueSummaries(db, row.companyId, [enriched]);
+    return withCreatedFromIssue;
   }
 
   async function getCurrentScheduledRetryForIssue(issueId: string, companyId: string): Promise<IssueScheduledRetryRow | null> {
@@ -4887,8 +4977,9 @@ export function issueService(db: Db) {
         description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
       }));
       const withLabels = await withIssueLabels(db, rows);
-      const runMap = await activeRunMapForIssues(db, withLabels);
-      const withRuns = withActiveRuns(withLabels, runMap);
+      const withCreatedFromIssues = await withCreatedFromIssueSummaries(db, companyId, withLabels);
+      const runMap = await activeRunMapForIssues(db, withCreatedFromIssues);
+      const withRuns = withActiveRuns(withCreatedFromIssues, runMap);
       if (withRuns.length === 0) {
         return withRuns;
       }
@@ -6015,6 +6106,7 @@ export function issueService(db: Db) {
 
           const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, {
             ...nextChildInput,
+            createdFromIssueId: sourceIssue.id,
             executionWorkspaceInheritanceMode: "strategy_only",
           });
           const nextIds = [...existingChildIssueIds, createdChild.issue.id];
@@ -6152,6 +6244,8 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
+      const issueId = issueData.id ?? randomUUID();
+      issueData.id = issueId;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -6182,6 +6276,12 @@ export function issueService(db: Db) {
           const idempotencyGuardKey = `issue-create:idempotency:${companyId}:${idempotencyKey}`;
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${idempotencyGuardKey}, 0))`);
         }
+
+        const createdFromIssueId = await resolveCreatedFromIssueIdForCreate(tx, companyId, {
+          issueId,
+          createdFromIssueId: issueData.createdFromIssueId ?? null,
+          actorRunId: actorRunId ?? null,
+        });
 
         let existingIssue: typeof issues.$inferSelect | undefined;
         let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
@@ -6388,6 +6488,7 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          createdFromIssueId,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",

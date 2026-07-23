@@ -2641,6 +2641,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
         originKind: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
         originId: input.issue.id,
+        createdFromIssueId: input.issue.id,
         originRunId: input.latestRun?.id ?? null,
         originFingerprint: [
           STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,

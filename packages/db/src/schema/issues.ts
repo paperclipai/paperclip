@@ -28,6 +28,8 @@ export const issues = pgTable(
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
+    createdFromIssueId: uuid("created_from_issue_id")
+      .references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
@@ -103,6 +105,7 @@ export const issues = pgTable(
       )
       .where(sql`${table.hiddenAt} is null and ${table.status} not in ('done', 'cancelled')`),
     companyPriorityIdx: index("issues_company_priority_idx").on(table.companyId, table.priority),
+    createdFromIssueIdx: index("issues_created_from_issue_idx").on(table.createdFromIssueId),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),

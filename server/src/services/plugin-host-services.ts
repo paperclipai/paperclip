@@ -1707,6 +1707,7 @@ export function buildHostServices(
           originKind: normalizedOriginKind,
           originId: params.originId ?? null,
           originRunId: params.originRunId ?? actorRunId ?? null,
+          createdFromIssueId: params.createdFromIssueId ?? null,
           createdByAgentId: actorAgentId ?? null,
           createdByUserId: actorUserId ?? null,
           actorResponsibleUserId: actorUserId ?? null,

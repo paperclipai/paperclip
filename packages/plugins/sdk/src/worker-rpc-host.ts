@@ -780,6 +780,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             projectId: input.projectId,
             goalId: input.goalId,
             parentId: input.parentId,
+            createdFromIssueId: input.createdFromIssueId,
             inheritExecutionWorkspaceFromIssueId: input.inheritExecutionWorkspaceFromIssueId,
             title: input.title,
             description: input.description,

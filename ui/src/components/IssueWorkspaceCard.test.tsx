@@ -86,6 +86,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     projectWorkspaceId: "project-workspace-1",
     goalId: null,
     parentId: null,
+    createdFromIssueId: null,
     title: "Sandboxing",
     description: null,
     status: "in_progress",
