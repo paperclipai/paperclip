@@ -7434,6 +7434,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const logContent = await readRunLogTextForIssueCommentPolicy(run);
     if (!logContent) return null;
 
+    const loggedCommentIds = Array.from(
+      new Set(
+        Array.from(logContent.matchAll(/\bcomment id:\s*([0-9a-fA-F-]{36})\b/g), ([, commentId]) =>
+          commentId.toLowerCase()
+        ),
+      ),
+    );
+    if (loggedCommentIds.length === 0) return null;
+
     const runStartMs = toPolicyTimestampMs(run.startedAt ?? run.createdAt);
     const runEndMs = toPolicyTimestampMs(run.finishedAt ?? run.createdAt);
     const endSlackMs = 60_000;
@@ -7449,13 +7458,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(issueComments.companyId, companyId),
           eq(issueComments.issueId, issueId),
           isNull(issueComments.createdByRunId),
+          inArray(issueComments.id, loggedCommentIds),
         ),
       )
-      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
-      .limit(100);
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id));
 
     return candidates.find((comment) => {
-      if (!logContent.includes(`comment id: ${comment.id}`)) return false;
       const commentCreatedAtMs = toPolicyTimestampMs(comment.createdAt);
       if (commentCreatedAtMs === null || runStartMs === null || runEndMs === null) return true;
       return commentCreatedAtMs >= runStartMs && commentCreatedAtMs <= runEndMs + endSlackMs;

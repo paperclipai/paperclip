@@ -2144,6 +2144,18 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .returning()
         .then((rows) => rows[0]);
 
+      await db.insert(issueComments).values(
+        Array.from({ length: 101 }, (_, index) => ({
+          companyId,
+          issueId,
+          authorAgentId: agentId,
+          authorUserId: null,
+          createdByRunId: null,
+          createdAt: new Date(Date.now() + index + 1_000),
+          body: `Unrelated unattributed comment ${index + 1}.`,
+        })),
+      );
+
       const store = getRunLogStore();
       const handle = await store.begin({ companyId, agentId, runId: firstRun!.id });
       const logBytes = await store.append(handle, {
