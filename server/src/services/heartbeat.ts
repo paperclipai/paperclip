@@ -10570,6 +10570,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Boolean(row);
   }
 
+  async function hasActiveIssueExecutionForAgent(agent: typeof agents.$inferSelect) {
+    const row = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, agent.companyId),
+          eq(heartbeatRuns.agentId, agent.id),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+          sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', '') <> ''`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row);
+  }
+
   async function markTimerHeartbeatChecked(agentId: string, source: WakeupOptions["source"]) {
     if (source !== "timer") return;
     await db
@@ -15369,6 +15386,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       !wakeCommentId &&
       !readNonEmptyString(enrichedContextSnapshot.taskId) &&
       !readNonEmptyString(enrichedContextSnapshot.taskKey);
+    if (genericTimerWake && await hasActiveIssueExecutionForAgent(agent)) {
+      await writeSkippedHeartbeatRequest("heartbeat.timer.issue_execution_active", {
+        reason: "Agent already has an active issue-scoped execution; skipping generic timer wake to avoid racing assignment ownership.",
+      });
+      await markTimerHeartbeatChecked(agentId, source);
+      return null;
+    }
     if (policy.skipTimerWhenNoActionableWork && genericTimerWake && !(await hasActionableTimerWork(agent))) {
       await writeSkippedHeartbeatRequest("heartbeat.timer.no_actionable_work", {
         reason: "No assigned todo or in_progress issue requires this agent before timer adapter invocation.",
