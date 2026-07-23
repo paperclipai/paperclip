@@ -2492,6 +2492,122 @@ describe("resolveNextSessionState", () => {
 
     expect(result.legacySessionId).toBe("from");
   });
+
+  it("rotates the persisted session when a succeeded run emitted zero tokens", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      },
+      outcome: "succeeded",
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      previousParams: {
+        sessionId: "20260601_141558_c861e4",
+      },
+      previousDisplayId: "20260601_141558_c861e4",
+      previousLegacySessionId: "20260601_141558_c861e4",
+    });
+
+    // Without rotation this succeeded run would resume the previous valid
+    // session; the 0-token death means that session is stale and must be dropped.
+    expect(result).toEqual({
+      params: null,
+      displayId: null,
+      legacySessionId: null,
+    });
+  });
+
+  it("does not rotate a zero-token run that did not classify as succeeded", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "adapter failed",
+      },
+      outcome: "failed",
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      previousParams: {
+        sessionId: "20260601_141558_c861e4",
+      },
+      previousDisplayId: "20260601_141558_c861e4",
+      previousLegacySessionId: "20260601_141558_c861e4",
+    });
+
+    // Only the invisible succeeded-but-0-token death triggers rotation; an
+    // already-visible failed run keeps its resumable previous session.
+    expect(result).toEqual({
+      params: {
+        sessionId: "20260601_141558_c861e4",
+      },
+      displayId: "20260601_141558_c861e4",
+      legacySessionId: "20260601_141558_c861e4",
+    });
+  });
+
+  it("does not rotate a healthy succeeded run that produced real token usage", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: {
+          sessionId: "20260601_141558_c861e4",
+        },
+        sessionDisplayId: "20260601_141558_",
+      },
+      outcome: "succeeded",
+      usage: { inputTokens: 4200, cachedInputTokens: 0, outputTokens: 37 },
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    });
+
+    expect(result).toEqual({
+      params: {
+        sessionId: "20260601_141558_c861e4",
+      },
+      displayId: "20260601_141558_c861e4",
+      legacySessionId: "20260601_141558_c861e4",
+    });
+  });
+
+  it("does not rotate a succeeded run whose usage was not reported", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: {
+          sessionId: "20260601_141558_c861e4",
+        },
+        sessionDisplayId: "20260601_141558_",
+      },
+      outcome: "succeeded",
+      usage: null,
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    });
+
+    // Missing usage is ambiguous; normal session continuity must be preserved.
+    expect(result).toEqual({
+      params: {
+        sessionId: "20260601_141558_c861e4",
+      },
+      displayId: "20260601_141558_c861e4",
+      legacySessionId: "20260601_141558_c861e4",
+    });
+  });
 });
 
 describe("formatRuntimeWorkspaceWarningLog", () => {

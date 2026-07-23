@@ -2789,6 +2789,18 @@ function normalizeUsageTotals(usage: UsageSummary | null | undefined): UsageTota
   };
 }
 
+/**
+ * True only when a *reported* usage shows the run produced nothing — both input
+ * and output tokens are zero. A missing (`null`/`undefined`) usage object is
+ * intentionally NOT treated as zero-token: it is ambiguous (usage may simply
+ * not have been captured) and must not trigger a session rotation. Used by
+ * {@link resolveNextSessionState} to rotate the persisted session after an
+ * invisible 0-token run death.
+ */
+function isZeroTokenUsage(usage: UsageTotals | null | undefined): boolean {
+  return !!usage && usage.inputTokens === 0 && usage.outputTokens === 0;
+}
+
 function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
   const parsed = parseObject(usageJson);
   if (Object.keys(parsed).length === 0) return null;
@@ -5251,10 +5263,33 @@ export function resolveNextSessionState(input: {
   previousParams: Record<string, unknown> | null;
   previousDisplayId: string | null;
   previousLegacySessionId: string | null;
+  usage?: UsageTotals | null;
 }) {
   const { adapterType, codec, adapterResult, previousParams, previousDisplayId, previousLegacySessionId } = input;
 
   if (adapterResult.clearSession) {
+    return {
+      params: null as Record<string, unknown> | null,
+      displayId: null as string | null,
+      legacySessionId: null as string | null,
+    };
+  }
+
+  // A run the gateway classified as "succeeded" yet emitted zero input and
+  // output tokens is the invisible 0-token death (typically a 529 / provider
+  // overload that returned exit 0 with no error message). The session it would
+  // leave behind is stale or poisoned, so rotate it: return the same
+  // cleared-state contract as `clearSession` above, which the downstream caller
+  // translates into a task-session clear (params + displayId both null). The
+  // next run then starts a fresh session instead of resuming the dead one.
+  //
+  // Safety net only — this fixes stale-session failures, NOT a gateway-wide
+  // outage (only provider recovery / failover does). It never fires for a
+  // healthy run: any real work emits >0 tokens, and runs whose usage was simply
+  // not reported (`usage` null) are left untouched so normal session continuity
+  // is preserved. Mirrors the zero-token predicate in
+  // heartbeat-zero-token-diagnostic.ts.
+  if (input.outcome === "succeeded" && isZeroTokenUsage(input.usage)) {
     return {
       params: null as Record<string, unknown> | null,
       displayId: null as string | null,
@@ -13720,6 +13755,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome = "failed";
       }
 
+      const rawUsage = normalizeUsageTotals(adapterResult.usage);
       const nextSessionState = resolveNextSessionState({
         adapterType: agent.adapterType,
         codec: sessionCodec,
@@ -13728,8 +13764,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         previousParams: previousSessionParams,
         previousDisplayId: runtimeForAdapter.sessionDisplayId,
         previousLegacySessionId: runtimeForAdapter.sessionId,
+        usage: rawUsage,
       });
-      const rawUsage = normalizeUsageTotals(adapterResult.usage);
       const sessionUsageResolution = await resolveNormalizedUsageForSession({
         agentId: agent.id,
         runId: run.id,
