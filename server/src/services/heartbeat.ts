@@ -72,6 +72,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { sanitizeRunLogText } from "./feedback-redaction.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -2016,7 +2017,7 @@ function redactInlineBase64ImageData(chunk: string) {
 }
 
 export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_CHUNK_CHARS) {
-  const normalized = redactSensitiveText(redactInlineBase64ImageData(chunk));
+  const normalized = sanitizeRunLogText(redactSensitiveText(redactInlineBase64ImageData(chunk)));
   if (normalized.length <= maxChars) return normalized;
 
   const headChars = Math.max(0, Math.floor(maxChars * 0.6));
