@@ -1261,6 +1261,10 @@ async function buildRuntime(input: {
         onRuntimeProgress: input.ctx.onRuntimeProgress,
       })
     : null;
+  // `stagedRuntime.restoreWorkspace` is intentionally NOT invoked in this PR:
+  // copy-back of the sandbox edits onto the host workspace is wired into the
+  // run/session teardown path in the follow-up PR (session-lifecycle wiring).
+  // See `stageAcpRemoteRuntime()` above for the full deferral note.
   // The ACP `session/new` cwd and every cwd-keyed session-state site
   // (fingerprint, compat, persist, ensureSession, error) bind to THIS single
   // value so a warm/resumable session created with the in-sandbox cwd is reused
