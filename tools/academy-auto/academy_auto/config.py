@@ -31,7 +31,10 @@ class Config:
         base = home / ".paperclip" / "academy-auto"
         return cls(
             academy_repo=academy,
-            worktree_path=base / "worktree",
+            # Worktree bewusst AUSSERHALB von ~/.paperclip: dieses Verzeichnis steht
+            # auf der Sandbox-Read-Denylist, und der Deny blockt auch die Pfad-
+            # Traversierung in Unterordner — tsc/node scheitern dann mit EPERM.
+            worktree_path=home / ".academy-auto" / "worktree",
             branch="agents/academy-auto",
             base_branch="main",
             # --legacy-peer-deps: das Repo hat einen Peer-Konflikt, "npm ci"

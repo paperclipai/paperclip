@@ -59,15 +59,6 @@ def test_config_default_has_sandbox_fields():
     assert any(".ssh" in p for p in cfg.secret_read_paths)
 
 
-def test_default_config_worktree_reallow_after_paperclip_deny():
-    # Worktree liegt real unter ~/.paperclip (read-denied) -> muss per last-match-wins wieder lesbar sein
-    cfg = Config.default()
-    prof = build_profile(cfg)
-    wt_real = os.path.realpath(str(cfg.worktree_path))
-    pp_real = os.path.realpath(str(Path.home() / ".paperclip"))
-    assert pp_real in prof                                  # ~/.paperclip ist in der Deny-Liste
-    assert wt_real.startswith(pp_real)                      # Worktree liegt tatsächlich darunter
-    assert prof.index("deny file-read*") < prof.rindex(f'(subpath "{wt_real}")')  # Worktree-Reallow NACH dem Deny
 
 
 def test_each_sandbox_write_path_appears_in_profile():
@@ -195,3 +186,18 @@ def test_protected_write_paths_include_skills():
     from academy_auto.config import Config
     cfg = Config.default()
     assert any(p.endswith(".claude/skills") for p in cfg.protected_write_paths)
+
+
+def test_worktree_not_inside_any_secret_read_path():
+    """Der Worktree darf in KEINEM read-denied Pfad liegen.
+
+    Ein file-read-Deny blockt auch die Traversierung in Unterordner — lag der
+    Worktree unter ~/.paperclip, scheiterte tsc im Sandbox-Lauf mit EPERM.
+    """
+    import os
+    from academy_auto.config import Config
+    cfg = Config.default()
+    wt = os.path.realpath(str(cfg.worktree_path))
+    for secret in cfg.secret_read_paths:
+        s = os.path.realpath(secret)
+        assert not wt.startswith(s + os.sep), f"Worktree liegt unter gesperrtem Pfad {s}"
