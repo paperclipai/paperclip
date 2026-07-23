@@ -139,6 +139,7 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     feedbackExportBackendToken: "telemetry-token",
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
+    productivityReviewEnabled: true,
     companyDeletionEnabled: false,
     ...overrides,
   };
@@ -235,6 +236,10 @@ vi.mock("../services/index.js", () => ({
     duplicates: 0,
   })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
+  reconcileProductivityReviewsIfEnabled: vi.fn(
+    async (enabled: boolean | undefined, reconcile: () => Promise<unknown>) =>
+      enabled === false ? null : reconcile(),
+  ),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
   toolAccessService: vi.fn(() => ({
@@ -355,6 +360,37 @@ describe("startServer feedback export wiring", () => {
 
     expect(heartbeatServiceMock.reconcileHotRestartAdoption).toHaveBeenCalledTimes(1);
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["enabled", true, 2],
+    ["disabled", false, 0],
+  ])("keeps startup and periodic productivity reconciliation %s", async (_label, enabled, expectedCalls) => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+      productivityReviewEnabled: enabled,
+    }));
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void) => {
+        intervalCallback = callback;
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+
+    try {
+      await startServer();
+      expect(intervalCallback).not.toBeNull();
+      intervalCallback?.();
+      await vi.waitFor(() => {
+        expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+      });
+
+      expect(heartbeatServiceMock.reconcileProductivityReviews).toHaveBeenCalledTimes(expectedCalls);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
   });
 
   it("refuses authenticated public startup without an external database URL", async () => {
