@@ -5083,6 +5083,185 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
   });
 
+  it("release lets an agent release its own checkout across a run boundary even when the prior run is not yet terminal (SCH-2594)", async () => {
+    // SCH-2593 / SCH-945 regression: a recurring heartbeat agent re-invoked as a
+    // fresh run must be able to release the checkout it took in an earlier run,
+    // even before that earlier run's heartbeat row has been finalized to a
+    // terminal status. Previously this was refused with 403/409 "Only checkout
+    // run can release issue", which deadlocked the agent.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const priorRunId = randomUUID();
+    const currentRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: priorRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-06-10T10:00:00.000Z"),
+      },
+      {
+        id: currentRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-06-10T10:06:00.000Z"),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Same-agent cross-run release",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: priorRunId,
+      executionRunId: priorRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
+    });
+
+    const released = await svc.release(issueId, agentId, currentRunId);
+    expect(released).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "todo",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
+  it("release still refuses a different agent even when the prior checkout run is not terminal (SCH-2594 guard)", async () => {
+    // The SCH-2594 relaxation only lets an agent release ITS OWN checkout. A
+    // different agent must still be rejected by the assignee-ownership guard, so
+    // cross-agent checkout theft stays blocked.
+    const companyId = randomUUID();
+    const ownerAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const issueId = randomUUID();
+    const ownerRunId = randomUUID();
+    const otherRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ownerAgentId,
+        companyId,
+        name: "OwnerAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "OtherAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: ownerRunId,
+        companyId,
+        agentId: ownerAgentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-06-10T10:00:00.000Z"),
+      },
+      {
+        id: otherRunId,
+        companyId,
+        agentId: otherAgentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-06-10T10:06:00.000Z"),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cross-agent release attempt",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: ownerAgentId,
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+      executionAgentNameKey: "owneragent",
+      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
+    });
+
+    await expect(svc.release(issueId, otherAgentId, otherRunId)).rejects.toMatchObject({
+      status: 409,
+    });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+      checkoutRunId: ownerRunId,
+    });
+  });
+
   it("checkout refuses to promote a 'done' issue when 'done' is not in expectedStatuses, even with a lingering executionRunId pointer", async () => {
     // Regression for PR #2482 checkout-adoption review finding: the original
     // patch's stale-executionRunId adoption SQL set `status: 'in_progress'`
@@ -6095,8 +6274,30 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     ).rejects.toMatchObject({ status: 409 });
   });
 
-  it("keeps live checkout owners protected with a 409 conflict", async () => {
+  it("lets the assignee re-own its own checkout across a run boundary even when the prior run is not yet terminal (SCH-2594)", async () => {
+    // SCH-2593 / SCH-945: at a run boundary the prior heartbeat run's status can
+    // still read as "running" before it is finalized. The assignee's new run
+    // must be able to adopt its own checkout regardless, otherwise recurring
+    // agents deadlock. The cross-agent guard below (non-assignee case) still
+    // blocks theft.
     const seeded = await seedOwnershipIssue({ checkoutStatus: "running" });
+
+    const ownership = await svc.assertCheckoutOwner(
+      seeded.issueId,
+      seeded.actorAgentId,
+      seeded.actorRunId,
+    );
+
+    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
+    expect(ownership.executionRunId).toBe(seeded.actorRunId);
+    expect(ownership.adoptedFromRunId).toBe(seeded.staleRunId);
+  });
+
+  it("still refuses a non-assignee to adopt a live checkout owner (SCH-2594 cross-agent guard)", async () => {
+    const seeded = await seedOwnershipIssue({
+      checkoutStatus: "running",
+      assigneeMatchesActor: false,
+    });
 
     await expect(
       svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId),

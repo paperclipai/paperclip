@@ -4504,21 +4504,21 @@ export function issueService(db: Db) {
           sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
         ),
       ]);
-      const [existingRun, actorRun] = await Promise.all([
-        tx
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
-          .then((rows) => rows[0] ?? null),
-        tx
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, input.actorRunId))
-          .then((rows) => rows[0] ?? null),
-      ]);
-      const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
+      const actorRun = await tx
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.actorRunId))
+        .then((rows) => rows[0] ?? null);
+      // SCH-2594: same-agent stale-checkout adoption must succeed across a run
+      // boundary even when the previous run's heartbeat row has not yet been
+      // finalized to a terminal status. The row-level guards above already
+      // restrict this to the same assignee (assigneeAgentId === actorAgentId)
+      // with the expected prior checkoutRunId, so the assignee re-owning its own
+      // checkout is safe regardless of the previous run's status. A different
+      // agent never reaches here (callers gate on same-assignee). We therefore
+      // only require that the adopting run itself is still live.
       const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
-      if (!stale || !actorLive) {
+      if (!actorLive) {
         return { adopted: null, latest: lockedIssue };
       }
 
@@ -7140,23 +7140,14 @@ export function issueService(db: Db) {
         if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
           throw conflict("Only assignee can release issue");
         }
-        if (
-          actorAgentId &&
-          existing.status === "in_progress" &&
-          existing.assigneeAgentId === actorAgentId &&
-          existing.checkoutRunId &&
-          !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
-        ) {
-          const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId, tx);
-          if (!stale) {
-            throw conflict("Only checkout run can release issue", {
-              issueId: existing.id,
-              assigneeAgentId: existing.assigneeAgentId,
-              checkoutRunId: existing.checkoutRunId,
-              actorRunId: actorRunId ?? null,
-            });
-          }
-        }
+        // SCH-2594: an agent may release ITS OWN checkout regardless of the run
+        // id. The assignee-ownership guard above already blocks a different agent
+        // from releasing. Previously a same-agent release across a run boundary
+        // was refused with 403 "Only checkout run can release issue" unless the
+        // prior run had already been finalized to a terminal status; at a run
+        // boundary that finalization can lag, which deadlocked recurring
+        // heartbeat agents (SCH-2593 / SCH-945). Self-release is idempotent for
+        // the assignee, so no run-id gate is applied here.
 
         // Release clears checkout/assignee locks; only in_progress work re-queues to todo.
         const releaseStatus = existing.status === "in_progress" ? "todo" : existing.status;
