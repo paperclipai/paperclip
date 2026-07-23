@@ -8598,7 +8598,10 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        // Re-derive closed-ness from the post-update issue so a status change
+        // like in_progress -> done with a closure comment does not enqueue a
+        // stale issue_commented wake for an already-completed issue.
+        const skipAssigneeCommentWake = selfComment || isClosedIssueStatus(issue.status);
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {

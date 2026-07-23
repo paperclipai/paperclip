@@ -474,6 +474,41 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it("does not wake the assignee when a closure comment marks the issue done", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = {
+      ...existing,
+      status: "done",
+      completedAt: new Date("2026-06-26T16:30:00.000Z"),
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-close-1",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "Closing this out.",
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "done",
+        comment: "Closing this out.",
+      });
+
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setImmediate(resolve));
+    const issueCommentedWakeCalls = mockHeartbeatService.wakeup.mock.calls.filter(
+      ([, wakeup]: [string, { reason?: string }]) => wakeup?.reason === "issue_commented",
+    );
+    expect(issueCommentedWakeCalls).toEqual([]);
+  });
+
   it("wakes the assignee on top-level board issue comments", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
