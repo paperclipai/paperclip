@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { forbidden } from "../errors.js";
 
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -8,6 +9,7 @@ const mockRegistry = vi.hoisted(() => ({
   upsertConfig: vi.fn(),
   getCompanySettings: vi.fn(),
   upsertCompanySettings: vi.fn(),
+  listByStatus: vi.fn(),
 }));
 
 const mockLifecycle = vi.hoisted(() => ({
@@ -41,6 +43,22 @@ vi.mock("../services/secrets.js", () => ({
 
 vi.mock("../services/live-events.js", () => ({
   publishGlobalLiveEvent: vi.fn(),
+}));
+
+const mockAccess = vi.hoisted(() => ({
+  canUser: vi.fn(),
+  hasPermission: vi.fn(),
+}));
+
+vi.mock("../services/access.js", () => ({
+  accessService: () => mockAccess,
+}));
+
+const mockAssertSurfaceExposed = vi.hoisted(() => vi.fn(async () => {}));
+
+vi.mock("../routes/authz.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../routes/authz.js")>()),
+  assertSurfaceExposed: mockAssertSurfaceExposed,
 }));
 
 async function createApp(
@@ -142,6 +160,38 @@ function readyPlugin() {
     version: "1.0.0",
     status: "ready",
   });
+}
+
+function catalogPluginRecord(
+  overrides: Record<string, unknown> = {},
+  manifestOverrides: Record<string, unknown> = {},
+) {
+  return {
+    id: pluginId,
+    pluginKey: "paperclip.example",
+    version: "1.0.0",
+    status: "ready",
+    categories: ["workspace"],
+    updatedAt: new Date("2024-01-01T00:00:00.000Z"),
+    manifestJson: {
+      id: "paperclip.example",
+      displayName: "Example Plugin",
+      description: "An example plugin",
+      ui: {
+        slots: [
+          {
+            type: "companySettingsPage",
+            id: "settings",
+            displayName: "Settings",
+            exportName: "Settings",
+            routePath: "example",
+          },
+        ],
+      },
+      ...manifestOverrides,
+    },
+    ...overrides,
+  };
 }
 
 describe.sequential("plugin install and upgrade authz", () => {
@@ -423,8 +473,7 @@ describe.sequential("scoped plugin API routes", () => {
         body: { ok: true },
       }),
     };
-    mockRegistry.getById.mockResolvedValue(null);
-    mockRegistry.getByKey.mockResolvedValue({
+    const scopedApiPluginRecord = {
       id: pluginId,
       pluginKey: "paperclip.example",
       version: "1.0.0",
@@ -443,7 +492,12 @@ describe.sequential("scoped plugin API routes", () => {
           },
         ],
       },
-    });
+    };
+    // resolvePlugin() looks the non-UUID pluginId up via getByKey; the
+    // enablement gate separately re-fetches by the resolved record's uuid
+    // (`plugin.id`), so both lookups need to resolve for this test's plugin.
+    mockRegistry.getById.mockResolvedValue(scopedApiPluginRecord);
+    mockRegistry.getByKey.mockResolvedValue(scopedApiPluginRecord);
 
     const { app } = await createApp(
       {
@@ -528,6 +582,81 @@ describe.sequential("plugin local folder routes", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("Local folder key is not declared");
     expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
+  function defaultOffLocalFolderPlugin() {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        id: "paperclip.example",
+        capabilities: ["local.folders"],
+        companyEnablement: { default: "off" },
+        localFolders: [
+          {
+            folderKey: "content-root",
+            displayName: "Content root",
+            access: "readWrite",
+            requiredDirectories: ["docs"],
+            requiredFiles: ["README.md"],
+          },
+        ],
+      },
+    });
+  }
+
+  it("rejects PUT local-folders for a member when the plugin is not enabled for the company (403, no upsert)", async () => {
+    defaultOffLocalFolderPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/content-root`)
+      .send({ path: "/tmp" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("plugin_not_enabled_for_company");
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects GET local-folders (list) for a member when the plugin is not enabled for the company", async () => {
+    defaultOffLocalFolderPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/companies/${companyA}/local-folders`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("plugin_not_enabled_for_company");
+  });
+
+  it("rejects GET local-folders/:folderKey/status for a member when the plugin is not enabled for the company", async () => {
+    defaultOffLocalFolderPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/content-root/status`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("plugin_not_enabled_for_company");
+  });
+
+  it("allows PUT local-folders once the plugin is enabled for the company (settings row present)", async () => {
+    defaultOffLocalFolderPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValue({ enabled: true, settingsJson: null, lastError: null });
+    mockRegistry.upsertCompanySettings.mockResolvedValue({ enabled: true });
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/content-root`)
+      .send({ path: "/tmp" });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertCompanySettings).toHaveBeenCalled();
   });
 });
 
@@ -1101,5 +1230,490 @@ describe.sequential("plugin tool and bridge authz", () => {
 
     expect(res.status).toBe(403);
     expect(executeTool).not.toHaveBeenCalled();
+  });
+});
+
+describe.sequential("company plugin catalog and enablement authz", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAssertSurfaceExposed.mockResolvedValue(undefined);
+    mockAccess.canUser.mockResolvedValue(true);
+    mockAccess.hasPermission.mockResolvedValue(true);
+  });
+
+  it("lists catalog items with manifest-aware enabled state and metadata", async () => {
+    mockRegistry.listByStatus.mockResolvedValueOnce([catalogPluginRecord()]);
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get(`/api/plugins/companies/${companyA}/catalog`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      {
+        pluginId,
+        pluginKey: "paperclip.example",
+        displayName: "Example Plugin",
+        version: "1.0.0",
+        description: "An example plugin",
+        capabilities: [],
+        enabled: false,
+        locked: false,
+        defaultEnabled: true,
+        hasCompanySettingsPage: true,
+        settingsRoutePath: "example",
+      },
+    ]);
+    expect(mockRegistry.listByStatus).toHaveBeenCalledWith("ready");
+  });
+
+  it("reports default-off plugins as disabled when no row exists", async () => {
+    mockRegistry.listByStatus.mockResolvedValueOnce([
+      catalogPluginRecord({}, { companyEnablement: { default: "off" } }),
+    ]);
+    mockRegistry.getCompanySettings.mockResolvedValueOnce(null);
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get(`/api/plugins/companies/${companyA}/catalog`);
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toMatchObject({ enabled: false, defaultEnabled: false, locked: false });
+  });
+
+  it("excludes sandbox-provider-only infrastructure plugins from the catalog", async () => {
+    mockRegistry.listByStatus.mockResolvedValueOnce([
+      catalogPluginRecord(
+        { id: "99999999-9999-4999-8999-999999999999", pluginKey: "paperclip.kubernetes-sandbox-provider" },
+        {
+          ui: undefined,
+          environmentDrivers: [
+            { driverKey: "kubernetes", kind: "sandbox_provider", displayName: "Kubernetes" },
+          ],
+        },
+      ),
+      catalogPluginRecord(),
+    ]);
+    mockRegistry.getCompanySettings.mockResolvedValueOnce(null);
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get(`/api/plugins/companies/${companyA}/catalog`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].pluginKey).toBe("paperclip.example");
+  });
+
+  it("requires the company.plugins surface (PR-1 gate) on catalog reads", async () => {
+    mockAssertSurfaceExposed.mockImplementationOnce(async () => {
+      throw forbidden("Surface is not exposed", { code: "surface_not_exposed" });
+    });
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get(`/api/plugins/companies/${companyA}/catalog`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("surface_not_exposed");
+    expect(mockAssertSurfaceExposed).toHaveBeenCalledWith(
+      expect.anything(),
+      "company.plugins",
+      expect.any(Function),
+    );
+    expect(mockRegistry.listByStatus).not.toHaveBeenCalled();
+  });
+
+  it("rejects catalog reads from a member of another company", async () => {
+    const { app } = await createApp(boardActor({ companyIds: [companyB] }));
+
+    const res = await request(app).get(`/api/plugins/companies/${companyA}/catalog`);
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.listByStatus).not.toHaveBeenCalled();
+  });
+
+  it("toggles enablement, preserving settingsJson and lastError", async () => {
+    mockRegistry.getById.mockResolvedValue(catalogPluginRecord());
+    mockRegistry.getCompanySettings.mockResolvedValue({
+      enabled: true,
+      settingsJson: { keep: "me" },
+      lastError: "previous failure",
+    });
+    mockRegistry.upsertCompanySettings.mockResolvedValueOnce({
+      enabled: false,
+      settingsJson: { keep: "me" },
+      lastError: "previous failure",
+    });
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/enablement`)
+      .send({ enabled: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ pluginId, enabled: false });
+    expect(mockAccess.canUser).toHaveBeenCalledWith(companyA, "user-1", "plugins:manage");
+    expect(mockRegistry.upsertCompanySettings).toHaveBeenCalledWith(
+      pluginId,
+      companyA,
+      { enabled: false, settingsJson: { keep: "me" }, lastError: "previous failure" },
+    );
+  });
+
+  it("rejects toggles from members without plugins:manage", async () => {
+    mockAccess.canUser.mockResolvedValue(false);
+    mockRegistry.getById.mockResolvedValue(catalogPluginRecord());
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/enablement`)
+      .send({ enabled: false });
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects toggles from viewers before the permission check (write-path company access)", async () => {
+    const { app } = await createApp(boardActor({
+      memberships: [
+        { companyId: companyA, status: "active", membershipRole: "viewer" },
+      ],
+    }));
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/enablement`)
+      .send({ enabled: false });
+
+    expect(res.status).toBe(403);
+    expect(mockAccess.canUser).not.toHaveBeenCalled();
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 plugin_enablement_locked when a non-admin toggles a locked plugin", async () => {
+    mockRegistry.getById.mockResolvedValue(
+      catalogPluginRecord({}, { companyEnablement: { default: "off", locked: true } }),
+    );
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/enablement`)
+      .send({ enabled: true });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("plugin_enablement_locked");
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
+  it("lets an instance admin toggle a locked plugin", async () => {
+    mockRegistry.getById.mockResolvedValue(
+      catalogPluginRecord({}, { companyEnablement: { default: "off", locked: true } }),
+    );
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+    mockRegistry.upsertCompanySettings.mockResolvedValueOnce({
+      enabled: true,
+      settingsJson: {},
+      lastError: null,
+    });
+    const { app } = await createApp(boardActor({ isInstanceAdmin: true }));
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/enablement`)
+      .send({ enabled: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ enabled: true, locked: true, defaultEnabled: false });
+    expect(mockRegistry.upsertCompanySettings).toHaveBeenCalledWith(
+      pluginId,
+      companyA,
+      { enabled: true, settingsJson: {}, lastError: null },
+    );
+  });
+
+  it("rejects enablement toggles from a member of another company", async () => {
+    const { app } = await createApp(boardActor({ companyIds: [companyB] }));
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/enablement`)
+      .send({ enabled: false });
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-boolean enabled value", async () => {
+    mockRegistry.getById.mockResolvedValue(catalogPluginRecord());
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/enablement`)
+      .send({ enabled: "yes" });
+
+    expect(res.status).toBe(400);
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+});
+
+describe.sequential("per-company plugin enablement on bridge routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the typed 403 for bridge/data when the plugin is disabled for the company", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const call = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { workerManager: { call } },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/bridge/data`)
+      .send({ companyId: companyA, key: "health", params: {} });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("plugin_not_enabled_for_company");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("allows bridge/data when no company settings row exists", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce(null);
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { workerManager: { call } },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/bridge/data`)
+      .send({ companyId: companyA, key: "health", params: {} });
+
+    expect(res.status).not.toBe(403);
+    expect(call).toHaveBeenCalled();
+  });
+
+  it("does not gate instance-scoped bridge/data calls (no companyId)", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(
+      boardActor({ userId: "admin-1", isInstanceAdmin: true, companyIds: [] }),
+      {},
+      { bridgeDeps: { workerManager: { call } } },
+    );
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/bridge/data`)
+      .send({ key: "health", params: {} });
+
+    expect(mockRegistry.getCompanySettings).not.toHaveBeenCalled();
+    expect(res.status).not.toBe(403);
+  });
+
+  it("returns 403 for bridge/action when the plugin is disabled for the company", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const call = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { workerManager: { call } },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/bridge/action`)
+      .send({ companyId: companyA, key: "sync", params: {} });
+
+    expect(res.status).toBe(403);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 for data/:key when the plugin is disabled for the company", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const call = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { workerManager: { call } },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/data/health`)
+      .send({ companyId: companyA, params: {} });
+
+    expect(res.status).toBe(403);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 for actions/:key when the plugin is disabled for the company", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const call = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { workerManager: { call } },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({ companyId: companyA, params: {} });
+
+    expect(res.status).toBe(403);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 for the bridge SSE stream when the plugin is disabled for the company", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const subscribe = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { streamBus: { subscribe } },
+    });
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/bridge/stream/updates`)
+      .query({ companyId: companyA });
+
+    expect(res.status).toBe(403);
+    expect(subscribe).not.toHaveBeenCalled();
+  });
+});
+
+function uiContributionPluginRecord(manifestOverrides: Record<string, unknown> = {}) {
+  return catalogPluginRecord({}, {
+    entrypoints: { worker: "./dist/worker.js", ui: "dist/ui" },
+    ...manifestOverrides,
+  });
+}
+
+describe.sequential("per-company plugin enablement on tool execution", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function toolDeps(executeTool: ReturnType<typeof vi.fn>) {
+    return {
+      toolDispatcher: {
+        listToolsForAgent: vi.fn(),
+        getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+        executeTool,
+      },
+    };
+  }
+
+  function scopeDb() {
+    // Three select queues consumed by validateToolRunContextScope:
+    // project -> agent -> run (each scoped to companyA).
+    return createSelectQueueDb([
+      [{ companyId: companyA }],
+      [{ companyId: companyA, agentId: agentA }],
+      [{ companyId: companyA }],
+    ]);
+  }
+
+  it("rejects tool execution when the owning plugin is disabled for the run's company", async () => {
+    const executeTool = vi.fn();
+    mockRegistry.getByKey.mockResolvedValue({ id: pluginId, pluginKey: "paperclip.example" });
+    mockRegistry.getById.mockResolvedValue({ id: pluginId, pluginKey: "paperclip.example" });
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const { app } = await createApp(agentActor(), {}, {
+      db: scopeDb(),
+      toolDeps: toolDeps(executeTool),
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: { q: "test" },
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("plugin_not_enabled_for_company");
+    expect(mockRegistry.getByKey).toHaveBeenCalledWith("paperclip.example");
+    expect(mockRegistry.getCompanySettings).toHaveBeenCalledWith(pluginId, companyA);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("allows tool execution when no company settings row exists for the owning plugin", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    mockRegistry.getByKey.mockResolvedValue({ id: pluginId, pluginKey: "paperclip.example" });
+    mockRegistry.getById.mockResolvedValue({ id: pluginId, pluginKey: "paperclip.example" });
+    mockRegistry.getCompanySettings.mockResolvedValueOnce(null);
+    const { app } = await createApp(agentActor(), {}, {
+      db: scopeDb(),
+      toolDeps: toolDeps(executeTool),
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: { q: "test" },
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).not.toBe(403);
+    expect(executeTool).toHaveBeenCalled();
+  });
+});
+
+describe.sequential("GET /plugins/ui-contributions company filtering", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("filters contributions from plugins disabled for the company", async () => {
+    mockRegistry.listByStatus.mockResolvedValueOnce([uiContributionPluginRecord()]);
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get(`/api/plugins/ui-contributions?companyId=${companyA}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+    expect(mockRegistry.getCompanySettings).toHaveBeenCalledWith(pluginId, companyA);
+  });
+
+  it("filters default-off plugins with no settings row (manifest-aware)", async () => {
+    mockRegistry.listByStatus.mockResolvedValueOnce([
+      uiContributionPluginRecord({ companyEnablement: { default: "off" } }),
+    ]);
+    mockRegistry.getCompanySettings.mockResolvedValueOnce(null);
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get(`/api/plugins/ui-contributions?companyId=${companyA}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it("includes contributions still enabled for the company", async () => {
+    mockRegistry.listByStatus.mockResolvedValueOnce([uiContributionPluginRecord()]);
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: true });
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get(`/api/plugins/ui-contributions?companyId=${companyA}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({ pluginId, pluginKey: "paperclip.example" }),
+    ]);
+  });
+
+  it("returns contributions unchanged without a companyId, without settings lookups", async () => {
+    mockRegistry.listByStatus.mockResolvedValueOnce([uiContributionPluginRecord()]);
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get("/api/plugins/ui-contributions");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({ pluginId, pluginKey: "paperclip.example" }),
+    ]);
+    expect(mockRegistry.getCompanySettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects a companyId the actor does not belong to", async () => {
+    mockRegistry.listByStatus.mockResolvedValueOnce([uiContributionPluginRecord()]);
+    const { app } = await createApp(boardActor({ companyIds: [companyB] }));
+
+    const res = await request(app).get(`/api/plugins/ui-contributions?companyId=${companyA}`);
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.getCompanySettings).not.toHaveBeenCalled();
   });
 });

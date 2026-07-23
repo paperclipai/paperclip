@@ -23,7 +23,7 @@ import { SummarySlotCard, resolveGenerationStatusLine } from "./SummarySlotCard"
 
 const { LiveEventSubscriptionContext, dispatchLiveEventToSubscribers } = __liveUpdatesTestUtils;
 
-const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
+const mockAccessApi = vi.hoisted(() => ({ getCurrentBoardAccess: vi.fn() }));
 const mockSummarySlotsApi = vi.hoisted(() => ({
   get: vi.fn(),
   revisions: vi.fn(),
@@ -32,7 +32,7 @@ const mockSummarySlotsApi = vi.hoisted(() => ({
 const mockBuiltInAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({ resume: vi.fn() }));
 
-vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
+vi.mock("@/api/access", () => ({ accessApi: mockAccessApi }));
 vi.mock("@/api/summarySlots", () => ({ summarySlotsApi: mockSummarySlotsApi }));
 vi.mock("@/api/builtInAgents", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/builtInAgents")>()),
@@ -186,7 +186,7 @@ describe("SummarySlotCard live status line", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableSummaries: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ capabilities: { features: { enableSummaries: true } } });
     mockBuiltInAgentsApi.list.mockResolvedValue([readySummarizer()]);
     mockSummarySlotsApi.get.mockResolvedValue({
       slot: slot(),

@@ -135,6 +135,7 @@ describe("PluginPage", () => {
     ]);
     expect(container.textContent).toContain("Back");
     expect(container.querySelector('a[href="/PAP/dashboard"]')).not.toBeNull();
+    expect(mockPluginsApi.listUiContributions).toHaveBeenCalledWith("company-1");
 
     await act(async () => {
       root.unmount();

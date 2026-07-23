@@ -42,7 +42,7 @@ import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { projectsApi } from "../api/projects";
 import { secretsApi } from "../api/secrets";
 import { ApiError } from "../api/client";
@@ -1347,11 +1347,7 @@ export function PipelineSettings() {
     queryFn: () => authApi.getSession(),
   });
 
-  const experimentalSettingsQuery = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
+  const experimentalSettingsQuery = useFeatures();
 
   const healthQuery = useQuery({
     queryKey: pipelineId ? queryKeys.pipelines.health(pipelineId) : ["pipelines", "health", "none"],
