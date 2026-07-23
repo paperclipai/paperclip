@@ -399,6 +399,33 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(summaryWrite.body.document.latestBody).toContain("**Decide:**");
     expect(await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.kind === "full"))).toMatchObject({ inputTokens: 5200, outputTokens: 980 });
 
+    const yesterday = new Date();
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    yesterday.setUTCHours(23, 59, 59, 999);
+    await db.insert(statusCardUpdates).values({
+      cardId: created.body.id,
+      kind: "full",
+      trigger: "manual",
+      inputTokens: 9000,
+      outputTokens: 1000,
+      costCents: 99,
+      startedAt: yesterday,
+      status: "ok",
+    });
+
+    const expectedReadFields = {
+      summaryBody: "**Decide:** unblock launch approval.\n\n**Recent work:** launch review is waiting.",
+      watchedIssueCount: 1,
+      todayTokens: 6180,
+      todayCostCents: 2,
+    };
+    const detail = await request(boardApp).get(`/api/status-cards/${created.body.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body).toMatchObject(expectedReadFields);
+    const list = await request(boardApp).get(`/api/companies/${company.id}/status-cards`);
+    expect(list.status).toBe(200);
+    expect(list.body).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.body.id, ...expectedReadFields })]));
+
     await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchedIssue.id));
     const refresh = await request(boardApp).post(`/api/status-cards/${created.body.id}/refresh`).send({});
     expect(refresh.status).toBe(202);

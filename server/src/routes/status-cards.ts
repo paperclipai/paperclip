@@ -134,7 +134,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
-    res.json(card);
+    res.json(await service.hydrate(card));
   });
 
   router.patch("/status-cards/:id", validate(patchStatusCardSchema), async (req, res) => {

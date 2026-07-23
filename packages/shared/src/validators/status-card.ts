@@ -86,6 +86,10 @@ export const statusCardSchema = z.object({
   archivedByAgentId: z.string().uuid().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  summaryBody: z.string().nullable().optional(),
+  watchedIssueCount: z.number().int().nonnegative().optional(),
+  todayTokens: z.number().int().nonnegative().optional(),
+  todayCostCents: z.number().int().nonnegative().optional(),
 });
 
 export const statusCardUpdateChangeSchema = z.object({

@@ -124,12 +124,42 @@ export function statusCardService(db: Db) {
   const issuesSvc = issueService(db);
   const searchSvc = companySearchService(db);
 
+  async function hydrate(card: StatusCardRow) {
+    const dayStart = new Date();
+    dayStart.setUTCHours(0, 0, 0, 0);
+    const [document, today, watchedIssues] = await Promise.all([
+      card.documentId
+        ? db.select({ latestBody: documents.latestBody })
+          .from(documents)
+          .where(and(eq(documents.id, card.documentId), eq(documents.companyId, card.companyId)))
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      db.select({
+        tokens: sql<number>`coalesce(sum(coalesce(${statusCardUpdates.inputTokens}, 0) + coalesce(${statusCardUpdates.outputTokens}, 0)), 0)::int`,
+        costCents: sql<number>`coalesce(sum(${statusCardUpdates.costCents}), 0)::int`,
+      })
+        .from(statusCardUpdates)
+        .where(and(eq(statusCardUpdates.cardId, card.id), gte(statusCardUpdates.startedAt, dayStart)))
+        .then((rows) => rows[0] ?? { tokens: 0, costCents: 0 }),
+      card.queries.length > 0 ? executeQueries(card) : Promise.resolve([]),
+    ]);
+
+    return {
+      ...card,
+      summaryBody: document?.latestBody ?? null,
+      watchedIssueCount: watchedIssues.length,
+      todayTokens: today.tokens,
+      todayCostCents: today.costCents,
+    };
+  }
+
   async function list(companyId: string, archived: boolean) {
-    return db
+    const cards = await db
       .select()
       .from(statusCards)
       .where(and(eq(statusCards.companyId, companyId), archived ? isNotNull(statusCards.archivedAt) : isNull(statusCards.archivedAt)))
       .orderBy(desc(statusCards.updatedAt));
+    return Promise.all(cards.map(hydrate));
   }
 
   async function getById(id: string) {
@@ -578,5 +608,5 @@ export function statusCardService(db: Db) {
     return Promise.all(card.queries.map(async (query) => ({ query, result: await searchSvc.search(card.companyId, query) })));
   }
 
-  return { list, getById, create, update, remove, listUpdates, requestCompile, requestRefresh, tickDueStatusCards, writeQuery, writeSummary, dryRun };
+  return { list, getById, hydrate, create, update, remove, listUpdates, requestCompile, requestRefresh, tickDueStatusCards, writeQuery, writeSummary, dryRun };
 }
