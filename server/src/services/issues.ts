@@ -4737,6 +4737,7 @@ export function issueService(db: Db) {
       .from(issueComments)
       .where(and(
         eq(issueComments.companyId, child.companyId),
+        eq(issueComments.issueId, child.parentId),
         eq(issueComments.authorType, "system"),
         eq(issueComments.body, body),
       ))

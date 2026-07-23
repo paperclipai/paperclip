@@ -856,6 +856,12 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "blocked" }).expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "todo" }).expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "cancelled" }).expect(200);
+    await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "todo" }).expect(200);
+    await db
+      .update(issues)
+      .set({ parentId: fixture.issues.reviewGrandparent.id })
+      .where(eq(issues.id, fixture.issues.assignedReview.id));
+    await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "blocked" }).expect(200);
 
     await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "blocked" }).expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "todo" }).expect(200);
@@ -882,6 +888,17 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       expect(relay.body).not.toContain("done");
       expect(relay.body).not.toContain(fixture.issues.standardChild.identifier);
     }
+
+    const reparentedRelayComments = await db
+      .select({ body: issueComments.body, authorType: issueComments.authorType })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.issueId, fixture.issues.reviewGrandparent.id),
+        eq(issueComments.authorType, "system"),
+      ));
+    expect(reparentedRelayComments).toHaveLength(1);
+    expect(reparentedRelayComments[0]?.body).toContain("transitioned to `blocked`");
+    expect(reparentedRelayComments[0]?.body).not.toContain(fixture.canaries.raw);
   });
 
   it("allows mentioned low-trust agents to comment on out-of-bound assigned issues", async () => {
