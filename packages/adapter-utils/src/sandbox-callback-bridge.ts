@@ -1101,6 +1101,7 @@ async function waitForResponse(requestId) {
 }
 
 const server = createServer(async (req, res) => {
+  let requestPath;
   try {
     const auth = req.headers.authorization || "";
     const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
@@ -1137,7 +1138,7 @@ const server = createServer(async (req, res) => {
       body: requestBody,
       createdAt: new Date().toISOString(),
     };
-    const requestPath = path.posix.join(requestsDir, \`\${requestId}.json\`);
+    requestPath = path.posix.join(requestsDir, \`\${requestId}.json\`);
     const tempPath = \`\${requestPath}.tmp\`;
     await fs.writeFile(tempPath, \`\${JSON.stringify(payload)}\\n\`, "utf8");
     await fs.rename(tempPath, requestPath);
@@ -1150,6 +1151,16 @@ const server = createServer(async (req, res) => {
     }
     res.end(typeof response.body === "string" ? response.body : "");
   } catch (error) {
+    if (requestPath) {
+      // About to 502 the caller — nobody can consume an answer to this request.
+      // Unlink our request file (and any late response) so unanswered calls cannot
+      // permanently occupy a queue slot and ratchet queueDepth to maxQueueDepth,
+      // which rejects every further call and bricks the run. Safe by construction:
+      // the control-plane response-writer already no-ops when the request file is gone.
+      const abandonedResponsePath = path.posix.join(responsesDir, path.posix.basename(requestPath));
+      await fs.rm(requestPath, { force: true }).catch(() => undefined);
+      await fs.rm(abandonedResponsePath, { force: true }).catch(() => undefined);
+    }
     res.statusCode = 502;
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
