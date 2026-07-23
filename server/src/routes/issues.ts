@@ -193,6 +193,8 @@ import {
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
 
+const ISSUE_AUTHORIZATION_BOUNDARY_ERROR = "Issue is outside this actor's authorization boundary";
+const TERMINAL_ISSUE_AGENT_MUTATION_ERROR = "Issue is in a terminal state and does not accept agent mutations";
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
@@ -3376,6 +3378,10 @@ export function issueRoutes(
     await assertCanAssignTasks(req, companyId, assignmentScope);
   }
 
+  type IssueAccessExtraScope = {
+    pmGrooming?: boolean;
+  };
+
   async function decideIssueAccess(
     req: Request,
     issue: {
@@ -3388,6 +3394,7 @@ export function issueRoutes(
       status: string;
     },
     action: "issue:comment" | "issue:read" | "issue:mutate",
+    extraScope: IssueAccessExtraScope = {},
   ) {
     return access.decide({
       actor: req.actor,
@@ -3403,6 +3410,7 @@ export function issueRoutes(
         status: issue.status,
       },
       scope: {
+        ...extraScope,
         issueId: issue.id,
         projectId: issue.projectId,
         parentIssueId: issue.parentId,
@@ -3410,6 +3418,20 @@ export function issueRoutes(
         assigneeUserId: issue.assigneeUserId,
       },
     });
+  }
+
+  function isPmGroomingIssuePatchBody(body: unknown) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const record = body as Record<string, unknown>;
+    const allowedKeys = new Set(["comment", "status", "priority", "blockedByIssueIds"]);
+    const keys = Object.keys(record);
+    if (keys.length === 0) return false;
+    if (keys.some((key) => !allowedKeys.has(key))) return false;
+    if (typeof record.status === "string" && (record.status === "in_progress" || record.status === "cancelled")) {
+      return false;
+    }
+    if (record.status === "done") return false;
+    return true;
   }
 
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
@@ -3512,6 +3534,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options: { pmGrooming?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3542,15 +3565,33 @@ export function issueRoutes(
       }
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    const boundaryDecision = await decideIssueAccess(
+      req,
+      issue,
+      "issue:mutate",
+      { pmGrooming: options.pmGrooming === true },
+    );
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      res.status(403).json({
+        error:
+          issue.status === "done" || issue.status === "cancelled"
+            ? TERMINAL_ISSUE_AGENT_MUTATION_ERROR
+            : ISSUE_AUTHORIZATION_BOUNDARY_ERROR,
+      });
       return false;
     }
     if (issue.assigneeAgentId === null) {
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
+      if (
+        boundaryDecision.reason === "allow_same_company_pm_grooming" &&
+        issue.status !== "in_progress" &&
+        issue.status !== "done" &&
+        issue.status !== "cancelled"
+      ) {
+        return true;
+      }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
@@ -7625,7 +7666,9 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, {
+      pmGrooming: isPmGroomingIssuePatchBody(req.body),
+    }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
