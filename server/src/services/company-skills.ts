@@ -658,7 +658,10 @@ function deriveTrustLevel(fileInventory: CompanySkillFileInventoryEntry[]): Comp
 }
 
 async function fetchText(url: string) {
-  const response = await ghFetch(url);
+  // Bound each GitHub raw fetch so a single slow/hung request can't stall the
+  // whole runtime-skill materialization loop (which fetches every file of every
+  // GitHub-sourced skill before an agent run can start).
+  const response = await ghFetch(url, { signal: AbortSignal.timeout(15_000) });
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
@@ -1027,13 +1030,46 @@ function readInlineSkillImports(companyId: string, files: Record<string, string>
   return imports;
 }
 
-async function walkLocalFiles(root: string, current: string, out: string[]) {
-  const entries = await fs.readdir(current, { withFileTypes: true });
+const WALK_SKIP_DIRS = new Set([
+  ".git",
+  "node_modules",
+  ".pnpm-store",
+  ".cache",
+  ".venv",
+  "__pycache__",
+  "dist",
+  "build",
+  ".next",
+  ".turbo",
+]);
+
+async function walkLocalFiles(
+  root: string,
+  current: string,
+  out: string[],
+  options: { maxDepth?: number; maxFiles?: number; visited?: Set<number> } = {},
+) {
+  const maxDepth = options.maxDepth ?? 10;
+  const maxFiles = options.maxFiles ?? 5000;
+  const visited = options.visited ?? new Set<number>();
+
+  if (maxDepth <= 0 || out.length >= maxFiles) return;
+
+  const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
-    if (entry.name === ".git" || entry.name === "node_modules") continue;
+    if (out.length >= maxFiles) return;
+    if (WALK_SKIP_DIRS.has(entry.name)) continue;
     const absolutePath = path.join(current, entry.name);
     if (entry.isDirectory()) {
-      await walkLocalFiles(root, absolutePath, out);
+      const stat = await fs.stat(absolutePath).catch(() => null);
+      if (!stat) continue;
+      if (visited.has(stat.ino)) continue;
+      visited.add(stat.ino);
+      await walkLocalFiles(root, absolutePath, out, {
+        maxDepth: maxDepth - 1,
+        maxFiles,
+        visited,
+      });
       continue;
     }
     if (!entry.isFile()) continue;
@@ -5220,6 +5256,21 @@ export function companySkillService(db: Db) {
   async function materializeRuntimeSkillFiles(companyId: string, skill: CompanySkill) {
     const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
     const skillDir = path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
+    const markerPath = path.resolve(skillDir, ".materialized");
+    // The marker records the skill's `updatedAt` (epoch ms) captured at materialization
+    // time. Comparing the recorded value against the skill's current `updatedAt` avoids
+    // relying on filesystem mtime granularity or clock skew between the database and the
+    // host — both of which made reuse non-deterministic (the marker's mtime could be
+    // truncated below `updatedAt` even when nothing changed, forcing a re-fetch).
+    const skillUpdatedAt = skill.updatedAt ? new Date(skill.updatedAt).getTime() : 0;
+    const markerContent = await fs.readFile(markerPath, "utf8").catch(() => null);
+    if (markerContent !== null) {
+      const recordedUpdatedAt = Number.parseInt(markerContent.trim(), 10);
+      if (Number.isFinite(recordedUpdatedAt) && recordedUpdatedAt >= skillUpdatedAt) {
+        return skillDir;
+      }
+    }
+
     await fs.rm(skillDir, { recursive: true, force: true });
     await fs.mkdir(skillDir, { recursive: true });
 
@@ -5239,6 +5290,8 @@ export function companySkillService(db: Db) {
       await fs.rm(skillDir, { recursive: true, force: true });
       throw unprocessable("Company skill could not be materialized because its stored SKILL.md copy is missing.");
     }
+
+    await fs.writeFile(markerPath, String(skillUpdatedAt), "utf8");
 
     return skillDir;
   }
