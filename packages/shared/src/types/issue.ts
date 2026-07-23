@@ -399,6 +399,7 @@ export interface IssueBlockerAttention {
   coveredBlockerCount: number;
   stalledBlockerCount: number;
   attentionBlockerCount: number;
+  pendingFinalizeBlockerIssueIds?: string[];
   sampleBlockerIdentifier: string | null;
   sampleStalledBlockerIdentifier: string | null;
 }
