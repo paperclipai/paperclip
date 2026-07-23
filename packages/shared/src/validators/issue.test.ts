@@ -417,4 +417,34 @@ describe("issue validators", () => {
 
     expect(parsed.success).toBe(false);
   });
+
+  it("accepts missing blocker-edge liveness reasons", () => {
+    expect(issueBlockedInboxAttentionSchema.parse({
+      kind: "blocked",
+      state: "needs_attention",
+      reason: "blocked_without_blocker_edge",
+      severity: "high",
+      stoppedSinceAt: "2026-04-30T14:31:35.000Z",
+      owner: { type: "agent", agentId: "11111111-1111-4111-8111-111111111111", userId: null, label: null },
+      action: { label: "Create blocker edge", detail: "Attach an actionable blocker issue." },
+      sourceIssue: {
+        id: "22222222-2222-4222-8222-222222222222",
+        identifier: "PAP-1",
+        title: "Blocked work",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: "11111111-1111-4111-8111-111111111111",
+        assigneeUserId: null,
+      },
+      leafIssue: null,
+      recoveryIssue: null,
+      approvalId: null,
+      interactionId: null,
+      sampleIssueIdentifier: "PAP-1",
+      redaction: {
+        externalDetailsRedacted: false,
+        secretFieldsOmitted: true,
+      },
+    }).reason).toBe("blocked_without_blocker_edge");
+  });
 });

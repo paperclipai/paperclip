@@ -6,6 +6,7 @@ export type IssueLivenessSeverity = "warning" | "critical";
 export type IssueLivenessState =
   | "blocked_by_unassigned_issue"
   | "blocked_by_assigned_backlog_issue"
+  | "blocked_without_blocker_edge"
   | "blocked_by_uninvokable_assignee"
   | "blocked_by_cancelled_issue"
   | "invalid_review_participant"
@@ -580,6 +581,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
         const nested = firstBlockedChainFinding(source, blocker, path, new Set(seen));
         if (nested) return nested;
         if (hasExplicitWaitingPath(blocker)) continue;
+        const missingEdge = blockedWithoutBlockerEdgeFinding(source, blocker, path);
+        if (missingEdge) return missingEdge;
       }
 
       const leafFinding = blockedFindingForLeaf(source, blocker, path);
@@ -587,6 +590,41 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     }
 
     return null;
+  }
+
+  function hasNonTerminalBlockerEdge(issue: IssueLivenessIssueInput) {
+    const relations = blockersByBlockedIssueId.get(issue.id) ?? [];
+    return relations.some((relation) => {
+      if (relation.companyId !== issue.companyId) return false;
+      const blocker = issuesById.get(relation.blockerIssueId);
+      return Boolean(blocker && blocker.companyId === issue.companyId && blocker.status !== "done" && blocker.status !== "cancelled");
+    });
+  }
+
+  function blockedWithoutBlockerEdgeFinding(
+    source: IssueLivenessIssueInput,
+    issue: IssueLivenessIssueInput,
+    dependencyPath: IssueLivenessIssueInput[],
+  ): IssueLivenessFinding | null {
+    if (hasNonTerminalBlockerEdge(issue)) return null;
+    if (hasExplicitWaitingPath(issue)) return null;
+
+    const ownerCandidates = ownerCandidatesForRecoveryIssue(issue, input.agents, agentsById, {
+      includeStalledAssignee: true,
+    });
+
+    return finding({
+      issue: source,
+      state: "blocked_without_blocker_edge",
+      reason: `${issueLabel(issue)} is blocked but has no unresolved first-class blocker edge, wake, active run, human owner, interaction, approval, monitor, or recovery issue owning the next action.`,
+      dependencyPath,
+      recoveryIssue: issue,
+      recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+      recommendedOwnerCandidates: ownerCandidates,
+      recommendedAction:
+        `Review ${issueLabel(issue)} and either attach an actionable blocker issue, move it back to todo with a live owner, or close it if the blocked state is stale.`,
+      blockerIssueId: issue.id,
+    });
   }
 
   for (const issue of input.issues) {
@@ -607,6 +645,10 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       if (unresolvedBlockers.has(issue.id)) continue;
       chainFinding = firstBlockedChainFinding(issue, issue, [issue], new Set());
       if (chainFinding) findings.push(chainFinding);
+      else {
+        const noEdgeFinding = blockedWithoutBlockerEdgeFinding(issue, issue, [issue]);
+        if (noEdgeFinding) findings.push(noEdgeFinding);
+      }
     }
 
     if (issue.status === "in_review" && !chainFinding && !unresolvedBlockers.has(issue.id)) {
