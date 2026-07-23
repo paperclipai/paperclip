@@ -10058,6 +10058,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await tx
           .update(issues)
           .set({
+            // Clear the stale checkout so the retry run can re-checkout cleanly.
+            // Mirrors the confirmed-dead-child retry path (enqueueProcessLossRetry)
+            // so both orphan paths leave the issue in an identical, self-healing
+            // shape. Without this the checkout lock stays pinned to the now-terminal
+            // run and every run-guarded mutation (PATCH/release/DELETE comments) 409s
+            // against the dead run (root cause of the transient-retry orphan bug).
+            checkoutRunId: null,
             executionRunId: scheduledRun.id,
             executionAgentNameKey: normalizeAgentNameKey(agent.name),
             executionLockedAt: now,

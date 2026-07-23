@@ -471,6 +471,102 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(promotedRun?.status).toBe("queued");
   });
 
+  it("transfers the issue execution lock to the retry run and clears the stale checkout on a transient_failure_retry", async () => {
+    // Regression for the transient-retry orphan bug: when a run fails on a
+    // transient upstream error, scheduleBoundedRetry moves the issue execution
+    // lock to the new scheduled_retry run. It must ALSO clear the stale
+    // checkoutRunId (which still points at the now-terminal failed run), exactly
+    // like the confirmed-dead-child retry path. Otherwise the issue stays pinned
+    // to the dead run and every run-guarded mutation 409s against it.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceRunId = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "failed",
+      error: "upstream overload",
+      errorCode: "adapter_failed",
+      finishedAt: now,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+      },
+      updatedAt: now,
+      createdAt: now,
+    });
+    // Issue pinned to the failed run on BOTH lock columns — the shape produced
+    // by a live checkout that then died on a transient upstream failure.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Transient retry orphan",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: sourceRunId,
+      executionRunId: sourceRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: now,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const issueAfter = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    // Execution lock moved to the new scheduled_retry run; stale checkout cleared.
+    expect(issueAfter?.executionRunId).toBe(scheduled.run.id);
+    expect(issueAfter?.checkoutRunId).toBeNull();
+    expect(issueAfter?.executionAgentNameKey).toBe("codexcoder");
+    expect(issueAfter?.executionLockedAt).not.toBeNull();
+  });
+
   it("schedules max-turn continuations with distinct retry metadata", async () => {
     const { runId, now } = await seedMaxTurnFixture();
 
