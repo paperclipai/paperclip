@@ -32,6 +32,8 @@ function writeBaseConfig(configPath: string) {
     logging: {
       mode: "file",
       logDir: "/tmp/paperclip-logs",
+      maxSizeMb: 200,
+      maxFiles: 10,
     },
     server: {
       deploymentMode: "local_trusted",

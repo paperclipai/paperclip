@@ -24,4 +24,36 @@ describe("paperclip config schema", () => {
     expect(parsed.storage.localDisk.baseDir).toBe("~/.paperclip/instances/default/data/storage");
     expect(parsed.secrets.localEncrypted.keyFilePath).toBe("~/.paperclip/instances/default/secrets/master.key");
   });
+
+  it("defaults log rotation size and file count when omitted", () => {
+    const parsed = paperclipConfigSchema.parse({
+      $meta: {
+        version: 1,
+        updatedAt: "2026-05-10T00:00:00.000Z",
+        source: "configure",
+      },
+      database: { mode: "embedded-postgres" },
+      logging: { mode: "file" },
+      server: {},
+    });
+
+    expect(parsed.logging.maxSizeMb).toBe(200);
+    expect(parsed.logging.maxFiles).toBe(10);
+  });
+
+  it("honours operator-provided log rotation overrides", () => {
+    const parsed = paperclipConfigSchema.parse({
+      $meta: {
+        version: 1,
+        updatedAt: "2026-05-10T00:00:00.000Z",
+        source: "configure",
+      },
+      database: { mode: "embedded-postgres" },
+      logging: { mode: "file", maxSizeMb: 50, maxFiles: 5 },
+      server: {},
+    });
+
+    expect(parsed.logging.maxSizeMb).toBe(50);
+    expect(parsed.logging.maxFiles).toBe(5);
+  });
 });

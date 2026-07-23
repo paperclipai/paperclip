@@ -43,6 +43,8 @@ export const databaseConfigSchema = z.object({
 export const loggingConfigSchema = z.object({
   mode: z.enum(["file", "cloud"]),
   logDir: z.string().default("~/.paperclip/instances/default/logs"),
+  maxSizeMb: z.number().positive().max(1024 * 1024).default(200),
+  maxFiles: z.number().int().min(1).max(1000).default(10),
 });
 
 export const serverConfigSchema = z.object({

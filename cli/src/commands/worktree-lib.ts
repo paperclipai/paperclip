@@ -206,6 +206,8 @@ export function buildWorktreeConfig(input: {
     logging: {
       mode: source?.logging.mode ?? "file",
       logDir: paths.logDir,
+      maxSizeMb: source?.logging.maxSizeMb ?? 200,
+      maxFiles: source?.logging.maxFiles ?? 10,
     },
     server: {
       deploymentMode: source?.server.deploymentMode ?? "local_trusted",

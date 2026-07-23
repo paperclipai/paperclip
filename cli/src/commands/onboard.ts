@@ -224,6 +224,8 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
     logging: {
       mode: "file",
       logDir: resolveDefaultLogsDir(instanceId),
+      maxSizeMb: 200,
+      maxFiles: 10,
     },
     server: {
       deploymentMode,

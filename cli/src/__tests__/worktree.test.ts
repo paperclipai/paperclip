@@ -125,6 +125,8 @@ function buildSourceConfig(): PaperclipConfig {
     logging: {
       mode: "file",
       logDir: "/tmp/main/logs",
+      maxSizeMb: 200,
+      maxFiles: 10,
     },
     server: {
       deploymentMode: "authenticated",
