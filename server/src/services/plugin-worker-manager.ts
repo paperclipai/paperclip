@@ -528,6 +528,19 @@ export function createPluginWorkerHandle(
       return companyId ? { companyId } : null;
     }
 
+    // Jobs are instance-scoped: register a real invocation (empty companyId =
+    // unrestricted, since readNonEmptyString("") is falsy in the company-scope
+    // check) so nested worker->host calls echo a valid id instead of tripping
+    // contextForWorkerMessage's no-id fallback whenever a scoped invocation
+    // (onEvent/executeTool) happens to be active at the same moment. Without
+    // this, a job's own calls are indistinguishable from a call that lost
+    // track of a scope it should have had, and get denied intermittently
+    // under real event traffic. Company-scoped jobs still take their scope
+    // from the top-level params.companyId check above.
+    if (method === "runJob") {
+      return { companyId: "" };
+    }
+
     return null;
   }
 

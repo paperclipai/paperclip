@@ -238,6 +238,66 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("registers an unrestricted invocation scope for runJob so nested worker host calls succeed", async () => {
+    // Regression test for #9310: runJob dispatches previously derived no
+    // invocation scope at all (no case in deriveInvocationScope), so a job's
+    // own nested host calls had no invocation id to echo. That made them
+    // indistinguishable from a call that lost track of a scope it should
+    // have had, and contextForWorkerMessage's fallback denied them whenever
+    // any OTHER scoped invocation (performAction/executeTool/onEvent)
+    // happened to be active at the same moment -- intermittent under real
+    // event traffic, invisible on a quiet instance. Jobs are instance-scoped
+    // (a single tick can touch many companies), so the fix registers a real
+    // but unrestricted ({ companyId: "" }) invocation rather than picking one
+    // company to lock to.
+    const companiesGet = vi.fn(async (
+      params: { companyId: string },
+      context?: { invocationScope?: { companyId?: string | null } | null },
+    ) => ({
+      id: params.companyId,
+      scopedCompanyId: context?.invocationScope?.companyId ?? null,
+    }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {
+        "companies.get": companiesGet as never,
+      },
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("runJob", {
+        job: {
+          jobKey: "test.job",
+          runId: "run-1",
+          trigger: "schedule",
+          scheduledAt: new Date().toISOString(),
+        },
+        params: {
+          mode: "echo",
+          requestedCompanyId: "company-a",
+        },
+      } as never)).resolves.toEqual({
+        id: "company-a",
+        scopedCompanyId: "",
+      });
+      expect(companiesGet).toHaveBeenCalledWith(
+        { companyId: "company-a" },
+        { invocationScope: { companyId: "" } },
+      );
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("passes echoed invocation scope to worker-to-host handlers", async () => {
     const companiesGet = vi.fn(async () => ({ id: "company-1" }));
     const handle = createPluginWorkerHandle("test.plugin", {
