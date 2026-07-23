@@ -142,10 +142,14 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       databaseUrl: process.env.DATABASE_URL,
       jwtSecret: process.env.PAPERCLIP_AGENT_JWT_SECRET,
       hermesHome: process.env.HERMES_HOME,
+      bashEnv: process.env.BASH_ENV,
+      envHook: process.env.ENV,
     };
     process.env.DATABASE_URL = "postgres://server-only";
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "server-signing-secret";
     process.env.HERMES_HOME = "/server/control-plane-profile";
+    process.env.BASH_ENV = "/server/hostile-bash-env";
+    process.env.ENV = "/server/hostile-shell-env";
 
     try {
       const { ctx } = makeCtx();
@@ -161,6 +165,8 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       expect(opts.env.DATABASE_URL).toBeUndefined();
       expect(opts.env.PAPERCLIP_AGENT_JWT_SECRET).toBeUndefined();
       expect(opts.env.HERMES_HOME).toBeUndefined();
+      expect(opts.env.BASH_ENV).toBeUndefined();
+      expect(opts.env.ENV).toBeUndefined();
       expect(opts.env.PATH).toBe(process.env.PATH);
     } finally {
       if (previous.databaseUrl === undefined) delete process.env.DATABASE_URL;
@@ -169,6 +175,10 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       else process.env.PAPERCLIP_AGENT_JWT_SECRET = previous.jwtSecret;
       if (previous.hermesHome === undefined) delete process.env.HERMES_HOME;
       else process.env.HERMES_HOME = previous.hermesHome;
+      if (previous.bashEnv === undefined) delete process.env.BASH_ENV;
+      else process.env.BASH_ENV = previous.bashEnv;
+      if (previous.envHook === undefined) delete process.env.ENV;
+      else process.env.ENV = previous.envHook;
     }
   });
 });
