@@ -2939,6 +2939,10 @@ describe("IssueChatThread", () => {
   });
 
   it("keeps the composer floating with a capped editor height", () => {
+    Object.defineProperty(document.documentElement, "scrollHeight", {
+      configurable: true,
+      value: 2000,
+    });
     const root = createRoot(container);
 
     act(() => {
@@ -2962,6 +2966,13 @@ describe("IssueChatThread", () => {
     expect(dock?.className).toContain("bottom-(--sz-calc-8)");
     expect(dock?.className).toContain("z-20");
 
+    const scrollToBottom = dock?.querySelector('button[aria-label="Scroll to bottom"]');
+    expect(scrollToBottom).not.toBeNull();
+    expect(scrollToBottom?.className).toContain("absolute");
+    expect(scrollToBottom?.className).toContain("bottom-full");
+    expect(scrollToBottom?.className).toContain("left-1/2");
+    expect(scrollToBottom?.className).toContain("-translate-x-1/2");
+
     const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
     expect(composer).not.toBeNull();
     expect(composer?.className).toContain("rounded-md");
@@ -2977,6 +2988,7 @@ describe("IssueChatThread", () => {
     act(() => {
       root.unmount();
     });
+    Reflect.deleteProperty(document.documentElement, "scrollHeight");
   });
 
   it("shows full-composer drop instructions while dragging files over the issue composer", () => {
