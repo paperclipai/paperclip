@@ -136,6 +136,8 @@ Done
 MD
 ```
 
+If the helper is unavailable from your current working directory, do not search the filesystem for it. Use the raw `PATCH /api/issues/{issueId}` request above instead.
+
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
 
 ### Status Quick Guide
