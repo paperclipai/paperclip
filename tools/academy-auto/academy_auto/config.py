@@ -17,6 +17,7 @@ class Config:
     max_diff_lines: int
     denied_globs: tuple[str, ...]
     triage_state_path: Path
+    npm_install_cmd: tuple[str, ...]
     secret_read_paths: tuple[str, ...]
     sandbox_write_paths: tuple[str, ...]
     protected_write_paths: tuple[str, ...]
@@ -33,6 +34,9 @@ class Config:
             worktree_path=base / "worktree",
             branch="agents/academy-auto",
             base_branch="main",
+            # --legacy-peer-deps: das Repo hat einen Peer-Konflikt, "npm ci"
+            # allein scheitert mit ERESOLVE (live verifiziert).
+            npm_install_cmd=("npm", "ci", "--legacy-peer-deps"),
             pause_flag=home / ".paperclip" / "academy-auto.pause",
             dry_run_flag=home / ".paperclip" / "academy-auto.dryrun",
             gate_commands=[

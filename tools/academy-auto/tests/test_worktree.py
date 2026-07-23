@@ -89,7 +89,7 @@ def test_ensure_dependencies_installs_when_missing(tmp_path):
         class R: returncode = 0; stdout = ""; stderr = ""
         return R()
     assert ensure_dependencies(cfg, runner=runner) is True
-    assert seen["cmd"] == ["npm", "ci"]
+    assert seen["cmd"] == list(cfg.npm_install_cmd)
     assert seen["timeout"] == NPM_INSTALL_TIMEOUT
     assert seen["cwd"] == str(wt)
 
@@ -104,3 +104,26 @@ def test_ensure_dependencies_fail_soft(tmp_path):
 
 def test_config_has_base_branch():
     assert Config.default().base_branch == "main"
+
+
+def test_ensure_dependencies_uses_configured_install_cmd(tmp_path):
+    """Das Install-Kommando kommt aus der Config (Repo braucht --legacy-peer-deps)."""
+    (tmp_path / "wt").mkdir()
+    cfg = _cfg(tmp_path)
+    seen = {}
+
+    def runner(cmd, **k):
+        seen["cmd"] = cmd
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    assert ensure_dependencies(cfg, runner=runner) is True
+    assert seen["cmd"] == list(cfg.npm_install_cmd)
+    assert "--legacy-peer-deps" in seen["cmd"]
+
+
+def test_config_npm_install_cmd_default():
+    assert Config.default().npm_install_cmd == ("npm", "ci", "--legacy-peer-deps")

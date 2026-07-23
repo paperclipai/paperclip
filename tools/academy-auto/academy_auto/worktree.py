@@ -38,10 +38,16 @@ def ensure_dependencies(cfg: Config, runner=subprocess.run) -> bool:
         pass
     try:
         proc = runner(
-            ["npm", "ci"], cwd=str(cfg.worktree_path),
+            list(cfg.npm_install_cmd), cwd=str(cfg.worktree_path),
             check=False, capture_output=True, text=True, timeout=NPM_INSTALL_TIMEOUT,
         )
-        return getattr(proc, "returncode", 1) == 0
+        if getattr(proc, "returncode", 1) == 0:
+            return True
+        # Sichtbar machen: ohne Dependencies misst das Gate nichts und die
+        # Triage findet nichts — der Lauf waere stillschweigend wertlos.
+        tail = ((getattr(proc, "stderr", "") or "") + (getattr(proc, "stdout", "") or ""))[-500:]
+        print(f"WARNUNG: {' '.join(cfg.npm_install_cmd)} fehlgeschlagen — Gate misst nichts.\n{tail}")
+        return False
     except Exception:
         return False
 
