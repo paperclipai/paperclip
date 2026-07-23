@@ -14604,12 +14604,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Local-CLI agents post comments under user auth, so a self-comment from
         // the run that is now ending would otherwise look like a real human
         // comment and trigger a reopen on the very issue this run just closed.
-        // Suppress reopen only when every referenced comment came from this run;
-        // mixed batches must still reopen because they contain a real follow-up.
+        // Suppress reopen when every referenced comment came from this run or
+        // from some other run of the same assignee agent; mixed batches must
+        // still reopen because they contain a real follow-up.
         let deferredCommentWakeIsSelfAuthored = false;
+        let deferredCommentWakeIsAgentAuthored = false;
         if (deferredCommentIds.length > 0) {
           const deferredComments = await tx
-            .select({ createdByRunId: issueComments.createdByRunId })
+            .select({
+              createdByRunId: issueComments.createdByRunId,
+              authorAgentId: issueComments.authorAgentId,
+            })
             .from(issueComments)
             .where(
               and(
@@ -14622,12 +14627,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           deferredCommentWakeIsSelfAuthored =
             deferredComments.length > 0 &&
             deferredComments.every((comment) => comment.createdByRunId === run.id);
+          deferredCommentWakeIsAgentAuthored =
+            deferredComments.length > 0 &&
+            deferredComments.every(
+              (comment) =>
+                comment.createdByRunId !== null &&
+                comment.authorAgentId === deferred.agentId,
+            );
         }
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           !deferredCommentWakeIsSelfAuthored &&
+          !deferredCommentWakeIsAgentAuthored &&
           (issue.status === "done" || issue.status === "cancelled") &&
           (
             deferred.requestedByActorType === "user" ||
