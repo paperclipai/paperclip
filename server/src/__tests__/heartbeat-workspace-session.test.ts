@@ -2545,13 +2545,13 @@ describe("parseSessionCompactionPolicy", () => {
       enabled: true,
       maxSessionRuns: 0,
       maxRawInputTokens: 0,
-      maxSessionAgeHours: 0,
+      maxSessionAgeHours: 48,
     });
     expect(parseSessionCompactionPolicy(buildAgent("claude_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,
       maxRawInputTokens: 0,
-      maxSessionAgeHours: 0,
+      maxSessionAgeHours: 48,
     });
   });
 
@@ -2586,7 +2586,7 @@ describe("parseSessionCompactionPolicy", () => {
       enabled: true,
       maxSessionRuns: 25,
       maxRawInputTokens: 500_000,
-      maxSessionAgeHours: 0,
+      maxSessionAgeHours: 48,
     });
   });
 });
