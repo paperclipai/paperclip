@@ -113,6 +113,7 @@ interface ClaudeRuntimeConfig {
   loggedEnv: Record<string, string>;
   timeoutSec: number;
   graceSec: number;
+  streamIdleWatchdogMs: number;
   extraArgs: string[];
 }
 
@@ -123,6 +124,23 @@ export function claudeSessionCwdMatchesExecutionTarget(input: {
 }): boolean {
   if (input.executionTargetIsRemote || input.runtimeSessionCwd.length === 0) return true;
   return path.resolve(input.runtimeSessionCwd) === path.resolve(input.effectiveExecutionCwd);
+}
+
+const DEFAULT_STREAM_IDLE_WATCHDOG_MS = 30 * 60 * 1000;
+
+// Resolve the per-stream idle watchdog window. Env override
+// (CLAUDE_STREAM_IDLE_WATCHDOG_MS) wins over adapter config so it can be tuned
+// on a running host without a redeploy. <= 0 disables the watchdog entirely.
+function resolveStreamIdleWatchdogMs(
+  config: Record<string, unknown>,
+  runtimeEnv: Record<string, string | undefined>,
+): number {
+  const rawEnv = runtimeEnv.CLAUDE_STREAM_IDLE_WATCHDOG_MS;
+  if (typeof rawEnv === "string" && rawEnv.trim().length > 0) {
+    const parsed = Number(rawEnv);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return asNumber(config.streamIdleWatchdogMs, DEFAULT_STREAM_IDLE_WATCHDOG_MS);
 }
 
 function buildLoginResult(input: {
@@ -332,6 +350,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     resolvedCommand,
   });
 
+  const streamIdleWatchdogMs = resolveStreamIdleWatchdogMs(config, runtimeEnv);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -349,6 +368,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     loggedEnv,
     timeoutSec,
     graceSec,
+    streamIdleWatchdogMs,
     extraArgs,
   };
 }
@@ -466,6 +486,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     loggedEnv: initialLoggedEnv,
     timeoutSec,
     graceSec,
+    streamIdleWatchdogMs,
     extraArgs,
   } = runtimeConfig;
   let loggedEnv = initialLoggedEnv;
@@ -912,6 +933,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
+      streamIdleWatchdogMs,
       onSpawn,
       onRuntimeProgress: ctx.onRuntimeProgress,
       onLog,
@@ -957,6 +979,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: "timeout",
         errorMeta,
+        clearSession: Boolean(opts.clearSessionOnMissingSession),
+      };
+    }
+
+    if (proc.idleWatchdogFired) {
+      const silenceAgeMs = proc.silenceAgeMs ?? streamIdleWatchdogMs;
+      const silenceMin = Math.round(silenceAgeMs / 60000);
+      return {
+        exitCode: proc.exitCode,
+        signal: proc.signal,
+        timedOut: false,
+        errorMessage: `Claude stream idle for ~${silenceMin}m with no stdout; reaped by idle watchdog (threshold ${streamIdleWatchdogMs}ms)`,
+        errorCode: "stream_idle_watchdog",
+        errorMeta: { ...errorMeta, silenceAgeMs, streamIdleWatchdogMs },
+        // Persisted into heartbeat_runs.result_json so the silence age is
+        // durably attached to the run payload (errorMeta has no column).
+        resultJson: {
+          streamIdleWatchdog: {
+            silenceAgeMs,
+            streamIdleWatchdogMs,
+            terminatedSignal: proc.signal,
+          },
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+        },
         clearSession: Boolean(opts.clearSessionOnMissingSession),
       };
     }

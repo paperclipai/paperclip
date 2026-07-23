@@ -19,6 +19,19 @@ export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  /**
+   * True when the per-stream idle watchdog reaped the subprocess because no
+   * stdout was observed for `streamIdleWatchdogMs`. Distinct from `timedOut`
+   * (the wall-clock `timeoutSec` cap), which stays false in this case.
+   * Optional: only the local `runChildProcess` path arms the watchdog; remote
+   * (SSH/sandbox) result producers leave it undefined.
+   */
+  idleWatchdogFired?: boolean;
+  /**
+   * Silence (in ms) since the last stdout chunk at the moment the idle
+   * watchdog fired. `null`/undefined when the watchdog did not fire.
+   */
+  silenceAgeMs?: number | null;
   stdout: string;
   stderr: string;
   pid: number | null;
@@ -3022,6 +3035,12 @@ export async function runChildProcess(
     env: Record<string, string>;
     timeoutSec: number;
     graceSec: number;
+    /**
+     * Per-stream idle watchdog. When > 0, the subprocess is SIGTERM'd (then
+     * SIGKILL'd after `graceSec`) if no stdout chunk arrives for this many ms.
+     * Independent of `timeoutSec` (the wall-clock cap). Omitted/<=0 disables it.
+     */
+    streamIdleWatchdogMs?: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
@@ -3087,6 +3106,8 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
+        let idleWatchdogFired = false;
+        let silenceAgeMs: number | null = null;
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
@@ -3156,11 +3177,40 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+        // Per-stream idle watchdog: independent of the wall-clock `timeout`
+        // above, this reaps a subprocess whose stdout has gone silent (e.g. a
+        // half-open SSE socket after laptop sleep) long before the Claude CLI's
+        // own ~11h idle timeout would. Re-armed on every stdout chunk.
+        const idleWatchdogMs = opts.streamIdleWatchdogMs ?? 0;
+        let lastStdoutAt = Date.now();
+        let idleTimer: NodeJS.Timeout | null = null;
+        const clearIdleTimer = () => {
+          if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = null;
+          }
+        };
+        const armIdleWatchdog = () => {
+          if (idleWatchdogMs <= 0) return;
+          clearIdleTimer();
+          idleTimer = setTimeout(() => {
+            idleWatchdogFired = true;
+            silenceAgeMs = Date.now() - lastStdoutAt;
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            setTimeout(() => {
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          }, idleWatchdogMs);
+        };
+        armIdleWatchdog();
+
         child.stdout?.on("data", (chunk: unknown) => {
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
           const text = String(chunk);
+          lastStdoutAt = Date.now();
+          armIdleWatchdog();
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
@@ -3200,6 +3250,7 @@ export async function runChildProcess(
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearIdleTimer();
           runningProcesses.delete(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
@@ -3218,6 +3269,7 @@ export async function runChildProcess(
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearIdleTimer();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             void Promise.resolve()
@@ -3227,6 +3279,8 @@ export async function runChildProcess(
                 exitCode: code,
                 signal,
                 timedOut,
+                idleWatchdogFired,
+                silenceAgeMs,
                 stdout,
                 stderr,
                 pid: child.pid ?? null,

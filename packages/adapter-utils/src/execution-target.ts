@@ -104,6 +104,12 @@ export interface AdapterExecutionTargetProcessOptions {
   stdin?: string;
   timeoutSec: number;
   graceSec: number;
+  /**
+   * Per-stream idle watchdog (ms). Forwarded to `runChildProcess` on the local
+   * execution path; remote (SSH/sandbox) transports rely on their own timeouts
+   * and ignore it. Omitted/<=0 disables the watchdog.
+   */
+  streamIdleWatchdogMs?: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
@@ -587,6 +593,7 @@ export async function runAdapterExecutionTargetProcess(
     stdin: options.stdin,
     timeoutSec: options.timeoutSec,
     graceSec: options.graceSec,
+    streamIdleWatchdogMs: options.streamIdleWatchdogMs,
     onLog: options.onLog,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
