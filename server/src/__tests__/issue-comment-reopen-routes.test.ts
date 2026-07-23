@@ -1475,6 +1475,32 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("does not wake the assignee with issue_commented when a PATCH comment closes the issue", async () => {
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      status: "done",
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done", comment: "Closing this out." });
+
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setImmediate(resolve));
+    const issueCommentedWakeCalls = mockHeartbeatService.wakeup.mock.calls.filter(
+      ([, wakeup]: [string, { reason?: string }]) => wakeup?.reason === "issue_commented",
+    );
+    expect(issueCommentedWakeCalls).toEqual([]);
+  });
+
   it("explicit same-agent resume works through the PATCH comment path", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
