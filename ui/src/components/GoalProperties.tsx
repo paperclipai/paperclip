@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { Goal } from "@paperclipai/shared";
+import type { Agent, Goal } from "@paperclipai/shared";
 import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
@@ -12,6 +12,7 @@ import { formatDate, cn, agentUrl } from "../lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { AgentIcon } from "./AgentIconPicker";
 
 interface GoalPropertiesProps {
   goal: Goal;
@@ -70,6 +71,61 @@ function PickerButton({
   );
 }
 
+function OwnerPicker({
+  currentOwnerAgentId,
+  agents,
+  onChange,
+  children,
+}: {
+  currentOwnerAgentId: string | null;
+  agents: Agent[];
+  onChange: (value: string | null) => void;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button className="cursor-pointer hover:opacity-80 transition-opacity text-left">
+          {children}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-56 p-1" align="end">
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn("w-full justify-start text-xs", !currentOwnerAgentId && "bg-accent")}
+          onClick={() => {
+            onChange(null);
+            setOpen(false);
+          }}
+        >
+          No owner
+        </Button>
+        {agents.map((agent) => (
+          <Button
+            key={agent.id}
+            variant="ghost"
+            size="sm"
+            className={cn("w-full justify-start gap-2 text-xs", agent.id === currentOwnerAgentId && "bg-accent")}
+            onClick={() => {
+              onChange(agent.id);
+              setOpen(false);
+            }}
+          >
+            <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="truncate">{agent.name}</span>
+            {agent.status !== "idle" && (
+              <span className="ml-auto text-[10px] text-muted-foreground capitalize">{label(agent.status)}</span>
+            )}
+          </Button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
   const { selectedCompanyId } = useCompany();
 
@@ -88,6 +144,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
   const ownerAgent = goal.ownerAgentId
     ? agents?.find((a) => a.id === goal.ownerAgentId)
     : null;
+  const ownerOptions = (agents ?? []).filter((agent) => agent.status !== "terminated");
 
   const parentGoal = goal.parentId
     ? allGoals?.find((g) => g.id === goal.parentId)
@@ -125,7 +182,32 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
         </PropertyRow>
 
         <PropertyRow label="Owner">
-          {ownerAgent ? (
+          {onUpdate ? (
+            <>
+              <OwnerPicker
+                currentOwnerAgentId={goal.ownerAgentId ?? null}
+                agents={ownerOptions}
+                onChange={(ownerAgentId) => onUpdate({ ownerAgentId })}
+              >
+                {ownerAgent ? (
+                  <span className="inline-flex items-center gap-1.5 text-sm">
+                    <AgentIcon icon={ownerAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    {ownerAgent.name}
+                  </span>
+                ) : (
+                  <span className="text-sm text-muted-foreground">No owner</span>
+                )}
+              </OwnerPicker>
+              {ownerAgent && (
+                <Link
+                  to={agentUrl(ownerAgent)}
+                  className="text-xs text-muted-foreground hover:underline"
+                >
+                  Open
+                </Link>
+              )}
+            </>
+          ) : ownerAgent ? (
             <Link
               to={agentUrl(ownerAgent)}
               className="text-sm hover:underline"
@@ -133,7 +215,7 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
               {ownerAgent.name}
             </Link>
           ) : (
-            <span className="text-sm text-muted-foreground">None</span>
+            <span className="text-sm text-muted-foreground">No owner</span>
           )}
         </PropertyRow>
 
