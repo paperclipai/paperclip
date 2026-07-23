@@ -3500,6 +3500,13 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  function isStaleManagedIssue(issue: {
+    status: string;
+    assigneeAgentId: string | null;
+  }) {
+    return issue.assigneeAgentId !== null && issue.status !== "in_progress";
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -3551,7 +3558,15 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
-      if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+      const hasManagementOverride = await hasActiveCheckoutManagementOverride(
+        actorAgentId,
+        issue.companyId,
+        issue.assigneeAgentId,
+      );
+      if (issue.status === "in_progress" && hasManagementOverride) {
+        return true;
+      }
+      if (isStaleManagedIssue(issue) && hasManagementOverride) {
         return true;
       }
       if (issue.status === "in_progress") {

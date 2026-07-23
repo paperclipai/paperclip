@@ -809,6 +809,38 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("allows management-authorized agents to comment on stale issues owned by another agent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment" || input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason:
+        input.action === "tasks:manage_active_checkouts"
+          ? "allow_manager_chain"
+          : input.action === "issue:comment"
+            ? "allow_manager_chain"
+            : "deny_missing_grant",
+      explanation:
+        input.action === "tasks:manage_active_checkouts"
+          ? "Allowed because the actor manages the issue assignee."
+          : input.action === "issue:comment"
+            ? "Allowed because the actor manages the stale issue assignee."
+            : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Cleaning up stale confirmation context." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Cleaning up stale confirmation context.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
   it("rejects peer agents from listing comments when issue read is outside their boundary", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: false,
@@ -1491,6 +1523,37 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("allows management-authorized agents to mutate stale issues owned by another agent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:mutate" || input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason:
+        input.action === "tasks:manage_active_checkouts"
+          ? "allow_manager_chain"
+          : input.action === "issue:mutate"
+            ? "allow_manager_chain"
+            : "deny_missing_grant",
+      explanation:
+        input.action === "tasks:manage_active_checkouts"
+          ? "Allowed because the actor manages the issue assignee."
+          : input.action === "issue:mutate"
+            ? "Allowed because the actor manages the stale issue assignee."
+            : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Managed stale update" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ title: "Managed stale update" }),
+    );
   });
 
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {

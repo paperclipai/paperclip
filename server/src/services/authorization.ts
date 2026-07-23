@@ -1314,13 +1314,17 @@ export function authorizationService(db: Db) {
     return false;
   }
 
-  function allowIssueMentionGrant(action: AuthorizationAction): AuthorizationDecision {
-    return allow({
-      action,
-      reason: "allow_issue_mention_grant",
-      explanation: "Allowed by a mention-scoped issue comment grant.",
-    });
-  }
+function allowIssueMentionGrant(action: AuthorizationAction): AuthorizationDecision {
+  return allow({
+    action,
+    reason: "allow_issue_mention_grant",
+    explanation: "Allowed by a mention-scoped issue comment grant.",
+  });
+}
+
+function isStaleIssueStatus(status: string | null | undefined) {
+  return status !== null && status !== undefined && status !== "in_progress";
+}
 
   async function decideBase(input: {
     actor: AuthorizationActor;
@@ -1901,6 +1905,22 @@ export function authorizationService(db: Db) {
         })
       ) {
         return allowIssueMentionGrant(input.action);
+      }
+      if (resource?.assigneeAgentId && isStaleIssueStatus(resource.status)) {
+        if (canCreateAgentsLegacy(actorAgent)) {
+          return allow({
+            action: input.action,
+            reason: "allow_legacy_agent_creator",
+            explanation: "Allowed because the actor can reconcile stale issues across the company.",
+          });
+        }
+        if (await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId)) {
+          return allow({
+            action: input.action,
+            reason: "allow_manager_chain",
+            explanation: "Allowed because the actor manages the stale issue assignee in the reporting chain.",
+          });
+        }
       }
     }
     if (

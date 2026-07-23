@@ -1534,6 +1534,124 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows legacy CEO agents to reconcile stale issues owned by other agents", async () => {
+    const company = await createCompany(db, "LegacyStaleIssue");
+    const actorAgent = await createAgent(db, company.id, { role: "ceo" });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: targetAgent.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: targetAgent.id,
+        status: "todo",
+      },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_legacy_agent_creator",
+    });
+  });
+
+  it("does not treat missing issue status as stale for legacy CEO reconciliation", async () => {
+    const company = await createCompany(db, "LegacyMissingStatusIssue");
+    const actorAgent = await createAgent(db, company.id, { role: "ceo" });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: targetAgent.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
+  it("allows manager-chain agents to reconcile stale issues in their subtree", async () => {
+    const company = await createCompany(db, "ManagerStaleIssue");
+    const manager = await createAgent(db, company.id, { role: "manager" });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer", reportsTo: manager.id });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: targetAgent.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: manager.id, companyId: company.id, source: "agent_jwt" },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: targetAgent.id,
+        status: "blocked",
+      },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_manager_chain",
+    });
+  });
+
+  it("does not treat missing issue status as stale for manager-chain reconciliation", async () => {
+    const company = await createCompany(db, "ManagerMissingStatusIssue");
+    const manager = await createAgent(db, company.id, { role: "manager" });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer", reportsTo: manager.id });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: targetAgent.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: manager.id, companyId: company.id, source: "agent_jwt" },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
+  it("keeps manager-chain agents out of another agent's active checkout", async () => {
+    const company = await createCompany(db, "ManagerActiveIssue");
+    const manager = await createAgent(db, company.id, { role: "manager" });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer", reportsTo: manager.id });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: targetAgent.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: manager.id, companyId: company.id, source: "agent_jwt" },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: targetAgent.id,
+        status: "in_progress",
+      },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
   it("denies active-checkout management outside the CEO caller company scope", async () => {
     const sourceCompany = await createCompany(db, "CheckoutSource");
     const targetCompany = await createCompany(db, "CheckoutTarget");
