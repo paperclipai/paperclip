@@ -9146,6 +9146,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_found"
           | "issue_reassigned"
           | "issue_cancelled"
+          | "issue_blocked"
           | "issue_terminal_status"
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
@@ -9239,11 +9240,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (issue.status === "cancelled" || issue.status === "done") {
+    if (issue.status === "cancelled" || issue.status === "done" || issue.status === "blocked") {
       return {
         allowed: false,
-        reason: `Scheduled retry suppressed because issue reached terminal status (${issue.status})`,
-        errorCode: issue.status === "cancelled" ? "issue_cancelled" : "issue_terminal_status",
+        reason:
+          issue.status === "blocked"
+            ? "Scheduled retry suppressed because the target issue is blocked"
+            : `Scheduled retry suppressed because issue reached terminal status (${issue.status})`,
+        errorCode:
+          issue.status === "cancelled"
+            ? "issue_cancelled"
+            : issue.status === "blocked"
+            ? "issue_blocked"
+            : "issue_terminal_status",
         issueId,
         details: { issueId, currentStatus: issue.status },
       };
@@ -9715,6 +9724,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             | "issue_not_found"
             | "issue_reassigned"
             | "issue_cancelled"
+            | "issue_blocked"
             | "issue_terminal_status"
             | "issue_not_in_progress"
             | "issue_execution_lock_changed";
