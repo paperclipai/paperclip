@@ -1314,4 +1314,73 @@ describe("NewIssueDialog", () => {
       act(() => root.unmount());
     });
   });
+
+  describe("last-used work-mode preference", () => {
+    const PREF_KEY = "paperclip:work-mode-pref";
+
+    function modeChip() {
+      return container.querySelector("[data-issue-work-mode-chip]");
+    }
+
+    it("defaults to ask on a fresh browser with no stored preference", async () => {
+      expect(localStorage.getItem(PREF_KEY)).toBeNull();
+
+      const { root } = renderDialog(container);
+      await flush();
+
+      expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
+
+      act(() => root.unmount());
+    });
+
+    it("remembers the mode used on the most recent successful create", async () => {
+      const { root } = renderDialog(container);
+      await flush();
+
+      const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+      expect(titleInput).not.toBeNull();
+      await typeTextareaValue(titleInput!, "Plan this first");
+
+      const planningButton = container.querySelector('[data-issue-work-mode="planning"]');
+      expect(planningButton).not.toBeNull();
+      await act(async () => {
+        planningButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+
+      const submitButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Create Task"));
+      expect(submitButton).not.toBeUndefined();
+      await vi.waitFor(() => {
+        expect(submitButton?.hasAttribute("disabled")).toBe(false);
+      });
+
+      await act(async () => {
+        submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+
+      expect(localStorage.getItem(PREF_KEY)).toBe("planning");
+
+      act(() => root.unmount());
+
+      const reopened = renderDialog(container);
+      await flush();
+
+      expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+      act(() => reopened.root.unmount());
+    });
+
+    it("falls back to ask when the stored preference is corrupt", async () => {
+      localStorage.setItem(PREF_KEY, "not-a-real-mode");
+
+      const { root } = renderDialog(container);
+      await flush();
+
+      expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
+
+      act(() => root.unmount());
+    });
+  });
 });
