@@ -10,6 +10,7 @@ import {
   issueRelations,
   issues,
   pluginDatabaseNamespaces,
+  pluginJobs,
   pluginMigrations,
   plugins,
 } from "@paperclipai/db";
@@ -25,6 +26,7 @@ import {
   validatePluginRuntimeExecute,
   validatePluginRuntimeQuery,
 } from "../services/plugin-database.js";
+import { pluginJobStore } from "../services/plugin-job-store.js";
 import { buildPluginWorkerEnv, pluginLoader } from "../services/plugin-loader.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -215,7 +217,15 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
   }, 20_000);
 
   afterEach(async () => {
-    for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.refresh", multiMigrationPluginKey, llmWikiPluginKey]) {
+    for (const pluginKey of [
+      "paperclip.dbtest",
+      "paperclip.escape",
+      "paperclip.refresh",
+      "paperclip.jobsync",
+      "paperclip.jobstore",
+      multiMigrationPluginKey,
+      llmWikiPluginKey,
+    ]) {
       const namespace = derivePluginDatabaseNamespace(pluginKey);
       await db.execute(sql.raw(`DROP SCHEMA IF EXISTS "${namespace}" CASCADE`));
     }
@@ -637,6 +647,99 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       .from(plugins)
       .where(eq(plugins.id, pluginId));
     expect(plugin?.manifestJson.database?.coreReadTables).toEqual(["companies"]);
+  });
+
+  it("syncs empty job declarations during plugin activation", async () => {
+    const pluginManifest: PaperclipPluginManifestV1 = {
+      ...manifest("paperclip.jobsync"),
+      jobs: [],
+    };
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createInstallablePluginPackage(
+      pluginManifest,
+      `CREATE TABLE ${namespace}.job_sync_rows (id uuid PRIMARY KEY);`,
+    );
+    const pluginId = await installPluginRecord({
+      ...pluginManifest,
+      jobs: [
+        {
+          jobKey: "stale-job",
+          displayName: "Stale Job",
+          schedule: "0 * * * *",
+        },
+      ],
+    });
+    await db
+      .update(plugins)
+      .set({
+        packagePath: packageRoot,
+        status: "ready",
+      })
+      .where(eq(plugins.id, pluginId));
+
+    const jobStore = {
+      syncJobDeclarations: vi.fn().mockResolvedValue(undefined),
+    };
+    const jobScheduler = {
+      registerPlugin: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(),
+    };
+    const loader = pluginLoader(db, {
+      enableLocalFilesystem: false,
+      enableNpmDiscovery: false,
+    }, {
+      workerManager: {
+        startWorker: vi.fn().mockResolvedValue(undefined),
+        stopAll: vi.fn().mockResolvedValue(undefined),
+      },
+      eventBus: {
+        forPlugin: vi.fn(() => ({})),
+        subscriptionCount: vi.fn(() => 0),
+      },
+      jobScheduler,
+      jobStore,
+      toolDispatcher: {
+        registerPluginTools: vi.fn(),
+      },
+      lifecycleManager: {
+        markError: vi.fn().mockResolvedValue(undefined),
+      },
+      buildHostHandlers: vi.fn(() => ({})),
+      instanceInfo: {
+        instanceId: "test-instance",
+        hostVersion: "1.0.0",
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+      },
+    } as never);
+
+    const result = await loader.loadSingle(pluginId);
+
+    expect(result.success).toBe(true);
+    expect(jobStore.syncJobDeclarations).toHaveBeenCalledWith(pluginId, []);
+    expect(jobScheduler.registerPlugin).toHaveBeenCalledWith(pluginId);
+  });
+
+  it("pauses existing plugin jobs when the manifest declares none", async () => {
+    const pluginManifest = manifest("paperclip.jobstore");
+    const pluginId = await installPluginRecord(pluginManifest);
+    const store = pluginJobStore(db);
+
+    await store.syncJobDeclarations(pluginId, [
+      {
+        jobKey: "hourly-reconcile",
+        displayName: "Hourly Reconcile",
+        schedule: "0 * * * *",
+      },
+    ]);
+
+    await store.syncJobDeclarations(pluginId, []);
+
+    const [job] = await db
+      .select()
+      .from(pluginJobs)
+      .where(and(eq(pluginJobs.pluginId, pluginId), eq(pluginJobs.jobKey, "hourly-reconcile")));
+    expect(job?.status).toBe("paused");
   });
 
   it("rejects checksum changes for already applied migrations", async () => {
