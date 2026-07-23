@@ -100,3 +100,27 @@ test("testEnvironment isolates command probes from server-only environment varia
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("testEnvironment rejects unsupported remote targets without running a local command", async () => {
+  const result = await testEnvironment({
+    companyId: "company-test",
+    adapterType: "hermes_local",
+    executionTarget: {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/remote/workspace",
+    },
+    environmentName: "remote-test",
+    config: {
+      command: "/definitely-not-a-local-command",
+    },
+  });
+
+  expect(result.status).toBe("fail");
+  expect(result.checks).toEqual([
+    expect.objectContaining({
+      level: "error",
+      code: "hermes_remote_execution_unsupported",
+    }),
+  ]);
+});

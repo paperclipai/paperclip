@@ -116,11 +116,35 @@ const HERMES_INHERITED_ENV_ALLOWLIST = [
   "PATHEXT",
 ] as const;
 
+const HERMES_PROXY_ENV_KEYS = new Set([
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+]);
+
+function inheritedProxyContainsCredentials(value: string): boolean {
+  if (value.includes("@")) return true;
+  try {
+    const url = new URL(value);
+    return url.username.length > 0 || url.password.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function buildHermesInheritedEnv(source: NodeJS.ProcessEnv): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of HERMES_INHERITED_ENV_ALLOWLIST) {
     const value = source[key];
-    if (value !== undefined) env[key] = value;
+    if (
+      value !== undefined &&
+      !(HERMES_PROXY_ENV_KEYS.has(key) && inheritedProxyContainsCredentials(value))
+    ) {
+      env[key] = value;
+    }
   }
   return env;
 }
@@ -401,6 +425,9 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
 export async function execute(
   ctx: AdapterExecutionContext,
 ): Promise<AdapterExecutionResult> {
+  if (ctx.executionTarget?.kind === "remote") {
+    throw new Error("Hermes local adapter does not support remote execution targets");
+  }
   const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
 
   // ── Resolve configuration ──────────────────────────────────────────────

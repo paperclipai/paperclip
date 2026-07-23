@@ -181,9 +181,50 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       else process.env.ENV = previous.envHook;
     }
   });
+
+  it("rejects unsupported remote targets before spawning a local process", async () => {
+    const { ctx } = makeCtx();
+    (ctx as any).executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/remote/workspace",
+    };
+
+    await expect(execute(ctx as any)).rejects.toThrow(
+      "Hermes local adapter does not support remote execution targets",
+    );
+    expect(vi.mocked(serverUtils.runChildProcess)).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildHermesChildEnv", () => {
+  it("drops credentialed inherited proxy URLs", () => {
+    const env = buildHermesChildEnv(
+      {},
+      {
+        HTTP_PROXY: "http://proxy-user:proxy-pass@proxy.example:8080",
+        HTTPS_PROXY: "https://proxy.example:8443",
+        ALL_PROXY: "socks5://proxy-user@proxy.example:1080",
+        NO_PROXY: "localhost,127.0.0.1",
+      },
+    );
+
+    expect(env.HTTP_PROXY).toBeUndefined();
+    expect(env.ALL_PROXY).toBeUndefined();
+    expect(env.HTTPS_PROXY).toBe("https://proxy.example:8443");
+    expect(env.NO_PROXY).toBe("localhost,127.0.0.1");
+  });
+
+  it("preserves a credentialed proxy explicitly configured for the agent", () => {
+    const configuredProxy = "http://agent-user:agent-pass@proxy.example:8080";
+    const env = buildHermesChildEnv(
+      { env: { HTTP_PROXY: configuredProxy } },
+      { HTTP_PROXY: "http://server-user:server-pass@proxy.example:8080" },
+    );
+
+    expect(env.HTTP_PROXY).toBe(configuredProxy);
+  });
+
   it("lets configured Windows environment keys override inherited casing", () => {
     const env = buildHermesChildEnv(
       { env: { Path: "C:\\agent-bin" } },

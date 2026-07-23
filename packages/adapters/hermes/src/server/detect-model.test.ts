@@ -138,6 +138,25 @@ test("testEnvironment does not warn about missing API keys when Hermes config pr
   });
 });
 
+test("testEnvironment does not report provider keys that exist only in the server process", async () => {
+  await withHermesHomeConfig([], async () => {
+    process.env.OPENAI_API_KEY = "host-only-placeholder";
+
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "openai/gpt-4.1-mini",
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+    expect(codes.includes("hermes_api_keys_found")).toBe(false);
+    expect(codes.includes("hermes_no_api_keys")).toBe(true);
+  });
+});
+
 test("testEnvironment describes provider-omitted runtime config without inventing provider auto", async () => {
   await withHermesHomeConfig([
     "model:",

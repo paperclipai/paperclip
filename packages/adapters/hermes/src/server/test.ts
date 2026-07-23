@@ -334,6 +334,19 @@ export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
   const config = (ctx.config ?? {}) as Record<string, unknown>;
+  if (ctx.executionTarget?.kind === "remote") {
+    return {
+      adapterType: ADAPTER_TYPE,
+      status: "fail",
+      checks: [{
+        level: "error",
+        message: "Hermes local adapter does not support remote execution targets",
+        hint: "Use a local execution environment for this adapter.",
+        code: "hermes_remote_execution_unsupported",
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
   const command = resolveHermesCommand(config);
   const childEnv = buildHermesChildEnv(config);
   const checks: AdapterEnvironmentCheck[] = [];
