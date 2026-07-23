@@ -39,6 +39,20 @@ const SECRET_TEXT_HINTS = [
 ] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
+function uniqueSecretValues(values: readonly string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length >= 4))]
+    .sort((left, right) => right.length - left.length);
+}
+
+/** Redact concrete resolved secrets, including values with no recognizable token shape. */
+export function redactKnownSecretValues(input: string, values: readonly string[]) {
+  let result = input;
+  for (const value of uniqueSecretValues(values)) {
+    result = result.split(value).join(REDACTED_EVENT_VALUE);
+  }
+  return result;
+}
+
 function maybeContainsSecretText(input: string) {
   const lower = input.toLowerCase();
   return SECRET_TEXT_HINTS.some((hint) => lower.includes(hint)) || input.includes(".");
@@ -141,4 +155,26 @@ export function redactSensitiveText(input: string): string {
       .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`),
     REDACTED_EVENT_VALUE,
   );
+}
+
+/**
+ * Recursive persistence boundary for adapter output. String values are scanned
+ * even when their JSON key is innocuous, so an unmanaged credential echoed in
+ * `summary`, `result`, or session metadata cannot bypass key-name redaction.
+ */
+export function redactRunOutputValue<T>(value: T, knownSecretValues: readonly string[] = []): T {
+  if (typeof value === "string") {
+    return redactKnownSecretValues(redactSensitiveText(value), knownSecretValues) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactRunOutputValue(entry, knownSecretValues)) as T;
+  }
+  if (!isPlainObject(value)) return value;
+  const result: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    result[key] = SECRET_PAYLOAD_KEY_RE.test(key)
+      ? REDACTED_EVENT_VALUE
+      : redactRunOutputValue(entry, knownSecretValues);
+  }
+  return result as T;
 }
