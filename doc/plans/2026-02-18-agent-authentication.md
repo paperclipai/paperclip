@@ -207,7 +207,7 @@ On approval, the approver sets:
 
 ## P0 Implementation Plan
 
-See [`doc/plans/agent-authentication-implementation.md`](./agent-authentication-implementation.md) for the P0 local JWT execution plan.
+See [`doc/plans/2026-02-18-agent-authentication-implementation.md`](./2026-02-18-agent-authentication-implementation.md) for the P0 local JWT execution plan.
 
 ---
 
