@@ -473,9 +473,11 @@ export {
   issueTreeHoldReleasePolicySchema,
   previewIssueTreeControlSchema,
   releaseIssueTreeHoldSchema,
+  overrideReleaseIssueTreeHoldSchema,
   type CreateIssueTreeHold,
   type PreviewIssueTreeControl,
   type ReleaseIssueTreeHold,
+  type OverrideReleaseIssueTreeHold,
 } from "./issue-tree-control.js";
 
 export {

@@ -1069,6 +1069,43 @@ export function issueTreeControlService(db: Db) {
     return toHold(hold, members);
   }
 
+  async function listActivePauseHoldsByCompany(companyId: string) {
+    const holds = await db
+      .select()
+      .from(issueTreeHolds)
+      .where(
+        and(
+          eq(issueTreeHolds.companyId, companyId),
+          eq(issueTreeHolds.status, "active"),
+          eq(issueTreeHolds.mode, "pause"),
+        ),
+      )
+      .orderBy(asc(issueTreeHolds.createdAt), asc(issueTreeHolds.id));
+
+    if (holds.length === 0) return [];
+
+    const holdIds = holds.map((hold) => hold.id);
+    const members = await db
+      .select()
+      .from(issueTreeHoldMembers)
+      .where(
+        and(
+          eq(issueTreeHoldMembers.companyId, companyId),
+          inArray(issueTreeHoldMembers.holdId, holdIds),
+        ),
+      )
+      .orderBy(asc(issueTreeHoldMembers.depth), asc(issueTreeHoldMembers.createdAt), asc(issueTreeHoldMembers.issueId));
+
+    const membersByHoldId = new Map<string, HoldMemberRow[]>();
+    for (const member of members) {
+      const existing = membersByHoldId.get(member.holdId) ?? [];
+      existing.push(member);
+      membersByHoldId.set(member.holdId, existing);
+    }
+
+    return holds.map((hold) => toHold(hold, membersByHoldId.get(hold.id) ?? []));
+  }
+
   async function listHolds(
     companyId: string,
     rootIssueId: string,
@@ -1205,6 +1242,7 @@ export function issueTreeControlService(db: Db) {
     restoreIssueStatusesForHold,
     getHold,
     listHolds,
+    listActivePauseHoldsByCompany,
     getActivePauseHoldGate,
     releaseHold,
     cancelUnclaimedWakeupsForTree,

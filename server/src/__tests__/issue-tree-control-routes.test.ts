@@ -12,6 +12,7 @@ const mockTreeControlService = vi.hoisted(() => ({
   cancelIssueStatusesForHold: vi.fn(),
   restoreIssueStatusesForHold: vi.fn(),
   getHold: vi.fn(),
+  listActivePauseHoldsByCompany: vi.fn(),
   releaseHold: vi.fn(),
   cancelUnclaimedWakeupsForTree: vi.fn(),
 }));
@@ -415,5 +416,268 @@ describe("issue tree control routes", () => {
     expect(mockTreeControlService.cancelUnclaimedWakeupsForTree).not.toHaveBeenCalled();
     expect(mockTreeControlService.cancelIssueStatusesForHold).not.toHaveBeenCalled();
     expect(mockTreeControlService.restoreIssueStatusesForHold).not.toHaveBeenCalled();
+  });
+
+  describe("company-level tree control", () => {
+    it("lists active pause holds for the company", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-2"],
+        source: "session",
+        isInstanceAdmin: false,
+      });
+      mockTreeControlService.listActivePauseHoldsByCompany.mockResolvedValue([
+        {
+          id: "33333333-3333-4333-8333-333333333333",
+          companyId: "company-2",
+          rootIssueId: "11111111-1111-4111-8111-111111111111",
+          mode: "pause",
+          status: "active",
+          reason: "pause subtree",
+          members: [{ issueId: "55555555-5555-4555-8555-555555555555" }],
+        },
+      ]);
+
+      const res = await request(app)
+        .get("/api/companies/company-2/tree-control/active-pause-holds");
+
+      expect(res.status).toBe(200);
+      expect(res.body.holds).toHaveLength(1);
+      expect(res.body.holds[0].mode).toBe("pause");
+      expect(res.body.holds[0].rootIssueId).toBe("11111111-1111-4111-8111-111111111111");
+    });
+
+    it("requires board access for active pause hold listing", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-2",
+        runId: null,
+        source: "api_key",
+      });
+
+      const res = await request(app)
+        .get("/api/companies/company-2/tree-control/active-pause-holds");
+
+      expect(res.status).toBe(403);
+      expect(mockTreeControlService.listActivePauseHoldsByCompany).not.toHaveBeenCalled();
+    });
+
+    it("rejects non-UUID hold IDs for override-release", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-2"],
+        source: "session",
+        isInstanceAdmin: false,
+      });
+
+      const res = await request(app)
+        .post("/api/companies/company-2/tree-control/active-pause-holds/null/override-release")
+        .send({ reason: "override" });
+
+      expect(res.status).toBe(400);
+      expect(mockTreeControlService.getHold).not.toHaveBeenCalled();
+      expect(mockTreeControlService.releaseHold).not.toHaveBeenCalled();
+    });
+
+    it("rejects override-release for a non-existent hold", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-2"],
+        source: "session",
+        isInstanceAdmin: false,
+      });
+      mockTreeControlService.getHold.mockResolvedValue(null);
+
+      const res = await request(app)
+        .post(
+          "/api/companies/company-2/tree-control/active-pause-holds/33333333-3333-4333-8333-333333333333/override-release",
+        )
+        .send({ reason: "override" });
+
+      expect(res.status).toBe(404);
+      expect(mockTreeControlService.releaseHold).not.toHaveBeenCalled();
+    });
+
+    it("rejects override-release for an already-released hold", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-2"],
+        source: "session",
+        isInstanceAdmin: false,
+      });
+      mockTreeControlService.getHold.mockResolvedValue({
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-2",
+        rootIssueId: "11111111-1111-4111-8111-111111111111",
+        mode: "pause",
+        status: "released",
+        reason: "already done",
+      });
+
+      const res = await request(app)
+        .post(
+          "/api/companies/company-2/tree-control/active-pause-holds/33333333-3333-4333-8333-333333333333/override-release",
+        )
+        .send({ reason: "override" });
+
+      expect(res.status).toBe(409);
+      expect(mockTreeControlService.releaseHold).not.toHaveBeenCalled();
+    });
+
+    it("rejects override-release for a non-pause hold", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-2"],
+        source: "session",
+        isInstanceAdmin: false,
+      });
+      mockTreeControlService.getHold.mockResolvedValue({
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-2",
+        rootIssueId: "11111111-1111-4111-8111-111111111111",
+        mode: "cancel",
+        status: "active",
+        reason: "cancel hold",
+        createdByActorType: "user",
+        createdByUserId: "user-ciso",
+        createdByAgentId: null,
+      });
+
+      const res = await request(app)
+        .post(
+          "/api/companies/company-2/tree-control/active-pause-holds/33333333-3333-4333-8333-333333333333/override-release",
+        )
+        .send({ reason: "override" });
+
+      expect(res.status).toBe(422);
+      expect(mockTreeControlService.releaseHold).not.toHaveBeenCalled();
+    });
+
+    it("successfully override-releases an active pause hold", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-2"],
+        source: "session",
+        isInstanceAdmin: false,
+      });
+      mockTreeControlService.getHold.mockResolvedValue({
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-2",
+        rootIssueId: "11111111-1111-4111-8111-111111111111",
+        mode: "pause",
+        status: "active",
+        reason: "pause for audit",
+        createdByActorType: "user",
+        createdByUserId: "user-ciso",
+        createdByAgentId: null,
+      });
+      mockTreeControlService.releaseHold.mockResolvedValue({
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-2",
+        rootIssueId: "11111111-1111-4111-8111-111111111111",
+        mode: "pause",
+        status: "released",
+        releaseReason: "Override release by board operator",
+        releaseMetadata: { override: true },
+        members: [{ issueId: "55555555-5555-4555-8555-555555555555" }],
+      });
+
+      const res = await request(app)
+        .post(
+          "/api/companies/company-2/tree-control/active-pause-holds/33333333-3333-4333-8333-333333333333/override-release",
+        )
+        .send({ reason: "Override release by board operator" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("released");
+      expect(res.body.releaseReason).toBe("Override release by board operator");
+      expect(mockTreeControlService.releaseHold).toHaveBeenCalledWith(
+        "company-2",
+        "11111111-1111-4111-8111-111111111111",
+        "33333333-3333-4333-8333-333333333333",
+        expect.objectContaining({
+          reason: "Override release by board operator",
+          metadata: expect.objectContaining({ override: true }),
+        }),
+      );
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.tree_hold_override_released",
+          details: expect.objectContaining({
+            originalCreatedByUserId: "user-ciso",
+          }),
+        }),
+      );
+    });
+
+    it("uses default reason when none provided for override-release", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-2"],
+        source: "session",
+        isInstanceAdmin: false,
+      });
+      mockTreeControlService.getHold.mockResolvedValue({
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-2",
+        rootIssueId: "11111111-1111-4111-8111-111111111111",
+        mode: "pause",
+        status: "active",
+        reason: "pause for audit",
+        createdByActorType: "user",
+        createdByUserId: "user-ciso",
+        createdByAgentId: null,
+      });
+      mockTreeControlService.releaseHold.mockResolvedValue({
+        id: "33333333-3333-4333-8333-333333333333",
+        mode: "pause",
+        status: "released",
+      });
+
+      const res = await request(app)
+        .post(
+          "/api/companies/company-2/tree-control/active-pause-holds/33333333-3333-4333-8333-333333333333/override-release",
+        )
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(mockTreeControlService.releaseHold).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({
+          reason: "Override release by board operator",
+        }),
+      );
+    });
+
+    it("requires board access for override-release", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-2",
+        runId: null,
+        source: "api_key",
+      });
+
+      const res = await request(app)
+        .post(
+          "/api/companies/company-2/tree-control/active-pause-holds/33333333-3333-4333-8333-333333333333/override-release",
+        )
+        .send({ reason: "override" });
+
+      expect(res.status).toBe(403);
+      expect(mockTreeControlService.getHold).not.toHaveBeenCalled();
+      expect(mockTreeControlService.releaseHold).not.toHaveBeenCalled();
+    });
   });
 });

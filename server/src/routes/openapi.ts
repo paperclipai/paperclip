@@ -116,6 +116,7 @@ import {
   updateInboxAgentPolicySchema,
   // Issue tree
   createIssueTreeHoldSchema,
+  overrideReleaseIssueTreeHoldSchema,
   previewIssueTreeControlSchema,
   releaseIssueTreeHoldSchema,
   // Issue interactions
@@ -3884,6 +3885,27 @@ registry.registerPath({
     body: jsonBody(releaseIssueTreeHoldSchema),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/tree-control/active-pause-holds",
+  tags: ["issues"],
+  summary: "List company-wide active pause holds (CEO override)",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/tree-control/active-pause-holds/{holdId}/override-release",
+  tags: ["issues"],
+  summary: "Override-release an active pause hold (CEO override)",
+  request: {
+    params: z.object({ companyId: z.string(), holdId: z.string() }),
+    body: jsonBody(overrideReleaseIssueTreeHoldSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
 
 // ─── Attachments ──────────────────────────────────────────────────────────────
