@@ -72,13 +72,19 @@ function invalidAgentTokenMessage(token: string) {
   return "Agent token did not verify; obtain fresh credentials and retry";
 }
 
-async function resolveLegacyRunResponsibleUserId(
+async function resolveActiveAgentRun(
   db: Db,
   input: { companyId: string; agentId: string; runId: string },
 ) {
   if (!isUuidLike(input.runId)) return null;
   const run = await db
-    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+      status: heartbeatRuns.status,
+    })
     .from(heartbeatRuns)
     .where(
       and(
@@ -88,8 +94,14 @@ async function resolveLegacyRunResponsibleUserId(
       ),
     )
     .then((rows) => rows[0] ?? null);
-  return normalizeOptionalString(run?.responsibleUserId);
+  return run?.id === input.runId &&
+    run.companyId === input.companyId &&
+    run.agentId === input.agentId &&
+    run.status === "running"
+    ? run
+    : null;
 }
+
 
 async function loadResponsibleUserMemberships(
   db: Db,
@@ -356,13 +368,19 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      const activeRun = await resolveActiveAgentRun(db, {
+        companyId: claims.company_id,
+        agentId: claims.sub,
+        runId: claims.run_id,
+      });
+      if (!activeRun) {
+        next();
+        return;
+      }
+
       const onBehalfOfUserId = claims.responsible_user_id !== undefined
         ? normalizeOptionalString(claims.responsible_user_id)
-        : await resolveLegacyRunResponsibleUserId(db, {
-            companyId: claims.company_id,
-            agentId: claims.sub,
-            runId: claims.run_id,
-          });
+        : normalizeOptionalString(activeRun.responsibleUserId);
       const onBehalfOfMemberships = await loadResponsibleUserMemberships(db, {
         companyId: claims.company_id,
         userId: onBehalfOfUserId,
