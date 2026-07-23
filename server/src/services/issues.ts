@@ -110,6 +110,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -736,6 +737,58 @@ function truncateInlineSummary(value: string | null | undefined, maxChars = CHIL
   const normalized = value?.trim();
   if (!normalized) return null;
   return normalized.length > maxChars ? `${normalized.slice(0, Math.max(0, maxChars - 15)).trimEnd()} [truncated]` : normalized;
+}
+
+function displayIssueRef(issue: { identifier: string | null; id: string }) {
+  return issue.identifier || issue.id;
+}
+
+async function listNonTerminalChildIssues(
+  dbOrTx: DbReader,
+  companyId: string,
+  parentIssueId: string,
+) {
+  return dbOrTx
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      status: issues.status,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.parentId, parentIssueId),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ),
+    )
+    .orderBy(asc(issues.issueNumber), asc(issues.createdAt));
+}
+
+async function assertTerminalParentTransitionAllowed(
+  dbOrTx: DbReader,
+  issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "identifier" | "status">,
+  nextStatus: string | undefined,
+) {
+  if (!nextStatus || issue.status === nextStatus || !TERMINAL_ISSUE_STATUSES.has(nextStatus)) return;
+
+  const blockingChildren = await listNonTerminalChildIssues(dbOrTx, issue.companyId, issue.id);
+  if (blockingChildren.length === 0) return;
+
+  const blockingChildRefs = blockingChildren.map(displayIssueRef);
+  throw unprocessable(
+    `Cannot mark parent issue ${nextStatus} while child issues remain open: ${blockingChildRefs.join(", ")}`,
+    {
+      code: "parent_has_open_children",
+      issueId: issue.id,
+      issueIdentifier: issue.identifier,
+      requestedStatus: nextStatus,
+      blockingChildIssueIds: blockingChildren.map((child) => child.id),
+      blockingChildIdentifiers: blockingChildRefs,
+      blockingChildren,
+    },
+  );
 }
 
 function truncateByCodePoint(value: string, maxChars: number): string {
@@ -6497,6 +6550,7 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+        await assertTerminalParentTransitionAllowed(dbOrTx, existing, issueData.status);
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
