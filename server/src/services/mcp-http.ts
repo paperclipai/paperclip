@@ -27,6 +27,101 @@ export function mcpHttpRequestHeaders(extra?: Record<string, string>): Record<st
   };
 }
 
+/**
+ * MCP protocol revision advertised in the `initialize` handshake. Servers
+ * negotiate down to a version they support, so advertising a version we speak
+ * is safe.
+ */
+export const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+/** HTTP response header a stateful server uses to hand back its session id. */
+const MCP_SESSION_ID_HEADER = "mcp-session-id";
+
+/**
+ * Open a session with a remote MCP server over the Streamable HTTP transport by
+ * performing the `initialize` handshake, returning the session id the server
+ * assigned (or `null` if it did not assign one).
+ *
+ * The MCP spec requires `initialize` to be the client's very first message.
+ * Stateful servers (the `@modelcontextprotocol/sdk` default) answer it with an
+ * `Mcp-Session-Id` response header and then reject every subsequent request that
+ * omits it with `400 Bad Request: Server not initialized`; stateless servers
+ * simply don't set the header. Callers must therefore run this before any other
+ * request and echo the returned id — when present — on those requests.
+ *
+ * This is best-effort: it returns `null` both for stateless servers and for any
+ * failed handshake (including OAuth-guarded 401s and network errors), leaving
+ * the caller's follow-up request as the single authoritative error path.
+ */
+export async function initializeMcpSession(
+  endpoint: string | URL,
+  headers?: Record<string, string>,
+): Promise<string | null> {
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: mcpHttpRequestHeaders(headers),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "paperclip-mcp-initialize",
+        method: "initialize",
+        params: {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: "paperclip", version: "1.0.0" },
+        },
+      }),
+    });
+  } catch {
+    // Network failure — let the caller's follow-up request surface it.
+    return null;
+  }
+  if (!response.ok) {
+    // Includes OAuth-guarded 401s; the caller's follow-up request owns the
+    // authoritative error handling (OAuth discovery, etc.).
+    await response.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  const sessionId = response.headers.get(MCP_SESSION_ID_HEADER);
+  await response.text().catch(() => undefined);
+  if (sessionId) {
+    // Complete the handshake. Required by the spec for stateful servers and
+    // harmlessly ignored by stateless ones; failures here are non-fatal.
+    await fetch(endpoint, {
+      method: "POST",
+      headers: { ...mcpHttpRequestHeaders(headers), [MCP_SESSION_ID_HEADER]: sessionId },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    }).catch(() => undefined);
+  }
+  return sessionId;
+}
+
+/**
+ * Best-effort teardown of a session opened by {@link initializeMcpSession}.
+ *
+ * The MCP spec says a client SHOULD `DELETE` the session once it is no longer
+ * needed; without this, stateful servers accumulate a dead session for every
+ * catalog refresh / connection check. Failures — including servers that don't
+ * support explicit termination and answer `405` — are ignored, since the
+ * session will expire server-side regardless.
+ */
+export async function closeMcpSession(
+  endpoint: string | URL,
+  headers: Record<string, string> | undefined,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const response = await fetch(endpoint, {
+      method: "DELETE",
+      headers: { ...mcpHttpRequestHeaders(headers), [MCP_SESSION_ID_HEADER]: sessionId },
+    });
+    await response.body?.cancel().catch(() => undefined);
+  } catch {
+    // Teardown is best-effort.
+  }
+}
+
 function looksLikeJsonRpcMessage(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
