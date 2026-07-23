@@ -4,7 +4,7 @@ import type { Agent, HeartbeatRun, HeartbeatRunEvent, HeartbeatRunStatus } from 
 import { getCLIAdapter } from "../adapters/index.js";
 import { resolveCommandContext } from "./client/common.js";
 
-const HEARTBEAT_SOURCES = ["timer", "assignment", "on_demand", "automation"] as const;
+const HEARTBEAT_SOURCES = ["assignment", "on_demand", "automation"] as const;
 const HEARTBEAT_TRIGGERS = ["manual", "ping", "callback", "system"] as const;
 const TERMINAL_STATUSES = new Set<HeartbeatRunStatus>(["succeeded", "failed", "cancelled", "timed_out"]);
 const POLL_INTERVAL_MS = 200;
@@ -59,9 +59,13 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
   const debug = Boolean(opts.debug);
   const parsedTimeout = Number.parseInt(opts.timeoutMs, 10);
   const timeoutMs = Number.isFinite(parsedTimeout) ? parsedTimeout : 0;
-  const source = HEARTBEAT_SOURCES.includes(opts.source as HeartbeatSource)
-    ? (opts.source as HeartbeatSource)
-    : "on_demand";
+  if (!HEARTBEAT_SOURCES.includes(opts.source as HeartbeatSource)) {
+    console.error(pc.red(`Invalid heartbeat source: ${opts.source}`));
+    console.error(pc.gray(`Allowed sources: ${HEARTBEAT_SOURCES.join(", ")}`));
+    process.exitCode = 1;
+    return;
+  }
+  const source = opts.source as HeartbeatSource;
   const triggerDetail = HEARTBEAT_TRIGGERS.includes(opts.trigger as HeartbeatTrigger)
     ? (opts.trigger as HeartbeatTrigger)
     : "manual";
