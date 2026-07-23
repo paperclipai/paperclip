@@ -26,6 +26,7 @@ import {
   type AdapterExecutionTargetPaperclipBridgeHandle,
   type AdapterExecutionTargetProcessSessionBridgeHandle,
   type AdapterExecutionTargetTimeoutResolution,
+  type AdapterManagedRuntimeAsset,
   type PreparedAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -140,6 +141,70 @@ export interface AcpxEngineBillingIdentity {
   billingType?: AdapterBillingType | null;
 }
 
+/**
+ * Per-adapter remote managed-home seed seam, injected by each adapter's ACP
+ * wiring ({codex,claude,gemini}-local `acp.ts`). The adapter-specific
+ * credential/home helpers (`copyBackCodexAuth`, `stageCodexHomeForSync`,
+ * `prepareClaudeConfigSeed`, the Gemini skills stager, …) live in the adapter
+ * packages, and the shared engine — which lives *inside*
+ * `@paperclipai/adapter-utils`, a dependency of those packages — cannot import
+ * them without a circular dependency. So the engine exposes this seam and each
+ * adapter supplies it, reusing the exact same vetted helpers (no duplication of
+ * the security-critical copy-back path).
+ *
+ * The seam mirrors the adapter's CLI lane: seed the managed home into the
+ * sandbox through the staging seam, repoint the adapter's home env var to the
+ * in-sandbox path, and — codex only — wire auth copy-back on teardown. It is
+ * invoked ONLY on the runner-backed remote sandbox lane
+ * (`useRemoteProcessSession`); when absent (custom agents, the shared-engine
+ * tests) the engine stages the workspace with no home asset, byte-identical to
+ * the PR-1 behavior and to the local / runner-less ACP→CLI fallback.
+ */
+export interface AcpxRemoteManagedHomeContext {
+  acpxAgent: string;
+  companyId: string;
+  runId: string;
+  config: Record<string, unknown>;
+  /** The runner-backed remote sandbox target the workspace stages into. */
+  executionTarget: AdapterExecutionTarget;
+  /** Host workspace dir being staged (the local cwd). */
+  workspaceLocalDir: string;
+  timeoutSec: number;
+  /**
+   * The run env. The seam MUST repoint the adapter's home env var here onto the
+   * in-sandbox path (e.g. `env.CODEX_HOME = staged.assetDirs.home`). At call
+   * time it already carries the host managed-home paths the engine resolved —
+   * notably `env.CODEX_HOME` is the host managed Codex home for the codex agent.
+   */
+  env: Record<string, string>;
+  /**
+   * Host managed Gemini skills dir the engine prepared this run (the dir the
+   * seam ships as the sandbox `skills` asset), or null for other agents.
+   */
+  geminiSkillsHome: string | null;
+  onLog: AdapterExecutionContext["onLog"];
+  onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
+  /**
+   * Runs the shared workspace+assets staging seam and returns the prepared
+   * runtime. The seam passes its per-adapter home `assets` here; the returned
+   * `assetDirs`/`runtimeRootDir` are what it remaps the home env var onto.
+   */
+  stage: (assets: AdapterManagedRuntimeAsset[]) => Promise<PreparedAdapterExecutionTargetRuntime>;
+}
+
+export interface AcpxRemoteManagedHomeResult {
+  stagedRuntime: PreparedAdapterExecutionTargetRuntime;
+  /**
+   * Invoked once on every teardown/exit path (mirrors the CLI restore-hook +
+   * staged-temp cleanup finally). For codex this runs `restoreWorkspace()` — the
+   * seam that fires the auth copy-back — and removes the staged home temp dir.
+   * Failures are logged by the seam, never fatal to the run result (an
+   * unclean-teardown copy-back miss is the accepted `refresh_token_reused`
+   * residual, loud on the next host Codex use, never silent).
+   */
+  teardown?: () => Promise<void>;
+}
+
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   now?: () => number;
@@ -155,6 +220,14 @@ export interface AcpxEngineExecutorOptions {
   resolveBillingIdentity?: (
     ctx: AdapterExecutionContext,
   ) => AcpxEngineBillingIdentity | null | Promise<AcpxEngineBillingIdentity | null>;
+  /**
+   * Per-adapter remote managed-home seed + remap (+ codex copy-back). See
+   * {@link AcpxRemoteManagedHomeContext}. Absent → the remote lane stages the
+   * workspace with no home asset (PR-1 behavior).
+   */
+  prepareRemoteManagedHome?: (
+    input: AcpxRemoteManagedHomeContext,
+  ) => Promise<AcpxRemoteManagedHomeResult>;
 }
 
 interface AcpxPreparedRuntime {
@@ -186,6 +259,11 @@ interface AcpxPreparedRuntime {
   // are what PR 2 (managed-home seeding + codex copy-back) and PR 3 (session
   // lifecycle re-staging) build on.
   stagedRuntime: PreparedAdapterExecutionTargetRuntime | null;
+  // Teardown hook from the per-adapter remote managed-home seam: runs the
+  // codex auth copy-back (via `restoreWorkspace()`) and removes staged temp
+  // dirs. Invoked once on every exit path by `cleanupRemoteBridges`. Null for
+  // local runs, the runner-less fallback, and adapters with no seam.
+  remoteManagedHomeTeardown: (() => Promise<void>) | null;
   remoteExecutionIdentity: Record<string, unknown> | null;
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
@@ -974,19 +1052,23 @@ async function writePaperclipClaudeSettings(input: {
 }
 
 // Cross the CLI's staging seam for a runner-backed remote sandbox: ship the
-// workspace into the sandbox and obtain the in-sandbox `workspaceRemoteDir`
-// plus the non-null `runtimeRootDir`/`assetDirs` the bridges and later PRs
-// consume. This is the shared-engine mirror of the CLI lanes (codex/claude/
-// gemini `*-local/execute.ts`). PR 1 stages the workspace + cwd ONLY: it ships
-// no managed-home credential/home asset (no `assets`, no per-adapter home
-// seed) — that is PR 2. The returned `restoreWorkspace` is carried on the
-// prepared runtime for PR 3's session-lifecycle wiring.
+// workspace (and, in PR 2, the per-adapter managed-home `assets`) into the
+// sandbox and obtain the in-sandbox `workspaceRemoteDir` plus the non-null
+// `runtimeRootDir`/`assetDirs` the bridges and the home remap consume. This is
+// the shared-engine mirror of the CLI lanes (codex/claude/gemini
+// `*-local/execute.ts`). PR 1 shipped the workspace + cwd only; PR 2 threads
+// the home `assets` (built by the per-adapter `prepareRemoteManagedHome` seam,
+// carrying the codex `provision`/`restore` auth seams) through `assets` here so
+// `assetDirs.<key>` resolves to the seeded in-sandbox home. The returned
+// `restoreWorkspace` fires the per-asset `restore` (codex copy-back) at
+// teardown.
 async function stageAcpRemoteRuntime(input: {
   runId: string;
   target: AdapterExecutionTarget;
   adapterKey: string;
   workspaceLocalDir: string;
   timeoutSec: number;
+  assets?: AdapterManagedRuntimeAsset[];
   onLog: AdapterExecutionContext["onLog"];
   onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
@@ -1000,6 +1082,7 @@ async function stageAcpRemoteRuntime(input: {
     adapterKey: input.adapterKey,
     timeoutSec: input.timeoutSec,
     workspaceLocalDir: input.workspaceLocalDir,
+    ...(input.assets && input.assets.length > 0 ? { assets: input.assets } : {}),
     onProgress: (line) => input.onLog("stdout", line),
     onRuntimeProgress: input.onRuntimeProgress,
   });
@@ -1008,6 +1091,7 @@ async function stageAcpRemoteRuntime(input: {
 async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
   engine: AcpxEngineSettings;
+  deps: AcpxEngineExecutorOptions;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -1168,6 +1252,10 @@ async function buildRuntime(input: {
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
   const skillCommandNotes: string[] = [];
   let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
+  // Host managed Gemini skills dir the engine prepared this run — the dir the
+  // remote managed-home seam ships as the sandbox `skills` asset. Only set for
+  // the gemini agent; other agents pass null.
+  let geminiSkillsHome: string | null = null;
   if (acpxAgent === "claude") {
     const preparedSkills = await prepareClaudeSkillRuntime({
       stateDir,
@@ -1207,6 +1295,7 @@ async function buildRuntime(input: {
     });
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
+    geminiSkillsHome = resolveGeminiSkillsHome(config);
   } else {
     const desired = resolvePaperclipDesiredSkillNames(
       config,
@@ -1250,21 +1339,50 @@ async function buildRuntime(input: {
   // Ship the workspace into the sandbox and capture `{ workspaceRemoteDir,
   // runtimeRootDir, assetDirs, restoreWorkspace }`. Done once here, before the
   // bridges, so both bridges receive the real (non-null) `runtimeRootDir`.
-  const stagedRuntime: PreparedAdapterExecutionTargetRuntime | null = useRemoteProcessSession
-    ? await stageAcpRemoteRuntime({
+  //
+  // PR 2: on the remote lane, delegate staging to the per-adapter
+  // `prepareRemoteManagedHome` seam when the adapter supplies one. The seam
+  // ships the adapter's managed home as an `assets` entry (through the `stage`
+  // callback = `stageAcpRemoteRuntime`), repoints the home env var (`env`) onto
+  // the in-sandbox `assetDirs.*` path, and returns a `teardown` that fires the
+  // codex auth copy-back (`restoreWorkspace()`) and removes staged temp dirs.
+  // Without a seam (custom agents / shared-engine tests) the engine stages the
+  // workspace with no home asset — identical to the PR-1 behavior.
+  let stagedRuntime: PreparedAdapterExecutionTargetRuntime | null = null;
+  let remoteManagedHomeTeardown: (() => Promise<void>) | null = null;
+  if (useRemoteProcessSession) {
+    const stage = (assets: AdapterManagedRuntimeAsset[]) =>
+      stageAcpRemoteRuntime({
         runId,
         target: executionTarget,
         adapterKey: input.engine.adapterType,
         workspaceLocalDir: cwd,
         timeoutSec,
+        assets,
         onLog: input.ctx.onLog,
         onRuntimeProgress: input.ctx.onRuntimeProgress,
-      })
-    : null;
-  // `stagedRuntime.restoreWorkspace` is intentionally NOT invoked in this PR:
-  // copy-back of the sandbox edits onto the host workspace is wired into the
-  // run/session teardown path in the follow-up PR (session-lifecycle wiring).
-  // See `stageAcpRemoteRuntime()` above for the full deferral note.
+      });
+    if (input.deps.prepareRemoteManagedHome) {
+      const seeded = await input.deps.prepareRemoteManagedHome({
+        acpxAgent,
+        companyId: agent.companyId,
+        runId,
+        config,
+        executionTarget,
+        workspaceLocalDir: cwd,
+        timeoutSec,
+        env,
+        geminiSkillsHome,
+        onLog: input.ctx.onLog,
+        onRuntimeProgress: input.ctx.onRuntimeProgress,
+        stage,
+      });
+      stagedRuntime = seeded.stagedRuntime;
+      remoteManagedHomeTeardown = seeded.teardown ?? null;
+    } else {
+      stagedRuntime = await stage([]);
+    }
+  }
   // The ACP `session/new` cwd and every cwd-keyed session-state site
   // (fingerprint, compat, persist, ensureSession, error) bind to THIS single
   // value so a warm/resumable session created with the in-sandbox cwd is reused
@@ -1311,6 +1429,11 @@ async function buildRuntime(input: {
       : null;
   } catch (err) {
     await paperclipBridge?.stop().catch(() => {});
+    // The staged home / copy-back teardown must run even if a bridge fails to
+    // start after the workspace + managed home were already staged into the
+    // sandbox, so a refreshed credential is copied back and staged temp dirs
+    // are removed on this error path too.
+    await remoteManagedHomeTeardown?.().catch(() => {});
     throw err;
   }
   const overrideCommand = processSessionBridge?.agentCommand ?? agentCommand;
@@ -1382,6 +1505,7 @@ async function buildRuntime(input: {
     processSessionBridge,
     paperclipBridge,
     stagedRuntime,
+    remoteManagedHomeTeardown,
     remoteExecutionIdentity,
     skillPromptInstructions,
     skillsIdentity: {
@@ -1454,6 +1578,15 @@ async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void
     prepared.processSessionBridge?.stop(),
     prepared.paperclipBridge?.stop(),
   ]);
+  // Runs AFTER the bridges stop (mirrors the CLI finally: stop bridge → restore
+  // workspace). Fires the codex auth copy-back via `restoreWorkspace()` and
+  // removes staged temp dirs. The seam logs and swallows its own failures — an
+  // unclean-teardown copy-back miss is the accepted, loud `refresh_token_reused`
+  // residual on the next host Codex use, never silent HOST-credential corruption
+  // — so a teardown fault never masks or fails the run result here.
+  if (prepared.remoteManagedHomeTeardown) {
+    await prepared.remoteManagedHomeTeardown().catch(() => {});
+  }
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -1996,7 +2129,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       ...(billingIdentity?.biller ? { biller: billingIdentity.biller } : {}),
       billingType: billingIdentity?.billingType ?? ("unknown" as const),
     };
-    const prepared = await buildRuntime({ ctx, engine });
+    const prepared = await buildRuntime({ ctx, engine, deps });
     // State the effective wall-clock timeout and its source up front so a
     // later timeout is diagnosable from the run log alone. Goes to stderr:
     // the acpx stdout log stream carries JSON acpx.* event payloads and must
