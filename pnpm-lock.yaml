@@ -330,6 +330,19 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/connect-protocol:
+    dependencies:
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.21
+        version: 22.19.21
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/db:
     dependencies:
       '@paperclipai/shared':
@@ -755,6 +768,9 @@ importers:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
+      '@paperclipai/connect-protocol':
+        specifier: workspace:*
+        version: link:../packages/connect-protocol
       '@paperclipai/db':
         specifier: workspace:*
         version: link:../packages/db
@@ -12668,7 +12684,7 @@ snapshots:
   '@types/body-parser@1.19.6':
     dependencies:
       '@types/connect': 3.4.38
-      '@types/node': 22.19.21
+      '@types/node': 24.13.3
 
   '@types/chai@5.2.3':
     dependencies:
@@ -12677,7 +12693,7 @@ snapshots:
 
   '@types/connect@3.4.38':
     dependencies:
-      '@types/node': 22.19.21
+      '@types/node': 24.13.3
 
   '@types/cookiejar@2.1.5': {}
 
@@ -12814,7 +12830,7 @@ snapshots:
 
   '@types/express-serve-static-core@5.1.1':
     dependencies:
-      '@types/node': 22.19.21
+      '@types/node': 24.13.3
       '@types/qs': 6.14.0
       '@types/range-parser': 1.2.7
       '@types/send': 1.2.1
@@ -12835,7 +12851,7 @@ snapshots:
 
   '@types/jsdom@28.0.0':
     dependencies:
-      '@types/node': 22.19.21
+      '@types/node': 24.13.3
       '@types/tough-cookie': 4.0.5
       parse5: 7.3.0
       undici-types: 7.24.4
@@ -12885,12 +12901,12 @@ snapshots:
 
   '@types/send@1.2.1':
     dependencies:
-      '@types/node': 22.19.21
+      '@types/node': 24.13.3
 
   '@types/serve-static@2.2.0':
     dependencies:
       '@types/http-errors': 2.0.5
-      '@types/node': 22.19.21
+      '@types/node': 24.13.3
 
   '@types/sharp@0.32.0(@types/node@22.19.21)':
     dependencies:
@@ -12902,7 +12918,7 @@ snapshots:
     dependencies:
       '@types/cookiejar': 2.1.5
       '@types/methods': 1.1.4
-      '@types/node': 22.19.21
+      '@types/node': 24.13.3
       form-data: 4.0.5
 
   '@types/supertest@6.0.3':
