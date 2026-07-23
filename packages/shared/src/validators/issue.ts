@@ -418,6 +418,19 @@ const createIssueBaseSchema = z.object({
   }).strict().optional().nullable(),
 });
 
+function requireBlockedStatusForUnblockDescriptor(
+  value: { status?: string; unblockDescriptor?: unknown },
+  ctx: z.RefinementCtx,
+) {
+  if (value.unblockDescriptor != null && value.status !== undefined && value.status !== "blocked") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "unblockDescriptor requires blocked status",
+      path: ["unblockDescriptor"],
+    });
+  }
+}
+
 const createIssueDuplicateGuardSchema = {
   idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
   allowDuplicate: z.boolean()
@@ -429,9 +442,11 @@ const createIssueDuplicateGuardSchema = {
 export const createIssueInputSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
   ...createIssueDuplicateGuardSchema,
-});
+}).superRefine(requireBlockedStatusForUnblockDescriptor);
 
-export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema.extend(createIssueDuplicateGuardSchema));
+export const createIssueSchema = withCreateIssueStatusDefault(
+  createIssueBaseSchema.extend(createIssueDuplicateGuardSchema),
+).superRefine(requireBlockedStatusForUnblockDescriptor);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
@@ -451,7 +466,7 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
   .extend({
     acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
     blockParentUntilDone: z.boolean().optional().default(false),
-  }));
+  })).superRefine(requireBlockedStatusForUnblockDescriptor);
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
@@ -482,7 +497,7 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
-});
+}).superRefine(requireBlockedStatusForUnblockDescriptor);
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;

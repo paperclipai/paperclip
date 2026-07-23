@@ -64,6 +64,15 @@ describe("issue validators", () => {
       status: "blocked",
       unblockDescriptor: { owner: "board", action: "   " },
     }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      status: "todo",
+      unblockDescriptor: { owner: "board", action: "Review" },
+    }).success).toBe(false);
+    expect(createIssueSchema.safeParse({
+      title: "Invalid descriptor status",
+      status: "todo",
+      unblockDescriptor: { owner: "board", action: "Review" },
+    }).success).toBe(false);
   });
 
   it("keeps issue attribution fields create-only", () => {

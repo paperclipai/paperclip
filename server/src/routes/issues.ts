@@ -7907,6 +7907,10 @@ export function issueRoutes(
     }
     Object.assign(updateFields, transition.patch);
 
+    const nextStatus = updateFields.status ?? existing.status;
+    if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
+      throw unprocessable("unblockDescriptor requires blocked status");
+    }
     const enteringBlocked = existing.status !== "blocked" && updateFields.status === "blocked";
     if (enteringBlocked) {
       const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
@@ -8133,7 +8137,11 @@ export function issueRoutes(
         },
       });
       if (ownerNotifiedAt) {
-        issue = await svc.update(blockedIssue.id, { blockedOwnerNotifiedAt: ownerNotifiedAt }) ?? blockedIssue;
+        await db.update(issueRows).set({ blockedOwnerNotifiedAt: ownerNotifiedAt }).where(and(
+          eq(issueRows.id, blockedIssue.id),
+          eq(issueRows.companyId, blockedIssue.companyId),
+        ));
+        issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
       }
     }
 

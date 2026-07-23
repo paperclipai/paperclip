@@ -952,13 +952,12 @@ export function attentionService(db: Db) {
           }));
         }
         const blockerAttention = issue.blockerAttention;
-        if (!isProspectiveBlockedTransition(issue)) continue;
         if (blockerAttention?.state !== "stalled" && blockerAttention?.state !== "needs_attention") continue;
         const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
         const summarizedIssue = issueSummary ?? issue;
         const sample = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier ?? issue.identifier ?? issue.id;
         const blockingIssue = blockingIssues.get(issue.id) ?? { id: null, identifier: sample, title: null };
-        const dedupKey = `blocker:${issue.id}:${blockerAttention.state}:${sample}`;
+        const dedupKey = `blocker:${issue.id}:${sample}`;
         add(createItem({
           companyId,
           sourceKind: "blocker_attention",

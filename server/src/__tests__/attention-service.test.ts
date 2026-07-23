@@ -912,7 +912,7 @@ describeEmbeddedPostgres("attention service", () => {
     expect(items[0]).toMatchObject({ sourceKind: "blocker_attention", whyNow: "Approve the exception" });
   });
 
-  it("does not route pre-existing blocker attention into the inbox", async () => {
+  it("keeps legacy blocker attention visible for pre-rollout blocked issues", async () => {
     const { companyId } = await seedCompany("ATP");
     const issueId = await insertIssue({
       companyId,
@@ -924,7 +924,24 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
 
-    expect(feed.items.some((item) => item.dedupKey.startsWith(`blocker:${issueId}:`))).toBe(false);
+    expect(feed.items.some((item) => item.dedupKey === `blocker:${issueId}:ATP-1`)).toBe(true);
+  });
+
+  it("does not route pre-rollout human unblock descriptors", async () => {
+    const { companyId } = await seedCompany("ATQ");
+    const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 1);
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATQ-1",
+      title: "Human-owned before rollout",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Review the issue" },
+      blockedTransitionAt: transitionAt,
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items.some((item) => item.dedupKey === `blocked-owner:${issueId}:${transitionAt.toISOString()}`)).toBe(false);
   });
 
   it("returns one pending approval row when the approval is linked to multiple tasks", async () => {
