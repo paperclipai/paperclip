@@ -301,6 +301,23 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+
+// Host-global concurrency gate for opencode_local runs (XIP-4907 / XIP-4690).
+// opencode_local agents all execute on the same local host, so a per-agent run
+// cap does nothing to bound cross-agent fan-out: the daily IP-collection routine
+// dispatches ~6 distinct opencode_local researcher agents at once, each spawning
+// its own `opencode run` + model enumeration simultaneously, saturating the host.
+// This caps the number of opencode_local runs running concurrently across ALL
+// agents on the host. Held runs stay queued and drain via the existing re-poll.
+const OPENCODE_LOCAL_ADAPTER_TYPE = "opencode_local";
+const OPENCODE_LOCAL_GLOBAL_MAX_CONCURRENT_DEFAULT = 2;
+
+function getOpencodeLocalGlobalMaxConcurrent(): number {
+  const raw = Number(process.env.PAPERCLIP_OPENCODE_LOCAL_MAX_CONCURRENT);
+  if (!Number.isFinite(raw) || raw < 1) return OPENCODE_LOCAL_GLOBAL_MAX_CONCURRENT_DEFAULT;
+  return Math.floor(raw);
+}
+
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -10633,6 +10650,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  // Counts runs currently `running` across ALL agents whose adapter is the given
+  // type. Used by the host-global opencode_local concurrency gate (XIP-4907):
+  // heartbeat_runs has no adapterType column, so we join through agents.
+  // Accepts an explicit executor so the gate can re-count *inside* the advisory-lock
+  // transaction (see startNextQueuedRunForAgent) and read claims committed by prior
+  // lock holders.
+  type CountExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+  async function countRunningRunsForAdapterType(adapterType: string, executor: CountExecutor = db) {
+    const [{ count }] = await executor
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(eq(agents.adapterType, adapterType), eq(heartbeatRuns.status, "running")));
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -11746,11 +11779,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
-      const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
-        if (claimed) claimedRuns.push(claimed);
+      // Claim up to `slots` queued runs in priority order. Each successful claim
+      // commits a `status = running` write (via claimQueuedRun) before the next
+      // iteration, so a re-count run between claims would observe them.
+      const claimUpTo = async (slots: number) => {
+        const claimed: Array<typeof heartbeatRuns.$inferSelect> = [];
+        for (const queuedRun of prioritizedRuns) {
+          if (claimed.length >= slots) break;
+          const claimedRun = await claimQueuedRun(queuedRun, companyAgents);
+          if (claimedRun) claimed.push(claimedRun);
+        }
+        return claimed;
+      };
+
+      let claimedRuns: Array<typeof heartbeatRuns.$inferSelect>;
+      if (agent.adapterType === OPENCODE_LOCAL_ADAPTER_TYPE) {
+        // Host-global concurrency gate (XIP-4907): opencode_local agents all execute
+        // on the same local host, so the per-agent cap above does nothing to bound
+        // cross-agent fan-out. The check (count running) and the claim (status write)
+        // are separate awaited DB ops, so without serialization N agents dispatching
+        // concurrently all observe the same pre-claim count, all pass, and all claim —
+        // a TOCTOU thundering herd that blows past the cap by up to N×. (XIP-4911)
+        //
+        // Make check-then-claim atomic ACROSS agents with a transaction-scoped
+        // Postgres advisory lock keyed on the adapter type: only one opencode_local
+        // dispatcher holds it at a time, so we re-count under the lock (seeing every
+        // claim committed by prior holders) and claim only up to the remaining global
+        // budget. The claim writes commit on the pooled connection and are visible to
+        // the next holder's re-count once this transaction releases the lock. If the
+        // host is already at the cap, the runs stay queued and the scheduler re-poll
+        // drains them as slots free.
+        claimedRuns = await db.transaction(async (tx) => {
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${OPENCODE_LOCAL_ADAPTER_TYPE}))`);
+          const globalMax = getOpencodeLocalGlobalMaxConcurrent();
+          const globalRunning = await countRunningRunsForAdapterType(OPENCODE_LOCAL_ADAPTER_TYPE, tx);
+          const globalSlots = Math.min(availableSlots, Math.max(0, globalMax - globalRunning));
+          if (globalSlots <= 0) return [];
+          return claimUpTo(globalSlots);
+        });
+      } else {
+        claimedRuns = await claimUpTo(availableSlots);
       }
       if (claimedRuns.length === 0) return [];
 
@@ -16945,6 +17013,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     retryScheduledRetryNow,
 
     resumeQueuedRuns,
+    // Exposed for the host-global concurrency-gate test, which dispatches several
+    // agents concurrently to exercise true check-then-claim interleaving (XIP-4911).
+    startNextQueuedRunForAgent,
 
     scheduleBoundedRetry: async (
       runId: string,
