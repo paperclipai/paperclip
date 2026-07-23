@@ -1183,6 +1183,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  it("persists the normalized failure when an adapter omits its diagnostic", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      provider: "test",
+      model: "test-model",
+    });
+
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    const run = await heartbeat.getRun(runId);
+    const runtime = await db
+      .select({ lastError: agentRuntimeState.lastError })
+      .from(agentRuntimeState)
+      .where(eq(agentRuntimeState.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    const agent = await db
+      .select({ status: agents.status, errorReason: agents.errorReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run).toMatchObject({ status: "failed", error: "Adapter failed" });
+    expect(runtime?.lastError).toBe("Adapter failed");
+    expect(agent).toEqual({ status: "error", errorReason: "Adapter failed" });
+  });
+
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);

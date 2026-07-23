@@ -557,6 +557,8 @@ export async function execute(
 
   if (parsed.errorMessage) {
     executionResult.errorMessage = parsed.errorMessage;
+  } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
+    executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
   }
 
   if (parsed.usage) {
