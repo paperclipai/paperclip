@@ -1562,7 +1562,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     silenceAgeMs: number | null;
     now: Date;
   }) {
-    if (!input.evidence) return { kind: "skipped" as const };
+    // evidence may be null when the source issue is terminal but no same-run activity_log
+    // entry exists linking the run to the terminal status transition. This is expected for
+    // runs that completed silently (e.g. CEO batched API ops). We still fold the run to
+    // prevent infinite evaluation creation (RLA-132).
     const cleanup = await cleanupSourceResolvedRunProcess({ run: input.run, runningAgent: input.runningAgent });
     const finalRunStatus = input.sourceIssue.status === "cancelled" ? "cancelled" : "succeeded";
     const resultJson = {
@@ -1571,9 +1574,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssueId: input.sourceIssue.id,
         sourceIssueIdentifier: input.sourceIssue.identifier,
         sourceIssueStatus: input.sourceIssue.status,
-        sameRunEvidenceKind: input.evidence.kind,
-        sameRunEvidenceId: input.evidence.id,
-        sameRunEvidenceAt: input.evidence.createdAt.toISOString(),
+        sameRunEvidenceKind: input.evidence?.kind ?? "terminal_source_without_same_run_evidence",
+        sameRunEvidenceId: input.evidence?.id ?? null,
+        sameRunEvidenceAt: input.evidence?.createdAt.toISOString() ?? null,
         silenceStartedAt: input.silenceStartedAt?.toISOString() ?? null,
         silenceAgeMs: input.silenceAgeMs,
         evaluationIssueId: input.existingEvaluation?.id ?? null,
@@ -1635,7 +1638,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         "",
         `- Source issue: ${input.sourceIssue.identifier ?? input.sourceIssue.id}`,
         `- Run: \`${input.run.id}\``,
-        `- Same-run evidence: \`${input.evidence.kind}:${input.evidence.id}\` at ${input.evidence.createdAt.toISOString()}`,
+        input.evidence
+          ? `- Same-run evidence: \`${input.evidence.kind}:${input.evidence.id}\` at ${input.evidence.createdAt.toISOString()}`
+          : "- No same-run activity_log evidence; source issue terminal status is sufficient",
         "- Outcome: false positive; the source issue already reached a terminal disposition from this run.",
       ].join("\n"), { runId: input.run.id });
     }
@@ -1685,9 +1690,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssueStatus: input.sourceIssue.status,
         evaluationIssueId: input.existingEvaluation?.id ?? null,
         watchdogDecisionId: decision.id,
-        sameRunEvidenceKind: input.evidence.kind,
-        sameRunEvidenceId: input.evidence.id,
-        sameRunEvidenceAt: input.evidence.createdAt.toISOString(),
+        sameRunEvidenceKind: input.evidence?.kind ?? "terminal_source_without_same_run_evidence",
+        sameRunEvidenceId: input.evidence?.id ?? null,
+        sameRunEvidenceAt: input.evidence?.createdAt.toISOString() ?? null,
         cleanup,
       },
     });
@@ -1970,18 +1975,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssue,
         evidenceAfter: silenceStartedAt,
       });
-      if (terminalEvidence) {
-        return foldSourceResolvedStaleRun({
-          run: input.run,
-          runningAgent,
-          sourceIssue,
-          evidence: terminalEvidence,
-          existingEvaluation: existing,
-          silenceStartedAt,
-          silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
-          now: input.now,
-        });
-      }
+      // Fold the run if the source issue is terminal, regardless of same-run evidence.
+      // Without this, completed runs that lack an activity_log entry linking the run to
+      // the source issue's terminal status transition would repeatedly create new evaluation
+      // issues (the infinite loop reported in RLA-132).
+      return foldSourceResolvedStaleRun({
+        run: input.run,
+        runningAgent,
+        sourceIssue,
+        evidence: terminalEvidence,
+        existingEvaluation: existing,
+        silenceStartedAt,
+        silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
+        now: input.now,
+      });
     }
 
     // Idle output is expected when the source issue is blocked — skip ticket creation entirely.
