@@ -3455,6 +3455,7 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:comment");
     if (!boundaryDecision.allowed) {
+      if (await activeRecoveryActionAllowsAgentBoundaryOverride(req, issue)) return true;
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
     }
@@ -3498,6 +3499,29 @@ export function issueRoutes(
       resource: { type: "issue", companyId, assigneeAgentId },
     });
     return decision.allowed;
+  }
+
+  async function activeRecoveryActionAllowsAgentBoundaryOverride(
+    req: Request,
+    issue: { id: string; companyId: string },
+  ) {
+    if (req.actor.type !== "agent") return false;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) return false;
+
+    let activeRecoveryAction: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null = null;
+    try {
+      activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+    } catch (err) {
+      logger.warn(
+        { err, issueId: issue.id, actorAgentId },
+        "failed to evaluate recovery action boundary override",
+      );
+      return false;
+    }
+    if (!activeRecoveryAction?.ownerAgentId) return false;
+    if (activeRecoveryAction.ownerAgentId === actorAgentId) return true;
+    return hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, activeRecoveryAction.ownerAgentId);
   }
 
   async function assertAgentIssueMutationAllowed(
@@ -3544,6 +3568,7 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
+      if (await activeRecoveryActionAllowsAgentBoundaryOverride(req, issue)) return true;
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
     }
