@@ -2323,6 +2323,91 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
     expect(disposeCalls).toBe(1);
   });
 
+  it("test_idle_staged_runtime_cleanup_waits_for_active_turn_release", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const events: string[] = [];
+    let currentNow = 0;
+    let releaseTurn!: () => void;
+    let signalTurnStarted!: () => void;
+    const turnStarted = new Promise<void>((resolve) => {
+      signalTurnStarted = resolve;
+    });
+    const turnCompleted = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const execute = createAcpxEngineExecutor({
+      now: () => currentNow,
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      stagingLocks: new Map(),
+      createRuntime: (() => {
+        let call = 0;
+        return () => {
+          call += 1;
+          return {
+            ensureSession: async () => ({
+              backendSessionId: "backend-session",
+              agentSessionId: "agent-session",
+              runtimeSessionName: "runtime-session",
+            }),
+            startTurn: () => {
+              if (call === 2) signalTurnStarted();
+              return {
+                events: (async function* () {
+                  yield { type: "done", stopReason: "end_turn" };
+                })(),
+                result:
+                  call === 2
+                    ? turnCompleted.then(() => ({ status: "completed", stopReason: "end_turn" }))
+                    : Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+                cancel: async () => {},
+              };
+            },
+            setConfigOption: async () => {},
+            close: async () => {},
+          } as never;
+        };
+      })(),
+      prepareRemoteManagedHome: async (input) => {
+        events.push(`stage:${input.runId}`);
+        return {
+          stagedRuntime: await input.stage([]),
+          disposeStaged: async () => {
+            events.push(`dispose:${input.runId}`);
+          },
+        };
+      },
+    });
+    const base = baseExecuteArgs({
+      stateDir,
+      localCwd,
+      executionTarget,
+      env: { SESSION_MARKER: "idle-eviction" },
+    });
+
+    const first = await execute({ runId: "run-a", runtime: {}, ...base } as never);
+    expect(first.exitCode).toBe(0);
+
+    const second = execute({
+      runId: "run-b",
+      runtime: { sessionParams: first.sessionParams },
+      ...base,
+    } as never);
+    await turnStarted;
+    currentNow = 10_000;
+    const third = execute({ runId: "run-c", runtime: {}, ...base } as never);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(events).toEqual(["stage:run-a"]);
+
+    releaseTurn();
+    const [resultB, resultC] = await Promise.all([second, third]);
+
+    expect(resultB.exitCode).toBe(0);
+    expect(resultC.exitCode).toBe(0);
+    expect(events).toEqual(["stage:run-a", "dispose:run-a", "stage:run-c"]);
+  });
+
   // Superseding an incompatible session that collides on sessionKey re-stages
   // fresh AND releases the superseded entry's host staged-temp (no leak, no
   // reuse of the old session's staged credentials).

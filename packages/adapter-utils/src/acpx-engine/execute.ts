@@ -2296,15 +2296,24 @@ async function cleanupIdleHandles(input: {
 // still-persistent sandbox, which the inbound monotonic auth-merge keeps safe).
 async function cleanupIdleStagedRuntimes(input: {
   handles: Map<string, StagedRuntimeCacheEntry>;
-  now: number;
+  locks: Map<string, Promise<unknown>>;
+  now: () => number;
   idleMs: number;
 }) {
   if (input.idleMs <= 0) return;
-  for (const [key, entry] of [...input.handles.entries()]) {
-    if (input.now - entry.lastUsedAt >= input.idleMs) {
+  const stale: Array<[string, StagedRuntimeCacheEntry]> = [];
+  for (const entry of input.handles.entries()) {
+    if (input.now() - entry[1].lastUsedAt >= input.idleMs) stale.push(entry);
+  }
+  for (const [key, entry] of stale) {
+    const lease = await withSessionStagingLease(input.locks, key, async () => {
+      const current = input.handles.get(key);
+      if (current !== entry) return;
+      if (input.now() - current.lastUsedAt < input.idleMs) return;
       input.handles.delete(key);
       if (entry.dispose) await entry.dispose().catch(() => {});
-    }
+    });
+    lease.release();
   }
 }
 
@@ -2456,6 +2465,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const now = deps.now ?? (() => Date.now());
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
   const stagedRuntimes = deps.stagedRuntimes ?? defaultStagedRuntimes;
+  const stagingLocks = deps.stagingLocks ?? defaultStagingLocks;
   const engine = resolveEngineSettings(deps);
 
   return async function executeAcpxEngine(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -2474,7 +2484,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     // Evict idle staged runtimes BEFORE building the runtime, since buildRuntime
     // consults the staged cache to decide whether a compatible resume may reuse
     // an already-staged runtime — an expired entry must not be reused.
-    await cleanupIdleStagedRuntimes({ handles: stagedRuntimes, now: now(), idleMs: warmIdleMs });
+    await cleanupIdleStagedRuntimes({
+      handles: stagedRuntimes,
+      locks: stagingLocks,
+      now,
+      idleMs: warmIdleMs,
+    });
     const prepared = await buildRuntime({ ctx, engine, deps });
     // State the effective wall-clock timeout and its source up front so a
     // later timeout is diagnosable from the run log alone. Goes to stderr:
