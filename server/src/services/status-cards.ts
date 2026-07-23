@@ -18,8 +18,9 @@ import type {
   WriteStatusCardQuery,
   WriteStatusCardSummary,
 } from "@paperclipai/shared";
-import { STATUS_CARD_AGENT_MAX_CARDS } from "@paperclipai/shared";
+import { companySearchQuerySchema, STATUS_CARD_AGENT_MAX_CARDS } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { builtInAgentService } from "./built-in-agents.js";
 import { companySearchService } from "./company-search.js";
@@ -138,6 +139,19 @@ export function statusCardService(db: Db) {
   const issuesSvc = issueService(db);
   const searchSvc = companySearchService(db);
 
+  async function readWatchedIssueCount(card: StatusCardRow) {
+    if (card.queries.length === 0) return 0;
+    try {
+      return (await executeQueries(card)).length;
+    } catch (err) {
+      logger.warn(
+        { err, cardId: card.id, companyId: card.companyId },
+        "status card watched-issue count hydration failed",
+      );
+      return undefined;
+    }
+  }
+
   async function hydrate(card: StatusCardRow) {
     const dayStart = new Date();
     dayStart.setUTCHours(0, 0, 0, 0);
@@ -155,13 +169,13 @@ export function statusCardService(db: Db) {
         .from(statusCardUpdates)
         .where(and(eq(statusCardUpdates.cardId, card.id), gte(statusCardUpdates.startedAt, dayStart)))
         .then((rows) => rows[0] ?? { tokens: 0, costCents: 0 }),
-      card.queries.length > 0 ? executeQueries(card) : Promise.resolve([]),
+      readWatchedIssueCount(card),
     ]);
 
     return {
       ...card,
       summaryBody: document?.latestBody ?? null,
-      watchedIssueCount: watchedIssues.length,
+      ...(watchedIssues === undefined ? {} : { watchedIssueCount: watchedIssues }),
       todayTokens: today.tokens,
       todayCostCents: today.costCents,
     };
@@ -390,7 +404,8 @@ export function statusCardService(db: Db) {
 
   async function executeQueries(card: StatusCardRow) {
     const issueMap = new Map<string, CompanySearchIssueSummary>();
-    for (const query of card.queries) {
+    for (const storedQuery of card.queries) {
+      const query = companySearchQuerySchema.parse(storedQuery);
       const response = await searchSvc.search(card.companyId, query);
       for (const result of response.results) {
         if (result.type === "issue" && result.issue) issueMap.set(result.issue.id, result.issue);

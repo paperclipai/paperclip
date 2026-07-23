@@ -179,6 +179,73 @@ describeEmbeddedPostgres("status card routes", () => {
     expect((await request(app).get(`/api/status-cards/${created.body.id}`)).status).toBe(404);
   });
 
+  it("normalizes legacy saved queries when hydrating watched-issue counts", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const service = statusCardService(db);
+    const card = await service.create(
+      company.id,
+      {
+        interestPrompt: "Recently updated launch tasks",
+        titlePinned: false,
+        instructionsMode: "none",
+        refreshPolicy: defaultStatusCardRefreshPolicy,
+      },
+      { agentId: null, userId: "board-user" },
+    );
+    await db
+      .update(statusCards)
+      .set({
+        queries: [{ q: "launch", scope: "issues" }] as typeof card.queries,
+      })
+      .where(eq(statusCards.id, card.id));
+
+    const app = createApp(db, localBoardActor());
+    const list = await request(app).get(`/api/companies/${company.id}/status-cards`);
+    expect(list.status).toBe(200);
+    expect(list.body).toEqual([
+      expect.objectContaining({
+        id: card.id,
+        summaryBody: null,
+        watchedIssueCount: 0,
+        todayTokens: 0,
+        todayCostCents: 0,
+      }),
+    ]);
+
+    const detail = await request(app).get(`/api/status-cards/${card.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body).toMatchObject({ id: card.id, summaryBody: null, watchedIssueCount: 0 });
+  });
+
+  it("keeps cards readable when a saved query cannot be normalized", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const service = statusCardService(db);
+    const card = await service.create(
+      company.id,
+      {
+        interestPrompt: "Recently updated launch tasks",
+        titlePinned: false,
+        instructionsMode: "none",
+        refreshPolicy: defaultStatusCardRefreshPolicy,
+      },
+      { agentId: null, userId: "board-user" },
+    );
+    await db
+      .update(statusCards)
+      .set({
+        queries: [{ q: "launch", scope: "unsupported" }] as typeof card.queries,
+      })
+      .where(eq(statusCards.id, card.id));
+
+    const app = createApp(db, localBoardActor());
+    const list = await request(app).get(`/api/companies/${company.id}/status-cards`);
+    expect(list.status).toBe(200);
+    expect(list.body).toEqual([expect.objectContaining({ id: card.id, summaryBody: null })]);
+    expect(list.body[0]).not.toHaveProperty("watchedIssueCount");
+  });
+
   it("requires tasks:assign for mutations", async () => {
     const company = await seedCompany();
     await enableStatusCards();
