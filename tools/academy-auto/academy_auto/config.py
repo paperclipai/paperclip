@@ -23,11 +23,9 @@ class Config:
     @classmethod
     def default(cls) -> "Config":
         home = Path.home()
-        academy = (
-            home
-            / "Library/CloudStorage/SynologyDrive-Mac"
-            / "Claude Code MAC/WHITESTAG.ACADEMY"
-        )
+        # Bewusst NICHT in CloudStorage/SynologyDrive: launchd-Prozesse haben dort
+        # keinen Zugriff (git haengt dann unbegrenzt), und der Sync flippt Dateimodi.
+        academy = home / "Developer" / "WHITESTAG.ACADEMY"
         base = home / ".paperclip" / "academy-auto"
         return cls(
             academy_repo=academy,
