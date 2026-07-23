@@ -1132,10 +1132,16 @@ export function NewIssueDialog() {
       if (!shouldWarnAboutRunUserSecrets(status, selectedAssigneeAgentId)) return [];
       return uniqueRequiredUserSecretKeys([
         isRecord(currentAssignee?.adapterConfig) ? currentAssignee.adapterConfig.env as Record<string, unknown> : null,
-        currentProject?.env ?? null,
+        currentProject?.envMetadata?.bindings ?? currentProject?.env ?? null,
       ]);
     },
-    [currentAssignee?.adapterConfig, currentProject?.env, selectedAssigneeAgentId, status],
+    [
+      currentAssignee?.adapterConfig,
+      currentProject?.env,
+      currentProject?.envMetadata?.bindings,
+      selectedAssigneeAgentId,
+      status,
+    ],
   );
   const currentProjectExecutionWorkspacePolicy =
     experimentalSettings?.enableIsolatedWorkspaces === true

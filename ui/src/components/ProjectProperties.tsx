@@ -231,6 +231,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const [workspaceCwd, setWorkspaceCwd] = useState("");
   const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [envPatchEditorOpen, setEnvPatchEditorOpen] = useState(false);
 
   const commitField = (field: ProjectConfigFieldKey, data: Record<string, unknown>) => {
     if (onFieldUpdate) {
@@ -240,6 +241,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     onUpdate?.(data);
   };
   const fieldState = (field: ProjectConfigFieldKey): ProjectFieldSaveState => getFieldSaveState?.(field) ?? "idle";
+  const configuredEnvKeys = project.envMetadata?.keys ?? [];
+  const envValuesAreWriteOnly = project.env === null && configuredEnvKeys.length > 0;
 
   const { data: allGoals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -632,16 +635,71 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           valueClassName="space-y-2"
         >
           <div className="space-y-2">
-            <EnvironmentVariablesEditor
-              value={project.env ?? {}}
-              secrets={availableSecrets}
-              userSecretDefinitions={userSecretDefinitions}
-              onCreateSecret={async (name, value) => {
-                const created = await createSecret.mutateAsync({ name, value });
-                return created;
-              }}
-              onChange={(env) => commitField("env", { env: env ?? null })}
-            />
+            {envValuesAreWriteOnly ? (
+              <div className="space-y-3 rounded-md border border-border/70 p-3">
+                <div className="flex flex-wrap gap-1.5">
+                  {configuredEnvKeys.map((key) => (
+                    <span key={key} className="inline-flex items-center rounded-md border border-border">
+                      <Badge variant="outline" className="border-0 font-mono text-(length:--text-micro)">
+                        {key}
+                      </Badge>
+                      {(onUpdate || onFieldUpdate) && (
+                        <button
+                          type="button"
+                          className="mr-1 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                          aria-label={`Remove environment binding ${key}`}
+                          onClick={() => commitField("env", { envPatch: { remove: [key] } })}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+                <p className="text-(length:--text-micro) text-muted-foreground">
+                  Values are write-only and are never returned by the control plane. Existing bindings can be removed
+                  above or replaced below without exposing their current values.
+                </p>
+                {(onUpdate || onFieldUpdate) && (
+                  envPatchEditorOpen ? (
+                    <div className="space-y-2 border-t border-border/70 pt-3">
+                      <EnvironmentVariablesEditor
+                        value={{}}
+                        secrets={availableSecrets}
+                        userSecretDefinitions={userSecretDefinitions}
+                        onCreateSecret={async (name, value) => createSecret.mutateAsync({ name, value })}
+                        onChange={(env) => {
+                          if (env && Object.keys(env).length > 0) {
+                            commitField("env", { envPatch: { set: env } });
+                            setEnvPatchEditorOpen(false);
+                          }
+                        }}
+                        footerHint="Add a new binding or enter an existing key to replace it. Unchanged bindings are preserved."
+                      />
+                      <Button type="button" variant="ghost" size="xs" onClick={() => setEnvPatchEditorOpen(false)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button type="button" variant="outline" size="xs" onClick={() => setEnvPatchEditorOpen(true)}>
+                      <Plus className="mr-1 h-3 w-3" />
+                      Add or replace binding
+                    </Button>
+                  )
+                )}
+              </div>
+            ) : (
+              <EnvironmentVariablesEditor
+                value={project.env ?? {}}
+                secrets={availableSecrets}
+                userSecretDefinitions={userSecretDefinitions}
+                onCreateSecret={async (name, value) => {
+                  const created = await createSecret.mutateAsync({ name, value });
+                  return created;
+                }}
+                onChange={(env) => commitField("env", { env: env ?? null })}
+              />
+            )}
             <p className="text-(length:--text-micro) text-muted-foreground">
               Applied to all runs for tasks in this project. Project values override agent env on key conflicts.
             </p>

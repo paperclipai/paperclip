@@ -514,8 +514,17 @@ describe("NewIssueDialog", () => {
         description: null,
         archivedAt: null,
         color: "#445566",
-        env: {
-          PROJECT_TOKEN: { type: "user_secret_ref", key: "project_token", required: true },
+        env: null,
+        envMetadata: {
+          keys: ["PROJECT_TOKEN"],
+          bindings: {
+            PROJECT_TOKEN: {
+              type: "user_secret_ref",
+              configured: true,
+              key: "project_token",
+              required: true,
+            },
+          },
         },
       },
     ]);

@@ -698,6 +698,8 @@ export type {
   ProjectBudgetSummary,
   ProjectCodebase,
   ProjectCodebaseOrigin,
+  ProjectEnvBindingMetadata,
+  ProjectEnvMetadata,
   ProjectGoalRef,
   ProjectManagedByPlugin,
   ProjectWorkspace,

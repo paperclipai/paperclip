@@ -151,6 +151,7 @@ import {
   findExistingIssueBlockersResolvedWake,
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
+import { projectEnvMetadata } from "./project-response.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { decisionTrainingService } from "../services/decision-training.js";
 import { feedbackService } from "../services/feedback.js";
@@ -4439,6 +4440,7 @@ export function issueRoutes(
       color: project.color,
       icon: project.icon,
       env: null,
+      envMetadata: projectEnvMetadata(project.env),
       pauseReason: project.pauseReason,
       pausedAt: project.pausedAt,
       executionWorkspacePolicy: project.executionWorkspacePolicy,
@@ -5410,7 +5412,7 @@ export function issueRoutes(
       ...documentPayload,
       project: compactIssueProject(project),
       goal: goal ?? null,
-      mentionedProjects,
+      mentionedProjects: mentionedProjects.map(compactIssueProject),
       currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
       workProducts,
       linkedCases,
