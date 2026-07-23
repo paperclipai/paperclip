@@ -106,6 +106,44 @@ User-owned issues are not executed by the heartbeat scheduler.
 
 This is why `in_progress` can be strict for agents without forcing the same runtime rules onto human-held work.
 
+### Board hold (claiming without waking an agent)
+
+A board session sometimes needs to *claim* an issue — mark it visibly
+`in_progress` so nobody else double-grabs it — while it works the issue
+itself, without handing execution to an agent. Because assignment is the wake
+signal, **claiming by assigning an officer agent is the wrong tool**: it wakes
+that agent, which may start a parallel run in the same workspace. (This is
+exactly what happened in the 2026-07-04 CAS-8716/8719 incident — a "do not
+pick up" comment does not gate automation.)
+
+The correct claim is a **board hold**: assign the issue to a board *user*
+(`assigneeUserId`) and set `in_progress`. This is a first-class, non-waking
+hold, and it composes cleanly with the invariants above:
+
+- **The `in_progress` assignee requirement is satisfied.** `in_progress`
+  requires *an* assignee, and a user assignee counts — no agent assignee is
+  needed (`in_progress issues require an assignee` accepts either
+  `assigneeAgentId` or `assigneeUserId`; see `server/src/services/issues.ts`).
+- **No agent is woken.** Every wake path on issue update is gated on
+  `assigneeAgentId`. With only a user assignee set, the assignment, status-change,
+  and comment wake paths are all skipped (see `server/src/routes/issues.ts`).
+- **The heartbeat scheduler skips it.** Stranded-work recovery and issue
+  monitors only consider issues where `assigneeAgentId is not null` **and**
+  `assigneeUserId is null` (see the recovery/monitor queries in
+  `server/src/services/heartbeat.ts`). A board-held issue matches neither, so
+  no heartbeat will pick it up.
+- **The holder is visible and distinct.** Because a board hold uses
+  `assigneeUserId`, tools (the UI and `cxr issue view`) render the holder as a
+  board user, distinct from an agent assignee — humans can see who actually
+  has it.
+
+Release the hold by clearing `assigneeUserId`. When the work is ready to hand
+to an engineer, assign the officer agent at that point — assignment then does
+its normal job of waking the agent to start the run.
+
+> Rule of thumb: **board sessions claim via a board-user hold, never via
+> officer assignment.**
+
 ## 5. Checkout and Active Execution
 
 Checkout is the bridge from issue ownership to active agent execution.

@@ -591,4 +591,39 @@ describe("issue update comment wakeups", () => {
       }),
     );
   });
+
+  // Board hold / claim: a board session can move an unclaimed issue into
+  // in_progress under a human (board) assignee to signal "I have this" without
+  // waking any agent. Regression guard for the 2026-07-04 CAS-8716/8719
+  // incident, where the only claim path was assigning an officer agent — and
+  // assignment IS the wake signal, so a live agent started a parallel run.
+  // See doc/execution-semantics.md "Board hold (claiming without waking an agent)".
+  it("holds an issue in_progress under a board user without waking any agent (board claim)", async () => {
+    const existing = makeIssue({
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    });
+    const updated = makeIssue({
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "in_progress",
+        assigneeUserId: "local-board",
+      });
+
+    expect(res.status).toBe(200);
+    // The holder is a board user, not an agent — nothing to wake.
+    await vi.waitFor(() =>
+      expect(mockIssueService.update).toHaveBeenCalled(),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
 });
