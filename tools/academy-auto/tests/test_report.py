@@ -103,3 +103,16 @@ def test_build_digest_uses_gate_note_when_set():
     )
     assert "Delta grün (Fehler 5→2)" in text
     assert "Gate: Delta grün" in text
+
+
+def test_build_digest_result_override_replaces_result_line():
+    from academy_auto.runner import RunOutcome
+    from academy_auto.report import build_digest
+    text = build_digest(
+        task_prompt="x", run_outcome=RunOutcome(ok=True, output=""),
+        gate_result=None, committed=False,
+        result_override="TROCKENLAUF — hätte committet (3 Dateien, 42 Zeilen)",
+    )
+    assert "TROCKENLAUF" in text
+    assert "42 Zeilen" in text
+    assert "kein grünes Gate" not in text

@@ -8,6 +8,7 @@ def test_default_config_has_expected_invariants():
     assert cfg.max_tasks_per_run == 1
     assert cfg.max_diff_lines == 800
     assert cfg.pause_flag.name == "academy-auto.pause"
+    assert cfg.dry_run_flag.name == "academy-auto.dryrun"
     assert cfg.worktree_path.name == "worktree"
     # Gate: genau die drei nicht-mutierenden Checks, in Reihenfolge
     assert cfg.gate_commands == [

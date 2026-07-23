@@ -10,6 +10,7 @@ class Config:
     worktree_path: Path
     branch: str
     pause_flag: Path
+    dry_run_flag: Path
     gate_commands: list[list[str]]
     max_tasks_per_run: int
     max_diff_lines: int
@@ -33,6 +34,7 @@ class Config:
             worktree_path=base / "worktree",
             branch="agents/academy-auto",
             pause_flag=home / ".paperclip" / "academy-auto.pause",
+            dry_run_flag=home / ".paperclip" / "academy-auto.dryrun",
             gate_commands=[
                 ["npm", "test"],
                 ["npx", "tsc", "--noEmit"],

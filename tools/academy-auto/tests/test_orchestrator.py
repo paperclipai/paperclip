@@ -264,3 +264,55 @@ def test_run_once_triage_receives_baseline_red(tmp_path):
     deps = base_deps(measure_gate=two_stage_measure(4, 1), triage_and_pick=tp)
     run_once(cfg, None, deps)  # Triage-Modus, Baseline rot
     assert seen["red"] is True
+
+
+def test_run_once_dry_run_skips_commit_and_recording(tmp_path):
+    global sent, recorded, resets
+    sent, recorded, resets = [], [], []
+    from academy_auto.triage.rank import Pick
+    dry = tmp_path / "academy-auto.dryrun"
+    dry.write_text("")
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause", "dry_run_flag": dry})
+    deps = base_deps(
+        triage_and_pick=lambda cfg, cwd, baseline_red: Pick("todo:b.ts:1", "b umsetzen", "grund"),
+        commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("Trockenlauf darf NICHT committen")),
+    )
+    report = run_once(cfg, None, deps)
+    assert report.status == "dry_run"
+    assert recorded == []          # keine State-Verbuchung im Trockenlauf
+    assert len(resets) == 1        # Worktree zurückgesetzt
+    assert any("TROCKENLAUF" in s for s in sent)
+
+
+def test_run_once_commits_when_dry_run_flag_absent(tmp_path):
+    global sent, recorded, resets
+    sent, recorded, resets = [], [], []
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause",
+                    "dry_run_flag": tmp_path / "kein.dryrun"})
+    report = run_once(cfg, "manuell", base_deps())
+    assert report.status == "committed"
+
+
+def test_run_once_top_level_error_is_caught(tmp_path):
+    global sent, recorded, resets
+    sent, recorded, resets = [], [], []
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause",
+                    "dry_run_flag": tmp_path / "kein.dryrun"})
+    deps = base_deps(prepare_worktree=lambda cfg: (_ for _ in ()).throw(RuntimeError("worktree kaputt")))
+    report = run_once(cfg, "manuell", deps)
+    assert report.status == "error"
+    assert len(sent) == 1 and "kaputt" in sent[0]
+
+
+def test_pause_flag_wins_over_dry_run(tmp_path):
+    global sent, recorded, resets
+    sent, recorded, resets = [], [], []
+    pause = tmp_path / "p.pause"; pause.write_text("")
+    dry = tmp_path / "d.dryrun"; dry.write_text("")
+    cfg = Config.default()
+    cfg = Config(**{**cfg.__dict__, "pause_flag": pause, "dry_run_flag": dry})
+    assert run_once(cfg, None, base_deps()).status == "paused"
+    assert sent == []

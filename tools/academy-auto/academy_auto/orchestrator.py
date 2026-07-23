@@ -11,14 +11,24 @@ from .scope import check_scope
 
 @dataclass
 class RunReport:
-    status: str  # "paused" | "committed" | "discarded" | "impl_failed" | "nothing_to_do"
+    status: str  # "paused" | "committed" | "discarded" | "impl_failed" | "nothing_to_do" | "dry_run" | "error"
 
 
 def run_once(cfg: Config, task_prompt, deps) -> RunReport:
-    """Pause → Worktree → Baseline → [Triage] → Impl → After+Delta → Scope → Cap → Commit."""
+    """Pause → [Top-Level-Schutz] → Worktree → Baseline → Triage → Impl → Delta → Scope → Cap → Commit/Trockenlauf."""
     if cfg.pause_flag.exists():
         return RunReport(status="paused")
+    try:
+        return _run_once_inner(cfg, task_prompt, deps)
+    except Exception as exc:
+        try:
+            deps.send_digest(f"🎓 Academy-Auto — unerwarteter Fehler\n\n{exc}")
+        except Exception:
+            pass
+        return RunReport(status="error")
 
+
+def _run_once_inner(cfg: Config, task_prompt, deps) -> RunReport:
     cwd = deps.prepare_worktree(cfg)
     quar = deps.quarantined(cfg)
 
@@ -55,6 +65,16 @@ def run_once(cfg: Config, task_prompt, deps) -> RunReport:
     if lines > cfg.max_diff_lines:
         deps.send_digest(build_digest(task_prompt, outcome, None, committed=False, cap_exceeded=True, reason=reason, quarantined=quar, gate_note=delta.note))
         return _finalize(deps, cfg, cwd, pick, "discarded")
+
+    if cfg.dry_run_flag.exists():
+        summary = f"{len(changed)} Dateien, {lines} Zeilen"
+        deps.send_digest(build_digest(
+            task_prompt, outcome, None, committed=False, reason=reason, quarantined=quar,
+            gate_note=delta.note,
+            result_override=f"TROCKENLAUF — hätte committet ({summary})",
+        ))
+        deps.reset_worktree(cfg, cwd)   # nichts bleibt liegen; KEINE State-Verbuchung
+        return RunReport(status="dry_run")
 
     deps.commit_and_pr(cfg, cwd, task_prompt)
     deps.send_digest(build_digest(task_prompt, outcome, None, committed=True, reason=reason, quarantined=quar, gate_note=delta.note))

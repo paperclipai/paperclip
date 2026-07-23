@@ -14,6 +14,7 @@ def build_digest(
     reason: str = "",
     quarantined: list[str] | None = None,
     gate_note: str = "",
+    result_override: str = "",
 ) -> str:
     """Deutschen Tages-Digest für Jarvis/Telegram bauen."""
     lines = ["🎓 Academy-Auto — Tagesstand", ""]
@@ -30,7 +31,9 @@ def build_digest(
             cmd = " ".join(failing.cmd) if failing else "unbekannt"
             lines.append(f"Gate: rot bei `{cmd}`")
 
-    if committed:
+    if result_override:
+        lines.append(f"Ergebnis: {result_override}")
+    elif committed:
         lines.append("Ergebnis: auf agents/academy-auto committet")
     elif scope_violations:
         lines.append("Ergebnis: verworfen (Scope-Verletzung: " + ", ".join(scope_violations) + ")")
