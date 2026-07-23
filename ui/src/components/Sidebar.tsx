@@ -270,7 +270,10 @@ export function Sidebar() {
         {/* Classic mode restores the per-project collapsible below Work. */}
         {streamlined ? null : <SidebarProjects />}
 
-        <SidebarAgents streamlined={streamlined} />
+        <SidebarAgents
+          streamlined={streamlined}
+          builtInAgentsEnabled={experimentalSettings?.enableBuiltInAgents === true}
+        />
 
         <SidebarSection label="Company" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
           <SidebarNavItem to="/org" label="Org" icon={Network} />

@@ -24,6 +24,10 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
 }));
 
+const mockBuiltInAgentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockResourceMembershipsApi = vi.hoisted(() => ({
   listMine: vi.fn(),
   updateAgent: vi.fn(),
@@ -99,6 +103,10 @@ vi.mock("../api/auth", () => ({
 
 vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
+}));
+
+vi.mock("../api/builtInAgents", () => ({
+  builtInAgentsApi: mockBuiltInAgentsApi,
 }));
 
 vi.mock("../api/resourceMemberships", () => ({
@@ -227,6 +235,7 @@ describe("SidebarAgents", () => {
       user: { id: "user-1" },
     });
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    mockBuiltInAgentsApi.list.mockResolvedValue([]);
     memberships = {
       projectMemberships: {},
       agentMemberships: {},
@@ -276,19 +285,31 @@ describe("SidebarAgents", () => {
     vi.clearAllMocks();
   });
 
-  async function renderSidebarAgents(streamlined = true) {
+  async function renderSidebarAgents(streamlined = true, builtInAgentsEnabled = false) {
     const currentRoot = createRoot(container);
     root = currentRoot;
 
     await act(async () => {
       currentRoot.render(
         <QueryClientProvider client={queryClient}>
-          <SidebarAgents streamlined={streamlined} />
+          <SidebarAgents streamlined={streamlined} builtInAgentsEnabled={builtInAgentsEnabled} />
         </QueryClientProvider>,
       );
     });
     await flushReact();
   }
+
+  it("does not probe built-in agents while the experimental feature is disabled", async () => {
+    await renderSidebarAgents();
+
+    expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
+  });
+
+  it("loads built-in agent status only when the experimental feature is enabled", async () => {
+    await renderSidebarAgents(true, true);
+
+    expect(mockBuiltInAgentsApi.list).toHaveBeenCalledWith("company-1");
+  });
 
   async function renderSidebarAgentsWithDefaultProps() {
     const currentRoot = createRoot(container);

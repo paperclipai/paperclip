@@ -21,6 +21,12 @@ import { cn } from "../lib/utils";
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
+export function shouldShowInstanceSignOut(
+  deploymentMode: "local_trusted" | "authenticated" | undefined,
+): boolean {
+  return deploymentMode === "authenticated";
+}
+
 export function InstanceGeneralSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -352,25 +358,27 @@ export function InstanceGeneralSettings() {
         </div>
       </Card>
 
-      <Card className="block p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Sign out</h2>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Sign out of this Paperclip instance. You will be redirected to the login page.
-            </p>
+      {shouldShowInstanceSignOut(healthQuery.data?.deploymentMode) ? (
+        <Card className="block p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1.5">
+              <h2 className="text-sm font-semibold">Sign out</h2>
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                Sign out of this Paperclip instance. You will be redirected to the login page.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={signOutMutation.isPending}
+              onClick={() => signOutMutation.mutate()}
+            >
+              <LogOut className="size-4" />
+              {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+            </Button>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={signOutMutation.isPending}
-            onClick={() => signOutMutation.mutate()}
-          >
-            <LogOut className="size-4" />
-            {signOutMutation.isPending ? "Signing out..." : "Sign out"}
-          </Button>
-        </div>
-      </Card>
+        </Card>
+      ) : null}
     </div>
   );
 }
