@@ -1172,3 +1172,10 @@ instead of appending contradictory history.
 - The twelve existing pending outreach approvals were deliberately left
   unchanged. No email was sent and no approval was resolved as part of adopting
   the Muster.
+- Follow-up operator instruction on 2026-07-23 upgraded all eleven pending true
+  first-contact approvals to the Muster in one transaction. Each uses a verified
+  dossier reason, passed the live 12-check gate, and has identical content in
+  `ck_eval.pending_send` and its native pending interaction. CK-467 was correctly
+  preserved because it is an English reply to an existing Bellevue Palace
+  conversation, not a first contact. The queue remains 12 pending; nothing was
+  sent, approved, cancelled, or moved to `sending`.
