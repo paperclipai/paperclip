@@ -148,6 +148,42 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/same company/i);
   });
 
+  it("rejects Paperclip runtime env keys backed by non-plain bindings during env normalization", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(companyId, {
+        PAPERCLIP_AGENT_ID: {
+          type: "secret_ref",
+          secretId: randomUUID(),
+          version: "latest",
+        },
+      }),
+    ).rejects.toThrow(
+      'Environment key "PAPERCLIP_AGENT_ID" is reserved by the Paperclip runtime and cannot be overridden via a non-plain binding.',
+    );
+  });
+
+  it("allows Paperclip runtime env keys backed by plain bindings during env normalization", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(companyId, {
+        PAPERCLIP_AGENT_ID: {
+          type: "plain",
+          value: "agent-1",
+        },
+      }),
+    ).resolves.toEqual({
+      PAPERCLIP_AGENT_ID: {
+        type: "plain",
+        value: "agent-1",
+      },
+    });
+  });
+
   it("prevents duplicate bindings for a target config path", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

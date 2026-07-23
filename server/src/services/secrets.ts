@@ -1567,6 +1567,12 @@ export function secretService(db: Db) {
         continue;
       }
 
+      if (key.startsWith("PAPERCLIP_")) {
+        throw unprocessable(
+          `Environment key "${key}" is reserved by the Paperclip runtime and cannot be overridden via a non-plain binding.`,
+        );
+      }
+
       await assertSecretInCompany(companyId, binding.secretId);
       normalized[key] = {
         type: "secret_ref",
