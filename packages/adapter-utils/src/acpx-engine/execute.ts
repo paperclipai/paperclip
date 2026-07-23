@@ -154,14 +154,24 @@ export interface StagedRuntimeCacheEntry {
    */
   envDelta: Record<string, string>;
   /**
-   * The seam's teardown (codex auth copy-back via `restoreWorkspace()` + staged
-   * temp cleanup), or null for adapters/customs with no seam. Reused on every
-   * run's teardown so the copy-back cadence stays exactly per-run — unchanged
-   * from PR 2. `restoreWorkspace()` reads the sandbox live through the stable
-   * (stateless) runner, so reusing the closure across resumes copies back the
-   * current in-sandbox credential, not a stale snapshot.
+   * The seam's per-run copy-back (codex auth copy-back via `restoreWorkspace()`),
+   * or null for adapters/customs with no seam. Reused on every run's teardown so
+   * the copy-back cadence stays exactly per-run — unchanged from PR 2.
+   * `restoreWorkspace()` reads the sandbox live through the stable (stateless)
+   * runner, so reusing the closure across resumes copies back the current
+   * in-sandbox credential, not a stale snapshot. It never removes the staged
+   * in-sandbox home, so re-running it on each reuse can't invalidate this entry.
    */
   teardown: (() => Promise<void>) | null;
+  /**
+   * The seam's one-time host-side staged-resource cleanup (e.g. remove the
+   * staged home temp dir), or null. Fired ONLY when this entry is dropped —
+   * failed/cancelled/timed-out turn, incompatible re-stage, or idle eviction —
+   * never while the entry stays warm for reuse. Kept separate from `teardown`
+   * so a clean turn's per-run copy-back can't delete resources the next
+   * compatible resume still relies on.
+   */
+  dispose: (() => Promise<void>) | null;
   lastUsedAt: number;
 }
 
@@ -234,14 +244,33 @@ export interface AcpxRemoteManagedHomeContext {
 export interface AcpxRemoteManagedHomeResult {
   stagedRuntime: PreparedAdapterExecutionTargetRuntime;
   /**
-   * Invoked once on every teardown/exit path (mirrors the CLI restore-hook +
-   * staged-temp cleanup finally). For codex this runs `restoreWorkspace()` — the
-   * seam that fires the auth copy-back — and removes the staged home temp dir.
-   * Failures are logged by the seam, never fatal to the run result (an
-   * unclean-teardown copy-back miss is the accepted `refresh_token_reused`
-   * residual, loud on the next host Codex use, never silent).
+   * Per-run copy-back, invoked once on every teardown/exit path (mirrors the CLI
+   * restore-hook finally). For codex this runs `restoreWorkspace()` — the seam
+   * that fires the auth copy-back. It reads the sandbox live and does NOT remove
+   * the staged in-sandbox home/workspace, so it is safe to re-run on every
+   * compatible resume that reuses the staged runtime — the copy-back cadence
+   * stays exactly per-run. Failures are logged by the seam, never fatal to the
+   * run result (an unclean-teardown copy-back miss is the accepted
+   * `refresh_token_reused` residual, loud on the next host Codex use, never
+   * silent).
+   *
+   * Host-side staged-resource cleanup (e.g. removing the staged home temp dir)
+   * is NOT done here — it moved to {@link disposeStaged} so that reusing the
+   * cached staged runtime across resumes never destroys resources a later run
+   * still needs.
    */
   teardown?: () => Promise<void>;
+  /**
+   * One-time cleanup of host-side staged resources (e.g. the curated staged
+   * home temp dir). Split out from {@link teardown} so it fires ONLY when the
+   * staged runtime is actually dropped — a failed/cancelled/timed-out turn, an
+   * incompatible re-stage, or idle eviction — never on a clean turn that keeps
+   * the staged runtime warm for the next compatible resume. Idempotent (safe to
+   * call more than once — it force-removes and swallows already-gone paths).
+   * Null for adapters that seed from a managed cache and hold no disposable
+   * temp.
+   */
+  disposeStaged?: () => Promise<void>;
 }
 
 export interface AcpxEngineExecutorOptions {
@@ -255,6 +284,15 @@ export interface AcpxEngineExecutorOptions {
    * module-level map; tests pass an isolated map.
    */
   stagedRuntimes?: Map<string, StagedRuntimeCacheEntry>;
+  /**
+   * Per-`sessionKey` staging mutex for the remote runner-backed lane (PR 3).
+   * Serializes the stage-or-reuse decision so two overlapping runs of the same
+   * session can never ship into the same remote workspace concurrently (one
+   * stages while the other waits, then re-checks the cache). Defaults to a
+   * shared module-level map; tests pass an isolated map. Entries are ephemeral —
+   * cleared as soon as the last waiter for a key finishes staging.
+   */
+  stagingLocks?: Map<string, Promise<unknown>>;
   adapterType?: string;
   moduleDir?: string;
   packageRootDir?: string;
@@ -305,11 +343,18 @@ interface AcpxPreparedRuntime {
   // are what PR 2 (managed-home seeding + codex copy-back) and PR 3 (session
   // lifecycle re-staging) build on.
   stagedRuntime: PreparedAdapterExecutionTargetRuntime | null;
-  // Teardown hook from the per-adapter remote managed-home seam: runs the
-  // codex auth copy-back (via `restoreWorkspace()`) and removes staged temp
-  // dirs. Invoked once on every exit path by `cleanupRemoteBridges`. Null for
-  // local runs, the runner-less fallback, and adapters with no seam.
+  // Per-run copy-back hook from the per-adapter remote managed-home seam: runs
+  // the codex auth copy-back (via `restoreWorkspace()`). Invoked once on every
+  // exit path by `cleanupRemoteBridges`; it never removes staged temp, so it is
+  // safe on every compatible resume. Null for local runs, the runner-less
+  // fallback, and adapters with no seam.
   remoteManagedHomeTeardown: (() => Promise<void>) | null;
+  // One-time host-side staged-resource cleanup from the seam (remove staged temp
+  // dirs). Fired ONLY when the staged runtime is dropped (failed/cancelled/timed
+  // -out turn, incompatible re-stage, idle eviction), not on a clean turn that
+  // keeps the runtime warm. Null for local runs, the runner-less fallback, and
+  // adapters with no disposable temp.
+  remoteStagingDispose: (() => Promise<void>) | null;
   // PR 3: for the remote runner-backed lane, the env keys the managed-home seam
   // mutated on this run (or the reused delta on a compatible resume), so the
   // executor can cache/refresh the staged-runtime entry after a clean turn.
@@ -326,6 +371,7 @@ interface AcpxPreparedRuntime {
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
 const defaultStagedRuntimes = new Map<string, StagedRuntimeCacheEntry>();
+const defaultStagingLocks = new Map<string, Promise<unknown>>();
 
 function resolveEngineSettings(options: AcpxEngineExecutorOptions): AcpxEngineSettings {
   const moduleDir = path.resolve(options.moduleDir ?? defaultModuleDir);
@@ -1448,52 +1494,98 @@ async function buildRuntime(input: {
   // `prepareRemoteManagedHome` seam when the adapter supplies one. The seam
   // ships the adapter's managed home as an `assets` entry (through the `stage`
   // callback = `stageAcpRemoteRuntime`), repoints the home env var (`env`) onto
-  // the in-sandbox `assetDirs.*` path, and returns a `teardown` that fires the
-  // codex auth copy-back (`restoreWorkspace()`) and removes staged temp dirs.
-  // Without a seam (custom agents / shared-engine tests) the engine stages the
-  // workspace with no home asset — identical to the PR-1 behavior.
+  // the in-sandbox `assetDirs.*` path, and returns a `teardown` (per-run codex
+  // auth copy-back via `restoreWorkspace()`) plus a `disposeStaged` (one-time
+  // staged-temp cleanup). Without a seam (custom agents / shared-engine tests)
+  // the engine stages the workspace with no home asset — identical to PR-1.
   //
-  // PR 3 (stage once per session): a resume whose fingerprint matches this exact
-  // `sessionKey` reuses the already-staged in-sandbox runtime — no workspace
-  // re-ship, no home re-seed — while an incompatible fingerprint (a different
-  // key) misses the cache and stages fresh. The `sessionKey`
+  // PR 3 (stage once per session): a COMPATIBLE resume whose fingerprint matches
+  // this exact `sessionKey` reuses the already-staged in-sandbox runtime — no
+  // workspace re-ship, no home re-seed — while an incompatible fingerprint (a
+  // different key) misses the cache and stages fresh. The `sessionKey`
   // (`companyId:agentId:taskKey:fingerprint`) is the single scoping key, so one
   // session can never read another session's staged credentials. The cache is
   // populated by the executor only after a clean turn and dropped on
   // failure/cancel/timeout, so it always holds a known-good staged runtime.
+  //
+  // Two guards close the concurrency / cross-session windows Greptile flagged:
+  //   * Compatibility gate: reuse only when the supplied session params actually
+  //     resume THIS staged session (the same `isCompatibleSession` predicate the
+  //     warm-handle path uses). A fresh invocation with missing/cleared
+  //     `sessionParams` starts a new ACP session via `session/new`, so it must
+  //     NOT inherit the prior session's staged home/credentials — it stages
+  //     fresh even when company/agent/task/fingerprint (and hence sessionKey)
+  //     collide.
+  //   * Per-key staging lock: the stage-or-reuse decision runs under a
+  //     `sessionKey` mutex so two overlapping runs of the same session can never
+  //     ship into the same remote workspace at once (the loser waits, then
+  //     re-checks the cache before deciding).
   const stagedRuntimes = input.deps.stagedRuntimes ?? defaultStagedRuntimes;
+  const stagingLocks = input.deps.stagingLocks ?? defaultStagingLocks;
   const nowMs = input.deps.now ?? (() => Date.now());
+  const previousParams = parseObject(input.ctx.runtime.sessionParams);
+  const isCompatibleResume = isCompatibleSession(previousParams, {
+    fingerprint,
+    sessionKey,
+    cwd: sessionCwd,
+    mode,
+    acpxAgent,
+    remoteExecutionIdentity,
+  });
   let stagedRuntime: PreparedAdapterExecutionTargetRuntime | null = null;
   let remoteManagedHomeTeardown: (() => Promise<void>) | null = null;
+  let remoteStagingDispose: (() => Promise<void>) | null = null;
   let remoteStagingEnvDelta: Record<string, string> | null = null;
   if (useRemoteProcessSession && executionTarget?.kind === "remote") {
-    const cachedStaged = stagedRuntimes.get(sessionKey);
-    if (cachedStaged) {
-      // Reuse the already-staged in-sandbox workspace + managed home. Re-apply
-      // the env keys the seam repointed onto the in-sandbox home (deterministic,
-      // identical across the session's runs) and reuse the seam's teardown so
-      // the codex auth copy-back still fires on THIS run's teardown — the
-      // copy-back cadence stays exactly per-run, unchanged from PR 2. The
-      // copy-back reads the sandbox auth.json live at teardown, so the reused
-      // closure copies back the current credential, never a stale snapshot.
-      // (The workspace restore in that same closure diffs against the ORIGINAL
-      // staging run's host baseline — an accepted consequence of "reuse, don't
-      // re-ship": the in-sandbox workspace is the source of truth mid-session
-      // and the host stays synced from it each run.)
-      stagedRuntime = cachedStaged.stagedRuntime;
-      remoteManagedHomeTeardown = cachedStaged.teardown;
-      remoteStagingEnvDelta = cachedStaged.envDelta;
-      Object.assign(env, cachedStaged.envDelta);
-      cachedStaged.lastUsedAt = nowMs();
-      await input.ctx.onLog(
-        "stdout",
-        "[paperclip] Reusing the staged in-sandbox runtime for this resumed session (no workspace re-ship / managed-home re-seed).\n",
-      );
-    } else {
+    const remoteTarget = executionTarget;
+    const staged = await withSessionStagingLock(stagingLocks, sessionKey, async (): Promise<{
+      stagedRuntime: PreparedAdapterExecutionTargetRuntime;
+      teardown: (() => Promise<void>) | null;
+      dispose: (() => Promise<void>) | null;
+      envDelta: Record<string, string>;
+    }> => {
+      const cachedStaged = isCompatibleResume ? stagedRuntimes.get(sessionKey) : undefined;
+      if (cachedStaged) {
+        // Reuse the already-staged in-sandbox workspace + managed home. Re-apply
+        // the env keys the seam repointed onto the in-sandbox home (deterministic,
+        // identical across the session's runs) and reuse the seam's per-run
+        // copy-back so the codex auth copy-back still fires on THIS run's teardown
+        // — the copy-back cadence stays exactly per-run, unchanged from PR 2. The
+        // copy-back reads the sandbox auth.json live at teardown, so the reused
+        // closure copies back the current credential, never a stale snapshot, and
+        // it never removes the staged in-sandbox home (host staged-temp cleanup
+        // moved to `dispose`, fired only when the entry is dropped), so reusing it
+        // can't leave this run without its staged home.
+        // (The workspace restore in that same closure diffs against the ORIGINAL
+        // staging run's host baseline — an accepted consequence of "reuse, don't
+        // re-ship": the in-sandbox workspace is the source of truth mid-session
+        // and the host stays synced from it each run.)
+        Object.assign(env, cachedStaged.envDelta);
+        cachedStaged.lastUsedAt = nowMs();
+        await input.ctx.onLog(
+          "stdout",
+          "[paperclip] Reusing the staged in-sandbox runtime for this resumed session (no workspace re-ship / managed-home re-seed).\n",
+        );
+        return {
+          stagedRuntime: cachedStaged.stagedRuntime,
+          teardown: cachedStaged.teardown,
+          dispose: cachedStaged.dispose,
+          envDelta: cachedStaged.envDelta,
+        };
+      }
+      // Not a compatible resume (or no cache entry): stage fresh. If a stale
+      // entry sits at this key (e.g. an incompatible new session colliding on
+      // company/agent/task/fingerprint), drop it and release its host staged
+      // resources first so we neither reuse nor leak it.
+      const stale = stagedRuntimes.get(sessionKey);
+      if (stale) {
+        stagedRuntimes.delete(sessionKey);
+        if (stale.dispose) await stale.dispose().catch(() => {});
+      }
       const stage = (assets: AdapterManagedRuntimeAsset[]) =>
         stageAcpRemoteRuntime({
           runId,
-          target: executionTarget,
+          target: remoteTarget,
           adapterKey: input.engine.adapterType,
           workspaceLocalDir: cwd,
           workspaceRemoteDir: sessionCwd,
@@ -1507,13 +1599,16 @@ async function buildRuntime(input: {
       // verbatim on a later compatible resume. Add/change only — every seam sets
       // (never deletes) its home env var, so a set-based delta is complete.
       const envBeforeStage = { ...env };
+      let freshStagedRuntime: PreparedAdapterExecutionTargetRuntime;
+      let freshTeardown: (() => Promise<void>) | null = null;
+      let freshDispose: (() => Promise<void>) | null = null;
       if (input.deps.prepareRemoteManagedHome) {
         const seeded = await input.deps.prepareRemoteManagedHome({
           acpxAgent,
           companyId: agent.companyId,
           runId,
           config,
-          executionTarget,
+          executionTarget: remoteTarget,
           workspaceLocalDir: cwd,
           timeoutSec,
           env,
@@ -1521,17 +1616,27 @@ async function buildRuntime(input: {
           onRuntimeProgress: input.ctx.onRuntimeProgress,
           stage,
         });
-        stagedRuntime = seeded.stagedRuntime;
-        remoteManagedHomeTeardown = seeded.teardown ?? null;
+        freshStagedRuntime = seeded.stagedRuntime;
+        freshTeardown = seeded.teardown ?? null;
+        freshDispose = seeded.disposeStaged ?? null;
       } else {
-        stagedRuntime = await stage([]);
+        freshStagedRuntime = await stage([]);
       }
       const delta: Record<string, string> = {};
       for (const [key, value] of Object.entries(env)) {
         if (envBeforeStage[key] !== value) delta[key] = value;
       }
-      remoteStagingEnvDelta = delta;
-    }
+      return {
+        stagedRuntime: freshStagedRuntime,
+        teardown: freshTeardown,
+        dispose: freshDispose,
+        envDelta: delta,
+      };
+    });
+    stagedRuntime = staged.stagedRuntime;
+    remoteManagedHomeTeardown = staged.teardown;
+    remoteStagingDispose = staged.dispose;
+    remoteStagingEnvDelta = staged.envDelta;
   }
   let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
   if (useRemoteProcessSession) {
@@ -1574,9 +1679,12 @@ async function buildRuntime(input: {
     await paperclipBridge?.stop().catch(() => {});
     // The staged home / copy-back teardown must run even if a bridge fails to
     // start after the workspace + managed home were already staged into the
-    // sandbox, so a refreshed credential is copied back and staged temp dirs
-    // are removed on this error path too.
+    // sandbox, so a refreshed credential is copied back on this error path too.
+    // This run never reaches the executor, so also fire the one-time staged-temp
+    // dispose here (it no longer rides the per-run copy-back) — the run is being
+    // abandoned, so its staged temp must be released.
     await remoteManagedHomeTeardown?.().catch(() => {});
+    await remoteStagingDispose?.().catch(() => {});
     throw err;
   }
   const overrideCommand = processSessionBridge?.agentCommand ?? agentCommand;
@@ -1616,6 +1724,7 @@ async function buildRuntime(input: {
     paperclipBridge,
     stagedRuntime,
     remoteManagedHomeTeardown,
+    remoteStagingDispose,
     remoteStagingEnvDelta,
     remoteExecutionIdentity,
     skillPromptInstructions,
@@ -2160,19 +2269,23 @@ async function cleanupIdleHandles(input: {
 
 // Drop staged-runtime entries the session has not touched within the warm-idle
 // window, so the cache does not accumulate abandoned sessions (e.g. every time
-// a config change shifts the fingerprint to a new key). No teardown fires here:
-// the copy-back already ran on the entry's last run's `cleanupRemoteBridges`, so
-// eviction is a plain delete. A later run of the same session simply re-stages
-// fresh (re-shipping into the still-persistent sandbox, which the inbound
-// monotonic auth-merge keeps safe).
-function cleanupIdleStagedRuntimes(input: {
+// a config change shifts the fingerprint to a new key). The per-run copy-back
+// already ran on the entry's last run's `cleanupRemoteBridges`; eviction fires
+// the entry's one-time `dispose` (host staged-temp cleanup) — the only place
+// the staged temp is removed now that it no longer rides the per-run teardown.
+// A later run of the same session simply re-stages fresh (re-shipping into the
+// still-persistent sandbox, which the inbound monotonic auth-merge keeps safe).
+async function cleanupIdleStagedRuntimes(input: {
   handles: Map<string, StagedRuntimeCacheEntry>;
   now: number;
   idleMs: number;
 }) {
   if (input.idleMs <= 0) return;
-  for (const [key, entry] of input.handles.entries()) {
-    if (input.now - entry.lastUsedAt >= input.idleMs) input.handles.delete(key);
+  for (const [key, entry] of [...input.handles.entries()]) {
+    if (input.now - entry.lastUsedAt >= input.idleMs) {
+      input.handles.delete(key);
+      if (entry.dispose) await entry.dispose().catch(() => {});
+    }
   }
 }
 
@@ -2191,8 +2304,61 @@ function saveStagedRuntimeAfterCleanTurn(input: {
     stagedRuntime: prepared.stagedRuntime,
     envDelta: prepared.remoteStagingEnvDelta,
     teardown: prepared.remoteManagedHomeTeardown,
+    dispose: prepared.remoteStagingDispose,
     lastUsedAt: input.now,
   });
+}
+
+// Drop the staged-runtime entry a finished run owns and release its host-side
+// staged resources. Two guards make this safe under overlapping runs of the same
+// session key (PR 3 fix — "Concurrent Runs Corrupt Cache Ownership"):
+//   1. Ownership guard: only delete the map entry when it is still the exact
+//      staged runtime THIS run installed/reused (object identity). A concurrent
+//      run that installed a different clean entry keeps it — a failed run can no
+//      longer evict another run's good cache entry.
+//   2. `dispose` is fired for THIS run's own staged resources regardless, so a
+//      failed/cancelled run always frees its own staged temp. `dispose` is
+//      idempotent, so a shared closure re-fired across a reuse chain is safe.
+async function discardStagedRuntime(input: {
+  handles: Map<string, StagedRuntimeCacheEntry>;
+  prepared: AcpxPreparedRuntime;
+}): Promise<void> {
+  const { handles, prepared } = input;
+  const existing = handles.get(prepared.sessionKey);
+  if (existing && prepared.stagedRuntime && existing.stagedRuntime === prepared.stagedRuntime) {
+    handles.delete(prepared.sessionKey);
+  }
+  if (prepared.remoteStagingDispose) await prepared.remoteStagingDispose().catch(() => {});
+}
+
+// Per-`sessionKey` async mutex: chains each caller after the previous one so the
+// stage-or-reuse decision for a session runs serially (PR 3 fix — "Concurrent
+// Runs Corrupt Cache Ownership"). Overlapping runs of the same session can no
+// longer ship into the same remote workspace concurrently: the loser waits, then
+// re-checks the cache before deciding to reuse or re-stage. The lock entry is
+// GC'd once the last waiter for the key finishes.
+async function withSessionStagingLock<T>(
+  locks: Map<string, Promise<unknown>>,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = locks.get(key) ?? Promise.resolve();
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  // The next waiter's `prev` is this promise; it settles only once we release
+  // the gate below, so callers run one at a time.
+  const mine: Promise<unknown> = prev.then(() => gate);
+  locks.set(key, mine);
+  await prev.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    releaseGate();
+    // GC the lock if no later caller has chained after us.
+    if (locks.get(key) === mine) locks.delete(key);
+  }
 }
 
 function clearWarmHandleTimer(entry: RuntimeCacheEntry) {
@@ -2282,7 +2448,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     // Evict idle staged runtimes BEFORE building the runtime, since buildRuntime
     // consults the staged cache to decide whether a compatible resume may reuse
     // an already-staged runtime — an expired entry must not be reused.
-    cleanupIdleStagedRuntimes({ handles: stagedRuntimes, now: now(), idleMs: warmIdleMs });
+    await cleanupIdleStagedRuntimes({ handles: stagedRuntimes, now: now(), idleMs: warmIdleMs });
     const prepared = await buildRuntime({ ctx, engine, deps });
     // State the effective wall-clock timeout and its source up front so a
     // later timeout is diagnosable from the run log alone. Goes to stderr:
@@ -2365,7 +2531,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         err,
         phase: "ensure_session",
       });
-      stagedRuntimes.delete(prepared.sessionKey);
+      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
       await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
@@ -2382,7 +2548,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     }
 
     if (!handle) {
-      stagedRuntimes.delete(prepared.sessionKey);
+      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
       await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
@@ -2421,7 +2587,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         clearWarmHandleTimer(existing);
         warmHandles.delete(prepared.sessionKey);
       }
-      stagedRuntimes.delete(prepared.sessionKey);
+      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
       await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
@@ -2605,7 +2771,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       if (terminal.status === "completed" && !timedOut) {
         saveStagedRuntimeAfterCleanTurn({ handles: stagedRuntimes, prepared, now: now() });
       } else {
-        stagedRuntimes.delete(prepared.sessionKey);
+        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
       }
 
       const errorMessage = timedOut
@@ -2668,7 +2834,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         clearWarmHandleTimer(existing);
         warmHandles.delete(prepared.sessionKey);
       }
-      stagedRuntimes.delete(prepared.sessionKey);
+      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
       const { classified, message } = await emitAcpxFailure({
         ctx,
         prepared,

@@ -204,6 +204,13 @@ async function prepareCodexRemoteManagedHome(
 
   return {
     stagedRuntime,
+    // Per-run copy-back: fires on EVERY run's teardown (including a compatible
+    // resume that reuses this staged runtime). It reads the sandbox auth.json /
+    // workspace live and copies back to the host; it does NOT remove the staged
+    // in-sandbox home, so re-running it across resumes can't leave a later run
+    // without its staged home. Host staged-temp removal is deliberately NOT here
+    // — see `disposeStaged` — so caching this runtime for reuse never destroys
+    // resources the next resume needs.
     teardown: async () => {
       try {
         await onLog(
@@ -222,16 +229,22 @@ async function prepareCodexRemoteManagedHome(
             err instanceof Error ? err.message : String(err)
           }\n`,
         );
-      } finally {
-        await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(async (error) => {
-          await onLog(
-            "stderr",
-            `[paperclip] Failed to remove staged Codex home "${stagedCodexHomeDir}": ${
-              error instanceof Error ? error.message : String(error)
-            }\n`,
-          );
-        });
       }
+    },
+    // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the
+    // staged runtime is dropped (failed/cancelled/timed-out turn, incompatible
+    // re-stage, idle eviction) — never on a clean turn that keeps the runtime
+    // warm — so it can't remove the staged home while a reuse still depends on
+    // it. Idempotent: `force: true` no-ops if it was already removed.
+    disposeStaged: async () => {
+      await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(async (error) => {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to remove staged Codex home "${stagedCodexHomeDir}": ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      });
     },
   };
 }

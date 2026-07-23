@@ -2206,4 +2206,193 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
     // instead of reusing a torn-down session's staged credentials.
     expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(2);
   });
+
+  // Greptile P1 "Cache Reuse Bypasses Session Compatibility": a fresh invocation
+  // that shares company/agent/task/fingerprint (hence sessionKey) with a prior
+  // run but carries NO sessionParams starts a new ACP session — it must NOT
+  // inherit the prior session's staged workspace + managed home.
+  it("test_acp_reuse_requires_compatible_resume_not_just_session_key", async () => {
+    const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    let seamCalls = 0;
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      createRuntime: () => recordingRuntime({ ensureInputs }) as never,
+      prepareRemoteManagedHome: async (input) => {
+        seamCalls += 1;
+        return { stagedRuntime: await input.stage([]) };
+      },
+    });
+    const base = baseExecuteArgs({ stateDir, localCwd, executionTarget });
+
+    const first = await execute({ runId: "run-a", runtime: {}, ...base } as never);
+    // Same config (identical sessionKey) but sessionParams cleared → this is a
+    // NEW session, not a resume of A. The old code reused A's staged runtime on a
+    // bare sessionKey hit; the compatibility gate now forces a fresh stage.
+    const second = await execute({ runId: "run-b", runtime: {}, ...base } as never);
+
+    expect(first.exitCode).toBe(0);
+    expect(second.exitCode).toBe(0);
+    // Staged (and re-seeded the managed home) fresh for the new session — no
+    // silent inheritance of the prior session's staged credentials.
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(2);
+    expect(seamCalls).toBe(2);
+    // B binds a fresh session/new (no resumeSessionId), it does not resume A.
+    expect(ensureInputs[1]?.cwd).toBe(remoteCwd);
+    expect(ensureInputs[1]?.resumeSessionId).toBeUndefined();
+  });
+
+  // Greptile P1 "Teardown Invalidates Cached Runtime": the per-run copy-back must
+  // fire on every run (incl. a reused resume) while the one-time host staged-temp
+  // cleanup must NOT fire between clean runs — otherwise the reused staged runtime
+  // would be invalidated before the next resume.
+  it("test_reused_resume_copies_back_per_run_without_disposing_staged_temp", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    let teardownCalls = 0;
+    let disposeCalls = 0;
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      createRuntime: () => recordingRuntime({ ensureInputs }) as never,
+      prepareRemoteManagedHome: async (input) => {
+        const stagedRuntime = await input.stage([]);
+        return {
+          stagedRuntime,
+          teardown: async () => {
+            teardownCalls += 1;
+          },
+          disposeStaged: async () => {
+            disposeCalls += 1;
+          },
+        };
+      },
+    });
+    const base = baseExecuteArgs({ stateDir, localCwd, executionTarget });
+
+    const first = await execute({ runId: "run-a", runtime: {}, ...base } as never);
+    const second = await execute({
+      runId: "run-b",
+      runtime: { sessionParams: first.sessionParams },
+      ...base,
+    } as never);
+
+    expect(first.exitCode).toBe(0);
+    expect(second.exitCode).toBe(0);
+    // Staged once, reused on the compatible resume.
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(1);
+    // Per-run copy-back fired on BOTH runs — cadence unchanged.
+    expect(teardownCalls).toBe(2);
+    // The staged temp was never disposed while the entry stayed warm for reuse,
+    // so the resume found its staged home intact.
+    expect(disposeCalls).toBe(0);
+    expect(ensureInputs[1]?.resumeSessionId).toBe(first.sessionId);
+  });
+
+  // The one-time dispose DOES fire when the staged runtime is actually dropped
+  // (here: a failed turn), releasing the host staged-temp — the copy-back also
+  // still fires on the failure path.
+  it("test_dropped_staged_runtime_disposes_host_temp", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    let teardownCalls = 0;
+    let disposeCalls = 0;
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      createRuntime: () => recordingRuntime({ ensureInputs, terminalStatus: "failed" }) as never,
+      prepareRemoteManagedHome: async (input) => ({
+        stagedRuntime: await input.stage([]),
+        teardown: async () => {
+          teardownCalls += 1;
+        },
+        disposeStaged: async () => {
+          disposeCalls += 1;
+        },
+      }),
+    });
+    const base = baseExecuteArgs({ stateDir, localCwd, executionTarget });
+
+    const result = await execute({ runId: "run-a", runtime: {}, ...base } as never);
+
+    expect(result.exitCode).toBe(1);
+    // Failed turn → staged runtime dropped → host staged-temp disposed once, and
+    // the per-run copy-back still fired.
+    expect(teardownCalls).toBe(1);
+    expect(disposeCalls).toBe(1);
+  });
+
+  // Superseding an incompatible session that collides on sessionKey re-stages
+  // fresh AND releases the superseded entry's host staged-temp (no leak, no
+  // reuse of the old session's staged credentials).
+  it("test_incompatible_restage_disposes_superseded_staged_temp", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    const disposedRunIds: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      createRuntime: () => recordingRuntime({ ensureInputs }) as never,
+      prepareRemoteManagedHome: async (input) => ({
+        stagedRuntime: await input.stage([]),
+        disposeStaged: async () => {
+          disposedRunIds.push(input.runId);
+        },
+      }),
+    });
+    const base = baseExecuteArgs({ stateDir, localCwd, executionTarget });
+
+    // Run A completes cleanly and caches its staged runtime.
+    await execute({ runId: "run-a", runtime: {}, ...base } as never);
+    // Run B: same sessionKey, no sessionParams → not a compatible resume. It must
+    // drop + dispose A's superseded staged entry, then stage fresh.
+    await execute({ runId: "run-b", runtime: {}, ...base } as never);
+
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(2);
+    // A's staged temp was disposed when B superseded it.
+    expect(disposedRunIds).toContain("run-a");
+  });
+
+  // Greptile P1 "Concurrent Runs Corrupt Cache Ownership": two overlapping runs
+  // of the same session key must not ship into the same remote workspace at once.
+  // The per-key staging lock serializes the stage-or-reuse section, so their
+  // staging windows never overlap.
+  it("test_concurrent_same_session_staging_is_serialized", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    const events: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      stagingLocks: new Map(),
+      createRuntime: () => recordingRuntime({ ensureInputs }) as never,
+      prepareRemoteManagedHome: async (input) => {
+        events.push(`enter:${input.runId}`);
+        // Yield to the event loop so an unserialized second run would interleave
+        // its own enter here before we finish staging.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const stagedRuntime = await input.stage([]);
+        events.push(`exit:${input.runId}`);
+        return { stagedRuntime };
+      },
+    });
+    const base = baseExecuteArgs({ stateDir, localCwd, executionTarget });
+
+    // Both runs share the sessionKey (identical config) and start concurrently.
+    const [a, b] = await Promise.all([
+      execute({ runId: "run-a", runtime: {}, ...base } as never),
+      execute({ runId: "run-b", runtime: {}, ...base } as never),
+    ]);
+
+    expect(a.exitCode).toBe(0);
+    expect(b.exitCode).toBe(0);
+    // Each staging window is a matched enter/exit pair with no interleaving — the
+    // lock serialized them (never enter,enter,...,exit,exit).
+    expect(events).toHaveLength(4);
+    expect(events[0]).toMatch(/^enter:/);
+    expect(events[1]).toBe(`exit:${events[0]!.slice("enter:".length)}`);
+    expect(events[2]).toMatch(/^enter:/);
+    expect(events[3]).toBe(`exit:${events[2]!.slice("enter:".length)}`);
+  });
 });
