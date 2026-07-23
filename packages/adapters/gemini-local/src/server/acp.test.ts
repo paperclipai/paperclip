@@ -467,6 +467,87 @@ describe("gemini_local ACP lane", () => {
     expect(runtime.ensureInputs[0]?.cwd).not.toBe(localCwd);
   });
 
+  it("seeds the managed Gemini home into the sandbox, repoints HOME, and keeps the key file-only", async () => {
+    const root = await makeTempRoot("paperclip-gemini-acp-home-seed-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const hostHome = path.join(root, "home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    // A selected skill so the shipped skills asset has content to seed.
+    const skillSource = path.join(root, "skills", "review");
+    await fs.mkdir(skillSource, { recursive: true });
+    await fs.writeFile(path.join(skillSource, "SKILL.md"), "---\n---\nUse the review skill.\n", "utf8");
+    // The key is present as a host-env signal only; it must never enter the run
+    // env or the written settings.json.
+    const SECRET_KEY = "AIza-secret-key-value-SENTINEL";
+    process.env.HOME = hostHome;
+    process.env.GEMINI_API_KEY = SECRET_KEY;
+
+    const meta: AdapterInvocationMeta[] = [];
+    const runtime = new FakeRuntime({});
+    const execute = createGeminiAcpExecutor({
+      createRuntime: (options) => {
+        Object.assign(runtime.options, options);
+        return runtime as never;
+      },
+    });
+
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          // Drive resolveGeminiSkillsHome to a temp home so the engine prepares
+          // skills off the real ~/.gemini.
+          env: { HOME: hostHome },
+          promptTemplate: "Do the assigned work.",
+          paperclipRuntimeSkills: [{ key: "company/review", runtimeName: "review", source: skillSource }],
+          paperclipSkillSync: { desiredSkills: ["company/review"] },
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+        onMeta: async (payload) => {
+          meta.push(payload);
+        },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const remappedHome = String(meta[0]?.env?.HOME ?? "");
+    // C2 — HOME repointed onto the in-sandbox managed runtime root, distinct from
+    // the host home.
+    expect(remappedHome).not.toBe(hostHome);
+    expect(remappedHome).toContain(".paperclip-runtime");
+    // Seeded: skills copied into $HOME/.gemini/skills (local runner = host FS).
+    await expect(
+      fs.readFile(path.join(remappedHome, ".gemini", "skills", "review", "SKILL.md"), "utf8"),
+    ).resolves.toContain("review skill");
+    // settings.json pre-selects api-key auth but carries no key bytes.
+    const settingsRaw = await fs.readFile(path.join(remappedHome, ".gemini", "settings.json"), "utf8");
+    expect(settingsRaw).toContain("gemini-api-key");
+    expect(settingsRaw).not.toContain(SECRET_KEY);
+    // C3 — the credential value never appears in any run env var (key stays
+    // file/secret-managed, never re-exported into the env by the seed).
+    for (const value of Object.values(meta[0]?.env ?? {})) {
+      expect(String(value)).not.toContain(SECRET_KEY);
+    }
+    // C4 — no XDG_* variable introduced for credential discovery.
+    expect(Object.keys(meta[0]?.env ?? {}).filter((key) => key.startsWith("XDG_"))).toEqual([]);
+  });
+
   it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
     setNodeVersion("v22.13.0");
     await expect(
