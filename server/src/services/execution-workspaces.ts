@@ -929,7 +929,7 @@ export function executionWorkspaceService(db: Db) {
     if (filters?.reuseEligible) {
       conditions.push(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]));
       conditions.push(isNull(executionWorkspaces.closedAt));
-      conditions.push(inArray(executionWorkspaces.mode, ["isolated_workspace", "operator_branch", "adapter_managed", "cloud_sandbox"]));
+      conditions.push(inArray(executionWorkspaces.mode, ["shared_workspace", "isolated_workspace", "operator_branch", "adapter_managed", "cloud_sandbox"]));
     }
     return conditions;
   }
@@ -1525,7 +1525,7 @@ export function executionWorkspaceService(db: Db) {
         });
       }
 
-      if (executionWorkspace.providerType === "git_worktree" && workspacePath) {
+      if (executionWorkspace.providerType === "git_worktree" && git?.createdByRuntime && workspacePath) {
         plannedActions.push({
           kind: "git_worktree_remove",
           label: "Remove git worktree",

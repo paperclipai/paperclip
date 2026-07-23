@@ -3139,6 +3139,40 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
+  it("treats shared project-primary local paths as clean record-only cleanup", async () => {
+    const workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared-project-primary-"));
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "execution-workspace-1",
+        cwd: workspacePath,
+        providerType: "local_fs",
+        providerRef: workspacePath,
+        branchName: null,
+        repoUrl: null,
+        baseRef: null,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        sourceIssueId: "issue-1",
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        metadata: {
+          createdByRuntime: false,
+          source: "project_primary",
+        },
+      },
+      projectWorkspace: {
+        cwd: workspacePath,
+        cleanupCommand: null,
+      },
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.cleanedPath).toBe(workspacePath);
+    expect(cleanup.warnings).toEqual([]);
+    await expect(fs.stat(workspacePath)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+  });
+
   it("keeps an unmerged runtime-created branch and warns instead of force deleting it", async () => {
     const repoRoot = await createTempRepo();
 

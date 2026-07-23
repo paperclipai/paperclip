@@ -3140,6 +3140,8 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     cwd: string | null;
     providerType: string;
     providerRef: string | null;
+    mode?: string | null;
+    strategyType?: string | null;
     branchName: string | null;
     repoUrl: string | null;
     baseRef: string | null;
@@ -3169,6 +3171,15 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
   });
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
+  const isSharedProjectPrimaryLocalSession =
+    !createdByRuntime &&
+    input.workspace.providerType === "local_fs" &&
+    input.workspace.mode === "shared_workspace" &&
+    input.workspace.strategyType === "project_primary" &&
+    input.workspace.metadata?.source === "project_primary";
+  const recordOnlyLocalCleanup =
+    !createdByRuntime &&
+    (input.workspace.providerType === "local_fs" || input.workspace.providerType === "git_worktree");
   const cleanupCommands = [
     input.cleanupCommand ?? null,
     input.projectWorkspace?.cleanupCommand ?? null,
@@ -3205,7 +3216,9 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
     const worktreeExists = await directoryExists(workspacePath);
-    if (worktreeExists) {
+    if (worktreeExists && !createdByRuntime) {
+      warnings.push(`Archived execution workspace record only; kept existing local path "${workspacePath}" because Paperclip did not create it.`);
+    } else if (worktreeExists) {
       if (!repoRoot) {
         warnings.push(`Could not resolve git repo root for "${workspacePath}".`);
       } else {
@@ -3252,39 +3265,46 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         }
       }
     }
-  } else if (input.workspace.providerType === "local_fs" && createdByRuntime && workspacePath) {
-    const projectWorkspaceCwd = input.projectWorkspace?.cwd ? path.resolve(input.projectWorkspace.cwd) : null;
-    const resolvedWorkspacePath = path.resolve(workspacePath);
-    const containsProjectWorkspace = projectWorkspaceCwd
-      ? (
-          resolvedWorkspacePath === projectWorkspaceCwd ||
-          projectWorkspaceCwd.startsWith(`${resolvedWorkspacePath}${path.sep}`)
-        )
-      : false;
-    if (containsProjectWorkspace) {
-      warnings.push(`Refusing to remove path "${workspacePath}" because it contains the project workspace.`);
+  } else if (input.workspace.providerType === "local_fs" && workspacePath) {
+    if (!createdByRuntime) {
+      if (!isSharedProjectPrimaryLocalSession && (await directoryExists(workspacePath))) {
+        warnings.push(`Archived execution workspace record only; kept existing local path "${workspacePath}" because Paperclip did not create it.`);
+      }
     } else {
-      await fs.rm(resolvedWorkspacePath, { recursive: true, force: true });
-      if (input.recorder) {
-        await input.recorder.recordOperation({
-          phase: "workspace_teardown",
-          cwd: projectWorkspaceCwd ?? process.cwd(),
-          metadata: {
-            workspaceId: input.workspace.id,
-            workspacePath: resolvedWorkspacePath,
-            cleanupAction: "remove_local_fs",
-          },
-          run: async () => ({
-            status: "succeeded",
-            exitCode: 0,
-            system: `Removed local workspace directory ${resolvedWorkspacePath}\n`,
-          }),
-        });
+      const projectWorkspaceCwd = input.projectWorkspace?.cwd ? path.resolve(input.projectWorkspace.cwd) : null;
+      const resolvedWorkspacePath = path.resolve(workspacePath);
+      const containsProjectWorkspace = projectWorkspaceCwd
+        ? (
+            resolvedWorkspacePath === projectWorkspaceCwd ||
+            projectWorkspaceCwd.startsWith(`${resolvedWorkspacePath}${path.sep}`)
+          )
+        : false;
+      if (containsProjectWorkspace) {
+        warnings.push(`Refusing to remove path "${workspacePath}" because it contains the project workspace.`);
+      } else {
+        await fs.rm(resolvedWorkspacePath, { recursive: true, force: true });
+        if (input.recorder) {
+          await input.recorder.recordOperation({
+            phase: "workspace_teardown",
+            cwd: projectWorkspaceCwd ?? process.cwd(),
+            metadata: {
+              workspaceId: input.workspace.id,
+              workspacePath: resolvedWorkspacePath,
+              cleanupAction: "remove_local_fs",
+            },
+            run: async () => ({
+              status: "succeeded",
+              exitCode: 0,
+              system: `Removed local workspace directory ${resolvedWorkspacePath}\n`,
+            }),
+          });
+        }
       }
     }
   }
 
   const cleaned =
+    recordOnlyLocalCleanup ||
     !workspacePath ||
     !(await directoryExists(workspacePath));
 
