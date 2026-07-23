@@ -4,7 +4,7 @@
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -15,8 +15,10 @@ import { and, eq } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
+  formatEmbeddedPostgresLifecycleAmbiguity,
   formatEmbeddedPostgresError,
   getPostgresDataDirectory,
+  inspectEmbeddedPostgresLifecycle,
   inspectMigrations,
   applyPendingMigrations,
   createEmbeddedPostgresLogBuffer,
@@ -388,31 +390,20 @@ export async function startServer(): Promise<StartedServer> {
     const clusterVersionFile = resolve(dataDir, "PG_VERSION");
     const clusterAlreadyInitialized = existsSync(clusterVersionFile);
     const postmasterPidFile = resolve(dataDir, "postmaster.pid");
-    const isPidRunning = (pid: number): boolean => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-  
-    const getRunningPid = (): number | null => {
-      if (!existsSync(postmasterPidFile)) return null;
-      try {
-        const pidLine = readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim();
-        const pid = Number(pidLine);
-        if (!Number.isInteger(pid) || pid <= 0) return null;
-        if (!isPidRunning(pid)) return null;
-        return pid;
-      } catch {
-        return null;
-      }
-    };
-  
-    const runningPid = getRunningPid();
-    if (runningPid) {
-      logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
+    const lifecycle = await inspectEmbeddedPostgresLifecycle({
+      dataDir,
+      configuredPort,
+    });
+
+    if (lifecycle.state === "ambiguous") {
+      throw new Error(formatEmbeddedPostgresLifecycleAmbiguity(lifecycle));
+    }
+
+    if (lifecycle.state === "running") {
+      port = lifecycle.port;
+      logger.warn(
+        `Embedded PostgreSQL already running; reusing verified process (pid=${lifecycle.pid}, port=${port})`,
+      );
     } else {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
       try {
@@ -459,8 +450,10 @@ export async function startServer(): Promise<StartedServer> {
           logger.info(`Embedded PostgreSQL cluster already exists (${clusterVersionFile}); skipping init`);
         }
 
-        if (existsSync(postmasterPidFile)) {
-          logger.warn("Removing stale embedded PostgreSQL lock file");
+        if (lifecycle.state === "stale" && existsSync(postmasterPidFile)) {
+          logger.warn(
+            `Removing stale embedded PostgreSQL PID file (${postmasterPidFile}, reason=${lifecycle.reason})`,
+          );
           rmSync(postmasterPidFile, { force: true });
         }
         try {
