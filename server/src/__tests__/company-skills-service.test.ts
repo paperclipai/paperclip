@@ -431,10 +431,16 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       .set({ updatedAt: preservedUpdatedAt })
       .where(eq(companySkills.id, skillId));
 
+    const updateSpy = vi.spyOn(db, "update");
     await svc.importFromSource(companyId, skillDir);
     const stored = await svc.getById(companyId, skillId);
+    const companySkillUpdateCount = updateSpy.mock.calls
+      .filter(([table]) => table === companySkills)
+      .length;
+    updateSpy.mockRestore();
 
     expect(stored?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
+    expect(companySkillUpdateCount).toBe(0);
   });
 
   it("refreshes local-path imports with legacy null metadata fields", async () => {
