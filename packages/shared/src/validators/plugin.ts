@@ -18,6 +18,8 @@ import {
   PLUGIN_API_ROUTE_METHODS,
   ISSUE_PRIORITIES,
   ROUTINE_CATCH_UP_POLICIES,
+  ROUTINE_ACTIVITY_GATE_POLICIES,
+  ROUTINE_ACTIVITY_GATE_SCOPES,
   ROUTINE_CONCURRENCY_POLICIES,
   ROUTINE_STATUSES,
   ROUTINE_TRIGGER_KINDS,
@@ -238,6 +240,8 @@ export const pluginManagedRoutineDeclarationSchema = z.object({
   priority: z.enum(ISSUE_PRIORITIES).optional(),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional(),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional(),
+  activityGatePolicy: z.enum(ROUTINE_ACTIVITY_GATE_POLICIES).optional(),
+  activityGateScope: z.enum(ROUTINE_ACTIVITY_GATE_SCOPES).optional(),
   variables: z.array(routineVariableSchema).optional(),
   triggers: z.array(z.object({
     kind: z.enum(ROUTINE_TRIGGER_KINDS),

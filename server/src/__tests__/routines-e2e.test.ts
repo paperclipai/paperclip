@@ -249,13 +249,28 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         priority: "high",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        activityGatePolicy: "require_external_activity",
+        activityGateScope: "project",
       });
 
     expect([200, 201]).toContain(createRes.status);
     expect(createRes.body.title).toBe("Daily standup prep");
     expect(createRes.body.assigneeAgentId).toBe(agentId);
+    expect(createRes.body.activityGatePolicy).toBe("require_external_activity");
+    expect(createRes.body.activityGateScope).toBe("project");
 
     const routineId = createRes.body.id as string;
+
+    const updateRes = await request(app)
+      .patch(`/api/routines/${routineId}`)
+      .send({
+        activityGatePolicy: "always",
+        activityGateScope: "company",
+      });
+
+    expect(updateRes.status).toBe(200);
+    expect(updateRes.body.activityGatePolicy).toBe("always");
+    expect(updateRes.body.activityGateScope).toBe("company");
 
     const triggerRes = await request(app)
       .post(`/api/routines/${routineId}/triggers`)
@@ -286,12 +301,16 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(listRes.status).toBe(200);
     const listed = listRes.body.find((r: { id: string }) => r.id === routineId);
     expect(listed).toBeDefined();
+    expect(listed.activityGatePolicy).toBe("always");
+    expect(listed.activityGateScope).toBe("company");
     expect(listed.triggers).toHaveLength(1);
     expect(listed.triggers[0].cronExpression).toBe("0 10 * * 1-5");
     expect(listed.triggers[0].timezone).toBe("UTC");
 
     const detailRes = await request(app).get(`/api/routines/${routineId}`);
     expect(detailRes.status).toBe(200);
+    expect(detailRes.body.activityGatePolicy).toBe("always");
+    expect(detailRes.body.activityGateScope).toBe("company");
     expect(detailRes.body.triggers).toHaveLength(1);
     expect(detailRes.body.triggers[0]?.id).toBe(createdTrigger.id);
     expect(detailRes.body.recentRuns).toHaveLength(1);
@@ -383,6 +402,46 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       .where(eq(issues.id, runRes.body.linkedIssueId));
 
     expect(issue?.description).toBe("Review paperclip for high bugs");
+  });
+
+  it("defaults activity gates and rejects invalid activity gate values", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Default activity gate",
+        assigneeAgentId: agentId,
+      });
+
+    expect(createRes.status).toBe(201);
+    expect(createRes.body.activityGatePolicy).toBe("always");
+    expect(createRes.body.activityGateScope).toBe("company");
+
+    const invalidCreateRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Invalid activity gate",
+        assigneeAgentId: agentId,
+        activityGatePolicy: "when_busy",
+      });
+
+    expect(invalidCreateRes.status).toBe(400);
+
+    const invalidPatchRes = await request(app)
+      .patch(`/api/routines/${createRes.body.id}`)
+      .send({ activityGateScope: "agent" });
+
+    expect(invalidPatchRes.status).toBe(400);
   });
 
   it("allows drafting a routine without defaults and running it with one-off overrides", async () => {
