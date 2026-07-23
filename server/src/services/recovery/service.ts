@@ -74,6 +74,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { applyReviewOwnerDelegation } from "../review-owner-delegation.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -1723,7 +1724,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issueId: input.sourceIssue?.id ?? null,
         projectId: input.sourceIssue?.projectId ?? null,
       });
-      if ((await isAgentInvokable(candidate)) && !budgetBlock) return candidate.id;
+      if ((await isAgentInvokable(candidate)) && !budgetBlock) {
+        return applyReviewOwnerDelegation(db, {
+          companyId: input.run.companyId,
+          resolvedOwnerAgentId: candidate.id,
+          issueId: input.sourceIssue?.id ?? null,
+          projectId: input.sourceIssue?.projectId ?? null,
+        });
+      }
     }
 
     return null;
@@ -2445,7 +2453,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issueId: issue.id,
         projectId: issue.projectId,
       });
-      if ((await isAgentInvokable(candidate)) && !budgetBlock) return candidate.id;
+      if ((await isAgentInvokable(candidate)) && !budgetBlock) {
+        return applyReviewOwnerDelegation(db, {
+          companyId: issue.companyId,
+          resolvedOwnerAgentId: candidate.id,
+          issueId: issue.id,
+          projectId: issue.projectId,
+        });
+      }
     }
 
     return null;
