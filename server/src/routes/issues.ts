@@ -1723,6 +1723,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   actorRunId: string | null | undefined;
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
+  originKind: string | null | undefined;
 }) {
   // Local-CLI agents post comments under user auth, so the actor.type is "user"
   // even though the comment originates from the same heartbeat run that owns
@@ -1740,6 +1741,11 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
+
+  // CPL-6975: suppress implicit reopen for local-board mirrored comments on routine_execution issues.
+  if (input.actorId === "local-board" && input.originKind === "routine_execution") {
+    return false;
+  }
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
@@ -7725,6 +7731,7 @@ export function issueRoutes(
             actorRunId: actor.runId,
             checkoutRunId: existing.checkoutRunId,
             executionRunId: existing.executionRunId,
+            originKind: existing.originKind ?? undefined,
           })) ||
         shouldResumeInProgressScheduledRetry);
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -9743,6 +9750,7 @@ export function issueRoutes(
           actorRunId: actor.runId,
           checkoutRunId: issue.checkoutRunId,
           executionRunId: issue.executionRunId,
+          originKind: issue.originKind ?? undefined,
         }) ||
         shouldResumeInProgressScheduledRetry);
     const hasUnresolvedFirstClassBlockers =
