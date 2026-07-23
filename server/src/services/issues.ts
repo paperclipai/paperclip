@@ -6817,6 +6817,36 @@ export function issueService(db: Db) {
         throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
       }
 
+      // Idempotent review-state checkout (#8690): when the requesting agent
+      // already owns this row in `in_review` and the caller treats `in_review`
+      // as a valid checkout state, a wake-driven checkout must be a no-op for
+      // review posture — not a silent flip back to `in_progress`. Without this
+      // guard the main UPDATE below matches (`in_review` ∈ expectedStatuses, set
+      // by the documented skill path) and re-stamps the row as `in_progress`
+      // with a fresh `startedAt` on every wake of an `in_review` assignee.
+      // Return the current row entirely unchanged: status, `startedAt`,
+      // `assigneeUserId`, and the run-lock columns are all preserved. We do not
+      // claim the run lock for this wake — rows leaving `in_progress` already
+      // clear their lock columns, so an `in_review` row carries none — and
+      // intentional review resume goes through an explicit PATCH → checkout.
+      if (expectedStatuses.includes("in_review")) {
+        const reviewOwnerRow = await db
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.id, id),
+              eq(issues.assigneeAgentId, agentId),
+              eq(issues.status, "in_review"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (reviewOwnerRow) {
+          const [enriched] = await withIssueLabels(db, [reviewOwnerRow]);
+          return enriched;
+        }
+      }
+
       const sameRunAssigneeCondition = checkoutRunId
         ? and(
           eq(issues.assigneeAgentId, agentId),

@@ -5162,6 +5162,88 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
   });
 
+  it("checkout leaves an owned in_review issue in review on a wake-driven checkout (#8690)", async () => {
+    // Regression for #8690: the documented Paperclip skill calls
+    // POST /issues/{id}/checkout with expectedStatuses that include "in_review".
+    // When the owning agent is woken while its issue sits in `in_review`, the
+    // checkout is meant to refresh ownership for the new run — it must NOT
+    // silently flip the row to `in_progress` or re-stamp `startedAt`. Before the
+    // fix the main UPDATE matched (in_review ∈ expectedStatuses) and the row
+    // cascade-flipped on every wake of an `in_review` assignee.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const wakeRunId = randomUUID();
+    const reviewStartedAt = new Date("2026-06-10T09:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: wakeRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date("2026-06-10T12:00:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Awaiting review",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      startedAt: reviewStartedAt,
+    });
+
+    const result = await svc.checkout(
+      issueId,
+      agentId,
+      ["todo", "backlog", "blocked", "in_review"],
+      wakeRunId,
+    );
+
+    // The enriched row returned to the harness must still be in review.
+    expect(result).toMatchObject({ id: issueId, status: "in_review" });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        startedAt: issues.startedAt,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+
+    expect(row?.status).toBe("in_review");
+    expect(row?.assigneeAgentId).toBe(agentId);
+    // `startedAt` must not be re-stamped by the wake checkout.
+    expect(new Date(row!.startedAt as unknown as string).toISOString()).toBe(
+      reviewStartedAt.toISOString(),
+    );
+    // The no-op review checkout must not silently claim the run locks.
+    expect(row?.checkoutRunId).toBeNull();
+    expect(row?.executionRunId).toBeNull();
+  });
+
   it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
     // Regression for PR #2482 checkout-adoption review finding: any adoption
     // helper that re-locks an existing in_progress issue (e.g. when the prior
