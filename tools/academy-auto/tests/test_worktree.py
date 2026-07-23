@@ -58,3 +58,22 @@ def test_prepare_worktree_remove_failure_is_tolerated():
 
     flaky = FlakyRemove()
     prepare_worktree(cfg, runner=flaky)  # darf nicht werfen
+
+
+def test_prepare_worktree_passes_timeout():
+    from academy_auto.worktree import WORKTREE_TIMEOUT
+
+    cfg = Config.default()
+    seen = []
+
+    def runner(cmd, **kwargs):
+        seen.append(kwargs.get("timeout"))
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    prepare_worktree(cfg, runner=runner)
+    assert seen == [WORKTREE_TIMEOUT, WORKTREE_TIMEOUT]  # beide Git-Aufrufe mit Timeout

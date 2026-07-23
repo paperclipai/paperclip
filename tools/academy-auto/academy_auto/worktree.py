@@ -5,6 +5,10 @@ from pathlib import Path
 
 from .config import Config
 
+# Obergrenze fuer Git-Operationen. Haengt der Repo-Pfad (z.B. Netz-/Cloud-Mount
+# ohne Zugriff), muss der Lauf scheitern statt unbegrenzt zu blockieren.
+WORKTREE_TIMEOUT = 120
+
 
 def prepare_worktree(cfg: Config, runner=subprocess.run) -> Path:
     """Frischen, isolierten Worktree auf dem Agenten-Branch herstellen.
@@ -21,6 +25,7 @@ def prepare_worktree(cfg: Config, runner=subprocess.run) -> Path:
         check=False,
         capture_output=True,
         text=True,
+        timeout=WORKTREE_TIMEOUT,
     )
 
     # 2) Neuen Worktree auf dem Agenten-Branch anlegen (Branch bei Bedarf neu)
@@ -29,5 +34,6 @@ def prepare_worktree(cfg: Config, runner=subprocess.run) -> Path:
         check=True,
         capture_output=True,
         text=True,
+        timeout=WORKTREE_TIMEOUT,
     )
     return cfg.worktree_path
