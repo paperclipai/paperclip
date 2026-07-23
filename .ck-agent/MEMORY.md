@@ -237,3 +237,9 @@
   are the approved fixed social-proof references in the Muster. Their mention
   is not cross-venue leakage, but other venue names remain blocked unless Alan
   approves them.
+- User-facing Paperclip links must use the working Tailscale base URL
+  `http://quita-divino:8080`. The Outreach Outbox is
+  `http://quita-divino:8080/CK/ck-approvals` and Alan's inbox is
+  `http://quita-divino:8080/CK/inbox/mine`. Never give Alan
+  `127.0.0.1:3100`; that address is server-local and cannot work from his
+  laptop.
