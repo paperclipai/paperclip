@@ -159,6 +159,18 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(patched.status).toBe(200);
     expect(patched.body).toMatchObject({ title: "Launch health", titlePinned: true, instructionsMode: "append" });
 
+    const scheduled = await request(app)
+      .patch(`/api/status-cards/${created.body.id}`)
+      .send({ refreshPolicy: { mode: "interval", intervalMinutes: 15 } });
+    expect(scheduled.status).toBe(200);
+    expect(scheduled.body.nextEvalAt).toEqual(expect.any(String));
+
+    const manual = await request(app)
+      .patch(`/api/status-cards/${created.body.id}`)
+      .send({ refreshPolicy: { mode: "manual" } });
+    expect(manual.status).toBe(200);
+    expect(manual.body).toMatchObject({ refreshPolicy: { mode: "manual" }, nextEvalAt: null });
+
     const archived = await request(app).patch(`/api/status-cards/${created.body.id}`).send({ archived: true });
     expect(archived.status).toBe(200);
     expect(archived.body).toMatchObject({ archivedAt: expect.any(String), generatingIssueId: null });

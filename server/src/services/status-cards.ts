@@ -247,7 +247,12 @@ export function statusCardService(db: Db) {
       ...(input.instructionsMode !== undefined ? { instructionsMode: input.instructionsMode } : {}),
       ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
       ...(input.instructionsMode !== undefined || input.instructions !== undefined ? { lastUpdateRunKind: null } : {}),
-      ...(input.refreshPolicy !== undefined ? { refreshPolicy: input.refreshPolicy } : {}),
+      ...(input.refreshPolicy !== undefined
+        ? {
+            refreshPolicy: input.refreshPolicy,
+            nextEvalAt: card.archivedAt ? null : nextStatusCardEvaluationAt(input.refreshPolicy, now),
+          }
+        : {}),
       ...(archiveChanged && input.archived
         ? { archivedAt: now, archivedByAgentId: actor.agentId, archivedByUserId: actor.userId, nextEvalAt: null }
         : {}),

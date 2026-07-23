@@ -110,11 +110,10 @@ export function isWithinStatusCardActiveHours(policy: StatusCardRefreshPolicy, n
 }
 
 export function nextStatusCardEvaluationAt(policy: StatusCardRefreshPolicy, now: Date) {
+  if (policy.mode === "manual") return null;
   const seconds = policy.mode === "interval"
     ? (policy.intervalMinutes ?? 15) * 60
-    : policy.mode === "reactive"
-      ? Math.min(policy.debounceSeconds ?? 60, 60)
-      : 60;
+    : Math.min(policy.debounceSeconds ?? 60, 60);
   return new Date(now.getTime() + seconds * 1000);
 }
 

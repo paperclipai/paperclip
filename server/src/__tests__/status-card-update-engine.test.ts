@@ -6,6 +6,7 @@ import {
   evaluateStatusCardPolicy,
   filterStatusCardChanges,
   isWithinStatusCardActiveHours,
+  nextStatusCardEvaluationAt,
   statusCardChangesHash,
 } from "../services/status-card-update-engine.js";
 
@@ -51,6 +52,14 @@ describe("status card update engine", () => {
     const first = [{ issueId: "one", identifier: "PAP-1", title: "One", from: "todo", to: "done", changeKind: "status" as const }];
     const second = [{ issueId: "two", identifier: "PAP-2", title: "Two", from: "todo", to: "done", changeKind: "status" as const }];
     expect(statusCardChangesHash(first)).not.toBe(statusCardChangesHash(second));
+  });
+
+  it("does not schedule background evaluation for manual cards", () => {
+    const now = new Date("2026-07-23T14:00:00.000Z");
+    const manual = statusCardRefreshPolicySchema.parse({ mode: "manual" });
+    const interval = statusCardRefreshPolicySchema.parse({ mode: "interval", intervalMinutes: 15 });
+    expect(nextStatusCardEvaluationAt(manual, now)).toBeNull();
+    expect(nextStatusCardEvaluationAt(interval, now)).toEqual(new Date("2026-07-23T14:15:00.000Z"));
   });
 
   it("enforces debounce, hourly rate cap, active hours, and daily token cap", () => {
