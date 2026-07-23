@@ -66,3 +66,10 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+
+# Python and PR-Shepherd items
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+pr_description.md
