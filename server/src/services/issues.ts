@@ -66,6 +66,7 @@ import {
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
+import { isStrandedIssueRecoveryOriginKind } from "./recovery/origins.js";
 import {
   hydrateSuccessfulRunHandoffLiveness,
   SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
@@ -1734,7 +1735,7 @@ type IssueBlockerAttentionInputNode =
     IssueBlockerAttentionNode,
     "id" | "companyId" | "parentId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId"
   >
-  & { executionRunId?: string | null };
+  & { executionRunId?: string | null; description?: string | null; originKind?: string | null };
 
 type IssueBlockerAttentionEdge = {
   issueId: string;
@@ -2130,6 +2131,31 @@ async function listIssueBlockerAttentionMap(
   }
   if (roots.length === 0) return attentionMap;
 
+  const rootIds = roots.map((root) => root.id);
+  const recoveryOwnedIssueIds = new Set<string>();
+  for (const chunk of chunkList(rootIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const recoveryRows = await dbOrTx
+      .select({
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+        recoveryIssueId: issueRecoveryActions.recoveryIssueId,
+      })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          or(
+            inArray(issueRecoveryActions.sourceIssueId, chunk),
+            inArray(issueRecoveryActions.recoveryIssueId, chunk),
+          ),
+        ),
+      );
+    for (const row of recoveryRows) {
+      if (row.sourceIssueId) recoveryOwnedIssueIds.add(row.sourceIssueId);
+      if (row.recoveryIssueId) recoveryOwnedIssueIds.add(row.recoveryIssueId);
+    }
+  }
+
   const nodesById = new Map<string, IssueBlockerAttentionNode>();
   const edgesByIssueId = new Map<string, IssueBlockerAttentionEdge[]>();
   for (const root of roots) nodesById.set(root.id, { ...root });
@@ -2445,9 +2471,17 @@ async function listIssueBlockerAttentionMap(
   for (const root of roots) {
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
     if (topLevelEdges.length === 0) {
+      if (
+        externalWaitFromDescription(root.description ?? null) ||
+        recoveryOwnedIssueIds.has(root.id) ||
+        (isStrandedIssueRecoveryOriginKind(root.originKind) && Boolean(root.assigneeAgentId))
+      ) {
+        attentionMap.set(root.id, createIssueBlockerAttention({ state: "covered" }));
+        continue;
+      }
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
-        reason: "attention_required",
+        reason: "missing_blocker_path",
       }));
       continue;
     }
@@ -2954,6 +2988,28 @@ function externalWaitFromDescription(description: string | null): { owner: strin
     owner: owner.slice(0, 120),
     action: action.slice(0, 240),
   };
+}
+
+async function hasActiveRecoveryOwnerAction(
+  dbOrTx: Db,
+  companyId: string,
+  issueId: string,
+) {
+  const [activeRecoveryAction] = await dbOrTx
+    .select({ id: issueRecoveryActions.id })
+    .from(issueRecoveryActions)
+    .where(
+      and(
+        eq(issueRecoveryActions.companyId, companyId),
+        inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        or(
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+          eq(issueRecoveryActions.recoveryIssueId, issueId),
+        ),
+      ),
+    )
+    .limit(1);
+  return Boolean(activeRecoveryAction);
 }
 
 function escapeRegExp(value: string) {
@@ -3475,6 +3531,21 @@ async function listIssueBlockedInboxAttentionMap(
 
     const blockerAttention = await listIssueBlockerAttentionMap(dbOrTx, companyId, [row]);
     const blockerState = blockerAttention.get(row.id);
+    if (row.status === "blocked" && blockerState?.reason === "missing_blocker_path") {
+      result.set(row.id, attentionBase({
+        state: "needs_attention",
+        reason: "blocked_without_blocker_path",
+        severity: "high",
+        stoppedSinceAt: row.updatedAt,
+        owner: { type: "unknown", agentId: null, userId: null, label: null },
+        action: {
+          label: "Add blocker or external owner",
+          detail: "Add an unresolved blocker edge or record external owner/action, then resume the issue.",
+        },
+        sourceIssue: source,
+      }));
+      continue;
+    }
     if (row.status === "blocked" && (blockerState?.state === "needs_attention" || blockerState?.state === "stalled")) {
       result.set(row.id, attentionBase({
         state: "needs_attention",
@@ -6170,6 +6241,18 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      if (data.status === "blocked") {
+        const unresolvedBlockerIssueIds = await listUnresolvedBlockerIssueIds(
+          db,
+          companyId,
+          blockedByIssueIds ?? [],
+        );
+        if (unresolvedBlockerIssueIds.length === 0 && !externalWaitFromDescription(issueData.description ?? null)) {
+          throw unprocessable(
+            "blocked issues require an unresolved blocker or external owner/action",
+          );
+        }
+      }
       return db.transaction(async (tx) => {
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
@@ -6528,6 +6611,33 @@ export function issueService(db: Db) {
           throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
         }
       }
+      const nextStatus = patch.status ?? existing.status;
+      if (nextStatus === "blocked") {
+        const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
+          ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
+          : (
+              await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])
+            ).get(id)?.unresolvedBlockerIssueIds ?? [];
+        const nextDescription = issueData.description !== undefined ? issueData.description : existing.description;
+        const nextAssigneeAgentId = patch.assigneeAgentId ?? existing.assigneeAgentId;
+        const hasRecoveryOwnerAction = await hasActiveRecoveryOwnerAction(dbOrTx, existing.companyId, id);
+        const isAssignedRecoveryIssue =
+          isStrandedIssueRecoveryOriginKind(existing.originKind) && Boolean(nextAssigneeAgentId);
+        if (
+          unresolvedBlockerIssueIds.length === 0 &&
+          !externalWaitFromDescription(nextDescription ?? null) &&
+          !hasRecoveryOwnerAction &&
+          !isAssignedRecoveryIssue
+        ) {
+          if (existing.status === "blocked" && blockedByIssueIds !== undefined && issueData.status === undefined) {
+            patch.status = "todo";
+          } else {
+            throw unprocessable(
+              "blocked issues require an unresolved blocker or external owner/action",
+            );
+          }
+        }
+      }
       const shouldValidateNextAssignee =
         Boolean(nextAssigneeAgentId) &&
         (issueData.assigneeAgentId !== undefined || patch.status === "in_progress");
@@ -6589,14 +6699,14 @@ export function issueService(db: Db) {
         });
       }
 
-      applyStatusSideEffects(issueData.status, patch);
-      if (issueData.status && issueData.status !== "done") {
+      applyStatusSideEffects(patch.status, patch);
+      if (patch.status && patch.status !== "done") {
         patch.completedAt = null;
       }
-      if (issueData.status && issueData.status !== "cancelled") {
+      if (patch.status && patch.status !== "cancelled") {
         patch.cancelledAt = null;
       }
-      if (issueData.status && issueData.status !== "in_progress") {
+      if (patch.status && patch.status !== "in_progress") {
         patch.checkoutRunId = null;
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;

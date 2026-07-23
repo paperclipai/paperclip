@@ -97,6 +97,7 @@ describe("blockedInbox", () => {
       "pending_user_decision",
       "missing_successful_run_disposition",
       "blocked_chain_stalled",
+      "blocked_without_blocker_path",
       "blocked_by_unassigned_issue",
       "blocked_by_assigned_backlog_issue",
       "blocked_by_cancelled_issue",

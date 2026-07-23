@@ -67,6 +67,11 @@ vi.mock("../services/index.js", () => ({
     syncDocument: async () => undefined,
     syncIssue: async () => undefined,
   }),
+  issueReportService: () => ({
+    create: vi.fn(),
+    listForIssue: vi.fn(async () => []),
+    resolveOrigin: vi.fn(),
+  }),
   issueRecoveryActionService: () => ({
     getActiveForIssue: vi.fn(async () => null),
     listActiveForIssues: vi.fn(async () => new Map()),
@@ -275,6 +280,154 @@ describe("issue dependency wakeups in issue routes", () => {
           contextSnapshot: expect.objectContaining({
             source: "issue.blockers_restored",
           }),
+        }),
+      );
+    });
+  });
+
+  it("wakes an assigned issue when its final unresolved blocker edge is deleted", async () => {
+    const dependentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const blockerIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    mockIssueService.getById.mockResolvedValue({
+      id: dependentIssueId,
+      companyId: "company-1",
+      identifier: "PAP-201",
+      title: "Deleted blocker edge",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: dependentIssueId,
+      companyId: "company-1",
+      identifier: "PAP-201",
+      title: "Deleted blocker edge",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.getRelationSummaries
+      .mockResolvedValueOnce({
+        blockedBy: [{ id: blockerIssueId, status: "todo", title: "Unresolved blocker" }],
+        blocks: [],
+      })
+      .mockResolvedValueOnce({ blockedBy: [], blocks: [] });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: dependentIssueId,
+      blockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${dependentIssueId}`)
+      .send({ blockedByIssueIds: [] });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-2",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          payload: expect.objectContaining({
+            issueId: dependentIssueId,
+            resolvedBlockerIssueId: blockerIssueId,
+            mutation: "blocker_edge_deleted",
+          }),
+          contextSnapshot: expect.objectContaining({ source: "issue.blocker_edge_deleted" }),
+        }),
+      );
+    });
+  });
+
+  it("wakes an assigned issue when its final resolved blocker edge is stale-cleared", async () => {
+    const dependentIssueId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const blockerIssueId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    mockIssueService.getById.mockResolvedValue({
+      id: dependentIssueId,
+      companyId: "company-1",
+      identifier: "PAP-202",
+      title: "Stale blocker edge",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: dependentIssueId,
+      companyId: "company-1",
+      identifier: "PAP-202",
+      title: "Stale blocker edge",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.getRelationSummaries
+      .mockResolvedValueOnce({
+        blockedBy: [{ id: blockerIssueId, status: "done", title: "Resolved blocker" }],
+        blocks: [],
+      })
+      .mockResolvedValueOnce({ blockedBy: [], blocks: [] });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: dependentIssueId,
+      blockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${dependentIssueId}`)
+      .send({ blockedByIssueIds: [] });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-2",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          payload: expect.objectContaining({
+            issueId: dependentIssueId,
+            resolvedBlockerIssueId: blockerIssueId,
+            mutation: "blocker_stale_cleared",
+          }),
+          contextSnapshot: expect.objectContaining({ source: "issue.blocker_stale_cleared" }),
         }),
       );
     });

@@ -8699,6 +8699,27 @@ export function issueRoutes(
         }
       }
 
+      const removedBlockerRelations = Array.isArray(req.body.blockedByIssueIds)
+        ? (existingRelations?.blockedBy ?? []).filter(
+            (relation) => !(req.body.blockedByIssueIds as string[]).includes(relation.id),
+          )
+        : [];
+      if (removedBlockerRelations.length > 0 && issue.assigneeAgentId) {
+        const readiness = await dependencyReadinessSvc.getDependencyReadiness?.(issue.id);
+        if (readiness && readiness.unresolvedBlockerCount === 0) {
+          const clearedBlocker = [...removedBlockerRelations].sort((left, right) => left.id.localeCompare(right.id))[0]!;
+          const staleClear = clearedBlocker.status === "done" || clearedBlocker.status === "cancelled";
+          await addDependencyResolvedWakeup({
+            agentId: issue.assigneeAgentId,
+            dependentIssueId: issue.id,
+            resolvedBlockerIssueId: clearedBlocker.id,
+            blockerIssueIds: readiness.blockerIssueIds,
+            source: staleClear ? "issue.blocker_stale_cleared" : "issue.blocker_edge_deleted",
+            mutation: staleClear ? "blocker_stale_cleared" : "blocker_edge_deleted",
+          });
+        }
+      }
+
       const becameTerminal =
         !["done", "cancelled"].includes(existing.status) && ["done", "cancelled"].includes(issue.status);
       if (becameTerminal) {

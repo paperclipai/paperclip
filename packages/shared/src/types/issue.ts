@@ -388,6 +388,7 @@ export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs
 export type IssueBlockerAttentionReason =
   | "active_child"
   | "active_dependency"
+  | "missing_blocker_path"
   | "stalled_review"
   | "attention_required"
   | null;
@@ -419,6 +420,7 @@ export type IssueBlockedInboxReason =
   | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"
   | "blocked_by_cancelled_issue"
+  | "blocked_without_blocker_path"
   | "blocked_chain_stalled"
   | "invalid_review_participant"
   | "in_review_without_action_path"

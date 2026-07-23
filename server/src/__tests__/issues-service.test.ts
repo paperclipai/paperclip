@@ -18,6 +18,7 @@ import {
   issueInboxArchives,
   issueDocuments,
   issuePlanDecompositions,
+  issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -3526,6 +3527,114 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       priority: "high",
     }));
     expect(created.blocks).toEqual([]);
+  });
+
+  it("rejects blocked issue writes without an unresolved blocker or external owner/action", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(svc.create(companyId, {
+      title: "Invalid blocked issue",
+      status: "blocked",
+      priority: "medium",
+    })).rejects.toMatchObject({ status: 422 });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Todo issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.update(issueId, { status: "blocked" })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("accepts a blocked issue with an explicit external owner/action", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const created = await svc.create(companyId, {
+      title: "External wait",
+      description: "external owner: Vendor support\nexternal action: Restore the service account",
+      status: "blocked",
+      priority: "medium",
+    });
+
+    expect(created.status).toBe("blocked");
+  });
+
+  it("accepts a blocked issue with an active recovery owner/action", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Recovery-owned issue",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "board",
+      cause: "stranded_assigned_issue",
+      fingerprint: `recovery:${issueId}`,
+      nextAction: "Restore a live execution path or record the manual resolution.",
+    });
+
+    const updated = await svc.update(issueId, { status: "blocked" });
+
+    expect(updated?.status).toBe("blocked");
+    const [listed] = await svc.list(companyId, { status: "blocked" });
+    expect(listed?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: null,
+      unresolvedBlockerCount: 0,
+    });
+  });
+
+  it("auto-routes a blocked issue to todo when its final blocker edge is deleted", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "medium" },
+      { id: blockedId, companyId, title: "Blocked", status: "blocked", priority: "medium" },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
+
+    const updated = await svc.update(blockedId, { blockedByIssueIds: [] });
+
+    expect(updated?.status).toBe("todo");
+    await expect(svc.getDependencyReadiness(blockedId)).resolves.toMatchObject({
+      unresolvedBlockerCount: 0,
+    });
   });
 
   it("returns blocked-by summaries on newly created child issues", async () => {
