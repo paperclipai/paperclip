@@ -2847,6 +2847,21 @@ export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect):
   return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
 }
 
+export function shouldForceFreshSessionForWakeReason(
+  runtimeConfig: unknown,
+  wakeReason: string | null | undefined,
+) {
+  const normalizedWakeReason = readNonEmptyString(wakeReason);
+  if (!normalizedWakeReason) return false;
+
+  const runtime = parseObject(runtimeConfig);
+  const heartbeat = parseObject(runtime.heartbeat);
+  const configuredReasons = heartbeat.freshSessionWakeReasons;
+  if (!Array.isArray(configuredReasons)) return false;
+
+  return configuredReasons.some((value) => readNonEmptyString(value) === normalizedWakeReason);
+}
+
 export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
@@ -14992,6 +15007,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const recoveryReason = issue.status === "todo" ? "issue_assignment_recovery" : "issue_continuation_needed";
       const recoverySource =
         issue.status === "todo" ? "issue.assignment_recovery" : "issue.continuation_recovery";
+      const forceFreshSession = shouldForceFreshSessionForWakeReason(
+        recoveryAgent.runtimeConfig,
+        recoveryReason,
+      );
       const now = new Date();
       const recoveryContextSnapshot = withRecoveryModelProfileHint({
         issueId: issue.id,
@@ -15000,6 +15019,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         retryReason,
         source: recoverySource,
         retryOfRunId: run.id,
+        ...(forceFreshSession ? { forceFreshSession: true } : {}),
       }, "normal_model");
       const responsibleUserId = await resolveResponsibleUserIdForRunSeed({
         companyId: issue.companyId,
@@ -15053,7 +15073,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: recoveryContextSnapshot,
           responsibleUserId,
-          sessionIdBefore: recoverySessionBefore,
+          sessionIdBefore: forceFreshSession ? null : recoverySessionBefore,
           retryOfRunId: run.id,
           updatedAt: now,
         })
@@ -15156,6 +15176,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    if (shouldForceFreshSessionForWakeReason(agent.runtimeConfig, reason)) {
+      enrichedContextSnapshot.forceFreshSession = true;
+    }
 
     const writeSkippedRequest = async (
       skipReason: string,
