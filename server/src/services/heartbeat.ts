@@ -72,6 +72,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { isExclusivelySelfAuthoredDeferredCommentWake } from "./heartbeat-self-comment-wake.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -14601,33 +14602,76 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        // Local-CLI agents post comments under user auth, so a self-comment from
-        // the run that is now ending would otherwise look like a real human
-        // comment and trigger a reopen on the very issue this run just closed.
-        // Suppress reopen only when every referenced comment came from this run;
-        // mixed batches must still reopen because they contain a real follow-up.
-        let deferredCommentWakeIsSelfAuthored = false;
-        if (deferredCommentIds.length > 0) {
-          const deferredComments = await tx
-            .select({ createdByRunId: issueComments.createdByRunId })
-            .from(issueComments)
-            .where(
-              and(
-                eq(issueComments.companyId, issue.companyId),
-                eq(issueComments.issueId, issue.id),
-                inArray(issueComments.id, deferredCommentIds),
-              ),
-            )
-            .then((rows) => rows);
-          deferredCommentWakeIsSelfAuthored =
-            deferredComments.length > 0 &&
-            deferredComments.every((comment) => comment.createdByRunId === run.id);
-        }
+
+        // Look up the actual author of every deferred-wake comment so we can
+        // distinguish self-authored "agent posted its DONE-summary comment"
+        // wakes from real human comments. The `deferred.requestedByActorType`
+        // check below is insufficient on `local_trusted` deployments where the
+        // auth middleware short-circuits agent Bearer-token writes to the
+        // `local-board` user principal (see #3980), making every agent
+        // self-comment look like a human comment to the predicate and causing
+        // an infinite reopen loop on done issues (#3935,
+        // NousResearch/hermes-paperclip-adapter#92). The comment table holds
+        // the authoritative author identity regardless of auth attribution.
+        //
+        // We use TWO signals to recognize a self-authored comment, because the
+        // agent has two write paths on local_trusted (each lossy in a different
+        // way):
+        //   1. `issue_comments.author_agent_id` — set by MCP-routed writes;
+        //      NULL on shell-routed (`curl`) writes that round-trip through
+        //      the `local-board` user principal.
+        //   2. `heartbeat_runs.agent_id` joined via
+        //      `issue_comments.created_by_run_id` — set by the run-level
+        //      comment plumbing on BOTH paths, so it survives even when the
+        //      auth middleware loses the agent identity on the shell path.
+        // The helper treats EITHER signal matching the assignee as
+        // "self-authored". See `heartbeat-self-comment-wake.ts` for the
+        // full mechanism writeup.
+        // The self-comment guard only matters when the issue is in a terminal
+        // state (done/cancelled) — that's the only condition under which the
+        // predicate below would otherwise fire a reopen. Skip the DB roundtrip
+        // for in-progress / todo / blocked / in_review issues, which is the
+        // common case on every heartbeat tick (per Greptile review on #6576).
+        const issueIsTerminalForReopen =
+          issue.status === "done" || issue.status === "cancelled";
+        const deferredCommentAuthors =
+          issueIsTerminalForReopen && deferredCommentIds.length > 0
+            ? await tx
+                .select({
+                  id: issueComments.id,
+                  authorAgentId: issueComments.authorAgentId,
+                  createdByRunAgentId: heartbeatRuns.agentId,
+                })
+                .from(issueComments)
+                .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, issueComments.createdByRunId))
+                // Keep the same tenant/issue scoping the prior predicate carried: a
+                // stale or corrupted comment ID from the wake context seed must return
+                // zero rows (tripping the length-mismatch guard) rather than silently
+                // resolving a comment that belongs to another issue or company.
+                .where(
+                  and(
+                    eq(issueComments.companyId, issue.companyId),
+                    eq(issueComments.issueId, issue.id),
+                    inArray(issueComments.id, deferredCommentIds),
+                  ),
+                )
+            : [];
+        const deferredWakeIsExclusivelySelfAuthored = issueIsTerminalForReopen
+          ? isExclusivelySelfAuthoredDeferredCommentWake({
+              deferredCommentIds,
+              assigneeAgentId: issue.assigneeAgentId,
+              deferredCommentAuthors,
+            })
+          : false;
+
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
+        // Self-authored deferred comment wakes (the agent's own DONE-summary
+        // comment triggering its own follow-up wake) must NOT reopen either —
+        // that creates the loop described in #3980/#3935.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
-          !deferredCommentWakeIsSelfAuthored &&
+          !deferredWakeIsExclusivelySelfAuthored &&
           (issue.status === "done" || issue.status === "cancelled") &&
           (
             deferred.requestedByActorType === "user" ||
