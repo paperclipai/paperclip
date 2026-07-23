@@ -114,7 +114,7 @@ def _build_default_deps(worktree, gate, runner, report):  # pragma: no cover
         implement_task=lambda cfg, cwd, prompt: runner.implement_task(cfg, cwd, prompt),
         measure_gate=lambda cfg, cwd: gate.measure_gate(cfg, cwd),
         commit_and_pr=_commit_and_pr,
-        send_digest=lambda text: report.send_digest(text, sender=print),
+        send_digest=_send_digest_default,
         count_diff_lines=_count_diff_lines,
         list_changed_files=_list_changed_files,
         triage_and_pick=lambda cfg, cwd, baseline_red: _triage_and_pick(cfg, cwd, baseline_red),
@@ -122,6 +122,12 @@ def _build_default_deps(worktree, gate, runner, report):  # pragma: no cover
         reset_worktree=_reset_worktree,
         quarantined=_quarantined,
     )
+
+
+def _send_digest_default(text):  # pragma: no cover - echter Versand beim Deploy
+    from . import notify
+    print(text)              # immer ins launchd-Log
+    notify.send_digest(text)  # fail-soft nach Telegram
 
 
 def _count_diff_lines(cfg, cwd):
