@@ -1709,6 +1709,11 @@ function IssueChatAssistantMessage({
   };
 
   const followUpRequested = custom.followUpRequested === true;
+  const commentMetadataRecord =
+    custom.commentMetadata && typeof custom.commentMetadata === "object"
+      ? (custom.commentMetadata as Record<string, unknown>)
+      : null;
+  const crossAssignee = Boolean(commentMetadataRecord?.crossAssignee);
 
   const kind = typeof custom.kind === "string" ? custom.kind : null;
   const hasCommentText = message.content.some(
@@ -1926,6 +1931,11 @@ function IssueChatAssistantMessage({
               {followUpRequested ? (
                 <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">
                   Follow-up
+                </Badge>
+              ) : null}
+              {crossAssignee ? (
+                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                  Cross-assignee
                 </Badge>
               ) : null}
               {isRunning ? (
