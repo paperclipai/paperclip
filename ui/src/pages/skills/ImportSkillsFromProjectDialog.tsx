@@ -5,8 +5,12 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  ChevronRight,
   ExternalLink,
+  FileText,
   FileWarning,
+  Folder,
+  FolderOpen,
   FolderSearch,
   Layers,
   Link2,
@@ -17,6 +21,7 @@ import {
 } from "lucide-react";
 import type {
   CompanySkill,
+  CompanySkillProjectBrowseEntry,
   CompanySkillProjectScanCandidate,
   CompanySkillProjectScanResult,
   Project,
@@ -287,6 +292,8 @@ export function ImportSkillsFromProjectDialog({
   const [scanError, setScanError] = useState<unknown>(null);
   const [selection, setSelection] = useState<Map<string, SkillSelection>>(new Map());
   const [importResult, setImportResult] = useState<CompanySkillProjectScanResult | null>(null);
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [browseAddingKey, setBrowseAddingKey] = useState<string | null>(null);
   const scanTokenRef = useRef(0);
 
   const projectsQuery = useQuery({
@@ -306,6 +313,8 @@ export function ImportSkillsFromProjectDialog({
     setScanError(null);
     setSelection(new Map());
     setImportResult(null);
+    setBrowseOpen(false);
+    setBrowseAddingKey(null);
     scanTokenRef.current += 1;
   }, [open]);
 
@@ -421,6 +430,50 @@ export function ImportSkillsFromProjectDialog({
     });
   }
 
+  async function addBrowsedSkill(workspaceId: string, selectedPath: string) {
+    if (!selectedProject) return;
+    const skillPath = selectedPath.toLowerCase().endsWith("/skill.md")
+      ? selectedPath.slice(0, -"/SKILL.md".length) || "."
+      : selectedPath.toLowerCase() === "skill.md"
+        ? "."
+        : selectedPath;
+    const key = selectionKey(workspaceId, skillPath);
+    setBrowseAddingKey(key);
+    try {
+      const result = await companySkillsApi.scanProjects(companyId, {
+        projectIds: [selectedProject.id],
+        mode: "preview",
+        selection: [{ workspaceId, path: skillPath }],
+      });
+      setScanResult(result);
+      const candidate = result.candidates.find((entry) => (
+        entry.workspaceId === workspaceId && entry.relativePath === skillPath
+      ));
+      if (candidate && isSelectableCandidate(candidate)) {
+        setSelection((previous) => {
+          const next = new Map(previous);
+          next.set(key, {
+            workspaceId,
+            path: skillPath,
+            ...(candidate.status === "conflict" ? { slug: suggestedConflictSlug(candidate) } : {}),
+          });
+          return next;
+        });
+        setBrowseOpen(false);
+      } else {
+        toast.pushToast({
+          tone: "warn",
+          title: candidate?.status === "already_imported" ? "Skill already imported" : "Skill could not be added",
+          body: candidate?.reason ?? "The selected folder does not contain a valid SKILL.md file.",
+        });
+      }
+    } catch (error) {
+      toast.pushToast({ tone: "error", title: "Could not inspect skill", body: readableErrorMessage(error) });
+    } finally {
+      setBrowseAddingKey(null);
+    }
+  }
+
   function selectAll() {
     setSelection(selectAllSelection(candidates));
   }
@@ -501,6 +554,12 @@ export function ImportSkillsFromProjectDialog({
               selection={selection}
               toggleCandidate={toggleCandidate}
               renameCandidate={renameCandidate}
+              project={selectedProject}
+              companyId={companyId}
+              browseOpen={browseOpen}
+              onBrowseOpenChange={setBrowseOpen}
+              onAddBrowsedSkill={addBrowsedSkill}
+              browseAddingKey={browseAddingKey}
             />
           )}
           {step === "result" && importResult && <ResultStep result={importResult} />}
@@ -717,6 +776,131 @@ function ScanningStep({ projectName }: { projectName: string }) {
   );
 }
 
+
+function ProjectSkillBrowser({
+  companyId,
+  project,
+  onBack,
+  onAddSkill,
+  addingKey,
+}: {
+  companyId: string;
+  project: Project;
+  onBack: () => void;
+  onAddSkill: (workspaceId: string, path: string) => void;
+  addingKey: string | null;
+}) {
+  const workspaces = scannableWorkspaces(project);
+  const initialWorkspace = workspaces.find((workspace) => workspace.isPrimary) ?? workspaces[0] ?? null;
+  const [workspaceId, setWorkspaceId] = useState(initialWorkspace?.id ?? "");
+  const [folderPath, setFolderPath] = useState(".");
+  const browseQuery = useQuery({
+    queryKey: ["company-skills", "browse-project", companyId, project.id, workspaceId, folderPath],
+    queryFn: () => companySkillsApi.browseProject(companyId, {
+      projectId: project.id,
+      workspaceId,
+      path: folderPath,
+    }),
+    enabled: Boolean(workspaceId),
+  });
+  const result = browseQuery.data;
+
+  function changeWorkspace(nextWorkspaceId: string) {
+    setWorkspaceId(nextWorkspaceId);
+    setFolderPath(".");
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="project-skill-browser">
+      <div className="shrink-0 border-b border-border/60 px-5 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium">Browse project folders</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">Open any folder and add directories or individual SKILL.md files.</p>
+          </div>
+          <Button variant="outline" size="sm" onClick={onBack}>
+            <ArrowLeft className="mr-1 h-3.5 w-3.5" /> Discovered skills
+          </Button>
+        </div>
+        {workspaces.length > 1 && (
+          <div className="mt-3 flex flex-wrap gap-1.5" aria-label="Project workspace">
+            {workspaces.map((workspace) => (
+              <Button
+                key={workspace.id}
+                type="button"
+                variant={workspace.id === workspaceId ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => changeWorkspace(workspace.id)}
+              >
+                {workspace.name}
+              </Button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2 border-b border-border/60 bg-muted/20 px-5 py-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => result?.parentPath && setFolderPath(result.parentPath)}
+          disabled={!result?.parentPath}
+          aria-label="Open parent folder"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+        </Button>
+        <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{result?.path ?? folderPath}</span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {browseQuery.isLoading ? (
+          <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading folder…
+          </div>
+        ) : browseQuery.error ? (
+          <div className="p-6 text-sm text-destructive">{readableErrorMessage(browseQuery.error)}</div>
+        ) : result?.entries.length ? (
+          <ul className="divide-y divide-border/60">
+            {result.entries.map((entry: CompanySkillProjectBrowseEntry) => {
+              const selectablePath = entry.kind === "file"
+                ? entry.path.toLowerCase() === "skill.md" ? "." : entry.path.slice(0, -"/SKILL.md".length)
+                : entry.path;
+              const key = selectionKey(workspaceId, selectablePath);
+              return (
+                <li key={entry.path} className="flex items-center gap-3 px-5 py-2.5">
+                  {entry.kind === "directory" ? (
+                    <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <button
+                    type="button"
+                    className={cn("min-w-0 flex-1 truncate text-left text-sm", entry.kind === "directory" && "font-medium hover:underline")}
+                    onClick={() => entry.kind === "directory" && setFolderPath(entry.path)}
+                    disabled={entry.kind === "file"}
+                  >
+                    {entry.name}
+                  </button>
+                  {entry.isSkill ? (
+                    <Button size="sm" onClick={() => onAddSkill(workspaceId, entry.path)} disabled={addingKey === key}>
+                      {addingKey === key ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Add skill"}
+                    </Button>
+                  ) : entry.kind === "directory" ? (
+                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <div className="p-8 text-center text-sm text-muted-foreground">This folder is empty.</div>
+        )}
+        {result?.truncated && (
+          <p className="border-t border-border/60 px-5 py-2 text-xs text-muted-foreground">Showing the first 250 entries.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface SelectStepProps {
   scanError: unknown;
   onRetry: () => void;
@@ -728,6 +912,12 @@ interface SelectStepProps {
   selection: Map<string, SkillSelection>;
   toggleCandidate: (candidate: CompanySkillProjectScanCandidate) => void;
   renameCandidate: (candidate: CompanySkillProjectScanCandidate, slug: string) => void;
+  project: Project | null;
+  companyId: string;
+  browseOpen: boolean;
+  onBrowseOpenChange: (open: boolean) => void;
+  onAddBrowsedSkill: (workspaceId: string, path: string) => void;
+  browseAddingKey: string | null;
 }
 
 function SelectStep({
@@ -741,6 +931,12 @@ function SelectStep({
   selection,
   toggleCandidate,
   renameCandidate,
+  project,
+  companyId,
+  browseOpen,
+  onBrowseOpenChange,
+  onAddBrowsedSkill,
+  browseAddingKey,
 }: SelectStepProps) {
   if (scanError) {
     const grant = isGrantError(scanError);
@@ -772,6 +968,18 @@ function SelectStep({
     );
   }
 
+  if (browseOpen && project) {
+    return (
+      <ProjectSkillBrowser
+        companyId={companyId}
+        project={project}
+        onBack={() => onBrowseOpenChange(false)}
+        onAddSkill={onAddBrowsedSkill}
+        addingKey={browseAddingKey}
+      />
+    );
+  }
+
   if (totalCandidates === 0) {
     return (
       <div
@@ -790,6 +998,15 @@ function SelectStep({
               HIGHLIGHTED_SCAN_FOLDERS.length}{" "}
             other agent-harness folders.
           </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-4"
+            onClick={() => onBrowseOpenChange(true)}
+            data-testid="browse-project-folders-empty"
+          >
+            <FolderOpen className="mr-1.5 h-3.5 w-3.5" /> Browse project folders
+          </Button>
           {onImportFromPath && (
             <p className="mt-3 text-sm text-muted-foreground">
               For skills in non-standard folders, use{" "}
@@ -810,6 +1027,12 @@ function SelectStep({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="candidate-list">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 px-5 py-2.5">
+        <p className="text-xs text-muted-foreground">Choose discovered skills, or browse any workspace folder.</p>
+        <Button variant="outline" size="sm" onClick={() => onBrowseOpenChange(true)} data-testid="browse-project-folders">
+          <FolderOpen className="mr-1.5 h-3.5 w-3.5" /> Browse folders
+        </Button>
+      </div>
       <div className="shrink-0 border-b border-border/60 px-5 py-2.5">
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />

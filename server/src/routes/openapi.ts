@@ -103,6 +103,8 @@ import {
   companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
   companySkillImportSchema,
+  companySkillProjectBrowseRequestSchema,
+  companySkillProjectBrowseResultSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectScanResultSchema,
   companySkillTestInputCreateSchema,
@@ -4163,6 +4165,18 @@ registry.registerPath({
     body: jsonBody(companySkillImportSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/browse-project",
+  tags: ["skills"],
+  summary: "Browse a project workspace for skills",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companySkillProjectBrowseRequestSchema),
+  },
+  responses: { 200: r.ok(companySkillProjectBrowseResultSchema), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({

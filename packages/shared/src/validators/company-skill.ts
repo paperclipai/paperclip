@@ -273,6 +273,29 @@ export const companySkillProjectScanRequestSchema = z.object({
   })).optional(),
 });
 
+export const companySkillProjectBrowseRequestSchema = z.object({
+  projectId: z.string().uuid(),
+  workspaceId: z.string().uuid(),
+  path: z.string().nullable().optional(),
+});
+
+export const companySkillProjectBrowseEntrySchema = z.object({
+  name: z.string().min(1),
+  path: z.string().min(1),
+  kind: z.enum(["directory", "file"]),
+  isSkill: z.boolean(),
+});
+
+export const companySkillProjectBrowseResultSchema = z.object({
+  projectId: z.string().uuid(),
+  workspaceId: z.string().uuid(),
+  workspaceName: z.string().min(1),
+  path: z.string().min(1),
+  parentPath: z.string().nullable(),
+  entries: z.array(companySkillProjectBrowseEntrySchema),
+  truncated: z.boolean(),
+});
+
 export const companySkillProjectScanCandidateSchema = z.object({
   slug: z.string().min(1),
   name: z.string().min(1),
@@ -556,6 +579,7 @@ export const companySkillInstallCatalogResultSchema = z.object({
 export type CompanySkillImport = z.infer<typeof companySkillImportSchema>;
 export type CompanySkillListQuery = z.infer<typeof companySkillListQuerySchema>;
 export type CompanySkillProjectScan = z.infer<typeof companySkillProjectScanRequestSchema>;
+export type CompanySkillProjectBrowse = z.infer<typeof companySkillProjectBrowseRequestSchema>;
 export type CompanySkillCreate = z.infer<typeof companySkillCreateSchema>;
 export type CompanySkillFileUpdate = z.infer<typeof companySkillFileUpdateSchema>;
 export type CompanySkillFileDelete = z.infer<typeof companySkillFileDeleteSchema>;
