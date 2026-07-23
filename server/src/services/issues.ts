@@ -1059,11 +1059,42 @@ async function listPendingFinalizeBlockerIssueIds(
 }
 
 /**
- * Returns whether a specific run's operations on a specific execution workspace
- * reached the workspace_finalize barrier.
+ * Whether a heartbeat run has reached a terminal state or no longer exists.
+ * A terminal/missing run can make no further progress on its execution
+ * workspace, so callers must not wait on it to advance an in-flight operation.
+ */
+export async function heartbeatRunIsTerminalOrMissing(
+  dbOrTx: Pick<Db, "select">,
+  runId: string,
+): Promise<boolean> {
+  const run = await dbOrTx
+    .select({ status: heartbeatRuns.status })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .then((rows: Array<{ status: string }>) => rows[0] ?? null);
+  if (!run) return true;
+  return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+}
+
+/**
+ * Returns whether a specific run's sync-back on a specific execution workspace
+ * has settled — i.e. the accept/review gates that guard against a still-in-flight
+ * worktree sync no longer need to block on this run.
  *
- * Runs with no operations on the workspace are considered finalized because
- * they never touched the workspace state that accept/review gates protect.
+ * Semantics:
+ * - No operations recorded → settled. The run never touched the workspace state
+ *   the gates protect.
+ * - Earlier phases recorded but no `workspace_finalize` yet → NOT settled. The
+ *   sync-back hasn't been attempted; the gate should wait for it.
+ * - Latest `workspace_finalize` reached a terminal status (`succeeded`, `failed`,
+ *   or `skipped`) → settled. A finalize that ran and finished is done even if it
+ *   failed: it will not retry within this run, so continuing to block would wedge
+ *   the gate forever — a failed sync-back must not permanently block a
+ *   confirmation accept behind a misleading "still syncing" error.
+ * - Latest `workspace_finalize` is still `running` → in flight, so NOT settled —
+ *   unless the owning run has itself ended, in which case the `running` record is
+ *   stale (the process died mid-finalize) and we treat it as settled rather than
+ *   wait on a run that can never make progress.
  */
 export async function runWorkspaceIsFinalized(
   dbOrTx: Pick<Db, "select">,
@@ -1086,13 +1117,24 @@ export async function runWorkspaceIsFinalized(
       ),
     );
 
-  let latest: { phase: string; status: string; startedAt: Date } | null = null;
+  if (rows.length === 0) return true;
+
+  let latestFinalize: { status: string; startedAt: Date } | null = null;
   for (const row of rows) {
-    if (!latest || row.startedAt > latest.startedAt) latest = row;
+    if (row.phase !== "workspace_finalize") continue;
+    if (!latestFinalize || row.startedAt > latestFinalize.startedAt) latestFinalize = row;
   }
 
-  if (!latest) return true;
-  return latest.phase === "workspace_finalize" && latest.status === "succeeded";
+  // The run touched the workspace but hasn't reached the sync-back phase yet.
+  if (!latestFinalize) return false;
+
+  // A finalize that reached any terminal status is settled — including `failed`
+  // and `skipped`. It will not retry within this run, so gates must stop waiting.
+  if (latestFinalize.status !== "running") return true;
+
+  // Finalize is still marked `running`. It is only genuinely in flight while the
+  // owning run is alive; a `running` record left behind by an ended run is stale.
+  return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
 }
 
 async function listIssueDependencyReadinessMap(
@@ -4456,13 +4498,7 @@ export function issueService(db: Db) {
   }
 
   async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
-    const run = await dbOrTx
-      .select({ status: heartbeatRuns.status })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
-    if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
   }
 
   async function adoptStaleCheckoutRun(input: {
