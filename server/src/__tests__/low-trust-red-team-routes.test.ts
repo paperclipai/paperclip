@@ -772,6 +772,46 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expect(unmentionedComment.body.error).toBe("Issue is outside this actor's authorization boundary");
   });
 
+  it("rejects low-trust checkout on self-assigned issues outside the boundary before writing locks", async () => {
+    const fixture = await seedLowTrustFixture(db);
+    const [outOfScopeAssigned] = await db.insert(issues).values({
+      companyId: fixture.company.id,
+      projectId: fixture.projects.outOfScope.id,
+      title: "Out-of-bound standing issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: fixture.agents.lowTrust.id,
+    }).returning();
+
+    const checkout = await request(createApp(db, agentActor(fixture)))
+      .post(`/api/issues/${outOfScopeAssigned!.id}/checkout`)
+      .send({
+        agentId: fixture.agents.lowTrust.id,
+        expectedStatuses: ["todo"],
+      });
+
+    expect(checkout.status, JSON.stringify(checkout.body)).toBe(403);
+    expect(checkout.body.error).toBe("Issue is outside this actor's authorization boundary");
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, outOfScopeAssigned!.id))
+      .then((rows) => rows[0]);
+
+    expect(row).toEqual({
+      status: "todo",
+      assigneeAgentId: fixture.agents.lowTrust.id,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
   it("propagates denied low-trust policy conflicts on control-plane guards", async () => {
     const fixture = await seedLowTrustFixture(db);
     const conflictingExecutionPolicy = {

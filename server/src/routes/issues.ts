@@ -8831,6 +8831,18 @@ export function issueRoutes(
       return;
     }
 
+    if (
+      req.actor.type === "agent" &&
+      req.actor.agentId === req.body.agentId &&
+      issue.assigneeAgentId === req.body.agentId
+    ) {
+      const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (!boundaryDecision.allowed) {
+        res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+        return;
+      }
+    }
+
     if (issue.assigneeAgentId !== req.body.agentId) {
       await assertCanAssignTasks(req, issue.companyId, {
         issueId: issue.id,
