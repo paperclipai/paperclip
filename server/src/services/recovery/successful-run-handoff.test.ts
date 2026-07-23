@@ -101,6 +101,36 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("record an explicit continuation path");
   });
 
+  it("does not queue for a run woken by source_scoped_recovery_action", () => {
+    expect(
+      decide({
+        run: {
+          ...run,
+          contextSnapshot: {
+            issueId: "issue-1",
+            wakeReason: "source_scoped_recovery_action",
+          },
+        } as any,
+      }),
+    ).toEqual({
+      kind: "skip",
+      reason: "recovery action run owns its own follow-up path",
+    });
+    // the recoveryActionId marker alone is also enough (payloads carry it even
+    // when wakeReason is rewritten downstream)
+    expect(
+      decide({
+        run: {
+          ...run,
+          contextSnapshot: { issueId: "issue-1", recoveryActionId: "recovery-action-1" },
+        } as any,
+      }),
+    ).toEqual({
+      kind: "skip",
+      reason: "recovery action run owns its own follow-up path",
+    });
+  });
+
   it("does not queue when the issue already has a valid disposition", () => {
     expect(decide({ issue: { ...issue, status: "done" } as any })).toEqual({
       kind: "skip",

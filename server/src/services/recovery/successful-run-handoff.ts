@@ -308,6 +308,19 @@ function isCorrectiveHandoffRun(run: HeartbeatRunRow) {
     readString(context.wakeReason) === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON;
 }
 
+// A run woken by source_scoped_recovery_action must not become the source of another
+// successful-run handoff. The handoff idempotency key includes sourceRunId, so every
+// succeeding recovery run mints a fresh handoff wake: recovery run → handoff wake →
+// corrective run → new recovery action → recovery run → …, an unbounded ping-pong that
+// never reaches the handoff-exhausted escalation. Recovery runs own their own follow-up
+// path; if the disposition is still missing, the stranded-issue escalation (blocked +
+// exhausted notice) is the designed exit, not another handoff.
+function isRecoveryActionDrivenRun(run: HeartbeatRunRow) {
+  const context = readRecord(run.contextSnapshot);
+  return readString(context.wakeReason) === "source_scoped_recovery_action" ||
+    readString(context.recoveryActionId) !== null;
+}
+
 function isIssueMonitorMaintenanceRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
   const wakeReason = readString(context.wakeReason);
@@ -381,6 +394,7 @@ export function decideSuccessfulRunHandoff(input: {
 
   if (run.status !== "succeeded") return { kind: "skip", reason: "source run did not succeed" };
   if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
+  if (isRecoveryActionDrivenRun(run)) return { kind: "skip", reason: "recovery action run owns its own follow-up path" };
   if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
   if (isCommentDrivenWake(run)) return { kind: "skip", reason: "comment-driven wake already owns the next action" };
   if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") {
