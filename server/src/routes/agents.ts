@@ -54,7 +54,7 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
@@ -1769,11 +1769,20 @@ export function agentRoutes(
         inputAdapterConfig,
         { strictMode: strictSecretsMode, adapterType: type },
       );
+      // Prospective, non-persisted config: resolve the acting user's own user
+      // secrets in owner_scoped mode (no declaration rows exist for this config).
+      // Record an honest audit consumer — environment:<id> when the caller selected
+      // one, otherwise system:adapter_test — never a fake agent consumer.
       const { config: runtimeAdapterConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
         companyId,
         normalizedAdapterConfig,
-        undefined,
-        { adapterType: type },
+        buildActorSecretContext(
+          req,
+          requestedEnvironmentId
+            ? { consumerType: "environment", consumerId: requestedEnvironmentId }
+            : { consumerType: "system", consumerId: "adapter_test" },
+        ),
+        { adapterType: type, userSecretMediation: "owner_scoped" },
       );
 
       const { executionTarget, environmentName, fallbackChecks, sandboxIdentityCheck, release } =
@@ -3567,7 +3576,14 @@ export function agentRoutes(
     }
 
     const config = asRecord(agent.adapterConfig) ?? {};
-    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, config);
+    // Persisted agent: default declared mode; consumerId = agent.id matches the
+    // declaration rows written at env.<KEY> by syncAgentAdapterEnvBindings.
+    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+      agent.companyId,
+      config,
+      buildActorSecretContext(req, { consumerType: "agent", consumerId: agent.id }),
+      { adapterType: agent.adapterType },
+    );
     const result = await runClaudeLogin({
       runId: `claude-login-${randomUUID()}`,
       agent: {
