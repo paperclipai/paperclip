@@ -1,8 +1,13 @@
+import childProcess from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ensureLinuxSharedLibraryAliases, mergeEmbeddedPostgresSpawnEnv } from "./embedded-postgres-native.js";
+import {
+  ensureLinuxSharedLibraryAliases,
+  mergeEmbeddedPostgresSpawnEnv,
+  prepareEmbeddedPostgresNativeRuntime,
+} from "./embedded-postgres-native.js";
 
 describe("embedded Postgres native runtime", () => {
   const tempDirs: string[] = [];
@@ -59,5 +64,17 @@ describe("embedded Postgres spawn environment", () => {
   it("does not alter unrelated child processes", () => {
     const options = { env: { ONLY: "value" } };
     expect(mergeEmbeddedPostgresSpawnEnv("node", options)).toBe(options);
+  });
+
+  it("preserves the spawn options-only overload after installing the patch", async () => {
+    await prepareEmbeddedPostgresNativeRuntime();
+
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      const child = childProcess.spawn(process.execPath, { stdio: "ignore" });
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+
+    expect(exitCode).toBe(0);
   });
 });

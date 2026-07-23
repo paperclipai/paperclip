@@ -18,12 +18,26 @@ export function mergeEmbeddedPostgresSpawnEnv(
 function installEmbeddedPostgresSpawnPatch(): void {
   if (embeddedPostgresSpawnPatchInstalled) return;
   const originalSpawn = childProcess.spawn;
-  childProcess.spawn = ((command: string, args?: readonly string[], options?: object) =>
-    originalSpawn(
+  childProcess.spawn = ((
+    command: string,
+    argsOrOptions?: readonly string[] | childProcess.SpawnOptions,
+    options?: childProcess.SpawnOptions,
+  ) => {
+    if (Array.isArray(argsOrOptions)) {
+      return originalSpawn(
+        command,
+        argsOrOptions,
+        mergeEmbeddedPostgresSpawnEnv(command, options) as childProcess.SpawnOptions,
+      );
+    }
+    return originalSpawn(
       command,
-      args,
-      mergeEmbeddedPostgresSpawnEnv(command, options) as never,
-    )) as typeof childProcess.spawn;
+      mergeEmbeddedPostgresSpawnEnv(
+        command,
+        argsOrOptions as childProcess.SpawnOptions | undefined,
+      ) as childProcess.SpawnOptions,
+    );
+  }) as typeof childProcess.spawn;
   syncBuiltinESMExports();
   embeddedPostgresSpawnPatchInstalled = true;
 }
