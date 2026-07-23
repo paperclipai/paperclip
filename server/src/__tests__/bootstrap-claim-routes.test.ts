@@ -14,6 +14,9 @@ const accessServiceMock = vi.hoisted(() => ({
   ensureMembership: vi.fn(),
   setPrincipalGrants: vi.fn(),
 }));
+const instanceSettingsServiceMock = vi.hoisted(() => ({
+  getVisibility: vi.fn(),
+}));
 
 vi.mock("../first-admin-claim.js", () => ({
   claimFirstInstanceAdmin: claimFirstInstanceAdminMock,
@@ -33,6 +36,7 @@ vi.mock("../services/index.js", () => ({
   deduplicateAgentName: vi.fn(),
   logActivity: vi.fn(),
   notifyHireApproved: vi.fn(),
+  instanceSettingsService: () => instanceSettingsServiceMock,
 }));
 
 function hashToken(token: string) {
@@ -85,6 +89,15 @@ function createApp(input: {
 describe("POST /bootstrap/claim", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    instanceSettingsServiceMock.getVisibility.mockResolvedValue({
+      companySurfaces: [
+        "company.general",
+        "company.members",
+        "company.invites",
+        "company.secrets",
+        "company.plugins",
+      ],
+    });
     claimFirstInstanceAdminMock.mockResolvedValue({
       status: "claimed",
       userId: "user-1",
@@ -168,6 +181,15 @@ describe("POST /bootstrap/claim", () => {
 describe("bootstrap invite first-admin acceptance", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    instanceSettingsServiceMock.getVisibility.mockResolvedValue({
+      companySurfaces: [
+        "company.general",
+        "company.members",
+        "company.invites",
+        "company.secrets",
+        "company.plugins",
+      ],
+    });
   });
 
   function createBootstrapInvite() {
