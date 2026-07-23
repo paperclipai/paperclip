@@ -315,9 +315,16 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipListIssueApprovals",
-      "List approvals linked to an issue",
+      "List approvals linked to an issue. Does NOT include decision cards created via paperclipRequestConfirmation/paperclipRequestCheckboxConfirmation/paperclipAskUserQuestions/paperclipSuggestTasks — those live in interactions; use paperclipListIssueInteractions. An empty list here does NOT mean the human left no feedback.",
       z.object({ issueId: issueIdSchema }),
       async ({ issueId }) => client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/approvals`),
+    ),
+    makeTool(
+      "paperclipListIssueInteractions",
+      "List decision cards (interactions) on an issue, with the human's answer in the result field. USE THIS to read the reply to a card you created with paperclipRequestConfirmation, paperclipRequestCheckboxConfirmation, paperclipAskUserQuestions or paperclipSuggestTasks. NOT paperclipListIssueApprovals / paperclipListApprovals — approvals are a different table and return an EMPTY LIST for these cards; an empty list there does NOT mean the human left no feedback. The answer lives in a DIFFERENT FIELD per card kind: request_confirmation and request_checkbox_confirmation -> result.reason; ask_user_questions -> result.answers (plus result.summaryMarkdown, result.cancellationReason); suggest_tasks -> result.rejectionReason (plus result.createdTasks, result.skippedClientKeys). Do not assume result.reason exists for every kind. issueId MUST be the issue UUID — the identifier form (e.g. GG-132) is NOT supported on this read path.",
+      z.object({ issueId: issueIdSchema }),
+      async ({ issueId }) =>
+        client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/interactions`),
     ),
     makeTool(
       "paperclipListDocuments",
@@ -420,7 +427,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipListApprovals",
-      "List approvals in a company",
+      "List approvals in a company. Does NOT include decision cards created via paperclipRequestConfirmation/paperclipRequestCheckboxConfirmation/paperclipAskUserQuestions/paperclipSuggestTasks — those live in interactions; use paperclipListIssueInteractions. An empty list here does NOT mean the human left no feedback.",
       z.object({ companyId: companyIdOptional, status: z.string().optional() }),
       async ({ companyId, status }) => {
         const qs = status ? `?status=${encodeURIComponent(status)}` : "";
