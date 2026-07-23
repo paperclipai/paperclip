@@ -22,6 +22,7 @@ import {
   sandboxCallbackBridgeDirectories,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
+  type SandboxCallbackBridgeRequest,
 } from "./sandbox-callback-bridge.js";
 import {
   createSandboxRunLogTailFactory,
@@ -1183,8 +1184,20 @@ function buildBridgeForwardUrl(baseUrl: string, request: { path: string; query: 
   return url;
 }
 
-function bridgeResponseBodyLimitError(maxBodyBytes: number): Error {
-  return new Error(`Bridge response body exceeded the configured size limit of ${maxBodyBytes} bytes.`);
+/**
+ * Thrown by {@link readBridgeForwardResponseBody} only when the upstream
+ * response body exceeds the configured size cap. The bridge forward handler
+ * relies on this type to map the failure to a 413; any other error raised
+ * while reading the body (e.g. a mid-stream network fault) must NOT use this
+ * class, so it maps to a 502 the agent knows it can retry.
+ */
+export class BridgeResponseBodyTooLargeError extends Error {
+  readonly code = "BODY_TOO_LARGE" as const;
+
+  constructor(maxBodyBytes: number) {
+    super(`Bridge response body exceeded the configured size limit of ${maxBodyBytes} bytes.`);
+    this.name = "BridgeResponseBodyTooLargeError";
+  }
 }
 
 async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: number): Promise<string> {
@@ -1192,7 +1205,7 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
   if (rawContentLength) {
     const contentLength = Number.parseInt(rawContentLength, 10);
     if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
-      throw bridgeResponseBodyLimitError(maxBodyBytes);
+      throw new BridgeResponseBodyTooLargeError(maxBodyBytes);
     }
   }
 
@@ -1210,11 +1223,141 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
     totalBytes += value.byteLength;
     if (totalBytes > maxBodyBytes) {
       await reader.cancel().catch(() => undefined);
-      throw bridgeResponseBodyLimitError(maxBodyBytes);
+      throw new BridgeResponseBodyTooLargeError(maxBodyBytes);
     }
     chunks.push(Buffer.from(value));
   }
   return Buffer.concat(chunks, totalBytes).toString("utf8");
+}
+
+export interface PaperclipBridgeForwardHandlerOptions {
+  runId: string;
+  hostApiUrl: string;
+  hostApiToken: string;
+  maxBodyBytes: number;
+  debugEnabled?: boolean;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  /** Injection point for tests; defaults to the global fetch. */
+  fetchImpl?: typeof fetch;
+}
+
+export type PaperclipBridgeForwardRequest = Pick<
+  SandboxCallbackBridgeRequest,
+  "method" | "path" | "query" | "headers"
+> &
+  Partial<Pick<SandboxCallbackBridgeRequest, "body">>;
+
+/**
+ * Builds the host-side handler that forwards queued sandbox bridge requests to
+ * the Paperclip API. Extracted from startAdapterExecutionTargetPaperclipBridge
+ * so the error mapping is directly testable:
+ * - fetch timeout/abort -> 504 bridge_upstream_timeout (outcome ambiguous)
+ * - other fetch failures -> 502 bridge_upstream_unreachable
+ * - response body over the size cap -> 413 bridge_response_too_large
+ * - any other body-read failure (e.g. mid-stream fault) -> 502 bridge_upstream_read_failed
+ */
+export function createPaperclipBridgeForwardRequestHandler(
+  options: PaperclipBridgeForwardHandlerOptions,
+): (request: PaperclipBridgeForwardRequest) => Promise<{
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}> {
+  const onLog = options.onLog ?? (async () => {});
+  const fetchImpl = options.fetchImpl ?? fetch;
+  return async (request) => {
+    const method = request.method.trim().toUpperCase() || "GET";
+    if (options.debugEnabled) {
+      await onLog(
+        "stdout",
+        `[paperclip] Bridge proxy ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+      );
+    }
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(request.headers)) {
+      if (value.trim().length === 0) continue;
+      headers.set(key, value);
+    }
+    headers.set("authorization", `Bearer ${options.hostApiToken}`);
+    headers.set("x-paperclip-run-id", options.runId);
+    let response: Response;
+    try {
+      response = await fetchImpl(buildBridgeForwardUrl(options.hostApiUrl, request), {
+        method,
+        headers,
+        ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      // Map fetch failures to a faithful status the in-sandbox agent can act
+      // on, instead of letting them surface as an opaque generic 502. A
+      // timeout in particular is ambiguous on a mutating call ("did my write
+      // land?"), so it must be distinguishable — otherwise the agent tends to
+      // confabulate an outcome.
+      const name = error instanceof Error ? error.name : "";
+      if (name === "TimeoutError" || name === "AbortError") {
+        return {
+          status: 504,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            error: "The Paperclip API did not respond within the 30s bridge timeout. The request may or may not have been applied; re-read state before retrying.",
+            code: "bridge_upstream_timeout",
+          }),
+        };
+      }
+      return {
+        status: 502,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          error: `Bridge could not reach the Paperclip API: ${error instanceof Error ? error.message : String(error)}`,
+          code: "bridge_upstream_unreachable",
+        }),
+      };
+    }
+    if (options.debugEnabled) {
+      await onLog(
+        "stdout",
+        `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+      );
+    }
+    let body: string;
+    try {
+      body = await readBridgeForwardResponseBody(response, options.maxBodyBytes);
+    } catch (error) {
+      if (error instanceof BridgeResponseBodyTooLargeError) {
+        // Oversized response body: surface a clear 413 (not a generic 502) so
+        // the agent knows the call succeeded server-side but the payload was
+        // too large to relay, rather than assuming the operation failed.
+        return {
+          status: 413,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            error: error.message,
+            code: "bridge_response_too_large",
+            upstreamStatus: response.status,
+          }),
+        };
+      }
+      // Anything else is a mid-stream read failure (e.g. the connection
+      // dropped while relaying the body). Report it as a 502 so the agent
+      // treats it as a transient upstream fault and retries, instead of
+      // misreading it as "payload too large".
+      return {
+        status: 502,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          error: `Bridge failed to read the Paperclip API response body: ${error instanceof Error ? error.message : String(error)}`,
+          code: "bridge_upstream_read_failed",
+          upstreamStatus: response.status,
+        }),
+      };
+    }
+    return {
+      status: response.status,
+      headers: buildBridgeResponseHeaders(response),
+      body,
+    };
+  };
 }
 
 const PROCESS_SESSION_PROXY_SCRIPT = "paperclip-process-session-proxy.mjs";
@@ -1698,39 +1841,14 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       client,
       queueDir,
       maxBodyBytes,
-      handleRequest: async (request) => {
-        const method = request.method.trim().toUpperCase() || "GET";
-        if (bridgeDebugEnabled) {
-          await onLog(
-            "stdout",
-            `[paperclip] Bridge proxy ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
-          );
-        }
-        const headers = new Headers();
-        for (const [key, value] of Object.entries(request.headers)) {
-          if (value.trim().length === 0) continue;
-          headers.set(key, value);
-        }
-        headers.set("authorization", `Bearer ${hostApiToken}`);
-        headers.set("x-paperclip-run-id", input.runId);
-        const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
-          method,
-          headers,
-          ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
-          signal: AbortSignal.timeout(30_000),
-        });
-        if (bridgeDebugEnabled) {
-          await onLog(
-            "stdout",
-            `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
-          );
-        }
-        return {
-          status: response.status,
-          headers: buildBridgeResponseHeaders(response),
-          body: await readBridgeForwardResponseBody(response, maxBodyBytes),
-        };
-      },
+      handleRequest: createPaperclipBridgeForwardRequestHandler({
+        runId: input.runId,
+        hostApiUrl,
+        hostApiToken,
+        maxBodyBytes,
+        debugEnabled: bridgeDebugEnabled,
+        onLog,
+      }),
     });
     server = await startSandboxCallbackBridgeServer({
       runner,
