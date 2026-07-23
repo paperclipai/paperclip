@@ -456,6 +456,56 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onEvent, onSpawn, authToken } = ctx;
 
+  // Exit cleanly when the assigned issue is already in a terminal state to prevent stale
+  // runs from hanging indefinitely (race condition: heartbeat fired after issue completion).
+  const terminalCheckIssueId =
+    (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
+    (typeof context.issueId === "string" && context.issueId.trim().length > 0 && context.issueId.trim()) ||
+    null;
+  if (terminalCheckIssueId) {
+    const paperclipApiBase = (
+      process.env.PAPERCLIP_RUNTIME_API_URL ??
+      process.env.PAPERCLIP_API_URL ??
+      "http://localhost:3100"
+    ).replace(/\/+$/, "");
+    const resolvedToken = authToken ?? null;
+    let resolvedIssueStatus: string | null = null;
+    if (resolvedToken) {
+      try {
+        const issueRes = await fetch(
+          `${paperclipApiBase}/api/issues/${encodeURIComponent(terminalCheckIssueId)}`,
+          { headers: { Authorization: `Bearer ${resolvedToken}` } },
+        );
+        if (issueRes.ok) {
+          const issue = (await issueRes.json()) as Record<string, unknown>;
+          resolvedIssueStatus = typeof issue.status === "string" ? issue.status : null;
+        }
+      } catch {
+        // Network or parse failure — fall through to wake payload check.
+      }
+    }
+    // Fall back to the status baked into the wake payload if the API fetch was skipped or failed.
+    if (!resolvedIssueStatus) {
+      const wakeIssue =
+        typeof context.paperclipWake === "object" &&
+        context.paperclipWake !== null &&
+        !Array.isArray(context.paperclipWake)
+          ? (context.paperclipWake as Record<string, unknown>).issue
+          : null;
+      if (typeof wakeIssue === "object" && wakeIssue !== null && !Array.isArray(wakeIssue)) {
+        const raw = (wakeIssue as Record<string, unknown>).status;
+        resolvedIssueStatus = typeof raw === "string" ? raw : null;
+      }
+    }
+    if (resolvedIssueStatus === "done" || resolvedIssueStatus === "cancelled") {
+      await onLog(
+        "stdout",
+        `[paperclip] Assigned issue ${terminalCheckIssueId} is already in terminal state "${resolvedIssueStatus}"; exiting cleanly.\n`,
+      );
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null };
+    }
+  }
+
   const promptTemplate = asString(
     config.promptTemplate,
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
