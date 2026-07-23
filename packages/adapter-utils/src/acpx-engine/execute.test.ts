@@ -2457,4 +2457,58 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
     expect(events).toContain("enter:run-b");
     expect(events.indexOf("enter:run-b")).toBeGreaterThan(events.indexOf("run-a-finished"));
   });
+
+  // The per-session lease must be released when a run is abandoned before it
+  // reaches the executor's cleanup (e.g. staging or a bridge fails to start),
+  // otherwise the next run of the same session waits on the lease forever. Here
+  // the first run's staging throws; the second run of the same session must
+  // still acquire the lease and stage instead of deadlocking.
+  it("test_failed_staging_releases_lease_so_next_same_session_run_proceeds", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const events: string[] = [];
+    let failNextStaging = true;
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      stagingLocks: new Map(),
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        setConfigOption: async () => {},
+        close: async () => {},
+      }) as never,
+      prepareRemoteManagedHome: async (input) => {
+        events.push(`enter:${input.runId}`);
+        if (failNextStaging) {
+          failNextStaging = false;
+          throw new Error("staging boom");
+        }
+        const stagedRuntime = await input.stage([]);
+        events.push(`exit:${input.runId}`);
+        return { stagedRuntime };
+      },
+    });
+    const base = baseExecuteArgs({ stateDir, localCwd, executionTarget });
+
+    await expect(execute({ runId: "run-a", runtime: {}, ...base } as never)).rejects.toThrow(
+      "staging boom",
+    );
+    // If the failed run had stranded its lease, this second same-session run
+    // would hang on it and the test would time out.
+    const resultB = await execute({ runId: "run-b", runtime: {}, ...base } as never);
+
+    expect(resultB.exitCode).toBe(0);
+    expect(events).toContain("enter:run-b");
+    expect(events).toContain("exit:run-b");
+  });
 });

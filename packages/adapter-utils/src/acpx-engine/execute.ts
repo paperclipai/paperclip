@@ -1645,29 +1645,36 @@ async function buildRuntime(input: {
     remoteStagingDispose = staged.value.dispose;
     remoteStagingEnvDelta = staged.value.envDelta;
   }
+  // Both bridge starts run under one try so a failure at EITHER — including the
+  // paperclip callback bridge — fires the same abandon-path cleanup. The
+  // paperclip bridge starts after the workspace + managed home were already
+  // staged and the per-session staging lease is already held, so leaving it
+  // outside the catch would strand the lease (and the staged temp) on a
+  // start failure and deadlock the next run of this session.
   let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
-  if (useRemoteProcessSession) {
-    paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
-      runId,
-      target: { ...executionTarget, streamRunLogs: false },
-      runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
-      adapterKey: input.engine.adapterType,
-      timeoutSec,
-      hostApiToken: env.PAPERCLIP_API_KEY,
-      onLog: input.ctx.onLog,
-    });
-    if (paperclipBridge) {
-      Object.assign(env, paperclipBridge.env);
-      await input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n");
-    }
-  }
-  const runtimeEnv = Object.fromEntries(
-    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
   let processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null = null;
+  let runtimeEnv: Record<string, string> = {};
   try {
+    if (useRemoteProcessSession) {
+      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+        runId,
+        target: { ...executionTarget, streamRunLogs: false },
+        runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
+        adapterKey: input.engine.adapterType,
+        timeoutSec,
+        hostApiToken: env.PAPERCLIP_API_KEY,
+        onLog: input.ctx.onLog,
+      });
+      if (paperclipBridge) {
+        Object.assign(env, paperclipBridge.env);
+        await input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n");
+      }
+    }
+    runtimeEnv = Object.fromEntries(
+      Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
     processSessionBridge = useRemoteProcessSession
       ? await startAdapterExecutionTargetProcessSessionBridge({
           runId,
@@ -1689,7 +1696,9 @@ async function buildRuntime(input: {
     // sandbox, so a refreshed credential is copied back on this error path too.
     // This run never reaches the executor, so also fire the one-time staged-temp
     // dispose here (it no longer rides the per-run copy-back) — the run is being
-    // abandoned, so its staged temp must be released.
+    // abandoned, so its staged temp must be released — and release the per-session
+    // staging lease so the abandoned run does not strand the next same-session run
+    // (cleanupRemoteBridges, which normally releases it, is never reached here).
     await remoteManagedHomeTeardown?.().catch(() => {});
     await remoteStagingDispose?.().catch(() => {});
     sessionStagingLeaseRelease?.();
