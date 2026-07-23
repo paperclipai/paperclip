@@ -63,8 +63,10 @@ describeEmbeddedPostgres("heartbeat goal/project intake", () => {
     const projectId = randomUUID();
     const issueId = randomUUID();
     const previousRunId = randomUUID();
+    const interleavedRunId = randomUUID();
     const currentRunId = randomUUID();
     const baselineAt = new Date("2026-07-22T12:00:00.000Z");
+    const interleavedAt = new Date("2026-07-23T09:00:00.000Z");
     const changedAt = new Date("2026-07-23T10:00:00.000Z");
     const currentRunAt = new Date("2026-07-23T12:00:00.000Z");
 
@@ -156,27 +158,47 @@ describeEmbeddedPostgres("heartbeat goal/project intake", () => {
       priority: "high",
       assigneeAgentId: agentId,
     });
-    await db.insert(heartbeatRuns).values({
-      id: previousRunId,
-      companyId,
-      agentId,
-      status: "succeeded",
-      createdAt: baselineAt,
-      contextSnapshot: {
-        issueId,
-        paperclipWake: {
-          goalProjectIntake: {
-            capturedAt: baselineAt.toISOString(),
-            project: { id: projectId },
-            goal: { id: goalId },
-            activeMilestones: [
-              { id: activeMilestoneId },
-              { id: "milestone-no-longer-active" },
-            ],
+    await db.insert(heartbeatRuns).values([
+      {
+        id: previousRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        createdAt: baselineAt,
+        contextSnapshot: {
+          issueId,
+          paperclipWake: {
+            goalProjectIntake: {
+              capturedAt: baselineAt.toISOString(),
+              project: { id: projectId },
+              goal: { id: goalId },
+              activeMilestones: [
+                { id: activeMilestoneId },
+                { id: "milestone-no-longer-active" },
+              ],
+            },
           },
         },
       },
-    });
+      {
+        id: interleavedRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        createdAt: interleavedAt,
+        contextSnapshot: {
+          issueId,
+          paperclipWake: {
+            goalProjectIntake: {
+              capturedAt: interleavedAt.toISOString(),
+              project: { id: randomUUID() },
+              goal: { id: randomUUID() },
+              activeMilestones: [],
+            },
+          },
+        },
+      },
+    ]);
 
     const payload = await buildPaperclipWakePayload({
       db,

@@ -4488,6 +4488,10 @@ async function buildGoalProjectIntakeContext(input: {
     0,
     MAX_INLINE_WAKE_ACTIVE_MILESTONES,
   );
+  const previousProjectIdExpression =
+    sql<string | null>`${heartbeatRuns.contextSnapshot} #>> '{paperclipWake,goalProjectIntake,project,id}'`;
+  const previousGoalIdExpression =
+    sql<string | null>`${heartbeatRuns.contextSnapshot} #>> '{paperclipWake,goalProjectIntake,goal,id}'`;
 
   const previousRun = input.run
     ? await input.db
@@ -4507,6 +4511,12 @@ async function buildGoalProjectIntakeContext(input: {
               input.issueSummary.id,
             ),
             sql`${heartbeatRuns.contextSnapshot} -> 'paperclipWake' -> 'goalProjectIntake' is not null`,
+            project?.id
+              ? eq(previousProjectIdExpression, project.id)
+              : isNull(previousProjectIdExpression),
+            goal?.id
+              ? eq(previousGoalIdExpression, goal.id)
+              : isNull(previousGoalIdExpression),
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt))
