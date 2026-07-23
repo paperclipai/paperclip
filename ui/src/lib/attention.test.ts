@@ -115,6 +115,7 @@ describe("sourceMeta + severityStyle", () => {
   it("labels every catalog source kind", () => {
     const kinds: AttentionSourceKind[] = [
       "approval",
+      "decision",
       "issue_thread_interaction",
       "join_request",
       "recovery_action",

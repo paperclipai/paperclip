@@ -219,7 +219,7 @@ POST /api/companies/{companyId}/approvals
 
 Issue-thread interactions are first-class cards that render in the issue thread and capture a typed board/user response. Use them instead of asking the board to type yes/no or a checklist in markdown — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path.
 
-Five kinds are supported. Pick the smallest kind that fits the decision shape:
+Five issue-thread interaction kinds are supported. Pick the smallest kind that fits the decision shape:
 
 | Kind                            | When to use                                                                                  | When **not** to use                                                                                |
 | ------------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -228,6 +228,9 @@ Five kinds are supported. Pick the smallest kind that fits the decision shape:
 | `request_item_verdicts`         | Board must approve/reject/defer individual known items, potentially over multiple submits.   | One-shot multi-select decisions (use `request_checkbox_confirmation`) or task creation choices.    |
 | `ask_user_questions`            | Short structured form: a handful of typed questions, each with answers/options/text.         | Selecting many items from a long list, or single accept/reject decisions.                          |
 | `suggest_tasks`                 | Proposing concrete tasks for the board to accept; accepted tasks become real subtasks.       | Asking the board to confirm a plan or arbitrary selection. Tasks are the unit; not arbitrary ids.  |
+| `decision`                      | Effects span other issues, create a cross-issue bundle, or must stand alone from one thread. | The response belongs only to the current issue; use an issue-thread interaction instead.           |
+
+Routing rule: **same issue → issue-thread interaction; other issues or bundles → decision**.
 
 Key shared semantics:
 
@@ -236,6 +239,70 @@ Key shared semantics:
 - **Supersede on user comment.** Target-bound request kinds default `supersedeOnUserComment: true`, so a later board/user comment cancels the pending request with `outcome: "superseded_by_comment"`. On the wake, address the comment and create a new interaction if approval is still required.
 - **Idempotency.** Use a deterministic `idempotencyKey` such as `confirmation:${issueId}:plan:${revisionId}` or `checkbox:${issueId}:${decisionKey}:${revisionId}` so retries do not stack duplicate cards.
 - **Source issue posture.** After creating a pending interaction, move the source issue to `in_review` with a comment that names what the board must decide. The pending interaction is the explicit waiting path.
+
+### Standalone Decisions
+
+Create a decision from an issue-scoped agent run with `POST /api/companies/{companyId}/decisions`:
+
+```json
+{
+  "title": "Reassign the blocked launch issue?",
+  "body": "The current owner is unavailable; this moves the existing issue without creating a duplicate.",
+  "ruleKey": "routing.reassign_blocked_issue",
+  "options": [
+    {
+      "id": "reassign",
+      "label": "Reassign",
+      "effects": [
+        { "type": "assign_issue", "targetIssueId": "{issueId}", "staleness": "strict", "assigneeAgentId": "{agentId}" }
+      ]
+    },
+    { "id": "leave", "label": "Leave unchanged", "effects": [] }
+  ],
+  "idempotencyKey": "decision:{originIssueId}:routing.reassign_blocked_issue:v1",
+  "continuationPolicy": "wake_origin_agent"
+}
+```
+
+- `options` accepts 1–8 options; option ids are unique and each option accepts up to 10 effects.
+- Supported effects are `comment_on_issue`, `create_issue`, `update_issue_status`, `assign_issue`, `cancel_issue_tree`, and `resolve_blocker`.
+- `expiresAt` is optional, defaults to seven days, and must be no more than 30 days away.
+- `idempotencyKey` is optional but strongly recommended; reuse is safe only with the same payload.
+- `continuationPolicy` is `none` or `wake_origin_agent`. Use the latter only when resolution or expiry must resume the proposer.
+- Each origin agent may have at most 50 open decisions by default.
+
+Bundle related cross-issue decisions with `POST /api/companies/{companyId}/decision-bundles`:
+
+```json
+{
+  "title": "Launch recovery choices",
+  "summary": "Independent choices for ownership and blocker cleanup.",
+  "decisions": [
+    {
+      "title": "Reassign owner?",
+      "body": "Move the issue to the recovery owner.",
+      "ruleKey": "routing.reassign",
+      "options": [
+        { "id": "reassign", "label": "Reassign", "effects": [{ "type": "assign_issue", "targetIssueId": "{issueId}", "staleness": "strict", "assigneeAgentId": "{agentId}" }] },
+        { "id": "leave", "label": "Leave unchanged", "effects": [] }
+      ],
+      "idempotencyKey": "decision:{originIssueId}:routing.reassign:v1"
+    },
+    {
+      "title": "Clear obsolete blocker?",
+      "body": "Remove the resolved dependency from the blocked issue.",
+      "ruleKey": "blockers.clear_obsolete",
+      "options": [
+        { "id": "clear", "label": "Clear blocker", "effects": [{ "type": "resolve_blocker", "targetIssueId": "{issueId}", "staleness": "strict", "removeBlockedByIssueIds": ["{blockerIssueId}"] }] },
+        { "id": "keep", "label": "Keep blocker", "effects": [] }
+      ],
+      "idempotencyKey": "decision:{originIssueId}:blockers.clear_obsolete:v1"
+    }
+  ]
+}
+```
+
+Bundles accept 1–50 decisions and are created atomically. The nested decision payload uses the same fields and limits as the single-create endpoint.
 
 Create a `request_checkbox_confirmation` (board selects any subset, then confirms):
 

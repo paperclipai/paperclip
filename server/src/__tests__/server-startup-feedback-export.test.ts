@@ -204,6 +204,9 @@ vi.mock("../services/index.js", () => ({
     agentMembershipsInserted: 0,
     humanGrantsInserted: 0,
   })),
+  decisionService: vi.fn(() => ({
+    sweepExpired: vi.fn(async () => ({ expired: 0 })),
+  })),
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
@@ -281,6 +284,8 @@ import { startServer } from "../index.ts";
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
     loadConfigMock.mockReturnValue(buildTestConfig());
     resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
       suppressed: false,
@@ -289,6 +294,13 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("refuses startup when the decision signing secret is unavailable", async () => {
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET or PAPERCLIP_AGENT_JWT_SECRET is required");
+    expect(loadConfigMock).not.toHaveBeenCalled();
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {

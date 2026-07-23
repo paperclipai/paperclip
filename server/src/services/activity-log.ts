@@ -63,6 +63,7 @@ export interface LogActivityInput {
   agentApiKeyId?: string | null;
   issueId?: string | null;
   details?: Record<string, unknown> | null;
+  responsibleUserIdOverride?: string | null;
 }
 
 function readNonEmptyString(value: unknown) {
@@ -70,6 +71,9 @@ function readNonEmptyString(value: unknown) {
 }
 
 export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActivityInput) {
+  if (input.responsibleUserIdOverride !== undefined) {
+    return readNonEmptyString(input.responsibleUserIdOverride);
+  }
   if (input.actorType === "user") return readNonEmptyString(input.actorId);
 
   const runId = readNonEmptyString(input.runId);
@@ -133,7 +137,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
-  await db.insert(activityLog).values({
+  const [activity] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
     actorId: input.actorId,
@@ -144,7 +148,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     runId: input.runId ?? null,
     responsibleUserId,
     details: redactedDetails,
-  });
+  }).returning({ id: activityLog.id });
 
   publishLiveEvent({
     companyId: input.companyId,
@@ -182,4 +186,6 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     };
     publishPluginDomainEvent(event);
   }
+
+  return activity;
 }

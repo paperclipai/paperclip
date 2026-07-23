@@ -350,6 +350,13 @@ export const queryKeys = {
     list: (companyId: string) => ["decision-training", companyId] as const,
     detail: (id: string) => ["decision-training", "detail", id] as const,
   },
+  decisions: {
+    list: (companyId: string, status?: string) =>
+      ["decisions", companyId, status ?? "__all-statuses__"] as const,
+    detail: (id: string) => ["decisions", "detail", id] as const,
+    forTargetIssue: (companyId: string, issueId: string) =>
+      ["decisions", companyId, "target", issueId] as const,
+  },
   workTimeline: (companyId: string, lens?: string) => ["work-timeline", companyId, lens ?? "all"] as const,
   userProfile: (companyId: string, userSlug: string) =>
     ["user-profile", companyId, userSlug] as const,

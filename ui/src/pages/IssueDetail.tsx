@@ -114,6 +114,7 @@ import {
 } from "../components/IssueMonitorBanner";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
+import { PendingDecisionStrip } from "../components/PendingDecisionStrip";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
@@ -4500,6 +4501,8 @@ export function IssueDetail() {
           onCheckNow={() => checkIssueMonitorNow.mutate()}
           checkingNow={checkIssueMonitorNow.isPending}
         />
+
+        <PendingDecisionStrip companyId={issue.companyId} issueId={issue.id} />
 
         <InlineEditor
           value={issue.description ?? ""}

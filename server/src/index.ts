@@ -45,6 +45,7 @@ import {
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
+  decisionService,
   heartbeatService,
   instanceSettingsService,
   reconcileBuiltInAgentsOnStartup,
@@ -68,6 +69,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { validateDecisionSigningSecret } from "./services/decision-signing.js";
 import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
 import type {
   InstanceDatabaseBackupRunResult,
@@ -115,6 +117,7 @@ export async function startServer(): Promise<StartedServer> {
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
   await instrumentationReady;
+  validateDecisionSigningSecret();
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
@@ -879,6 +882,14 @@ export async function startServer(): Promise<StartedServer> {
 
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const decisionExecutor = decisionService(db as any, {
+      wakeOriginAgent: async (input) => heartbeat.wakeup(input.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: `decision_${input.outcome}`,
+        payload: { issueId: input.issueId, decisionId: input.decisionId, outcome: input.outcome },
+      }),
+    });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
@@ -1009,6 +1020,7 @@ export async function startServer(): Promise<StartedServer> {
     if (toolHealthSweep.failed > 0) {
       logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
     }
+    await decisionExecutor.sweepExpired();
 
     heartbeatSchedulerInterval = setInterval(() => {
       // Async so the suppression checks below can honor the override-aware
@@ -1016,6 +1028,9 @@ export async function startServer(): Promise<StartedServer> {
       // wrapped in trackHeartbeatSchedulerWork with its own error handling.
       void (async () => {
         if (heartbeatSchedulerStopped) return;
+        trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
+          logger.error({ err }, "decision expiry sweep failed");
+        }));
         const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
         if (sweptRuntimeStatuses > 0) {
           logger.info(

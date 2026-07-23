@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpDown, Check, CheckCircle2, GraduationCap, Inbox, Layers, ListFilter } from "lucide-react";
-import type { Agent, AttentionItem } from "@paperclipai/shared";
+import type { Agent, AttentionItem, AttentionSubject } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { decisionsApi } from "../api/decisions";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -40,6 +41,7 @@ import { cn } from "../lib/utils";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
+import { DecisionResolver } from "../components/DecisionResolver";
 import { DecisionTrainingDrawer } from "../components/DecisionTrainingDrawer";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { Button } from "../components/ui/button";
@@ -94,6 +96,8 @@ export function WhatNeedsMe() {
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set());
   const [snoozedOpen, setSnoozedOpen] = useState(false);
   const [dismissedOpen, setDismissedOpen] = useState(false);
+  const [decidedOpen, setDecidedOpen] = useState(false);
+  const [expiredOpen, setExpiredOpen] = useState(false);
 
   // Optimistic hide/restore. Reset whenever a fresh feed lands (server truth).
   const [pendingHide, setPendingHide] = useState<Set<string>>(() => new Set());
@@ -130,6 +134,19 @@ export function WhatNeedsMe() {
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  // Decision history — decided / expired decisions leave the open attention
+  // feed (entryRule = open only), so we fetch them directly for the curtains.
+  const { data: decidedDecisions } = useQuery({
+    queryKey: queryKeys.decisions.list(selectedCompanyId!, "decided"),
+    queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "decided", limit: 50 }),
+    enabled: !!selectedCompanyId,
+  });
+  const { data: expiredDecisions } = useQuery({
+    queryKey: queryKeys.decisions.list(selectedCompanyId!, "expired"),
+    queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "expired", limit: 50 }),
     enabled: !!selectedCompanyId,
   });
 
@@ -418,7 +435,9 @@ export function WhatNeedsMe() {
     return <PageSkeleton variant="approvals" />;
   }
 
-  const hasAnything = activeItems.length > 0 || snoozedItems.length > 0 || dismissedItems.length > 0;
+  const hasHistory = (decidedDecisions?.length ?? 0) > 0 || (expiredDecisions?.length ?? 0) > 0;
+  const hasAnything =
+    activeItems.length > 0 || snoozedItems.length > 0 || dismissedItems.length > 0 || hasHistory;
 
   return (
     <div ref={rootRef} className="max-w-3xl space-y-4">
@@ -553,21 +572,53 @@ export function WhatNeedsMe() {
                   )}
                   {!collapsed && (
                     <div className="space-y-2">
-                      {(renderPlan.groupRows.get(group.key) ?? []).map((item) => (
-                        <AttentionQueueRow
-                          key={item.id}
-                          item={item}
-                          companyId={selectedCompanyId}
-                          expanded={expandedId === item.id}
-                          onToggleExpand={handleToggleExpand}
-                          onDismiss={handleDismiss}
-                          onSnooze={handleSnooze}
-                          onTrain={handleTrain}
-                          agentMap={agentMap}
-                          currentUserId={currentUserId}
-                          selected={selectedAttentionId === item.id}
-                        />
-                      ))}
+                      {(() => {
+                        const rows = renderPlan.groupRows.get(group.key) ?? [];
+                        const seenBundles = new Set<string>();
+                        return rows.map((item) => {
+                          const bundleId =
+                            item.sourceKind === "decision"
+                              ? ((item.subject.metadata?.bundleId as string | null | undefined) ?? null)
+                              : null;
+                          let header: ReactNode = null;
+                          if (bundleId && !seenBundles.has(bundleId)) {
+                            seenBundles.add(bundleId);
+                            const bundleRows = rows.filter(
+                              (row) =>
+                                row.sourceKind === "decision" &&
+                                ((row.subject.metadata?.bundleId as string | null | undefined) ?? null) === bundleId,
+                            );
+                            const first = bundleRows[0];
+                            header = (
+                              <DecisionBundleHeader
+                                agentName={agentMap.get(first?.subject.metadata?.originAgentId as string)?.name ?? null}
+                                title={(first?.subject.metadata?.bundleTitle as string | null | undefined) ?? null}
+                                originIssue={first?.relatedIssue ?? null}
+                                count={bundleRows.length}
+                              />
+                            );
+                          }
+                          return (
+                            <Fragment key={item.id}>
+                              {header}
+                              <div className={bundleId ? "border-l-2 border-violet-500/40 pl-3" : undefined}>
+                                <AttentionQueueRow
+                                  item={item}
+                                  companyId={selectedCompanyId}
+                                  expanded={expandedId === item.id}
+                                  onToggleExpand={handleToggleExpand}
+                                  onDismiss={handleDismiss}
+                                  onSnooze={handleSnooze}
+                                  onTrain={handleTrain}
+                                  agentMap={agentMap}
+                                  currentUserId={currentUserId}
+                                  selected={selectedAttentionId === item.id}
+                                />
+                              </div>
+                            </Fragment>
+                          );
+                        });
+                      })()}
                     </div>
                   )}
                 </section>
@@ -622,6 +673,42 @@ export function WhatNeedsMe() {
               ))}
             </Curtain>
           )}
+
+          {(decidedDecisions?.length ?? 0) > 0 && (
+            <Curtain
+              label="Decided"
+              count={decidedDecisions!.length}
+              open={decidedOpen}
+              onToggle={() => setDecidedOpen((prev) => !prev)}
+            >
+              {decidedDecisions!.map((decision) => (
+                <DecisionResolver
+                  key={decision.id}
+                  companyId={selectedCompanyId}
+                  decisionId={decision.id}
+                  agentMap={agentMap}
+                />
+              ))}
+            </Curtain>
+          )}
+
+          {(expiredDecisions?.length ?? 0) > 0 && (
+            <Curtain
+              label="Expired"
+              count={expiredDecisions!.length}
+              open={expiredOpen}
+              onToggle={() => setExpiredOpen((prev) => !prev)}
+            >
+              {expiredDecisions!.map((decision) => (
+                <DecisionResolver
+                  key={decision.id}
+                  companyId={selectedCompanyId}
+                  decisionId={decision.id}
+                  agentMap={agentMap}
+                />
+              ))}
+            </Curtain>
+          )}
         </div>
       )}
 
@@ -634,6 +721,46 @@ export function WhatNeedsMe() {
         item={trainingItem}
         currentUserId={currentUserId}
       />
+    </div>
+  );
+}
+
+/**
+ * Violet left-rule strip over a run of decisions that share a bundle, e.g.
+ * "Gardener proposed 6 cleanups · from PAP-123 · morning sweep · 6 pending".
+ * Grouping is a surface only — each decision is still decided independently.
+ */
+function DecisionBundleHeader({
+  agentName,
+  title,
+  originIssue,
+  count,
+}: {
+  agentName: string | null;
+  title: string | null;
+  originIssue: AttentionSubject | null;
+  count: number;
+}) {
+  const noun = count === 1 ? "cleanup" : "cleanups";
+  return (
+    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-sm border-l-2 border-violet-500/60 bg-violet-500/5 px-3 py-1.5 text-xs">
+      <span className="font-semibold text-violet-800 dark:text-violet-200">
+        {agentName ?? "An agent"} proposed {count} {noun}
+      </span>
+      {originIssue && (originIssue.identifier || originIssue.title) && (
+        <span className="text-muted-foreground">
+          {"· from "}
+          {originIssue.href ? (
+            <a href={originIssue.href} className="hover:underline">
+              {originIssue.identifier ?? originIssue.title}
+            </a>
+          ) : (
+            originIssue.identifier ?? originIssue.title
+          )}
+        </span>
+      )}
+      {title && <span className="text-muted-foreground">· {title}</span>}
+      <span className="text-muted-foreground">· {count} pending</span>
     </div>
   );
 }
