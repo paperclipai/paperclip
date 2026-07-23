@@ -696,6 +696,17 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       routines: {
+        async list(input) {
+          return callHost("routines.list", {
+            companyId: input.companyId,
+            projectId: input.projectId,
+            limit: input.limit,
+            offset: input.offset,
+          });
+        },
+        async get(routineId: string, companyId: string) {
+          return callHost("routines.get", { routineId, companyId });
+        },
         managed: {
           async get(routineKey: string, companyId: string) {
             return callHost("routines.managed.get", { routineKey, companyId });

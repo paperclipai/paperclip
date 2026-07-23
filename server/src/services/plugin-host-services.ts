@@ -50,6 +50,7 @@ import { pluginStateStore } from "./plugin-state-store.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { pluginManagedAgentService } from "./plugin-managed-agents.js";
 import { pluginManagedRoutineService } from "./plugin-managed-routines.js";
+import { routineService } from "./routines.js";
 import { pluginManagedSkillService } from "./plugin-managed-skills.js";
 import {
   assertConfiguredLocalFolder,
@@ -535,6 +536,9 @@ export function buildHostServices(
     manifest: options.manifest,
   });
   const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
+  const routineReads = routineService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
   const projects = projectService(db);
@@ -1624,6 +1628,18 @@ export function buildHostServices(
     },
 
     routines: {
+      async list(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rows = await routineReads.list(companyId, { projectId: params.projectId ?? undefined });
+        return applyWindow(rows, params);
+      },
+      async get(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const routine = await routineReads.get(params.routineId);
+        return inCompany(routine, companyId) ? routine : null;
+      },
       async managedGet(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);

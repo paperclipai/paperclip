@@ -1147,6 +1147,22 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     routines: {
+      async list(input) {
+        requireCapability(manifest, capabilitySet, "routines.read");
+        const companyId = requireCompanyId(input?.companyId);
+        let out = [...routines.values()].filter((routine) => routine.companyId === companyId);
+        if (input?.projectId) out = out.filter((routine) => routine.projectId === input.projectId);
+        if (input?.offset) out = out.slice(input.offset);
+        if (input?.limit) out = out.slice(0, input.limit);
+        // The in-memory harness carries no trigger/run history, so the
+        // RoutineListItem enrichment fields are empty rather than invented.
+        return out.map((routine) => ({ ...routine, triggers: [], lastRun: null, activeIssue: null }));
+      },
+      async get(routineId, companyId) {
+        requireCapability(manifest, capabilitySet, "routines.read");
+        const routine = routines.get(routineId);
+        return isInCompany(routine, companyId) ? routine : null;
+      },
       managed: {
         async get(routineKey, companyId) {
           requireCapability(manifest, capabilitySet, "routines.managed");

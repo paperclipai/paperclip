@@ -205,8 +205,10 @@ export interface HostServices {
     get(params: WorkerToHostMethods["executionWorkspaces.get"][0]): Promise<WorkerToHostMethods["executionWorkspaces.get"][1]>;
   };
 
-  /** Provides `routines.managed.*`. */
+  /** Provides `routines.list`/`routines.get` (read) and `routines.managed.*`. */
   routines: {
+    list(params: WorkerToHostMethods["routines.list"][0]): Promise<WorkerToHostMethods["routines.list"][1]>;
+    get(params: WorkerToHostMethods["routines.get"][0]): Promise<WorkerToHostMethods["routines.get"][1]>;
     managedGet(params: WorkerToHostMethods["routines.managed.get"][0]): Promise<WorkerToHostMethods["routines.managed.get"][1]>;
     managedReconcile(params: WorkerToHostMethods["routines.managed.reconcile"][0]): Promise<WorkerToHostMethods["routines.managed.reconcile"][1]>;
     managedReset(params: WorkerToHostMethods["routines.managed.reset"][0]): Promise<WorkerToHostMethods["routines.managed.reset"][1]>;
@@ -435,6 +437,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
     "routines.managed.reset": "routines.managed",
     "routines.managed.update": "routines.managed",
     "routines.managed.run": "routines.managed",
+    "routines.list": "routines.read",
+    "routines.get": "routines.read",
     "skills.managed.get": "skills.managed",
     "skills.managed.reconcile": "skills.managed",
     "skills.managed.reset": "skills.managed",
@@ -831,6 +835,12 @@ export function createHostClientHandlers(
     }),
 
     // Routines
+    "routines.list": gated("routines.list", async (params) => {
+      return services.routines.list(params);
+    }),
+    "routines.get": gated("routines.get", async (params) => {
+      return services.routines.get(params);
+    }),
     "routines.managed.get": gated("routines.managed.get", async (params) => {
       return services.routines.managedGet(params);
     }),
