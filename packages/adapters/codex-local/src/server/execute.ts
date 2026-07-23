@@ -440,7 +440,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.engine === "acp") {
     try {
-      return await executeCodexAcp(ctx);
+      const result = await executeCodexAcp(ctx);
+      if (engineSelection.explicit || result.errorCode !== "acpx_session_config_failed") return result;
+      await ctx.onLog(
+        "stderr",
+        formatCodexAcpFallbackMessage(`Codex ACP session configuration failed: ${result.errorMessage ?? result.summary}`),
+      );
     } catch (err) {
       if (engineSelection.explicit) throw err;
       const reason = err instanceof Error ? err.message : String(err);

@@ -1,5 +1,6 @@
 import type { AdapterModel } from "../../api/agents";
 import type { Issue, Project } from "@paperclipai/shared";
+import { codexLocalThinkingEffortsForModel } from "@paperclipai/adapter-codex-local";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
 import type { IssueModelLane } from "../../lib/issue-assignee-overrides";
 
@@ -59,14 +60,7 @@ export const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
   ],
-  codex_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "xhigh", label: "X-High" },
-  ],
+  codex_local: [{ value: "", label: "Default" }],
   opencode_local: [
     { value: "", label: "Default" },
     { value: "minimal", label: "Minimal" },
@@ -90,8 +84,17 @@ export function compactRecord(record: Record<string, unknown>) {
   );
 }
 
-export function thinkingEffortOptionsFor(adapterType: string | null | undefined) {
-  if (adapterType === "codex_local") return ISSUE_THINKING_EFFORT_OPTIONS.codex_local;
+function effortLabel(value: string) {
+  return value === "xhigh" ? "X-High" : value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+export function thinkingEffortOptionsFor(adapterType: string | null | undefined, model?: string | null) {
+  if (adapterType === "codex_local") {
+    return [
+      ...ISSUE_THINKING_EFFORT_OPTIONS.codex_local,
+      ...codexLocalThinkingEffortsForModel(model).map((value) => ({ value, label: effortLabel(value) })),
+    ];
+  }
   if (adapterType === "opencode_local") return ISSUE_THINKING_EFFORT_OPTIONS.opencode_local;
   return ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
 }

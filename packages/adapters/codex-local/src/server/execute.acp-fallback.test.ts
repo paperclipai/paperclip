@@ -12,7 +12,7 @@ const {
 } = vi.hoisted(() => ({
   ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => undefined),
   ensureAdapterExecutionTargetRuntimeCommandInstalled: vi.fn(async () => undefined),
-  executeCodexAcp: vi.fn(async () => {
+  executeCodexAcp: vi.fn<() => Promise<Record<string, unknown>>>(async () => {
     throw new Error('Transform failed with 1 error: execute.ts:818:0: ERROR: Unexpected "<<"');
   }),
   prepareCodexRuntimeConfig: vi.fn(async () => ({ cleanup: vi.fn(async () => undefined), notes: [] })),
@@ -148,6 +148,30 @@ describe("codex_local ACP startup fallback", () => {
     expect(ctx.onLog).toHaveBeenCalledWith(
       "stderr",
       expect.stringContaining('Unexpected "<<"'),
+    );
+  });
+
+  it("falls back to Codex CLI when auto-selected ACP rejects session configuration", async () => {
+    executeCodexAcp.mockResolvedValueOnce({
+      exitCode: 1,
+      errorCode: "acpx_session_config_failed",
+      errorMessage: 'Agent rejected session/set_config_option for "model"="gpt-5.6-sol"',
+    });
+    const ctx = buildContext({ model: "gpt-5.6-sol", modelReasoningEffort: "ultra" });
+
+    const result = await execute(ctx as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      "run-1",
+      null,
+      "codex",
+      expect.arrayContaining(["--model", "gpt-5.6-sol", "-c", 'model_reasoning_effort="ultra"']),
+      expect.any(Object),
+    );
+    expect(ctx.onLog).toHaveBeenCalledWith(
+      "stderr",
+      expect.stringContaining("Codex ACP session configuration failed"),
     );
   });
 
