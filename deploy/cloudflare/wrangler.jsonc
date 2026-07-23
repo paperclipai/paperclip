@@ -37,7 +37,12 @@
     "PAPERCLIP_DEPLOYMENT_MODE": "authenticated",
     "PAPERCLIP_DEPLOYMENT_EXPOSURE": "private",
     // Leave empty to default to the request origin (your workers.dev URL).
-    "PAPERCLIP_PUBLIC_URL": ""
+    "PAPERCLIP_PUBLIC_URL": "",
+    // The deployment starts fail-closed: it serves nothing until you set the
+    // BOOTSTRAP_TOKEN secret (protects the unclaimed operator invite). After
+    // claiming the operator account, flip this to "true" to open the login
+    // page to your team — Paperclip's own auth takes over from there.
+    "DISABLE_BOOTSTRAP_GATE": "false"
   },
   "observability": { "enabled": true }
 }

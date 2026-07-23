@@ -69,12 +69,11 @@ Notes:
 cd deploy/cloudflare
 pnpm install
 npx wrangler login
-
-# strongly recommended: gate the deployment until you claim the operator
-# account — any value you choose, e.g. `openssl rand -hex 16`
-npx wrangler secret put BOOTSTRAP_TOKEN
-
 npx wrangler deploy
+
+# required before anything is served: gate the deployment until you claim
+# the operator account — any value you choose, e.g. `openssl rand -hex 16`
+npx wrangler secret put BOOTSTRAP_TOKEN
 
 # optional: give in-container agents an API key
 npx wrangler secret put ANTHROPIC_API_KEY
@@ -88,18 +87,14 @@ up.
 
 Paperclip boots in `authenticated` mode with a pending bootstrap invite, and
 **the first visitor to reach the app can claim the operator account**. The
-`BOOTSTRAP_TOKEN` gate exists to make sure that visitor is you: without the
-token (query param once; cookie afterwards), the Worker serves a 401 and
-nothing reaches Paperclip. After you claim the account, remove the gate so
-your team can reach the login page:
+deployment is therefore **fail-closed**: until `BOOTSTRAP_TOKEN` is set, the
+Worker serves only a setup page, and with the token set, requests must
+present it (query param once; cookie afterwards) or receive a 401 — nothing
+reaches Paperclip either way.
 
-```sh
-npx wrangler secret delete BOOTSTRAP_TOKEN
-```
-
-If you skip the token, deploy and claim the account immediately — an
-unclaimed invite on a public `workers.dev` URL is claimable by anyone who
-finds it.
+After you claim the operator account, open the deployment to your team by
+setting `DISABLE_BOOTSTRAP_GATE` to `"true"` in `wrangler.jsonc` and
+redeploying — from that point Paperclip's own login protects everything.
 
 ## Configuration
 
@@ -110,7 +105,8 @@ Set via `vars` in `wrangler.jsonc` or `wrangler secret put`:
 | `PAPERCLIP_PUBLIC_URL` | var | request origin | Public URL Paperclip advertises |
 | `PAPERCLIP_DEPLOYMENT_MODE` | var | `authenticated` | See [Deployment Modes](/deploy/deployment-modes) |
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | var | `private` | Embedded Postgres currently requires `private`; use `public` only with an external `DATABASE_URL` |
-| `BOOTSTRAP_TOKEN` | secret | — | Gates all access until the operator account is claimed (see Deploy) |
+| `BOOTSTRAP_TOKEN` | secret | — (required) | Fail-closed gate: nothing is served until set (see Deploy) |
+| `DISABLE_BOOTSTRAP_GATE` | var | `"false"` | Set `"true"` after claiming the operator account to open team logins |
 | `ANTHROPIC_API_KEY` | secret | — | Forwarded to in-container agent CLIs |
 | `DATABASE_URL` | secret | — | External Postgres (strongly recommended, see above) |
 | `ARTIFACTS` | R2 binding | — | Durable attachment storage (see above) |

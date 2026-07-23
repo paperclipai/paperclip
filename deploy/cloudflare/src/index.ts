@@ -24,8 +24,10 @@ import {
   STORAGE_MOUNT_PATH,
   accessDeniedPage,
   bootingResponse,
+  bootstrapGateMode,
   buildPaperclipEnv,
   getCookie,
+  setupRequiredPage,
   isMountAlreadyInUse,
   isPaperclipRunning,
   isTransientBootError,
@@ -54,12 +56,18 @@ interface Env {
   ANTHROPIC_API_KEY?: string;
   DATABASE_URL?: string;
   /**
-   * When set, every request must present this token (?bootstrap_token=…,
-   * which sets a cookie) — protects the unclaimed operator invite between
-   * first boot and the operator's first login. Delete the secret after
-   * claiming the account to open the login page to your team.
+   * Required before the deployment serves anything (fail-closed): every
+   * request must present this token (?bootstrap_token=…, which sets a
+   * cookie) — protects the unclaimed operator invite between first boot and
+   * the operator's first login.
    */
   BOOTSTRAP_TOKEN?: string;
+  /**
+   * Set to "true" (wrangler.jsonc vars) after the operator account is
+   * claimed to open the login page to your team; Paperclip's own auth
+   * protects everything from then on.
+   */
+  DISABLE_BOOTSTRAP_GATE?: string;
 }
 
 /**
@@ -92,15 +100,27 @@ async function tokensMatch(presented: string, expected: string): Promise<boolean
 }
 
 /**
- * Bootstrap gate: when BOOTSTRAP_TOKEN is set, only requests presenting it
+ * Bootstrap gate, fail-closed: with no token configured the deployment
+ * serves only the setup page; with a token, only requests presenting it
  * (query param once, cookie afterwards) reach Paperclip. Returns null when
  * the request may proceed, otherwise the response to serve.
  */
 async function enforceBootstrapGate(request: Request, env: Env, url: URL): Promise<Response | null> {
-  if (!env.BOOTSTRAP_TOKEN) return null;
+  const mode = bootstrapGateMode({
+    token: env.BOOTSTRAP_TOKEN,
+    disableGate: env.DISABLE_BOOTSTRAP_GATE,
+  });
+  if (mode === "open") return null;
+  if (mode === "setup") {
+    return new Response(setupRequiredPage(), {
+      status: 403,
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    });
+  }
 
+  // mode === "token": BOOTSTRAP_TOKEN is guaranteed non-empty here.
   const presented = url.searchParams.get(BOOTSTRAP_PARAM);
-  if (presented !== null && (await tokensMatch(presented, env.BOOTSTRAP_TOKEN))) {
+  if (presented !== null && (await tokensMatch(presented, env.BOOTSTRAP_TOKEN!))) {
     // Strip the token from the URL and persist access in a cookie.
     url.searchParams.delete(BOOTSTRAP_PARAM);
     return new Response(null, {
@@ -108,14 +128,14 @@ async function enforceBootstrapGate(request: Request, env: Env, url: URL): Promi
       headers: {
         location: url.toString(),
         "set-cookie":
-          `${BOOTSTRAP_COOKIE}=${encodeURIComponent(env.BOOTSTRAP_TOKEN)}; ` +
+          `${BOOTSTRAP_COOKIE}=${encodeURIComponent(env.BOOTSTRAP_TOKEN!)}; ` +
           "HttpOnly; Secure; SameSite=Lax; Path=/",
       },
     });
   }
 
   const cookie = getCookie(request.headers.get("Cookie"), BOOTSTRAP_COOKIE);
-  if (cookie !== undefined && (await tokensMatch(decodeURIComponent(cookie), env.BOOTSTRAP_TOKEN))) {
+  if (cookie !== undefined && (await tokensMatch(decodeURIComponent(cookie), env.BOOTSTRAP_TOKEN!))) {
     return null;
   }
 

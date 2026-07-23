@@ -6,7 +6,9 @@ import {
   START_COMMAND,
   STORAGE_MOUNT_PATH,
   accessDeniedPage,
+  bootstrapGateMode,
   getCookie,
+  setupRequiredPage,
   bootingPage,
   bootingResponse,
   buildPaperclipEnv,
@@ -117,6 +119,34 @@ describe("transient boot detection", () => {
       expect(isTransientBootMessage(message), message).toBe(false);
     }
     expect(isTransientBootError("connection refused")).toBe(false); // non-Error
+  });
+});
+
+describe("bootstrapGateMode", () => {
+  it("fails closed when no token is configured", () => {
+    expect(bootstrapGateMode({})).toBe("setup");
+    expect(bootstrapGateMode({ token: undefined })).toBe("setup");
+  });
+
+  it("treats an empty-string token as unconfigured, never open", () => {
+    expect(bootstrapGateMode({ token: "" })).toBe("setup");
+  });
+
+  it("requires the token when one is configured", () => {
+    expect(bootstrapGateMode({ token: "s3cret" })).toBe("token");
+  });
+
+  it("only opens on the explicit literal opt-out", () => {
+    expect(bootstrapGateMode({ disableGate: "true" })).toBe("open");
+    expect(bootstrapGateMode({ token: "s3cret", disableGate: "true" })).toBe("open");
+    expect(bootstrapGateMode({ disableGate: "TRUE" })).toBe("setup");
+    expect(bootstrapGateMode({ disableGate: "1" })).toBe("setup");
+  });
+
+  it("setup page tells the operator how to configure the gate", () => {
+    const html = setupRequiredPage();
+    expect(html).toContain("BOOTSTRAP_TOKEN");
+    expect(html).toContain("DISABLE_BOOTSTRAP_GATE");
   });
 });
 

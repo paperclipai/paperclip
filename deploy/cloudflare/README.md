@@ -9,8 +9,8 @@ preinstalled. No custom domain required.
 ```sh
 pnpm install
 npx wrangler login
-npx wrangler secret put BOOTSTRAP_TOKEN   # gate access until you claim the operator account
 npx wrangler deploy
+npx wrangler secret put BOOTSTRAP_TOKEN   # required — deployment is fail-closed until set
 ```
 
 > ⚠️ Container disk is **ephemeral** — for any data you want to keep, set an

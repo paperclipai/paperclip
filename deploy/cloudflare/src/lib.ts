@@ -90,6 +90,56 @@ export function getCookie(cookieHeader: string | null, name: string): string | u
   return undefined;
 }
 
+/**
+ * Access-gate decision, fail-closed by default:
+ * - "open"  — operator explicitly disabled the gate (post-claim state)
+ * - "setup" — no usable token configured; serve the setup page, proxy nothing
+ * - "token" — token configured; require it (query param once, cookie after)
+ * An empty-string token counts as unconfigured — it must never open the gate.
+ */
+export function bootstrapGateMode(options: {
+  token?: string;
+  disableGate?: string;
+}): "open" | "setup" | "token" {
+  if (options.disableGate === "true") return "open";
+  if (!options.token) return "setup";
+  return "token";
+}
+
+/** 403 page served fail-closed until BOOTSTRAP_TOKEN is configured. */
+export function setupRequiredPage(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Paperclip — setup required</title>
+<style>
+  :root{color-scheme:light dark}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       font-family:ui-sans-serif,system-ui,sans-serif;background:#0d1017;color:#e6e6e6}
+  main{max-width:36rem;padding:2rem}
+  h1{font-size:1.1rem;font-weight:600;margin:0 0 .5rem}
+  p{margin:.35rem 0;color:#9aa4bf;font-size:.9rem}
+  code{color:#7dd3fc}
+</style>
+</head>
+<body>
+<main>
+  <h1>Setup required</h1>
+  <p>This Paperclip deployment starts <strong>locked</strong> so that nobody
+     else can claim the operator account before you do.</p>
+  <p>Set a bootstrap token, then open this URL with
+     <code>?${BOOTSTRAP_PARAM}=&lt;your token&gt;</code>:</p>
+  <p><code>npx wrangler secret put BOOTSTRAP_TOKEN</code></p>
+  <p>After you claim the operator account you can open the deployment to your
+     team by setting <code>DISABLE_BOOTSTRAP_GATE</code> to <code>"true"</code>
+     in <code>wrangler.jsonc</code> and redeploying.</p>
+</main>
+</body>
+</html>`;
+}
+
 /** 401 page shown while the deployment is gated by BOOTSTRAP_TOKEN. */
 export function accessDeniedPage(): string {
   return `<!doctype html>
