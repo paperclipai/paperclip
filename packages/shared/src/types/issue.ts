@@ -210,6 +210,8 @@ export interface IssueRelationIssueSummary {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  executionPolicy?: IssueExecutionPolicy | null;
+  monitorNextCheckAt?: Date | null;
   terminalBlockers?: IssueRelationIssueSummary[];
   activeRecoveryAction?: IssueRecoveryAction | null;
 }
