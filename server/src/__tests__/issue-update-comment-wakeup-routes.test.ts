@@ -474,6 +474,44 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it.each(["done", "cancelled"] as const)(
+    "does not wake the assignee when a board comment transitions the issue to %s",
+    async (status) => {
+      const existing = makeIssue({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        status: "todo",
+      });
+      const updated = { ...existing, status };
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockResolvedValue(updated);
+      mockIssueService.addComment.mockResolvedValue({
+        id: `comment-${status}`,
+        issueId: existing.id,
+        companyId: existing.companyId,
+        body: `closing as ${status}`,
+      });
+
+      const res = await request(await createApp())
+        .patch(`/api/issues/${existing.id}`)
+        .send({
+          status,
+          comment: `closing as ${status}`,
+        });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        existing.id,
+        expect.objectContaining({ status }),
+      );
+      expect(mockIssueService.addComment).toHaveBeenCalled();
+      await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalled());
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    },
+    15_000,
+  );
+
   it("wakes the assignee on top-level board issue comments", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
