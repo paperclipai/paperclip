@@ -92,6 +92,16 @@ function subscriptionAuthJson(accountId: string, lastRefresh: string, marker: st
   );
 }
 
+// Enumerate the host staged-home temp dirs `stageCodexHomeForSync` created for a
+// given runId (`paperclip-codex-home-sync-<runId>-<random>` under os.tmpdir()).
+// A unique per-test runId scopes the match to this run's staging dirs only, so
+// the assertion is not disturbed by other tests/processes sharing the tmp dir.
+async function listCodexHomeSyncDirs(runId: string): Promise<string[]> {
+  const prefix = `paperclip-codex-home-sync-${runId}-`;
+  const entries = await fs.readdir(os.tmpdir());
+  return entries.filter((name) => name.startsWith(prefix)).map((name) => path.join(os.tmpdir(), name));
+}
+
 function setNodeVersion(version: string): void {
   Object.defineProperty(process, "version", {
     configurable: true,
@@ -786,6 +796,158 @@ describe("codex_local ACP lane", () => {
     const hostAuth = JSON.parse(await fs.readFile(path.join(sharedHostHome, "auth.json"), "utf8"));
     expect(hostAuth.last_refresh).toBe(NEWER_REFRESH);
     expect(hostAuth.tokens.refresh_token).toBe("ref-host-newer");
+  });
+
+  it("keeps the host staged Codex home after a clean teardown so a compatible resume can reuse it", async () => {
+    // Session-re-staging guardrail: the per-run copy-back (`teardown`) must NOT
+    // remove the host staged-home temp dir — that removal moved to the one-time
+    // `disposeStaged`, fired only when the runtime is dropped. So after a CLEAN
+    // turn the engine caches the staged runtime warm and its host staged home is
+    // still on disk for the next compatible resume to reuse.
+    const runId = "run-keep-staged-home";
+    const root = await makeTempRoot("paperclip-codex-acp-keep-staged-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const sourceHome = path.join(root, "codex-home");
+    const sharedHostHome = path.join(root, "shared-codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sourceHome, { recursive: true });
+    await fs.mkdir(sharedHostHome, { recursive: true });
+    // Strictly-newer sandbox credential so the per-run copy-back has real work.
+    await fs.writeFile(
+      path.join(sourceHome, "auth.json"),
+      subscriptionAuthJson("acct-same", NEWER_REFRESH, "sandbox-newer"),
+      { mode: 0o600 },
+    );
+    await fs.writeFile(
+      path.join(sharedHostHome, "auth.json"),
+      subscriptionAuthJson("acct-same", OLDER_REFRESH, "host-older"),
+      { mode: 0o600 },
+    );
+    process.env.CODEX_HOME = sharedHostHome;
+
+    // Isolated staged-runtime cache so this test observes only its own entry.
+    const stagedRuntimes = new Map();
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+      stagedRuntimes,
+      stagingLocks: new Map(),
+    });
+    const result = await execute(
+      buildContext(localCwd, {
+        runId,
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          env: { CODEX_HOME: sourceHome },
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    // Guardrail: `teardown` ran the copy-back but left the host staged home in
+    // place, and the clean turn cached the staged runtime warm for reuse.
+    const stagedDirs = await listCodexHomeSyncDirs(runId);
+    expect(stagedDirs).toHaveLength(1);
+    await expect(fs.stat(stagedDirs[0]!)).resolves.toBeDefined();
+    expect(stagedRuntimes.size).toBe(1);
+    // The per-run copy-back still fired: the strictly-newer sandbox credential
+    // landed on the shared host under the monotonic guard.
+    const hostAuth = JSON.parse(await fs.readFile(path.join(sharedHostHome, "auth.json"), "utf8"));
+    expect(hostAuth.last_refresh).toBe(NEWER_REFRESH);
+    expect(hostAuth.tokens.refresh_token).toBe("ref-sandbox-newer");
+    // No `disposeStaged` fires while the entry stays warm, so remove the
+    // intentionally-persisted staged temp ourselves to avoid leaking it.
+    await Promise.all(stagedDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  });
+
+  it("removes the host staged Codex home when a failed turn drops the staged runtime", async () => {
+    // The complementary guardrail: when the staged runtime IS dropped (here, a
+    // failed turn), the one-time `disposeStaged` fires and removes the host
+    // staged-home temp dir — while the per-run copy-back (`teardown`) STILL fires
+    // on the unclean exit path, so a rotated sandbox credential is never lost.
+    const runId = "run-drop-staged-home";
+    const root = await makeTempRoot("paperclip-codex-acp-drop-staged-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const sourceHome = path.join(root, "codex-home");
+    const sharedHostHome = path.join(root, "shared-codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sourceHome, { recursive: true });
+    await fs.mkdir(sharedHostHome, { recursive: true });
+    await fs.writeFile(
+      path.join(sourceHome, "auth.json"),
+      subscriptionAuthJson("acct-same", NEWER_REFRESH, "sandbox-newer"),
+      { mode: 0o600 },
+    );
+    await fs.writeFile(
+      path.join(sharedHostHome, "auth.json"),
+      subscriptionAuthJson("acct-same", OLDER_REFRESH, "host-older"),
+      { mode: 0o600 },
+    );
+    process.env.CODEX_HOME = sharedHostHome;
+
+    const stagedRuntimes = new Map();
+    const execute = createCodexAcpExecutor({
+      // A failed turn drives the drop path (discard staged runtime + dispose).
+      createRuntime: (options: FakeRuntimeOptions) =>
+        new FakeRuntime(options, [], { status: "failed", stopReason: "error" }) as never,
+      stagedRuntimes,
+      stagingLocks: new Map(),
+    });
+    const result = await execute(
+      buildContext(localCwd, {
+        runId,
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          env: { CODEX_HOME: sourceHome },
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    // Guardrail: the dropped staged runtime disposed its host staged home and
+    // left nothing cached for reuse.
+    await expect(listCodexHomeSyncDirs(runId)).resolves.toEqual([]);
+    expect(stagedRuntimes.size).toBe(0);
+    // ...yet the per-run copy-back still ran on the failure teardown path, so the
+    // strictly-newer sandbox credential was not lost.
+    const hostAuth = JSON.parse(await fs.readFile(path.join(sharedHostHome, "auth.json"), "utf8"));
+    expect(hostAuth.last_refresh).toBe(NEWER_REFRESH);
+    expect(hostAuth.tokens.refresh_token).toBe("ref-sandbox-newer");
   });
 
   it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
