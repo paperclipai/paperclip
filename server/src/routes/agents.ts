@@ -2313,6 +2313,32 @@ export function agentRoutes(
     );
   });
 
+  router.delete("/agents/:id/sessions", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    assertCompanyAccess(req, agent.companyId);
+
+    const cleared = await heartbeat.clearAgentSessions(id);
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.task_sessions_cleared",
+      entityType: "agent",
+      entityId: id,
+      details: { cleared },
+    });
+
+    res.json({ cleared });
+  });
+
   router.post("/agents/:id/runtime-state/reset-session", validate(resetAgentSessionSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;

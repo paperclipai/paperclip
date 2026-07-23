@@ -80,6 +80,7 @@ const mockBudgetService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   listTaskSessions: vi.fn(),
   resetRuntimeSession: vi.fn(),
+  clearAgentSessions: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
   cancelInvocationsForAgents: vi.fn(),
@@ -330,6 +331,7 @@ describe.sequential("agent permission routes", () => {
     mockBudgetService.upsertPolicy.mockReset();
     mockHeartbeatService.listTaskSessions.mockReset();
     mockHeartbeatService.resetRuntimeSession.mockReset();
+    mockHeartbeatService.clearAgentSessions.mockReset();
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
     mockHeartbeatService.cancelInvocationsForAgents.mockReset();
@@ -1808,5 +1810,44 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("Heartbeat run not found");
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("clears agent task sessions for current adapter via DELETE /agents/:id/sessions", async () => {
+    mockHeartbeatService.clearAgentSessions.mockResolvedValue(2);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).delete(`/api/agents/${agentId}/sessions`),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ cleared: 2 });
+    expect(mockHeartbeatService.clearAgentSessions).toHaveBeenCalledWith(agentId);
+  });
+
+  it("blocks DELETE /agents/:id/sessions for authenticated company members without agent admin permission", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).delete(`/api/agents/${agentId}/sessions`),
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockHeartbeatService.clearAgentSessions).not.toHaveBeenCalled();
   });
 });
