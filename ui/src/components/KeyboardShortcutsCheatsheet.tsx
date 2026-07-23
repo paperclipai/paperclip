@@ -1,4 +1,5 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { getModKeyLabel } from "@/components/ui/kbd";
 
 interface ShortcutEntry {
   keys: string[];
@@ -11,13 +12,7 @@ interface ShortcutEntry {
 // Platform-appropriate label for the Cmd/Ctrl modifier so the cheatsheet shows
 // the same key the user actually presses (re-pointed in the collapsible sidebar
 // work — Cmd/Ctrl+B toggles the rail).
-function getPlatformLabel() {
-  if (typeof navigator === "undefined") return "";
-  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-  return nav.userAgentData?.platform || navigator.userAgent || "";
-}
-
-const META_KEY = /Mac|iPhone|iPad|iPod/.test(getPlatformLabel()) ? "⌘" : "Ctrl";
+const META_KEY = getModKeyLabel();
 
 interface ShortcutSection {
   title: string;

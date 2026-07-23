@@ -45,6 +45,7 @@ These are shadcn/ui base components. Do not modify directly — extend via compo
 | Collapsible | `collapsible.tsx` | CollapsibleTrigger, CollapsibleContent | Expand/collapse sections. |
 | Skeleton | `skeleton.tsx` | className for sizing | Loading placeholder with shimmer. |
 | Sheet | `sheet.tsx` | SheetTrigger, SheetContent, SheetHeader, etc. | Side panel overlay. |
+| Kbd | `kbd.tsx` | `className`. Also exports `getModKeyLabel()`, `modComboLabel(key)`, `modEnterLabel()` | Inline keyboard-shortcut hint badge for buttons (e.g. Send + ⌘↵). Decorative (`aria-hidden`); put `aria-keyshortcuts` on the button. Helpers pick ⌘ vs Ctrl per platform (`+` separator on Ctrl). |
 
 ---
 

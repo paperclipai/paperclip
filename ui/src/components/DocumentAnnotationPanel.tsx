@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Kbd, modEnterLabel } from "@/components/ui/kbd";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -463,9 +464,11 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
                 || props.newCommentDisabled
                 || !props.baseRevisionId
               }
+              aria-keyshortcuts="Meta+Enter Control+Enter"
               onClick={() => createThread.mutate(composerValue.trim())}
             >
               {createThread.isPending ? "Posting…" : "Comment"}
+              <Kbd className="hidden sm:inline-flex">{modEnterLabel()}</Kbd>
             </Button>
           </div>
         </div>
@@ -569,9 +572,11 @@ function ThreadCard(props: {
                 type="button"
                 size="sm"
                 disabled={!props.replyDraft.trim() || props.pendingReply}
+                aria-keyshortcuts="Meta+Enter Control+Enter"
                 onClick={props.onSubmitReply}
               >
                 {props.pendingReply ? "Sending…" : "Reply"}
+                <Kbd className="hidden sm:inline-flex">{modEnterLabel()}</Kbd>
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>

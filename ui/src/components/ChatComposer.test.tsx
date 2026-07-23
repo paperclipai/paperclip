@@ -137,6 +137,26 @@ describe("ChatComposer", () => {
     act(() => root.unmount());
   });
 
+  it('submitKey="mod-enter": send button advertises the shortcut', () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<Harness submitKey="mod-enter" />);
+    });
+    expect(sendButton().title).toMatch(/\((⌘|Ctrl)\+Enter\)$/);
+    expect(sendButton().getAttribute("aria-keyshortcuts")).toBe("Meta+Enter Control+Enter");
+    act(() => root.unmount());
+  });
+
+  it('submitKey="enter": send button does not advertise the mod-enter shortcut', () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<Harness submitKey="enter" />);
+    });
+    expect(sendButton().title).toBe("Send message");
+    expect(sendButton().getAttribute("aria-keyshortcuts")).toBeNull();
+    act(() => root.unmount());
+  });
+
   it("singleLine strips newlines from input", () => {
     const onChange = vi.fn();
     const root = createRoot(container);

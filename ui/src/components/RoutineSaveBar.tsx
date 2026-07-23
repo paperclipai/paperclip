@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Kbd, modComboLabel } from "@/components/ui/kbd";
 import {
   Dialog,
   DialogContent,
@@ -150,13 +151,12 @@ export function RoutineSaveBar({
               <Button
                 size="sm"
                 disabled={isSaving || disabled}
+                aria-keyshortcuts="Meta+S Control+S"
                 onClick={onSave}
               >
                 {isSaving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
                 Save changes
-                <kbd className="ml-2 hidden rounded bg-foreground/10 px-1 text-(length:--text-nano) font-medium sm:inline">
-                  ⌘S
-                </kbd>
+                <Kbd className="ml-2 hidden sm:inline-flex">{modComboLabel("S")}</Kbd>
               </Button>
             </>
           )}
