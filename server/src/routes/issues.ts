@@ -5417,6 +5417,23 @@ export function issueRoutes(
     });
   });
 
+  router.get("/issues/:id/relations", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const relations = await svc.getRelationSummaries(issue.id);
+    res.json({
+      issueId: issue.id,
+      blockedBy: relations.blockedBy,
+      blocks: relations.blocks,
+    });
+  });
+
   router.get("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");

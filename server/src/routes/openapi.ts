@@ -1911,6 +1911,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/relations",
+  tags: ["issues"],
+  summary: "Get issue relation summaries",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/issues/{id}",
   tags: ["issues"],
