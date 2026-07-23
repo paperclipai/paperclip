@@ -5,6 +5,15 @@ function isGitHubDotCom(hostname: string) {
   return h === "github.com" || h === "www.github.com";
 }
 
+function isKnownGitHubHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  // github.com API and raw content hosts
+  if (h === "raw.githubusercontent.com" || h.endsWith(".github.com")) return true;
+  // GitHub Enterprise: match configured host and its api.* subdomain
+  const gheHost = process.env.GITHUB_HOST?.toLowerCase();
+  return !!gheHost && (h === gheHost || h === `api.${gheHost}`);
+}
+
 export function gitHubApiBase(hostname: string) {
   return isGitHubDotCom(hostname) ? "https://api.github.com" : `https://${hostname}/api/v3`;
 }
@@ -17,8 +26,14 @@ export function resolveRawGitHubUrl(hostname: string, owner: string, repo: strin
 }
 
 export async function ghFetch(url: string, init?: RequestInit): Promise<Response> {
+  const token = process.env.GITHUB_TOKEN;
+  const hostname = new URL(url).hostname;
+  const mergedInit: RequestInit =
+    token && isKnownGitHubHost(hostname)
+      ? { ...init, headers: { Authorization: `token ${token}`, ...init?.headers } }
+      : (init ?? {});
   try {
-    return await fetch(url, init);
+    return await fetch(url, mergedInit);
   } catch {
     throw unprocessable(`Could not connect to ${new URL(url).hostname} — ensure the URL points to a GitHub or GitHub Enterprise instance`);
   }
