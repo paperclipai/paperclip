@@ -3107,6 +3107,101 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("uses the selected project workspace instead of inherited source workspace on cross-project creates", async () => {
+    const companyId = randomUUID();
+    const sourceProjectId = randomUUID();
+    const targetProjectId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const sourceProjectWorkspaceId = randomUUID();
+    const sourceExecutionWorkspaceId = randomUUID();
+    const targetProjectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values([
+      {
+        id: sourceProjectId,
+        companyId,
+        name: "Source project",
+        status: "in_progress",
+      },
+      {
+        id: targetProjectId,
+        companyId,
+        name: "Target project",
+        status: "in_progress",
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          allowIssueOverride: true,
+          defaultProjectWorkspaceId: targetProjectWorkspaceId,
+        },
+      },
+    ]);
+
+    await db.insert(projectWorkspaces).values([
+      {
+        id: sourceProjectWorkspaceId,
+        companyId,
+        projectId: sourceProjectId,
+        name: "Source workspace",
+      },
+      {
+        id: targetProjectWorkspaceId,
+        companyId,
+        projectId: targetProjectId,
+        name: "Target workspace",
+        isPrimary: true,
+      },
+    ]);
+
+    await db.insert(executionWorkspaces).values({
+      id: sourceExecutionWorkspaceId,
+      companyId,
+      projectId: sourceProjectId,
+      projectWorkspaceId: sourceProjectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Source worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId: sourceProjectId,
+      projectWorkspaceId: sourceProjectWorkspaceId,
+      title: "Source issue",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: sourceExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+      },
+    });
+
+    const followUp = await svc.create(companyId, {
+      projectId: targetProjectId,
+      title: "Cross-project follow-up",
+      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
+    });
+
+    expect(followUp.projectId).toBe(targetProjectId);
+    expect(followUp.projectWorkspaceId).toBe(targetProjectWorkspaceId);
+    expect(followUp.executionWorkspaceId).toBeNull();
+    expect(followUp.executionWorkspaceSettings).toEqual({
+      mode: "shared_workspace",
+    });
+  });
+
   it("createChild applies parent defaults, acceptance criteria, workspace inheritance, and optional parent blocker chaining", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

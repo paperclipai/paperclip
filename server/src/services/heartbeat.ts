@@ -9204,13 +9204,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!issueId) return { allowed: true };
 
     const issue = await db
-      .select({
-        id: issues.id,
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        executionRunId: issues.executionRunId,
-        executionState: issues.executionState,
-      })
+      .select()
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
@@ -10857,6 +10851,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         errorCode:
           | "issue_not_found"
           | "issue_assignee_changed"
+          | "issue_blocked_unassigned"
           | "issue_terminal_status"
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
@@ -10935,6 +10930,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reviewParticipant = reviewExecutionState?.currentParticipant ?? null;
     const isCurrentReviewParticipant = reviewParticipant?.type === "agent" &&
       reviewParticipant.agentId === run.agentId;
+
+    if (issue.status === "blocked" && issue.assigneeAgentId === null && !isInteractionWake && !wakeCommentId) {
+      return {
+        stale: true,
+        errorCode: "issue_blocked_unassigned",
+        reason:
+          "Cancelled because the target issue is blocked and unassigned; blocked unowned issues need an explicit owner or blocker-resolution wake before dispatch",
+        details: { issueId, currentStatus: issue.status, currentAssigneeAgentId: null },
+      };
+    }
 
     if (issue.assigneeAgentId !== run.agentId && !isInteractionWake && !isCurrentReviewParticipant) {
       return {
@@ -11057,6 +11062,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       message: staleness.reason,
       payload: staleness.details,
     });
+
+    if (staleness.errorCode === "issue_blocked_unassigned") {
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+        .then((rows) => rows[0] ?? null);
+      if (issue && issue.status === "blocked" && !issue.assigneeAgentId && !issue.assigneeUserId) {
+        await recovery.escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "blocked",
+          latestRun: cancelled,
+          comment:
+            "Paperclip refused to dispatch this run because the source issue is blocked and unassigned with no executable owner. " +
+            "Fail-safe recovery is making that dead-end visible instead of silently cancelling the run.",
+        });
+      }
+    }
 
     return cancelled;
   }

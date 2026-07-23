@@ -105,6 +105,7 @@ import {
   parseIssueGraphLivenessIncidentKey,
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
+import { externalWaitFromDescription } from "./recovery/external-wait.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
@@ -1724,6 +1725,7 @@ type IssueBlockerAttentionNode = {
   parentId: string | null;
   identifier: string | null;
   title: string;
+  description: string | null;
   status: string;
   executionRunId?: string | null;
   assigneeAgentId: string | null;
@@ -1732,7 +1734,7 @@ type IssueBlockerAttentionNode = {
 type IssueBlockerAttentionInputNode =
   Pick<
     IssueBlockerAttentionNode,
-    "id" | "companyId" | "parentId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId"
+    "id" | "companyId" | "parentId" | "identifier" | "title" | "description" | "status" | "assigneeAgentId" | "assigneeUserId"
   >
   & { executionRunId?: string | null };
 
@@ -2149,6 +2151,7 @@ async function listIssueBlockerAttentionMap(
           parentId: issues.parentId,
           identifier: issues.identifier,
           title: issues.title,
+          description: issues.description,
           status: issues.status,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
@@ -2209,6 +2212,7 @@ async function listIssueBlockerAttentionMap(
           parentId: row.parentId,
           identifier: row.identifier,
           title: row.title,
+          description: row.description,
           status: row.status,
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
@@ -2945,17 +2949,6 @@ async function listSuccessfulRunHandoffMapForIssues(
     : hydrateSuccessfulRunHandoffLiveness(dbOrTx, companyId, states);
 }
 
-function externalWaitFromDescription(description: string | null): { owner: string; action: string } | null {
-  if (!description) return null;
-  const owner = description.match(/^\s*external owner\s*:\s*(.+)$/im)?.[1]?.trim();
-  const action = description.match(/^\s*external action\s*:\s*(.+)$/im)?.[1]?.trim();
-  if (!owner || !action) return null;
-  return {
-    owner: owner.slice(0, 120),
-    action: action.slice(0, 240),
-  };
-}
-
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -2971,7 +2964,7 @@ function redactExternalWaitDescription(
     .join("\n");
 
   for (const value of [external?.owner, external?.action]) {
-    if (!value) continue;
+    if (!value || value.length < 2) continue;
     redacted = redacted.replace(new RegExp(escapeRegExp(value), "gi"), "[redacted external wait detail]");
   }
 
@@ -3249,6 +3242,7 @@ async function listIssueBlockedInboxAttentionMap(
       companyId: issue.companyId,
       identifier: issue.identifier,
       title: issue.title,
+      description: issue.description,
       status: issue.status,
       projectId: issue.projectId,
       goalId: issue.goalId,
@@ -6258,13 +6252,18 @@ export function issueService(db: Db) {
           if (issueData.projectId == null && workspaceSource.projectId) {
             issueData.projectId = workspaceSource.projectId;
           }
-          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
+          const canInheritWorkspaceForProject =
+            issueData.projectId == null ||
+            workspaceSource.projectId == null ||
+            workspaceSource.projectId === issueData.projectId;
+          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId && canInheritWorkspaceForProject) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
           if (
             isolatedWorkspacesEnabled &&
             !hasExplicitExecutionWorkspaceOverride &&
-            workspaceSource.executionWorkspaceId
+            workspaceSource.executionWorkspaceId &&
+            canInheritWorkspaceForProject
           ) {
             const sourceWorkspace = await tx
               .select({

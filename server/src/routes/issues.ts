@@ -2652,7 +2652,8 @@ export function issueRoutes(
   }
 
   function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
-    return input.parentId !== undefined ||
+    return input.projectId !== undefined ||
+      input.parentId !== undefined ||
       input.inheritExecutionWorkspaceFromIssueId !== undefined ||
       input.projectWorkspaceId !== undefined ||
       input.executionWorkspaceId !== undefined ||
@@ -3603,6 +3604,38 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  async function assertAgentTargetIssueMutationAllowed(
+    req: Request,
+    res: Response,
+    currentIssue: Parameters<typeof decideIssueAccess>[1],
+    target: {
+      projectId?: string | null;
+      parentId?: string | null;
+      assigneeAgentId?: string | null;
+      assigneeUserId?: string | null;
+      status?: string;
+    },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    const targetIssue = {
+      ...currentIssue,
+      projectId: target.projectId === undefined ? currentIssue.projectId : target.projectId,
+      parentId: target.parentId === undefined ? currentIssue.parentId : target.parentId,
+      assigneeAgentId:
+        target.assigneeAgentId === undefined ? currentIssue.assigneeAgentId : target.assigneeAgentId,
+      assigneeUserId:
+        target.assigneeUserId === undefined ? currentIssue.assigneeUserId : target.assigneeUserId,
+      status: target.status === undefined ? currentIssue.status : target.status,
+    };
+    const decision = await decideIssueAccess(req, targetIssue, "issue:mutate");
+    if (decision.allowed) return true;
+    res.status(403).json({
+      error: "Target issue scope is outside this actor's authorization boundary",
+      details: authorizationDeniedDetails(decision),
+    });
+    return false;
   }
 
   async function assertFreshTaskWatchdogSourceMutation(
@@ -7649,6 +7682,20 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    if (
+      (updateFields.projectId !== undefined || updateFields.parentId !== undefined) &&
+      !(await assertAgentTargetIssueMutationAllowed(req, res, existing, {
+        projectId: updateFields.projectId as string | null | undefined,
+        parentId: updateFields.parentId as string | null | undefined,
+        assigneeAgentId: normalizedAssigneeAgentId === undefined
+          ? existing.assigneeAgentId
+          : normalizedAssigneeAgentId,
+        assigneeUserId: updateFields.assigneeUserId as string | null | undefined,
+        status: updateFields.status as string | undefined,
+      }))
+    ) {
+      return;
+    }
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {

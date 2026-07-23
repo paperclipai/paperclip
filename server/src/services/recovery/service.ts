@@ -154,7 +154,7 @@ type StrandedRecoveryCause =
   | "execution_review_participant_recovery"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
-type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
+type StrandedPreviousStatus = "todo" | "in_progress" | "in_review" | "blocked";
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
@@ -4121,6 +4121,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         companyId: issues.companyId,
         identifier: issues.identifier,
         title: issues.title,
+        description: issues.description,
         status: issues.status,
         projectId: issues.projectId,
         goalId: issues.goalId,

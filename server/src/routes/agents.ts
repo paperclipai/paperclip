@@ -128,6 +128,27 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+function failedRunFailureClass(run: { status?: string | null; errorCode?: string | null; error?: string | null }) {
+  if (run.status !== "failed" && !run.error && !run.errorCode) return null;
+  if (run.status === "cancelled") return "cancelled";
+  return "failed";
+}
+
+function safeFailedRunReasonCode(run: { status?: string | null; errorCode?: string | null; error?: string | null }) {
+  if (run.status !== "failed" && !run.error && !run.errorCode) return null;
+  const code = run.errorCode?.trim();
+  if (!code) return null;
+  return code.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || null;
+}
+
+function safeFailedRunReasonSummary(run: { status?: string | null; errorCode?: string | null; error?: string | null }) {
+  if (run.status !== "failed" && !run.error && !run.errorCode) return null;
+  const code = safeFailedRunReasonCode(run);
+  if (code) return `Run failed with error code: ${code}`;
+  if (run.status === "cancelled") return "Run was cancelled before completion.";
+  return "Run failed; inspect the run log for redacted details.";
+}
+
 function readRunIssueId(context: Record<string, unknown> | null) {
   const directIssueId = context?.issueId;
   if (typeof directIssueId === "string" && isUuidLike(directIssueId)) return directIssueId;
@@ -3687,7 +3708,14 @@ export function agentRoutes(
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
     res.json(
       redactCurrentUserValue(
-        { ...decoratedRun, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        {
+          ...decoratedRun,
+          retryExhaustedReason,
+          failureClass: failedRunFailureClass(decoratedRun),
+          failureReasonCode: safeFailedRunReasonCode(decoratedRun),
+          safeReasonSummary: safeFailedRunReasonSummary(decoratedRun),
+          outputSilence: await heartbeat.buildRunOutputSilence(run),
+        },
         await getCurrentUserRedactionOptions(),
       ),
     );

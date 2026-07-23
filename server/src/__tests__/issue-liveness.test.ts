@@ -77,6 +77,112 @@ describe("issue graph liveness classifier", () => {
     });
   });
 
+  it("detects a blocked unassigned issue with no blocker edge as a visible recovery finding", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          assigneeAgentId: null,
+          createdByAgentId: null,
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      state: "blocked_by_unassigned_issue",
+      recoveryIssueId: blockedId,
+      recommendedOwnerAgentId: managerId,
+      dependencyPath: [
+        expect.objectContaining({ issueId: blockedId }),
+      ],
+      incidentKey: `harness_liveness:${companyId}:${blockedId}:blocked_by_unassigned_issue:${blockedId}`,
+    });
+  });
+
+  it("does not flag a blocked unassigned issue when a recovery issue owns the wait", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          assigneeAgentId: null,
+          createdByAgentId: null,
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+      openRecoveryIssues: [{ companyId, issueId: blockedId, status: "todo" }],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it("does not flag a blocked unassigned issue with description-based external wait details", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          assigneeAgentId: null,
+          createdByAgentId: null,
+          description: [
+            "Waiting on a non-Paperclip owner.",
+            "external owner: Private Vendor Security Team",
+            "external action: Send the confidential access token for customer Alpha",
+          ].join("\n"),
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it("does not flag a blocked unassigned issue with one-character external wait details", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          assigneeAgentId: null,
+          createdByAgentId: null,
+          description: [
+            "Waiting on an external owner.",
+            "external owner: A",
+            "external action: B",
+          ].join("\n"),
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it("does not flag a blocked external-wait blocker leaf as an unassigned blocker", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "External wait blocker",
+          status: "blocked",
+          assigneeAgentId: null,
+          createdByAgentId: null,
+          description: [
+            "Waiting on a non-Paperclip owner.",
+            "external owner: Private Vendor Security Team",
+            "external action: Send the confidential access token for customer Alpha",
+          ].join("\n"),
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it("does not use free-form executive role or name matching for recovery ownership", () => {
     const rootAgentId = "root-agent";
     const spoofedExecutiveId = "spoofed-executive";
