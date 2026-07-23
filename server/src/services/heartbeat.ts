@@ -14600,7 +14600,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
+        const deferredCommentWakeId = deriveCommentId(deferredContextSeed, deferredPayload);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        // Only explicit lifecycle intent should revive completed issues. Plain
+        // comments, including routine-execution comments, remain history-only.
+        const deferredLifecycleIntent =
+          promotedContextSeed.resumeIntent === true ||
+          promotedContextSeed.followUpRequested === true ||
+          readNonEmptyString(promotedContextSeed.reopenedFrom) !== null;
+        if (
+          deferredCommentWakeId &&
+          issue.originKind === "routine_execution" &&
+          (issue.status === "done" || issue.status === "cancelled") &&
+          !deferredLifecycleIntent
+        ) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: "Deferred comment wake suppressed because routine execution issue is terminal",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
         // Local-CLI agents post comments under user auth, so a self-comment from
         // the run that is now ending would otherwise look like a real human
         // comment and trigger a reopen on the very issue this run just closed.
@@ -14629,6 +14653,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           deferredCommentIds.length > 0 &&
           !deferredCommentWakeIsSelfAuthored &&
           (issue.status === "done" || issue.status === "cancelled") &&
+          deferredLifecycleIntent &&
           (
             deferred.requestedByActorType === "user" ||
             deferredWakeReason === "issue_reopened_via_comment"
