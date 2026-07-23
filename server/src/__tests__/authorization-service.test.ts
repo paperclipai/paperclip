@@ -1701,6 +1701,54 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows manager and CEO agents to comment on review-held subordinate issues without mutate authority", async () => {
+    const company = await createCompany(db, "ManagerComment");
+    const ceoAgent = await createAgent(db, company.id, { role: "ceo" });
+    const managerAgent = await createAgent(db, company.id, { reportsTo: ceoAgent.id });
+    const reviewerAgent = await createAgent(db, company.id, { reportsTo: managerAgent.id });
+    const peerAgent = await createAgent(db, company.id, { reportsTo: ceoAgent.id });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: reviewerAgent.id });
+    const authz = authorizationService(db);
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      assigneeAgentId: reviewerAgent.id,
+      status: "in_review",
+    };
+
+    for (const actorAgent of [managerAgent, ceoAgent]) {
+      const actor = {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_key" as const,
+      };
+
+      await expect(authz.decide({ actor, action: "issue:comment", resource })).resolves.toMatchObject({
+        allowed: true,
+      });
+      await expect(authz.decide({ actor, action: "issue:mutate", resource })).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_missing_grant",
+      });
+    }
+
+    await expect(authz.decide({
+      actor: {
+        type: "agent" as const,
+        agentId: peerAgent.id,
+        companyId: company.id,
+        source: "agent_key" as const,
+      },
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
   it("scopes task bridge keys away from company-wide reads and unrelated issue writes", async () => {
     const company = await createCompany(db, "TaskBridge");
     const bridgeAgent = await createAgent(db, company.id);

@@ -1970,6 +1970,20 @@ export function authorizationService(db: Db) {
           explanation: "Allowed because the issue has no agent assignee.",
         });
       }
+      const isLegacyCreator = canCreateAgentsLegacy(actorAgent);
+      if (
+        input.action === "issue:comment" &&
+        // Legacy agent creators are intentionally company-wide; manager grants are hierarchy-scoped.
+        (isLegacyCreator || await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId))
+      ) {
+        return allow({
+          action: input.action,
+          reason: isLegacyCreator ? "allow_legacy_agent_creator" : "allow_manager_chain",
+          explanation: isLegacyCreator
+            ? "Allowed by legacy agent creator authority."
+            : "Allowed because the actor manages the issue assignee in the reporting chain.",
+        });
+      }
       if (
         input.action === "issue:comment" &&
         resource?.issueId &&
