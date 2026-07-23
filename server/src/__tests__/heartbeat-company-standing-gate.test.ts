@@ -48,9 +48,14 @@ describeEmbeddedPostgres("heartbeat company-standing run-start gate", () => {
   }, 20_000);
 
   afterEach(async () => {
-    // Master's heartbeatService has no bare drain(); tests here drive runs
-    // synchronously, so no in-flight execution needs draining before cleanup.
+    // Deterministically await any fire-and-forget run executions (including
+    // late skill-sync writes) before clearing tables — upstream's
+    // drainActiveRunExecutions() (#10040) replaces the old sleep/retry sweeps.
+    // The in-flight set is module-scoped, so one drain covers every service
+    // instance this suite created. A stalled agent start lock can hold a run
+    // for 30s, so give the drain generous headroom over the 20s default.
     heartbeats.length = 0;
+    await heartbeatService(db).drainActiveRunExecutions();
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -59,21 +64,9 @@ describeEmbeddedPostgres("heartbeat company-standing run-start gate", () => {
     await db.delete(plugins);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
-    // A just-finished run can flush an async skill-sync write after the last
-    // assertion resolves; if it lands between the next two deletes, deleting
-    // companies trips the company_skills FK. Sweep dependents and retry briefly
-    // instead of failing the whole suite on that narrow race.
-    for (let attempt = 1; ; attempt++) {
-      try {
-        await db.delete(companySkills);
-        await db.delete(companies);
-        break;
-      } catch (err) {
-        if (attempt >= 3) throw err;
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
-    }
-  }, 20_000);
+    await db.delete(companySkills);
+    await db.delete(companies);
+  }, 120_000);
 
   afterAll(async () => {
     await closeDbClient(db);
