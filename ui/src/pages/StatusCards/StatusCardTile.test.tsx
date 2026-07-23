@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StatusCard } from "@paperclipai/shared";
 import { StatusCardTile } from "./StatusCardTile";
@@ -79,7 +80,11 @@ const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false 
 
 function render(node: ReactNode) {
   flushSync(() => {
-    root.render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>);
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>{node}</MemoryRouter>
+      </QueryClientProvider>,
+    );
   });
 }
 
@@ -128,12 +133,21 @@ describe("StatusCardTile lifecycle rendering", () => {
     expect(container.querySelector('[data-testid="markdown-body"]')).toBeTruthy();
   });
 
-  it("renders a compiling card with dashed border and no summary claim", () => {
-    render(tile(baseCard({ state: "compiling", title: null, summaryBody: null })));
+  it("renders a compiling card (setup in flight) with a live spinner and a link to the setup task, no Run now", () => {
+    render(
+      tile(baseCard({ state: "compiling", title: null, summaryBody: null, generatingIssueId: "issue-setup" })),
+    );
     const el = container.querySelector('[data-lifecycle="compiling"]');
     expect(el).toBeTruthy();
     expect(el?.className).toContain("border-dashed");
     expect(container.textContent).toContain("Setting up your card");
+    // A live spinner (animate-spin), not a fading pulse.
+    expect(container.querySelector(".animate-spin")).toBeTruthy();
+    // The running setup task is linkable…
+    const link = container.querySelector('a[href="/issues/issue-setup"]');
+    expect(link?.textContent).toContain("View setup task");
+    // …and "Run now" is not offered while the run is live (no duplicate/race).
+    expect([...container.querySelectorAll("button")].some((b) => b.textContent?.includes("Run now"))).toBe(false);
   });
 
   it("renders an updating card with the delta banner and keeps the old summary", () => {
@@ -185,15 +199,17 @@ describe("StatusCardTile lifecycle rendering", () => {
     expect(opened).toBe(0);
   });
 
-  it("offers a Run now action on a stuck compiling card without opening the card", () => {
+  it("offers a Run now action on a stuck compiling card (no setup run) without opening the card", () => {
     let opened = 0;
     let recompiled = 0;
     render(
-      tile(baseCard({ state: "compiling", title: null, summaryBody: null }), {
+      // generatingIssueId null → the first run stalled, so a manual re-kick is offered.
+      tile(baseCard({ state: "compiling", title: null, summaryBody: null, generatingIssueId: null }), {
         onOpen: () => (opened += 1),
         onRecompile: () => (recompiled += 1),
       }),
     );
+    expect(container.textContent).toContain("Setup didn’t finish");
     const runButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Run now"));
     expect(runButton).toBeTruthy();
     flushSync(() => runButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));

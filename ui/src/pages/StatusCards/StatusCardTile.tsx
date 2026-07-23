@@ -1,6 +1,7 @@
 import { useMemo, type MouseEvent } from "react";
+import { Link } from "react-router-dom";
 import type { SummarySlotIssueRef } from "@paperclipai/shared";
-import { AlertTriangle, Loader2, MoreHorizontal, PauseCircle, RefreshCw, Wand2 } from "lucide-react";
+import { AlertTriangle, ExternalLink, Loader2, MoreHorizontal, PauseCircle, RefreshCw, Wand2 } from "lucide-react";
 
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSummaryDraftStream } from "@/components/useSummaryDraftStream";
@@ -60,6 +61,10 @@ export function StatusCardTile({
 }: StatusCardTileProps) {
   const lifecycle = deriveStatusCardLifecycle(card);
   const presentation = STATUS_CARD_LIFECYCLE_PRESENTATION[lifecycle];
+  // A setup run is actually in flight when the card is compiling AND has a
+  // generation task. When it's null the first run stalled/died and the card
+  // needs a manual re-kick — the only case where "Run now" is offered.
+  const setupRunning = lifecycle === "compiling" && Boolean(card.generatingIssueId);
 
   // Stream the in-flight update into the delta banner (reuses the Summarizer
   // draft-stream machinery). Inert unless the card is actively updating.
@@ -120,7 +125,7 @@ export function StatusCardTile({
               <DropdownMenuItem onSelect={onRefresh} disabled={refreshPending || lifecycle === "updating"}>
                 Refresh now
               </DropdownMenuItem>
-              {lifecycle === "compiling" || lifecycle === "error" ? (
+              {(lifecycle === "compiling" && !setupRunning) || lifecycle === "error" ? (
                 <DropdownMenuItem onSelect={onRecompile} disabled={recompilePending}>
                   Run now
                 </DropdownMenuItem>
@@ -139,23 +144,42 @@ export function StatusCardTile({
       {/* State banner */}
       <div className="px-4 pt-2">
         {lifecycle === "compiling" ? (
-          <div className="rounded-md bg-muted px-3 py-2 text-xs text-foreground" role="status">
+          <div className="rounded-md bg-muted px-3 py-2 text-xs text-foreground" role="status" aria-live="polite">
             <div className="flex items-center gap-2">
-              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-pulse text-muted-foreground" />
-              <span>Setting up your card…</span>
+              {setupRunning ? (
+                // A live spinner (not a fading pulse) so the in-flight setup
+                // reads as actual progress.
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+              ) : (
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+              )}
+              <span>{setupRunning ? "Setting up your card…" : "Setup didn’t finish"}</span>
             </div>
             <p className="mt-1 line-clamp-2 text-muted-foreground">“{card.interestPrompt}”</p>
-            {/* If the first run stalled (agent run died mid-setup) the card can
-                sit here forever, so always offer a manual re-kick. */}
-            <button
-              type="button"
-              onClick={stopClick(onRecompile)}
-              disabled={recompilePending}
-              className="mt-2 inline-flex items-center gap-1.5 font-medium text-foreground underline-offset-2 hover:underline disabled:opacity-60"
-            >
-              <Wand2 className={cn("h-3.5 w-3.5", recompilePending && "animate-pulse")} />
-              {recompilePending ? "Starting…" : "Run now"}
-            </button>
+            {setupRunning ? (
+              // The setup run is live — link to the task instead of offering
+              // "Run now", which would kick a duplicate run and race it.
+              <Link
+                to={`/issues/${card.generatingIssueId}`}
+                onClick={(event) => event.stopPropagation()}
+                className="mt-2 inline-flex items-center gap-1.5 font-medium text-foreground underline-offset-2 hover:underline"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                View setup task
+              </Link>
+            ) : (
+              // The first run stalled (agent run died mid-setup) and the card
+              // can sit here forever, so offer a manual re-kick.
+              <button
+                type="button"
+                onClick={stopClick(onRecompile)}
+                disabled={recompilePending}
+                className="mt-2 inline-flex items-center gap-1.5 font-medium text-foreground underline-offset-2 hover:underline disabled:opacity-60"
+              >
+                <Wand2 className={cn("h-3.5 w-3.5", recompilePending && "animate-pulse")} />
+                {recompilePending ? "Starting…" : "Run now"}
+              </button>
+            )}
           </div>
         ) : null}
 

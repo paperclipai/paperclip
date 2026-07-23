@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CompanySearchIssueSummary, StatusCardUpdate, SummarySlotIssueRef } from "@paperclipai/shared";
-import { ChevronDown, History, Loader2, RefreshCw, Wand2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, ExternalLink, History, Loader2, RefreshCw, Wand2 } from "lucide-react";
 
 import { statusCardsApi, type StatusCardDryRun } from "@/api/statusCards";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -202,6 +202,9 @@ export function StatusCardDetailDrawer({
   const displayedChanges = selectedRevision ? selectedRevision.changes : latestUpdate?.changes ?? [];
   const presentation = STATUS_CARD_LIFECYCLE_PRESENTATION[lifecycle];
   const hasSummary = Boolean(card.summaryBody && card.summaryBody.trim().length > 0);
+  // Setup is genuinely in flight only while a generation task exists; a null id
+  // on a compiling card means the first run stalled and needs a manual re-kick.
+  const setupRunning = lifecycle === "compiling" && Boolean(card.generatingIssueId);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -216,10 +219,16 @@ export function StatusCardDetailDrawer({
                 variant="outline"
                 size="sm"
                 onClick={() => recompileMutation.mutate()}
-                disabled={recompileMutation.isPending}
+                // While the setup run is live, "Run now" is disabled — kicking a
+                // second run would race the one already building the card.
+                disabled={recompileMutation.isPending || setupRunning}
               >
-                <Wand2 className={cn("h-3.5 w-3.5", recompileMutation.isPending && "animate-pulse")} />
-                {recompileMutation.isPending ? "Running…" : "Run now"}
+                {setupRunning || recompileMutation.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Wand2 className="h-3.5 w-3.5" />
+                )}
+                {setupRunning ? "Setting up…" : recompileMutation.isPending ? "Running…" : "Run now"}
               </Button>
             ) : (
               <Button
@@ -322,6 +331,28 @@ export function StatusCardDetailDrawer({
                 </div>
               ) : hasSummary ? (
                 <MarkdownBody className="text-sm leading-7">{card.summaryBody!}</MarkdownBody>
+              ) : lifecycle === "compiling" ? (
+                <div className="space-y-2 text-sm text-muted-foreground">
+                  <p className="flex items-center gap-2">
+                    {setupRunning ? (
+                      <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+                    )}
+                    {setupRunning
+                      ? "Setting up — the first summary is generated automatically once this finishes."
+                      : "Setup didn’t finish. Run it now to try again."}
+                  </p>
+                  {setupRunning && card.generatingIssueId ? (
+                    <Link
+                      to={`/issues/${card.generatingIssueId}`}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground underline-offset-2 hover:underline"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      View setup task
+                    </Link>
+                  ) : null}
+                </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
                   No summary yet — the first one is generated automatically once this card finishes setting up.
