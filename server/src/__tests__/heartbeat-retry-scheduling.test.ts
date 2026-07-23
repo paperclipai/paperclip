@@ -30,6 +30,7 @@ import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
+  resolveModelProfileApplication,
 } from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -208,11 +209,13 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   it("records provider quota failures, schedules the reset-time retry, and leaves the agent idle", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
@@ -230,11 +233,37 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
           wakeOnDemand: true,
           maxConcurrentRuns: 1,
         },
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {},
+          },
+        },
       },
       permissions: {},
     });
 
-    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Publish recovered evidence after quota reset",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      assigneeAdapterOverrides: { modelProfile: "cheap" },
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.invoke(agentId, "on_demand", {
+      issueId,
+      taskId: issueId,
+      forceFreshSession: true,
+      wakeReason: "cheap_recovery_deliverable_handoff",
+      livenessContinuationReason: "cheap_recovery_deliverable_handoff",
+      livenessContinuationInstruction: "Publish the recovered evidence with the normal model.",
+    }, "manual");
     expect(run).not.toBeNull();
 
     const failedRun = await waitForRunToFinish(heartbeat, run!.id);
@@ -273,6 +302,15 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       "2030-04-22T21:00:00.000Z",
     );
     expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.codexTransientFallbackMode ?? null).toBeNull();
+    expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.livenessContinuationReason).toBe(
+      "cheap_recovery_deliverable_handoff",
+    );
+    expect(resolveModelProfileApplication({
+      adapterModelProfiles: [{ key: "cheap", enabled: true, adapterConfig: { model: "cheap-model" } }],
+      agentRuntimeConfig: {},
+      issueModelProfile: "cheap",
+      contextSnapshot: retryRun?.contextSnapshot as Record<string, unknown> | null,
+    })).toMatchObject({ requested: null, applied: null });
 
     await expect
       .poll(

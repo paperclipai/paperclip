@@ -42,6 +42,32 @@ describe("heartbeat model profile application", () => {
     });
   });
 
+  it("ignores a persisted cheap issue override for the normal deliverable handoff", () => {
+    const expected = {
+      requested: null,
+      requestedBy: null,
+      applied: null,
+      configSource: null,
+      fallbackReason: null,
+      adapterConfig: null,
+    };
+
+    for (const contextSnapshot of [
+      { wakeReason: "cheap_recovery_deliverable_handoff" },
+      {
+        wakeReason: "issue_commented",
+        livenessContinuationReason: "cheap_recovery_deliverable_handoff",
+      },
+    ]) {
+      expect(resolveModelProfileApplication({
+        adapterModelProfiles: [cheapProfile],
+        agentRuntimeConfig: {},
+        issueModelProfile: "cheap",
+        contextSnapshot,
+      })).toEqual(expected);
+    }
+  });
+
   it("applies cheap profile patches before explicit issue adapter config overrides", () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: [cheapProfile],

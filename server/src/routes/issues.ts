@@ -6,6 +6,7 @@ import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   documents,
   executionWorkspaces,
@@ -163,6 +164,8 @@ import {
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+import { RECOVERY_REASON_KINDS } from "../services/recovery/origins.js";
+import { withRecoveryModelProfileHint } from "../services/recovery/model-profile-hint.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -194,6 +197,12 @@ import {
 import { externalObjectService } from "../services/external-objects.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const CHEAP_RECOVERY_DELIVERABLE_HANDOFF_IDEMPOTENT_WAKE_STATUSES = [
+  "queued",
+  "deferred_issue_execution",
+  "claimed",
+  "completed",
+];
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -3987,6 +3996,62 @@ export function issueRoutes(
     return run;
   }
 
+  async function ensureCheapRecoveryDeliverableHandoff(input: {
+    issue: { id: string; companyId: string };
+    run: {
+      id: string;
+      companyId: string;
+      agentId: string;
+      contextSnapshot: unknown;
+    };
+  }) {
+    const reason = RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff;
+    const idempotencyKey = [reason, input.issue.id, input.run.id].join(":");
+    const existingWake = await db
+      .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, input.issue.companyId),
+        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+        inArray(agentWakeupRequests.status, CHEAP_RECOVERY_DELIVERABLE_HANDOFF_IDEMPOTENT_WAKE_STATUSES),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existingWake) return;
+
+    const instruction =
+      "The cheap status-only recovery lane found deliverable work but was correctly denied permission. " +
+      "Continue with the normal model using the existing issue workspace evidence, complete the pending deliverable work, " +
+      "publish any required artifact, and update the issue with the resulting deliverable state.";
+    const handoffContext = {
+      issueId: input.issue.id,
+      taskId: input.issue.id,
+      taskKey: input.issue.id,
+      sourceIssueId: input.issue.id,
+      sourceRunId: input.run.id,
+      forceFreshSession: true,
+      followUpRequested: true,
+      wakeReason: reason,
+      handoffIntent: "publish_existing_workspace_evidence",
+      livenessContinuationSourceRunId: input.run.id,
+      livenessContinuationState: "pending_deliverable_work",
+      livenessContinuationReason: reason,
+      livenessContinuationInstruction: instruction,
+    };
+    const normalHandoffContext = withRecoveryModelProfileHint(handoffContext, "normal_model");
+
+    await heartbeat.wakeup(input.run.agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason,
+      idempotencyKey,
+      payload: normalHandoffContext,
+      contextSnapshot: normalHandoffContext,
+      requestedByActorType: "system",
+      requestedByActorId: "issue_routes",
+    });
+  }
+
   async function assertCheapRecoveryIssueAssigneeProfileAllowed(
     req: Request,
     res: Response,
@@ -4019,6 +4084,7 @@ export function issueRoutes(
     if (!run) return true;
     if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
 
+    await ensureCheapRecoveryDeliverableHandoff({ issue, run });
     res.status(403).json({
       error: "Cheap status-only recovery runs cannot update issue documents, plans, or deliverable artifacts",
       details: {
