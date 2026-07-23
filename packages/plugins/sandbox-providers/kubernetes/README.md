@@ -65,6 +65,7 @@ Common optional fields:
 | `namespacePrefix` | `"paperclip-"` | Prefix for the per-company tenant namespace. |
 | `companySlug` | derived from companyId | Override the auto-derived company slug. |
 | `imageRegistry` | (none) | Override the default registry for agent runtime images. |
+| `runtimeImages` | `{}` | Per-adapter runtime image overrides keyed by adapter type. Overrides only the image, preserving built-in env keys, probes, and egress defaults. |
 | `imageAllowList` | `[]` | Glob patterns of allowed `target.imageOverride` values. Empty = no override permitted. |
 | `imagePullSecrets` | `[]` | Names of pre-created Docker image pull secrets in the tenant namespace. |
 | `egressAllowFqdns` | `[]` | Additional FQDNs (beyond adapter defaults like `api.anthropic.com`). |
@@ -76,6 +77,25 @@ Common optional fields:
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
 
 Full JSON Schema in `src/manifest.ts`.
+
+### Runtime image tags
+
+If your Paperclip runtime images are published with immutable tags, set `runtimeImages`
+instead of patching the plugin's built-in defaults:
+
+```json
+{
+  "adapterType": "claude_local",
+  "runtimeImages": {
+    "claude_local": "ghcr.io/paperclipai/agent-runtime-claude:git-b18cbb0dd3d524d3d332f54143c84f00c694636c"
+  }
+}
+```
+
+`runtimeImages` changes only the image for the matching adapter. The plugin still
+uses that adapter's default secret env keys, probe command, and egress FQDNs. If
+`imageRegistry` is also set, the registry prefix is rewritten while the image tag
+from `runtimeImages` is preserved.
 
 ## What gets created in your cluster
 

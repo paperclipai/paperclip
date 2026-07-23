@@ -50,6 +50,18 @@ describe("getAdapterDefaults", () => {
     expect(d.defaultEnv).toBeUndefined();
   });
 
+  it("overrides only runtimeImage from runtimeImages while preserving built-in defaults", () => {
+    const d = getAdapterDefaults("claude_local", undefined, {
+      claude_local: "ghcr.io/paperclipai/agent-runtime-claude:git-b18cbb0dd3d524d3d332f54143c84f00c694636c",
+    });
+    expect(d.runtimeImage).toBe(
+      "ghcr.io/paperclipai/agent-runtime-claude:git-b18cbb0dd3d524d3d332f54143c84f00c694636c",
+    );
+    expect(d.envKeys).toEqual(["ANTHROPIC_API_KEY"]);
+    expect(d.allowFqdns).toEqual(["api.anthropic.com"]);
+    expect(d.probeCommand).toEqual(["claude", "--version"]);
+  });
+
   it("throws on an unknown built-in type when no registry is supplied", () => {
     expect(() => getAdapterDefaults("nope")).toThrow(/Unknown adapter type/);
   });
@@ -68,6 +80,28 @@ describe("getAdapterDefaults", () => {
     ];
     const d = getAdapterDefaults("opencode_local", registry);
     expect(d.runtimeImage).toBe("registry.example/opencode:eu");
+    expect(d.defaultEnv).toEqual({ ANTHROPIC_BASE_URL: "http://bifrost:8080" });
+  });
+
+  it("overrides only runtimeImage from runtimeImages while preserving registry defaults", () => {
+    const registry: AdapterRegistryEntry[] = [
+      {
+        adapterType: "opencode_local",
+        enabled: true,
+        runtimeImage: "registry.example/opencode:eu",
+        envKeys: ["ANTHROPIC_API_KEY"],
+        allowFqdns: ["api.anthropic.com"],
+        probeCommand: ["opencode", "--version"],
+        defaultEnv: { ANTHROPIC_BASE_URL: "http://bifrost:8080" },
+      },
+    ];
+    const d = getAdapterDefaults("opencode_local", registry, {
+      opencode_local: "registry.example/opencode:git-sha",
+    });
+    expect(d.runtimeImage).toBe("registry.example/opencode:git-sha");
+    expect(d.envKeys).toEqual(["ANTHROPIC_API_KEY"]);
+    expect(d.allowFqdns).toEqual(["api.anthropic.com"]);
+    expect(d.probeCommand).toEqual(["opencode", "--version"]);
     expect(d.defaultEnv).toEqual({ ANTHROPIC_BASE_URL: "http://bifrost:8080" });
   });
 

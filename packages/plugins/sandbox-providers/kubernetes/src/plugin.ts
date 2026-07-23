@@ -216,7 +216,7 @@ const plugin = definePlugin({
     }
     const warnings: string[] = [];
     const cfg = parsed.data;
-    const adapterDefaults = getAdapterDefaults(cfg.adapterType, cfg.adapters);
+    const adapterDefaults = getAdapterDefaults(cfg.adapterType, cfg.adapters, cfg.runtimeImages);
     const totalFqdns = [...adapterDefaults.allowFqdns, ...cfg.egressAllowFqdns];
     if (cfg.egressMode === "standard" && totalFqdns.length > 0) {
       if (cfg.egressAllowCidrs.length === 0) {
@@ -303,7 +303,7 @@ const plugin = definePlugin({
     // Emit a runtime warning if FQDNs are configured but egressMode=standard
     // cannot enforce them. Mirrors the validateConfig warning so operators see
     // it in paperclip-server logs even if they missed the validation step.
-    const adapterDefaultsForWarn = getAdapterDefaults(effectiveAdapterType, config.adapters);
+    const adapterDefaultsForWarn = getAdapterDefaults(effectiveAdapterType, config.adapters, config.runtimeImages);
     const totalFqdnsForWarn = [...adapterDefaultsForWarn.allowFqdns, ...config.egressAllowFqdns];
     if (config.egressMode === "standard" && totalFqdnsForWarn.length > 0) {
       if (config.egressAllowCidrs.length === 0) {
@@ -325,7 +325,7 @@ const plugin = definePlugin({
 
     // Ensure the tenant namespace and all its RBAC / network policy resources
     // exist before we try to create the Job.
-    const adapterDefaults = getAdapterDefaults(effectiveAdapterType, config.adapters);
+    const adapterDefaults = getAdapterDefaults(effectiveAdapterType, config.adapters, config.runtimeImages);
 
     await ensureTenant(clients, {
       namespace,
