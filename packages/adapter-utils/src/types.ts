@@ -12,6 +12,12 @@ export interface AdapterAgent {
   name: string;
   adapterType: string | null;
   adapterConfig: unknown;
+  /**
+   * Agent permissions relevant to runtime asset provisioning. Optional so
+   * existing callers/tests remain valid; adapters read `canCreateAgents` to
+   * decide whether the create-agent skill must be mounted into the sandbox.
+   */
+  permissions?: { canCreateAgents?: boolean; [key: string]: unknown } | null;
 }
 
 export interface AdapterRuntime {
