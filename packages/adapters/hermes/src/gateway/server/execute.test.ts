@@ -46,8 +46,18 @@ afterEach(() => {
 });
 
 describe("resolveSessionKey", () => {
-  it("derives issue-scoped session keys by default", () => {
-    expect(
+  it("derives deterministic issue-scoped session keys by default", () => {
+    const key = resolveSessionKey({
+      strategy: "issue",
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-1",
+      issueId: "issue-1",
+    });
+
+    expect(key).toMatch(/^pc:issue:[A-Za-z0-9_-]+$/);
+    expect(key?.length).toBeLessThanOrEqual(64);
+    expect(key).toBe(
       resolveSessionKey({
         strategy: "issue",
         companyId: "company-1",
@@ -55,7 +65,20 @@ describe("resolveSessionKey", () => {
         runId: "run-1",
         issueId: "issue-1",
       }),
-    ).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+    );
+  });
+
+  it("keeps UUID-backed Hermes prompt cache keys under the provider limit", () => {
+    const key = resolveSessionKey({
+      strategy: "issue",
+      companyId: "f4188af0-bfc1-4a44-9c3e-fb6aff1106d3",
+      agentId: "cde8ac0f-b1c8-4399-a970-888ced1e325b",
+      runId: "c6aa68d4-9d21-47ed-84ee-4086fc538b46",
+      issueId: "4158b55a-643f-42fc-beba-f9a7a656465e",
+    });
+
+    expect(key).toMatch(/^pc:issue:[A-Za-z0-9_-]+$/);
+    expect(key?.length).toBeLessThanOrEqual(64);
   });
 
   it("omits the session key for none strategy", () => {
@@ -133,15 +156,22 @@ describe("execute", () => {
     const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
     expect(createCall).toBeTruthy();
     const init = createCall?.[1] as RequestInit;
+    const sessionKey = resolveSessionKey({
+      strategy: "issue",
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "pc-run-1",
+      issueId: "issue-1",
+    });
     expect(init.headers).toMatchObject({
       Authorization: "Bearer secret-key",
       "Content-Type": "application/json",
       "Idempotency-Key": "pc-run-1",
-      "X-Hermes-Session-Key": "paperclip:company:company-1:agent:agent-1:issue:issue-1",
+      "X-Hermes-Session-Key": sessionKey,
     });
     const body = JSON.parse(String(init.body));
     expect(body.input).toContain("Do the thing");
-    expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+    expect(body.session_id).toBe(sessionKey);
   });
 
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {
