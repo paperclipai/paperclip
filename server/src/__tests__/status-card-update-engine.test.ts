@@ -6,6 +6,7 @@ import {
   evaluateStatusCardPolicy,
   filterStatusCardChanges,
   isWithinStatusCardActiveHours,
+  statusCardChangesHash,
 } from "../services/status-card-update-engine.js";
 
 describe("status card update engine", () => {
@@ -27,6 +28,24 @@ describe("status card update engine", () => {
       ["PAP-4", "new"],
       ["PAP-3", "removed"],
     ]);
+  });
+
+  it("tracks human comments independently from generic issue updates", () => {
+    const previous = {
+      issue: { status: "in_progress", updatedAt: "2026-07-23T10:00:00.000Z", latestHumanCommentAt: null, identifier: "PAP-5", title: "Commented" },
+    };
+    const current = {
+      issue: { status: "in_progress", updatedAt: "2026-07-23T10:01:00.000Z", latestHumanCommentAt: "2026-07-23T10:01:00.000Z", identifier: "PAP-5", title: "Commented" },
+    };
+    const changes = diffStatusCardFingerprint(previous, current);
+    expect(changes).toMatchObject([{ identifier: "PAP-5", changeKind: "human_comment" }]);
+    expect(filterStatusCardChanges(changes, defaultPolicy)).toHaveLength(1);
+  });
+
+  it("changes the pending signature when equal-sized change sets are replaced", () => {
+    const first = [{ issueId: "one", identifier: "PAP-1", title: "One", from: "todo", to: "done", changeKind: "status" as const }];
+    const second = [{ issueId: "two", identifier: "PAP-2", title: "Two", from: "todo", to: "done", changeKind: "status" as const }];
+    expect(statusCardChangesHash(first)).not.toBe(statusCardChangesHash(second));
   });
 
   it("enforces debounce, hourly rate cap, active hours, and daily token cap", () => {

@@ -10,6 +10,7 @@ import { issues } from "./issues.js";
 type StatusCardFingerprint = Record<string, {
   status: string;
   updatedAt: string;
+  latestHumanCommentAt?: string | null;
   identifier?: string | null;
   title?: string;
   assigneeAgentId?: string | null;
@@ -42,6 +43,7 @@ export const statusCards = pgTable(
     refreshPolicy: jsonb("refresh_policy").$type<StatusCardRefreshPolicy>().notNull(),
     state: text("state").$type<"compiling" | "active" | "error" | "paused_budget" | "paused_hours">().notNull().default("compiling"),
     pendingChangeCount: integer("pending_change_count").notNull().default(0),
+    pendingChangeHash: text("pending_change_hash"),
     lastChangeAt: timestamp("last_change_at", { withTimezone: true }),
     fingerprint: jsonb("fingerprint").$type<StatusCardFingerprint>(),
     fingerprintAt: timestamp("fingerprint_at", { withTimezone: true }),

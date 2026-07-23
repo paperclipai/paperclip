@@ -158,7 +158,8 @@ describeEmbeddedPostgres("status card routes", () => {
 
     const archived = await request(app).patch(`/api/status-cards/${created.body.id}`).send({ archived: true });
     expect(archived.status).toBe(200);
-    expect(archived.body.archivedAt).toBeTruthy();
+    expect(archived.body).toMatchObject({ archivedAt: expect.any(String), generatingIssueId: null });
+    expect(await db.select().from(issues).where(eq(issues.id, created.body.generatingIssueId)).then((rows) => rows[0]?.status)).toBe("cancelled");
     expect((await request(app).get(`/api/companies/${company.id}/status-cards`)).body).toEqual([]);
     expect((await request(app).get(`/api/companies/${company.id}/status-cards?archived=true`)).body).toHaveLength(1);
 
@@ -497,10 +498,14 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(list.body).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.body.id, ...expectedReadFields })]));
 
     await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchedIssue.id));
-    const refresh = await request(boardApp).post(`/api/status-cards/${created.body.id}/refresh`).send({});
-    expect(refresh.status).toBe(202);
-    expect(refresh.body).toMatchObject({ enqueued: true, kind: "incremental" });
-    const updateIssueId = refresh.body.generatingIssue.id as string;
+    const refreshes = await Promise.all([
+      statusCardService(db).requestRefresh(created.body.id, { actor: { agentId: null, userId: "board-user" } }),
+      statusCardService(db).requestRefresh(created.body.id, { actor: { agentId: null, userId: "board-user" } }),
+    ]);
+    expect(refreshes.filter((refresh) => refresh.enqueued)).toHaveLength(1);
+    expect(refreshes.every((refresh) => refresh.generatingIssue?.id === refreshes[0]?.generatingIssue?.id)).toBe(true);
+    expect(refreshes[0]).toMatchObject({ kind: "incremental" });
+    const updateIssueId = refreshes[0]!.generatingIssue!.id as string;
     const updateRun = await seedRun(company.id, summarizer.id);
     await db.update(issues).set({ checkoutRunId: updateRun.id }).where(eq(issues.id, updateIssueId));
     await db.insert(costEvents).values({

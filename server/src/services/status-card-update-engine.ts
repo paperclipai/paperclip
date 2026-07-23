@@ -4,6 +4,7 @@ import type { CompanySearchIssueSummary, StatusCardRefreshPolicy } from "@paperc
 export type StatusCardFingerprintEntry = {
   status: string;
   updatedAt: string;
+  latestHumanCommentAt?: string | null;
   identifier?: string | null;
   title?: string;
   assigneeAgentId?: string | null;
@@ -18,13 +19,14 @@ export type StatusCardDeltaChange = {
   title: string;
   from: string | null;
   to: string | null;
-  changeKind: "new" | "removed" | "status" | "assignee" | "updated";
+  changeKind: "new" | "removed" | "status" | "assignee" | "human_comment" | "updated";
 };
 
-export function buildStatusCardFingerprint(issues: CompanySearchIssueSummary[]): StatusCardFingerprint {
+export function buildStatusCardFingerprint(issues: Array<CompanySearchIssueSummary & { latestHumanCommentAt?: string | null }>): StatusCardFingerprint {
   return Object.fromEntries(issues.map((issue) => [issue.id, {
     status: issue.status,
     updatedAt: issue.updatedAt,
+    latestHumanCommentAt: issue.latestHumanCommentAt ?? null,
     identifier: issue.identifier,
     title: issue.title,
     assigneeAgentId: issue.assigneeAgentId,
@@ -49,6 +51,10 @@ export function diffStatusCardFingerprint(previous: StatusCardFingerprint | null
       changes.push({ issueId, identifier: next.identifier ?? issueId, title: next.title ?? "", from: null, to: null, changeKind: "assignee" });
       continue;
     }
+    if (prior.latestHumanCommentAt !== next.latestHumanCommentAt && next.latestHumanCommentAt) {
+      changes.push({ issueId, identifier: next.identifier ?? issueId, title: next.title ?? "", from: prior.latestHumanCommentAt ?? null, to: next.latestHumanCommentAt, changeKind: "human_comment" });
+      continue;
+    }
     if (prior.updatedAt !== next.updatedAt) {
       changes.push({ issueId, identifier: next.identifier ?? issueId, title: next.title ?? "", from: prior.status, to: next.status, changeKind: "updated" });
     }
@@ -66,9 +72,17 @@ export function filterStatusCardChanges(changes: StatusCardDeltaChange[], policy
     if (policy.triggers.anyUpdate) return true;
     if ((change.changeKind === "new" || change.changeKind === "removed") && policy.triggers.membershipChanges) return true;
     if (change.changeKind === "assignee" && policy.triggers.assigneeChanges) return true;
+    if (change.changeKind === "human_comment" && policy.triggers.humanComments) return true;
     if (change.changeKind === "status" && policy.triggers.statusTransitions && change.to && terminalTransitions.has(change.to)) return true;
     return false;
   });
+}
+
+export function statusCardChangesHash(changes: StatusCardDeltaChange[]) {
+  const stable = [...changes]
+    .map(({ issueId, changeKind, from, to }) => ({ issueId, changeKind, from, to }))
+    .sort((left, right) => `${left.issueId}:${left.changeKind}`.localeCompare(`${right.issueId}:${right.changeKind}`));
+  return createHash("sha256").update(JSON.stringify(stable)).digest("hex");
 }
 
 export function statusCardFingerprintHash(fingerprint: StatusCardFingerprint) {
