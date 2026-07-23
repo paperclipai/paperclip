@@ -61,26 +61,45 @@ Notes:
   available on the free tier)
 - [Docker](https://docs.docker.com/get-docker/) running locally (wrangler
   builds the container image and, for `wrangler dev`, runs it)
-- Node.js 20+ and pnpm
+- Node.js 22+ (required by the pinned wrangler toolchain) and pnpm
 
 ## Deploy
 
 ```sh
 cd deploy/cloudflare
-pnpm install --ignore-workspace
+pnpm install
 npx wrangler login
+
+# strongly recommended: gate the deployment until you claim the operator
+# account — any value you choose, e.g. `openssl rand -hex 16`
+npx wrangler secret put BOOTSTRAP_TOKEN
+
 npx wrangler deploy
 
 # optional: give in-container agents an API key
 npx wrangler secret put ANTHROPIC_API_KEY
 ```
 
-Then open the printed `https://paperclip-sandbox.<your-subdomain>.workers.dev`
-URL. The **first request** provisions the container and onboards Paperclip
+Then open
+`https://paperclip-sandbox.<your-subdomain>.workers.dev/?bootstrap_token=<your token>`.
+The **first request** provisions the container and onboards Paperclip
 (a minute or two) — you'll see a self-refreshing status page until the app is
-up. Paperclip boots in `authenticated` mode with a pending bootstrap invite;
-the first login claims the operator account, so open the URL yourself promptly
-after deploying.
+up.
+
+Paperclip boots in `authenticated` mode with a pending bootstrap invite, and
+**the first visitor to reach the app can claim the operator account**. The
+`BOOTSTRAP_TOKEN` gate exists to make sure that visitor is you: without the
+token (query param once; cookie afterwards), the Worker serves a 401 and
+nothing reaches Paperclip. After you claim the account, remove the gate so
+your team can reach the login page:
+
+```sh
+npx wrangler secret delete BOOTSTRAP_TOKEN
+```
+
+If you skip the token, deploy and claim the account immediately — an
+unclaimed invite on a public `workers.dev` URL is claimable by anyone who
+finds it.
 
 ## Configuration
 
@@ -91,6 +110,7 @@ Set via `vars` in `wrangler.jsonc` or `wrangler secret put`:
 | `PAPERCLIP_PUBLIC_URL` | var | request origin | Public URL Paperclip advertises |
 | `PAPERCLIP_DEPLOYMENT_MODE` | var | `authenticated` | See [Deployment Modes](/deploy/deployment-modes) |
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | var | `private` | Embedded Postgres currently requires `private`; use `public` only with an external `DATABASE_URL` |
+| `BOOTSTRAP_TOKEN` | secret | — | Gates all access until the operator account is claimed (see Deploy) |
 | `ANTHROPIC_API_KEY` | secret | — | Forwarded to in-container agent CLIs |
 | `DATABASE_URL` | secret | — | External Postgres (strongly recommended, see above) |
 | `ARTIFACTS` | R2 binding | — | Durable attachment storage (see above) |
@@ -117,7 +137,7 @@ want real memory; shrink with care.
 
 ```sh
 cd deploy/cloudflare
-pnpm install --ignore-workspace
+pnpm install
 pnpm dev            # wrangler dev — builds and runs the container via Docker
 ```
 

@@ -2,10 +2,14 @@
 # not attach it to the repo root workspace (same isolation rationale as
 # packages/plugins/sandbox-providers/*): the Cloudflare toolchain
 # (wrangler/workerd) never churns the root pnpm-lock.yaml.
-# sharp stays false: it is an optional wrangler dependency (static-asset
-# image processing) with no prebuilt binary on some platforms, and its
-# source build fails without node-addon-api. Wrangler works without it.
+packages:
+  - "."
+# sharp is an optional wrangler dependency (static-asset image processing)
+# that this Worker never uses; it is removed from resolution entirely
+# because sharp@0.34.x carries high-severity libvips CVEs
+# (GHSA-f88m-g3jw-g9cj) that trip dependency review.
+overrides:
+  sharp: "-"
 allowBuilds:
   esbuild: true
-  sharp: false
   workerd: true

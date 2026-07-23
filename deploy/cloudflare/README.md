@@ -7,8 +7,9 @@ running `paperclipai` with embedded Postgres and the local-adapter agent CLIs
 preinstalled. No custom domain required.
 
 ```sh
-pnpm install --ignore-workspace
+pnpm install
 npx wrangler login
+npx wrangler secret put BOOTSTRAP_TOKEN   # gate access until you claim the operator account
 npx wrangler deploy
 ```
 
@@ -30,10 +31,11 @@ troubleshooting): **[docs/deploy/cloudflare.md](../../docs/deploy/cloudflare.md)
 | `wrangler.jsonc` | Worker + container + Durable Object config |
 | `test/` | Unit tests + cross-file config consistency checks |
 
-This package is intentionally **not** part of the pnpm workspace (same
-pattern as `packages/plugins/sandbox-providers/*`) so its Cloudflare
-toolchain never churns the root lockfile. Install with
-`pnpm install --ignore-workspace`.
+This package is intentionally **not** part of the root pnpm workspace (same
+pattern as `packages/plugins/sandbox-providers/*`) — its own
+`pnpm-workspace.yaml` makes it a standalone single-package workspace, so the
+Cloudflare toolchain never churns the root lockfile and a plain
+`pnpm install` here does the right thing.
 
 ```sh
 pnpm test        # vitest: lib + config invariants (Dockerfile↔SDK version pin)

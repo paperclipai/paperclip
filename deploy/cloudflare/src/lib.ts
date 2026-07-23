@@ -73,6 +73,54 @@ export function isWebSocketUpgrade(headers: Headers): boolean {
   return headers.get("Upgrade")?.toLowerCase() === "websocket";
 }
 
+/** Cookie set once a visitor presents the bootstrap token. */
+export const BOOTSTRAP_COOKIE = "paperclip_bootstrap";
+
+/** Query parameter used to present the bootstrap token on first visit. */
+export const BOOTSTRAP_PARAM = "bootstrap_token";
+
+/** Minimal cookie-header lookup (no parsing library needed for one value). */
+export function getCookie(cookieHeader: string | null, name: string): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return undefined;
+}
+
+/** 401 page shown while the deployment is gated by BOOTSTRAP_TOKEN. */
+export function accessDeniedPage(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Paperclip — access restricted</title>
+<style>
+  :root{color-scheme:light dark}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       font-family:ui-sans-serif,system-ui,sans-serif;background:#0d1017;color:#e6e6e6}
+  main{max-width:34rem;padding:2rem}
+  h1{font-size:1.1rem;font-weight:600;margin:0 0 .5rem}
+  p{margin:.35rem 0;color:#9aa4bf;font-size:.9rem}
+  code{color:#7dd3fc}
+</style>
+</head>
+<body>
+<main>
+  <h1>Access restricted</h1>
+  <p>This Paperclip deployment is gated by a bootstrap token.</p>
+  <p>Open the URL with <code>?${BOOTSTRAP_PARAM}=&lt;your token&gt;</code> —
+     the value you set with <code>wrangler secret put BOOTSTRAP_TOKEN</code>.</p>
+  <p>Once the operator account is claimed, the operator can remove the gate
+     with <code>wrangler secret delete BOOTSTRAP_TOKEN</code>.</p>
+</main>
+</body>
+</html>`;
+}
+
 /** True when a live Paperclip boot process already exists in the sandbox. */
 export function isPaperclipRunning(processes: ProcessLike[]): boolean {
   return processes.some(

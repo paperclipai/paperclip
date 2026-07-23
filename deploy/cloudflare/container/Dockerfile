@@ -13,13 +13,15 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Paperclip (npm release) plus the local-adapter agent CLIs, mirroring the
-# root Dockerfile's production stage.
+# root Dockerfile's production stage. Versions are pinned exactly so image
+# rebuilds are reproducible and supply-chain review applies to a known set
+# (test/config.test.ts rejects mutable tags); bump them deliberately.
 RUN npm install -g \
-  paperclipai@latest \
-  @anthropic-ai/claude-code@latest \
-  @openai/codex@latest \
-  opencode-ai \
-  @google/gemini-cli@latest
+  paperclipai@2026.722.0 \
+  @anthropic-ai/claude-code@2.1.218 \
+  @openai/codex@0.145.0 \
+  opencode-ai@1.18.4 \
+  @google/gemini-cli@0.52.0
 
 # Paperclip runtime defaults (mirrors the root Dockerfile / quadlet unit).
 ENV HOST=0.0.0.0 \

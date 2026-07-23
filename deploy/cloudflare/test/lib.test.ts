@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOOTSTRAP_PARAM,
   PAPERCLIP_PORT,
   PAPERCLIP_UID,
   START_COMMAND,
   STORAGE_MOUNT_PATH,
+  accessDeniedPage,
+  getCookie,
   bootingPage,
   bootingResponse,
   buildPaperclipEnv,
@@ -114,6 +117,25 @@ describe("transient boot detection", () => {
       expect(isTransientBootMessage(message), message).toBe(false);
     }
     expect(isTransientBootError("connection refused")).toBe(false); // non-Error
+  });
+});
+
+describe("bootstrap gate helpers", () => {
+  it("extracts a single cookie value", () => {
+    expect(getCookie("a=1; paperclip_bootstrap=tok; b=2", "paperclip_bootstrap")).toBe("tok");
+    expect(getCookie("paperclip_bootstrap=tok", "paperclip_bootstrap")).toBe("tok");
+  });
+
+  it("returns undefined for missing header, missing cookie, or name prefixes", () => {
+    expect(getCookie(null, "paperclip_bootstrap")).toBeUndefined();
+    expect(getCookie("other=1", "paperclip_bootstrap")).toBeUndefined();
+    expect(getCookie("xpaperclip_bootstrap=evil", "paperclip_bootstrap")).toBeUndefined();
+  });
+
+  it("access-denied page names the param and secret", () => {
+    const html = accessDeniedPage();
+    expect(html).toContain(BOOTSTRAP_PARAM);
+    expect(html).toContain("BOOTSTRAP_TOKEN");
   });
 });
 

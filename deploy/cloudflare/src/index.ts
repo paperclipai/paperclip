@@ -16,12 +16,16 @@
 import { getSandbox, type Sandbox as SandboxType } from "@cloudflare/sandbox";
 import {
   ARTIFACTS_BINDING,
+  BOOTSTRAP_COOKIE,
+  BOOTSTRAP_PARAM,
   PAPERCLIP_PORT,
   SANDBOX_ID,
   START_COMMAND,
   STORAGE_MOUNT_PATH,
+  accessDeniedPage,
   bootingResponse,
   buildPaperclipEnv,
+  getCookie,
   isMountAlreadyInUse,
   isPaperclipRunning,
   isTransientBootError,
@@ -49,6 +53,13 @@ interface Env {
   /** Secrets (wrangler secret put …); forwarded to the container when set. */
   ANTHROPIC_API_KEY?: string;
   DATABASE_URL?: string;
+  /**
+   * When set, every request must present this token (?bootstrap_token=…,
+   * which sets a cookie) — protects the unclaimed operator invite between
+   * first boot and the operator's first login. Delete the secret after
+   * claiming the account to open the login page to your team.
+   */
+  BOOTSTRAP_TOKEN?: string;
 }
 
 /**
@@ -57,6 +68,62 @@ interface Env {
  * (the boot process does not survive a sandbox sleep/wake cycle).
  */
 let paperclipEnsured = false;
+
+/**
+ * Shared in-flight boot so concurrent cold-start requests in one isolate
+ * issue a single ensure pass instead of racing startProcess. Cross-isolate
+ * duplicates are additionally serialized by the flock in
+ * container/start-paperclip.sh — duplicates exit immediately.
+ */
+let ensureInFlight: Promise<void> | null = null;
+
+/** Constant-time comparison via digest so token checks don't leak timing. */
+async function tokensMatch(presented: string, expected: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(presented)),
+    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+  ]);
+  const av = new Uint8Array(a);
+  const bv = new Uint8Array(b);
+  let diff = 0;
+  for (let i = 0; i < av.length; i++) diff |= av[i] ^ bv[i];
+  return diff === 0;
+}
+
+/**
+ * Bootstrap gate: when BOOTSTRAP_TOKEN is set, only requests presenting it
+ * (query param once, cookie afterwards) reach Paperclip. Returns null when
+ * the request may proceed, otherwise the response to serve.
+ */
+async function enforceBootstrapGate(request: Request, env: Env, url: URL): Promise<Response | null> {
+  if (!env.BOOTSTRAP_TOKEN) return null;
+
+  const presented = url.searchParams.get(BOOTSTRAP_PARAM);
+  if (presented !== null && (await tokensMatch(presented, env.BOOTSTRAP_TOKEN))) {
+    // Strip the token from the URL and persist access in a cookie.
+    url.searchParams.delete(BOOTSTRAP_PARAM);
+    return new Response(null, {
+      status: 302,
+      headers: {
+        location: url.toString(),
+        "set-cookie":
+          `${BOOTSTRAP_COOKIE}=${encodeURIComponent(env.BOOTSTRAP_TOKEN)}; ` +
+          "HttpOnly; Secure; SameSite=Lax; Path=/",
+      },
+    });
+  }
+
+  const cookie = getCookie(request.headers.get("Cookie"), BOOTSTRAP_COOKIE);
+  if (cookie !== undefined && (await tokensMatch(decodeURIComponent(cookie), env.BOOTSTRAP_TOKEN))) {
+    return null;
+  }
+
+  return new Response(accessDeniedPage(), {
+    status: 401,
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+  });
+}
 
 async function ensurePaperclip(sandbox: SandboxType, env: Env, requestUrl: URL): Promise<void> {
   const processes = await sandbox.listProcesses();
@@ -76,7 +143,9 @@ async function ensurePaperclip(sandbox: SandboxType, env: Env, requestUrl: URL):
 
   await sandbox.startProcess(START_COMMAND, {
     env: buildPaperclipEnv({
-      publicUrl: env.PAPERCLIP_PUBLIC_URL || `https://${requestUrl.host}`,
+      // origin (not a hardcoded https:// prefix) so wrangler dev's http://
+      // origin round-trips correctly and auth cookies behave locally.
+      publicUrl: env.PAPERCLIP_PUBLIC_URL || requestUrl.origin,
       deploymentMode: env.PAPERCLIP_DEPLOYMENT_MODE,
       deploymentExposure: env.PAPERCLIP_DEPLOYMENT_EXPOSURE,
       anthropicApiKey: env.ANTHROPIC_API_KEY,
@@ -101,9 +170,15 @@ export default {
     const sandbox = getSandbox(env.Sandbox, SANDBOX_ID);
     const url = new URL(request.url);
 
+    const denied = await enforceBootstrapGate(request, env, url);
+    if (denied) return denied;
+
     try {
       if (!paperclipEnsured) {
-        await ensurePaperclip(sandbox, env, url);
+        ensureInFlight ??= ensurePaperclip(sandbox, env, url).finally(() => {
+          ensureInFlight = null;
+        });
+        await ensureInFlight;
         paperclipEnsured = true;
       }
 

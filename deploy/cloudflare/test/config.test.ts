@@ -69,9 +69,11 @@ describe("container image", () => {
     expect(dockerfile).toContain(`EXPOSE ${PAPERCLIP_PORT}`);
   });
 
-  it("installs Paperclip and the agent CLIs", () => {
-    expect(dockerfile).toContain("paperclipai@latest");
-    expect(dockerfile).toContain("@anthropic-ai/claude-code");
+  it("installs Paperclip and the agent CLIs with exact version pins", () => {
+    expect(dockerfile).toMatch(/paperclipai@\d+\.\d+\.\d+/);
+    expect(dockerfile).toMatch(/@anthropic-ai\/claude-code@\d+\.\d+\.\d+/);
+    // Mutable tags make image rebuilds non-reproducible and un-reviewable.
+    expect(dockerfile).not.toContain("@latest");
   });
 
   it("pins the paperclip uid the R2 mount options rely on", () => {
@@ -86,5 +88,9 @@ describe("boot script", () => {
     // s3fs rejects chown; a bare `chown -R /paperclip` would abort the boot.
     expect(script).toContain(`-path ${STORAGE_MOUNT_PATH} -prune`);
     expect(script).not.toMatch(/chown -R paperclip:paperclip \/paperclip\s*$/m);
+  });
+
+  it("serializes duplicate boots with a non-blocking lock", () => {
+    expect(script).toContain("flock --nonblock");
   });
 });

@@ -12,7 +12,10 @@ set -euo pipefail
 find /paperclip -path /paperclip/instances/default/data/storage -prune \
   -o -exec chown paperclip:paperclip {} +
 
-exec runuser -u paperclip -- bash -c '
+# Serialize boots: concurrent Worker isolates can race ensurePaperclip() and
+# start this script twice. The non-blocking lock makes every duplicate exit
+# immediately instead of fighting over onboarding and port 3100.
+exec flock --nonblock /paperclip/.boot.lock runuser -u paperclip -- bash -c '
   set -euo pipefail
   export HOME=/home/paperclip
   if [ ! -f /paperclip/instances/default/config.json ]; then
