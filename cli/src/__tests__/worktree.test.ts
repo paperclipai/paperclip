@@ -142,6 +142,10 @@ function buildSourceConfig(): PaperclipConfig {
     telemetry: {
       enabled: true,
     },
+    attribution: {
+      commit: true,
+      pr: true,
+    },
     storage: {
       provider: "local_disk",
       localDisk: {

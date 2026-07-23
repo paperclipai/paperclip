@@ -225,6 +225,10 @@ export function buildWorktreeConfig(input: {
     telemetry: {
       enabled: source?.telemetry?.enabled ?? true,
     },
+    attribution: {
+      commit: source?.attribution?.commit ?? true,
+      pr: source?.attribution?.pr ?? true,
+    },
     storage: {
       provider: source?.storage.provider ?? "local_disk",
       localDisk: {

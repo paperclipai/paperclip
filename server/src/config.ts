@@ -22,6 +22,7 @@ import {
   resolveRuntimeBind,
   validateConfiguredBindMode,
 } from "@paperclipai/shared";
+import { parseAttributionEnvFlag } from "@paperclipai/adapter-utils/server-utils";
 import {
   resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
@@ -87,6 +88,8 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  attributionCommit: boolean;
+  attributionPr: boolean;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -265,6 +268,18 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
+  const fileAttribution = fileConfig?.attribution;
+  const attributionCommitFromEnv = process.env.PAPERCLIP_ATTRIBUTION_COMMIT;
+  const attributionCommit =
+    attributionCommitFromEnv !== undefined
+      ? parseAttributionEnvFlag(attributionCommitFromEnv)
+      : (fileAttribution?.commit ?? true);
+  const attributionPrFromEnv = process.env.PAPERCLIP_ATTRIBUTION_PR;
+  const attributionPr =
+    attributionPrFromEnv !== undefined
+      ? parseAttributionEnvFlag(attributionPrFromEnv)
+      : (fileAttribution?.pr ?? true);
+
   const bindValidationErrors = validateConfiguredBindMode({
     deploymentMode,
     deploymentExposure,
@@ -333,5 +348,7 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    attributionCommit,
+    attributionPr,
   };
 }

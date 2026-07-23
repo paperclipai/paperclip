@@ -47,6 +47,10 @@ function writeBaseConfig(configPath: string) {
     telemetry: {
       enabled: true,
     },
+    attribution: {
+      commit: true,
+      pr: true,
+    },
     storage: {
       provider: "local_disk",
       localDisk: { baseDir: "/tmp/paperclip-storage" },
