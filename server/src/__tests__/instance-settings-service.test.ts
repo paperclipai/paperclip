@@ -40,6 +40,7 @@ describe("instance settings service", () => {
       enableCloudSync: true,
       enableSmokeLab: false,
       enableBuiltInAgents: true,
+      enableSummaries: false,
       enableDecisions: false,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,

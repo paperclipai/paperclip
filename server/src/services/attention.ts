@@ -5,6 +5,7 @@ import {
   approvals,
   assets,
   companies,
+  decisionTrainingExamples,
   heartbeatRunEvents,
   heartbeatRuns,
   inboxDismissals,
@@ -38,6 +39,7 @@ import { PRODUCTIVITY_REVIEW_ORIGIN_KIND } from "./productivity-review.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 
 const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "approval",
@@ -310,7 +312,7 @@ function decisionVerbs(...verbs: AttentionDecisionVerb[]): AttentionDecisionVerb
   return verbs;
 }
 
-type CreateAttentionItemInput = Omit<AttentionItem, "id" | "dismissalKey" | "rank" | "dismissal" | "project" | "workspace" | "detail"> & {
+type CreateAttentionItemInput = Omit<AttentionItem, "id" | "dismissalKey" | "rank" | "dismissal" | "project" | "workspace" | "detail" | "trainingExampleId"> & {
   project?: AttentionProjectRef | null;
   workspace?: AttentionWorkspaceRef | null;
   detail?: AttentionItemDetail | null;
@@ -325,6 +327,7 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     project: input.project ?? null,
     workspace: input.workspace ?? null,
     detail: input.detail ?? null,
+    trainingExampleId: null,
     rank: 0,
   };
 }
@@ -608,6 +611,22 @@ export function attentionService(db: Db) {
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .orderBy(desc(approvals.updatedAt), desc(approvals.id));
 
+      const pendingApprovalIds = pendingApprovals.map((approval) => approval.id);
+      const approvalIssueRows = pendingApprovalIds.length > 0
+        ? await db
+          .select({ approvalId: issueApprovals.approvalId, issueId: issueApprovals.issueId })
+          .from(issueApprovals)
+          .where(and(
+            eq(issueApprovals.companyId, companyId),
+            inArray(issueApprovals.approvalId, pendingApprovalIds),
+          ))
+          .orderBy(asc(issueApprovals.approvalId), asc(issueApprovals.issueId))
+        : [];
+      const approvalIssueMap = new Map<string, string>();
+      for (const row of approvalIssueRows) {
+        if (!approvalIssueMap.has(row.approvalId)) approvalIssueMap.set(row.approvalId, row.issueId);
+      }
+
       for (const approval of pendingApprovals) {
         const dedupKey = `approval:${approval.id}`;
         const title = approvalTitle(approval.type, approval.payload);
@@ -626,6 +645,7 @@ export function attentionService(db: Db) {
               type: approval.type,
               requestedByAgentId: approval.requestedByAgentId,
               requestedByUserId: approval.requestedByUserId,
+              issueId: approvalIssueMap.get(approval.id) ?? null,
             },
           },
           whyNow: "Approval is pending a board decision.",
@@ -899,9 +919,40 @@ export function attentionService(db: Db) {
       const blockedIssueSummaries = await issueSummaryMap(db, companyId, blockedIssues.map((issue) => issue.id));
       const blockedImageMap = await issueImageMap(db, companyId, blockedIssues.map((issue) => issue.id));
       const blockingIssues = await blockingIssueMap(db, companyId, blockedIssues.map((issue) => issue.id));
-      for (const issue of blockedIssues as Array<IssueSubjectRow & { blockerAttention?: { state?: string; sampleStalledBlockerIdentifier?: string | null; sampleBlockerIdentifier?: string | null } | null }>) {
+      for (const issue of blockedIssues as Array<IssueSubjectRow & {
+        blockerAttention?: { state?: string; sampleStalledBlockerIdentifier?: string | null; sampleBlockerIdentifier?: string | null } | null;
+        unblockDescriptor?: { owner: { userId: string } | { agentId: string } | "board"; action: string } | null;
+        blockedTransitionAt?: Date | null;
+      }>) {
+        const descriptor = issue.unblockDescriptor;
+        const humanOwnerMatches = descriptor?.owner === "board"
+          || (descriptor?.owner && "userId" in descriptor.owner && descriptor.owner.userId === options.userId);
+        if (descriptor && humanOwnerMatches && isProspectiveBlockedTransition(issue)) {
+          const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
+          add(createItem({
+            companyId,
+            sourceKind: "blocker_attention",
+            subject: issueSubject(prefix, issueSummary ?? issue),
+            whyNow: descriptor.action,
+            decisionVerbs: decisionVerbs(
+              { id: "unblock", label: "Unblock", description: descriptor.action },
+              { id: "reassign", label: "Reassign", description: "Route this blocked issue to another owner." },
+            ),
+            inlineResolvable: false,
+            entryRule: "blocked issue has a human-owned unblockDescriptor",
+            exitRule: "Issue leaves blocked status.",
+            dedupKey: `blocked-owner:${issue.id}:${issue.blockedTransitionAt.toISOString()}`,
+            severity: "high",
+            activityAt: toIso(issue.blockedTransitionAt),
+            createdAt: toIso(issue.createdAt),
+            updatedAt: toIso(issue.updatedAt),
+            relatedIssue: null,
+            ...issueContext(issueSummary),
+            detail: { kind: "blocker", blockingIssue: { id: issue.id, identifier: issue.identifier, title: issue.title }, images: issueImages(blockedImageMap, issue.id) },
+          }));
+        }
         const blockerAttention = issue.blockerAttention;
-        if (blockerAttention?.state !== "stalled") continue;
+        if (blockerAttention?.state !== "stalled" && blockerAttention?.state !== "needs_attention") continue;
         const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
         const summarizedIssue = issueSummary ?? issue;
         const sample = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier ?? issue.identifier ?? issue.id;
@@ -911,14 +962,16 @@ export function attentionService(db: Db) {
           companyId,
           sourceKind: "blocker_attention",
           subject: issueSubject(prefix, summarizedIssue),
-          whyNow: "Blocked dependency chain is stalled and needs a human to choose the next owner or action.",
+          whyNow: blockerAttention.state === "needs_attention"
+            ? "Blocked dependency chain needs human attention."
+            : "Blocked dependency chain is stalled and needs a human to choose the next owner or action.",
           decisionVerbs: decisionVerbs(
             { id: "unblock", label: "Unblock", description: "Repair or replace the stalled blocker path." },
             { id: "reassign", label: "Reassign", description: "Assign the stalled blocker to a live owner." },
             { id: "nudge", label: "Nudge", description: "Wake or prompt the current owner." },
           ),
           inlineResolvable: false,
-          entryRule: "blocked issue has blockerAttention.state = 'stalled'",
+          entryRule: `blocked issue has blockerAttention.state = '${blockerAttention.state}'`,
           exitRule: "Blocker chain is no longer stalled or the issue leaves blocked status.",
           dedupKey,
           severity: "high",
@@ -1238,6 +1291,42 @@ export function attentionService(db: Db) {
       const items = [...deduped.values()]
         .sort(compareAttentionItems)
         .map((item, index) => ({ ...item, rank: index + 1 }));
+      if (options.userId) {
+        const trainable: Array<{ sourceKind: "approval" | "interaction"; sourceId: string }> = [];
+        for (const item of items) {
+          if (item.sourceKind === "approval") {
+            trainable.push({ sourceKind: "approval", sourceId: item.subject.id });
+          }
+          if (item.sourceKind === "issue_thread_interaction") {
+            trainable.push({ sourceKind: "interaction", sourceId: item.subject.id });
+          }
+        }
+        if (trainable.length > 0) {
+          const examples = await db
+            .select({
+              id: decisionTrainingExamples.id,
+              sourceKind: decisionTrainingExamples.sourceKind,
+              sourceId: decisionTrainingExamples.sourceId,
+            })
+            .from(decisionTrainingExamples)
+            .where(and(
+              eq(decisionTrainingExamples.companyId, companyId),
+              eq(decisionTrainingExamples.createdByUserId, options.userId),
+              inArray(decisionTrainingExamples.sourceId, trainable.map((item) => item.sourceId)),
+            ));
+          const exampleBySource = new Map(examples.map((row) => [`${row.sourceKind}:${row.sourceId}`, row.id]));
+          for (const item of items) {
+            const sourceKind = item.sourceKind === "approval"
+              ? "approval"
+              : item.sourceKind === "issue_thread_interaction"
+                ? "interaction"
+                : null;
+            item.trainingExampleId = sourceKind
+              ? exampleBySource.get(`${sourceKind}:${item.subject.id}`) ?? null
+              : null;
+          }
+        }
+      }
       const countsBySourceKind = emptyCounts();
       for (const item of items) countsBySourceKind[item.sourceKind] += 1;
 

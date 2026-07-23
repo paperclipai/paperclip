@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- 04 · Monitor row — state matrix. Desktop 1280×800 -->
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <text x="48" y="56" font-size="20" font-weight="600" stroke="none" fill="#000">Monitor row — state matrix</text>
+  <text x="48" y="80" font-size="12" stroke="none" fill="#666">One copy system across banner, composer strip and properties row. Relative time always leads.</text>
+
+  <!-- 1 · scheduled, soon -->
+  <g transform="translate(48,112)">
+    <rect width="576" height="112" rx="8" />
+    <text x="16" y="28" font-size="12" stroke="none" fill="#666">SCHEDULED · UNDER 1 HOUR</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">Monitor</text>
+    <circle cx="152" cy="68" r="7" />
+    <line x1="152" y1="68" x2="152" y2="63" />
+    <line x1="152" y1="68" x2="156" y2="68" />
+    <text x="168" y="72" font-size="14" font-weight="600" stroke="none" fill="#000">In 24m</text>
+    <text x="168" y="92" font-size="12" stroke="none" fill="#666">Today, 2:20 PM</text>
+  </g>
+
+  <!-- 2 · scheduled, today -->
+  <g transform="translate(656,112)">
+    <rect width="576" height="112" rx="8" />
+    <text x="16" y="28" font-size="12" stroke="none" fill="#666">SCHEDULED · UNDER 24 HOURS</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">Monitor</text>
+    <circle cx="152" cy="68" r="7" />
+    <line x1="152" y1="68" x2="152" y2="63" />
+    <line x1="152" y1="68" x2="156" y2="68" />
+    <text x="168" y="72" font-size="14" font-weight="600" stroke="none" fill="#000">In 2h 12m</text>
+    <text x="168" y="92" font-size="12" stroke="none" fill="#666">Today, 4:08 PM</text>
+  </g>
+
+  <!-- 3 · scheduled, future day -->
+  <g transform="translate(48,248)">
+    <rect width="576" height="112" rx="8" />
+    <text x="16" y="28" font-size="12" stroke="none" fill="#666">SCHEDULED · BEYOND TODAY</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">Monitor</text>
+    <circle cx="152" cy="68" r="7" />
+    <line x1="152" y1="68" x2="152" y2="63" />
+    <line x1="152" y1="68" x2="156" y2="68" />
+    <text x="168" y="72" font-size="14" font-weight="600" stroke="none" fill="#000">In 3d</text>
+    <text x="168" y="92" font-size="12" stroke="none" fill="#666">Mon Jul 20, 9:00 AM</text>
+  </g>
+
+  <!-- 4 · retrying -->
+  <g transform="translate(656,248)">
+    <rect width="576" height="112" rx="8" />
+    <text x="16" y="28" font-size="12" stroke="none" fill="#666">RETRYING · ATTEMPT &gt; 1</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">Monitor</text>
+    <circle cx="152" cy="68" r="7" />
+    <line x1="152" y1="68" x2="152" y2="63" />
+    <line x1="152" y1="68" x2="156" y2="68" />
+    <text x="168" y="72" font-size="14" font-weight="600" stroke="none" fill="#000">In 2h 12m</text>
+    <text x="168" y="92" font-size="12" stroke="none" fill="#666">Today, 4:08 PM · </text>
+    <text x="272" y="92" font-size="12" font-weight="700" stroke="none" fill="#000">Attempt 3</text>
+  </g>
+
+  <!-- 5 · due now -->
+  <g transform="translate(48,384)">
+    <rect width="576" height="112" rx="8" />
+    <text x="16" y="28" font-size="12" stroke="none" fill="#666">DUE NOW</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">Monitor</text>
+    <circle cx="152" cy="68" r="7" fill="#e6e6e6" />
+    <line x1="152" y1="68" x2="152" y2="63" />
+    <line x1="152" y1="68" x2="156" y2="68" />
+    <text x="168" y="72" font-size="14" font-weight="600" stroke="none" fill="#000">Due now</text>
+    <text x="168" y="92" font-size="12" stroke="none" fill="#666">checking momentarily…</text>
+  </g>
+
+  <!-- 6 · overdue -->
+  <g transform="translate(656,384)">
+    <rect width="576" height="112" rx="8" />
+    <text x="16" y="28" font-size="12" stroke="none" fill="#666">OVERDUE</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">Monitor</text>
+    <circle cx="152" cy="68" r="7" fill="#e6e6e6" />
+    <line x1="152" y1="68" x2="152" y2="63" />
+    <line x1="152" y1="68" x2="156" y2="68" />
+    <text x="168" y="72" font-size="14" font-weight="600" stroke="none" fill="#000">Overdue by 18m</text>
+    <text x="168" y="92" font-size="12" stroke="none" fill="#666">Jul 17, 1:38 PM · fires on next tick</text>
+  </g>
+
+  <!-- 7 · cleared -->
+  <g transform="translate(48,520)">
+    <rect width="576" height="112" rx="8" />
+    <text x="16" y="28" font-size="12" stroke="none" fill="#666">CLEARED</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">Monitor</text>
+    <text x="168" y="72" font-size="14" stroke="none" fill="#666">Cleared</text>
+    <text x="168" y="92" font-size="12" stroke="none" fill="#666">2h ago · after attempt 2</text>
+  </g>
+
+  <!-- 8 · none -->
+  <g transform="translate(656,520)">
+    <rect width="576" height="112" rx="8" />
+    <text x="16" y="28" font-size="12" stroke="none" fill="#666">NONE</text>
+    <text x="16" y="72" font-size="12" stroke="none" fill="#666">Monitor</text>
+    <text x="144" y="72" font-size="14" stroke="none" fill="#666">None</text>
+  </g>
+
+  <!-- format rules -->
+  <text x="48" y="688" font-size="14" font-weight="600" stroke="none" fill="#000">Copy rules</text>
+  <text x="48" y="712" font-size="12" stroke="none" fill="#666">&lt; 1h → “In 24m” · &lt; 24h → “In 2h 12m” (two units, not “in 2h”) · beyond → “In 3d” + weekday date · past due → “Overdue by …”.</text>
+  <text x="48" y="732" font-size="12" stroke="none" fill="#666">Absolute time says “Today” when it is today; adds the year only when it is not the current year. Banner + strip render only in scheduled / due / overdue states.</text>
+</svg>

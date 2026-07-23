@@ -34,6 +34,7 @@ async function logMembershipChange(
     actorId: actor.actorId,
     agentId: actor.agentId,
     runId: actor.runId,
+    agentApiKeyId: actor.agentApiKeyId,
     action: `resource_membership.${input.changeKind}`,
     entityType: input.resourceType,
     entityId: input.resourceId,

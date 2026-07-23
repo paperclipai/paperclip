@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
 import {
@@ -16,6 +17,7 @@ import {
 } from "../routes/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
+import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "../services/successful-run-handoff-state.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -38,8 +40,8 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
   afterEach(async () => {
     __clearIssueListResponseCacheForTests();
     await db.delete(issues);
-    await db.delete(heartbeatRuns);
     await db.delete(activityLog);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
@@ -233,6 +235,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       successfulRunHandoff: {
         state: "required",
         required: true,
+        hasLiveContinuation: false,
         sourceRunId,
         assigneeAgentId: ownerAgentId,
       },
@@ -240,6 +243,146 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(res.body[0]).not.toHaveProperty("workProducts");
     expect(res.body[0]).not.toHaveProperty("project");
     expect(res.body[0]).not.toHaveProperty("goal");
+  });
+
+  it("marks a required successful-run handoff live while a run targets the issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Live handoff issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.successful_run_handoff_required",
+      entityType: "issue",
+      entityId: issueId,
+      agentId,
+      details: { sourceRunId: randomUUID() },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { taskId: issueId },
+    });
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ view: "compact", limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body[0]?.successfulRunHandoff).toMatchObject({
+      state: "required",
+      required: true,
+      hasLiveContinuation: true,
+      liveRunId: runId,
+    });
+  });
+
+  it("logs resolved when a valid-path skip closes a stale required handoff", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const resolverRunId = randomUUID();
+    const sourceRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: resolverRunId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextSnapshot: { issueId },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: `${uniqueIssuePrefix()}-1`,
+      title: "Stale handoff",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      action: "issue.successful_run_handoff_required",
+      entityType: "issue",
+      entityId: issueId,
+      agentId,
+      details: { sourceRunId },
+      createdAt: new Date("2026-07-01T00:00:00.000Z"),
+    });
+
+    await expect(resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
+      companyId,
+      issueId,
+      issueIdentifier: "PAP-1",
+      agentId,
+      runId: resolverRunId,
+      skipReason: "persisted issue monitor owns the next action",
+    })).resolves.toBe(true);
+
+    const resolved = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.find((row) => row.action === "issue.successful_run_handoff_resolved"));
+    expect(resolved).toMatchObject({
+      runId: resolverRunId,
+      details: {
+        sourceRunId,
+        resolvedByRunId: resolverRunId,
+        resolvedBySkipReason: "persisted issue monitor owns the next action",
+      },
+    });
   });
 
   it("returns 304 for unchanged compact issue list ETags", async () => {

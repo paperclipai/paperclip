@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "slug": "linear",
+  "name": "Linear",
+  "description": "Create, update, and read Linear issues.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=linear.app&sz=128"
+  },
+  "urlPatterns": [
+    "https://mcp.linear.app/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer",
+        "dcr"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {
+        "serverUrl": "https://mcp.linear.app/mcp",
+        "authorizationEndpoint": "https://linear.app/oauth/authorize",
+        "tokenEndpoint": "https://api.linear.app/oauth/token",
+        "scopesHint": [
+          "read",
+          "write"
+        ]
+      },
+      "guidanceMd": "Register a Linear OAuth app and add Paperclip's redirect URI before connecting.",
+      "riskTier": "S2",
+      "requiredResourceFilters": [
+        "workspace",
+        "team",
+        "project"
+      ]
+    }
+  ]
+}

@@ -70,7 +70,7 @@ function SuccessfulRunRetryNowControl({
     <div className="mt-2 rounded-md border border-amber-300/70 bg-background/80 p-2 dark:border-amber-500/40 dark:bg-background/40">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0 text-xs leading-5 text-amber-900 dark:text-amber-100">
-          Corrective wake {scheduleLabel}. Retry now starts the same recovery path immediately.
+          Paperclip will ask the assignee to choose the next step {scheduleLabel}. Retry now starts that follow-up immediately.
         </div>
         <Button
           type="button"
@@ -247,8 +247,8 @@ function WaitingOnLiveWorkNotice({
             <p className="font-medium leading-5">Waiting on live work</p>
             <p className="leading-5">
               Queued behind {total} {queuedNoun} being worked in order. This task
-              resumes automatically when the chain is done. Comments still wake the
-              responsible agent.
+              resumes automatically when the chain is done. Comments still notify the
+              assignee.
             </p>
           </div>
 
@@ -432,6 +432,43 @@ export function IssueBlockedNotice({
   })();
   const showStalledRow = isStalled && stalledLeafBlockers.length > 0;
 
+  // Rule C (PAP-13554 / plan §Rule C): when the issue is `blocked` and a
+  // blocker edge is genuinely not done, a human comment does NOT reopen it —
+  // the reopen gate keeps it blocked. `blockers` here is the *unresolved* set
+  // (status ≠ done/cancelled), so a non-empty list on a `blocked` issue is
+  // exactly the case the human's message can't move to todo. Done-but-pending-
+  // finalize blockers are `done`, so they fall out of this set and into the
+  // Rule B reopen path — we must not claim "a message won't reopen" for those.
+  // Name the deepest unresolved leaf (prefer terminal leaves) with its status
+  // so "I sent a message and nothing happened" can't recur silently.
+  const responsibleName = agentName ?? "the assignee";
+  const reopenSuppressed = issueStatus === "blocked" && !isStalled && blockers.length > 0;
+  const unresolvedLeafBlockers = (() => {
+    if (!reopenSuppressed) return [] as IssueRelationIssueSummary[];
+    const seen = new Set<string>();
+    const collected: IssueRelationIssueSummary[] = [];
+    for (const blocker of blockers) {
+      const terminals = (blocker.terminalBlockers ?? []).filter(
+        (leaf) => leaf.status !== "done" && leaf.status !== "cancelled",
+      );
+      const leaves = terminals.length > 0 ? terminals : [blocker];
+      for (const leaf of leaves) {
+        if (seen.has(leaf.id)) continue;
+        seen.add(leaf.id);
+        collected.push(leaf);
+      }
+    }
+    return collected;
+  })();
+  const reopenSuppressedLeaf = unresolvedLeafBlockers[0] ?? null;
+  const reopenSuppressedLeafId = reopenSuppressedLeaf
+    ? reopenSuppressedLeaf.identifier ?? reopenSuppressedLeaf.id.slice(0, 8)
+    : null;
+  const reopenSuppressedLeafStatus = reopenSuppressedLeaf
+    ? reopenSuppressedLeaf.status.replace(/_/g, " ")
+    : null;
+  const reopenSuppressedOtherCount = Math.max(unresolvedLeafBlockers.length - 1, 0);
+
   const renderBlockerChip = (blocker: IssueRelationIssueSummary) => {
     const issuePathId = blocker.identifier ?? blocker.id;
     const recoveryAction = blocker.activeRecoveryAction ?? null;
@@ -493,16 +530,13 @@ export function IssueBlockedNotice({
             <>
               <p className="font-medium leading-5">This task still needs a next step.</p>
               <p className="leading-5">
-                A run finished successfully, but this task is still open in{" "}
-                <code className="rounded bg-amber-100 px-1 py-0.5 text-xs dark:bg-amber-400/15">
-                  in_progress
-                </code>{" "}
-                with no clear owner for the next action.
+                A run finished successfully, but the task is still open. Paperclip needs someone to choose
+                what happens next.
               </p>
               <ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-amber-900 dark:text-amber-100">
                 <li>Mark it done or cancelled.</li>
                 <li>Send it for review or ask for input.</li>
-                <li>Mark it blocked with a blocker owner.</li>
+                <li>Record what is blocking it and who owns that blocker.</li>
                 <li>Delegate follow-up work or queue a continuation.</li>
               </ul>
               <div className="flex flex-wrap gap-1.5 text-xs">
@@ -519,7 +553,7 @@ export function IssueBlockedNotice({
                   </span>
                 ) : null}
                 <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 text-amber-900 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100">
-                  Corrective wake queued for {agentName ?? "the responsible"}
+                  Asked {agentName ?? "the assignee"} to choose the next step
                 </span>
               </div>
               {successfulRunHandoff.detectedProgressSummary ? (
@@ -546,9 +580,27 @@ export function IssueBlockedNotice({
                     ? stalledLeafBlockers.length > 1
                       ? <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
                       : <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
-                    : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the responsible for questions or triage.</>
-                  : <>Work on this task is blocked until it is moved back to todo. Comments still wake the responsible for questions or triage.</>}
+                    : reopenSuppressed
+                      ? <>A message won&rsquo;t restart this task yet — it stays blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} done, then it reopens automatically. Comments still notify {responsibleName} for questions or triage in the meantime.</>
+                      : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still notify the assignee for questions or triage.</>
+                  : <>Work on this task is blocked until someone moves it back to To do. Comments still notify the assignee for questions or triage.</>}
               </p>
+              {reopenSuppressed && reopenSuppressedLeafId ? (
+                <p
+                  data-testid="issue-blocked-notice-reopen-suppressed"
+                  className="text-xs font-medium leading-5 text-amber-900 dark:text-amber-100"
+                >
+                  Still blocked by{" "}
+                  <span className="font-mono">{reopenSuppressedLeafId}</span>
+                  {reopenSuppressedLeafStatus ? <> ({reopenSuppressedLeafStatus})</> : null}
+                  {reopenSuppressedOtherCount > 0
+                    ? ` and ${reopenSuppressedOtherCount} other ${
+                        reopenSuppressedOtherCount === 1 ? "task" : "tasks"
+                      }`
+                    : null}
+                  .
+                </p>
+              ) : null}
               {blockers.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
                   {blockers.map(renderBlockerChip)}

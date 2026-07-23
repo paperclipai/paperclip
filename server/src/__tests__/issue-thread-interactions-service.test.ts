@@ -1574,6 +1574,39 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.status).toBe("pending");
   });
 
+  it("lists interactions whose stored result predates the current schema without throwing (LOOA-629)", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Legacy result outcome");
+
+    // Simulate a row persisted by an older build: a resolved confirmation whose
+    // result.outcome is a value no longer in the current enum. A hard parse
+    // would 500 the whole listForIssue call and brick every consumer (web
+    // thread + Slack gateway notifier/digest/aging).
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "cancelled",
+      continuationPolicy: { kind: "none" },
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+      },
+      result: {
+        version: 1,
+        outcome: "withdrawn_by_creator",
+      },
+      createdByUserId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.kind).toBe("request_confirmation");
+    // The unparseable result degrades to null; the interaction still lists.
+    expect(listed[0]?.result).toBeNull();
+    expect(listed[0]?.status).toBe("cancelled");
+  });
+
   it("does not supersede request confirmations for agent, system, or older user comments", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Comment supersede exclusions");
 
@@ -2069,6 +2102,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     async function seedAcceptGateFixture(options?: {
       kind?: AcceptGateInteractionKind;
       sourceRunId?: string | null;
+      sourceRunStatus?: string;
     }) {
       const companyId = randomUUID();
       const projectId = randomUUID();
@@ -2115,6 +2149,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         runtimeConfig: {},
         permissions: {},
       });
+      const sourceRunStatus = options?.sourceRunStatus ?? "succeeded";
+      const sourceRunTerminal = sourceRunStatus !== "running";
       await db.insert(heartbeatRuns).values([
         ...(sourceRunId
           ? [
@@ -2123,9 +2159,9 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
                 companyId,
                 agentId,
                 invocationSource: "manual",
-                status: "succeeded",
+                status: sourceRunStatus,
                 startedAt: new Date("2026-05-23T21:55:00.000Z"),
-                finishedAt: new Date("2026-05-23T22:05:00.000Z"),
+                finishedAt: sourceRunTerminal ? new Date("2026-05-23T22:05:00.000Z") : null,
               },
             ]
           : []),
@@ -2297,6 +2333,105 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         id: interactionId,
         kind: "request_confirmation",
         status: "accepted",
+      });
+    });
+
+    it("allows request_confirmation accept when the source run's workspace_finalize failed", async () => {
+      // A sync-back that ran and FAILED is terminal. The run will not retry it, so
+      // the confirmation must not stay wedged behind a misleading "still syncing"
+      // error — the user can merge/act manually.
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId, sourceRunId } =
+        await seedAcceptGateFixture({ sourceRunStatus: "failed" });
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: sourceRunId,
+        phase: "workspace_config_freshness",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      });
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: sourceRunId,
+        phase: "workspace_finalize",
+        status: "failed",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        {},
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: interactionId,
+        kind: "request_confirmation",
+        status: "accepted",
+      });
+    });
+
+    it("allows request_confirmation accept when a running workspace_finalize is stale (source run ended)", async () => {
+      // The source run died mid-finalize, leaving a `running` op that will never
+      // advance. A terminal/missing owner run means the record is stale, so the
+      // gate must not wait on it forever.
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId, sourceRunId } =
+        await seedAcceptGateFixture({ sourceRunStatus: "failed" });
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: sourceRunId,
+        phase: "workspace_finalize",
+        status: "running",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        {},
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: interactionId,
+        kind: "request_confirmation",
+        status: "accepted",
+      });
+    });
+
+    it("refuses request_confirmation accept while a workspace_finalize is running on a live source run", async () => {
+      // A genuinely in-flight sync-back on a still-active run must still block, so
+      // the confirmation cannot race commits that are actively being synced back.
+      const { companyId, executionWorkspaceId, issueId, goalId, interactionId, sourceRunId } =
+        await seedAcceptGateFixture({ sourceRunStatus: "running" });
+
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: sourceRunId,
+        phase: "workspace_finalize",
+        status: "running",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      });
+
+      await expect(
+        interactionsSvc.acceptInteraction(
+          { id: issueId, companyId, goalId, projectId: null },
+          interactionId,
+          {},
+          { userId: "local-board" },
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining(
+          "the run that created this interaction has not finished syncing its workspace",
+        ),
+        details: { executionWorkspaceId, sourceRunId },
       });
     });
 

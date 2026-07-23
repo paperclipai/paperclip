@@ -71,7 +71,8 @@ describeEmbeddedPostgres("tool OAuth legacy backfill", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: `Legacy OAuth Connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: {
@@ -181,7 +182,8 @@ describeEmbeddedPostgres("tool OAuth legacy backfill", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: `Legacy OAuth AWS Connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: {

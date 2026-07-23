@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
 import type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "@paperclipai/shared";
+import { parseBuildCommit, readBuildCommit } from "./build-commit.js";
 
 export type { ServerGitInfo, ServerInfoSnapshot };
 
 type GitCommand = () => string;
+type BuildCommitCommand = () => string | null;
 
-const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
 const SHORT_SHA_RE = /^[0-9a-f]{7,40}$/i;
 
 function defaultGitCommand() {
@@ -87,15 +88,16 @@ function parseGitInfo(
   const [fullSha = "", shortSha = "", subject = "", committedAt = ""] = output
     .trimEnd()
     .split("\n");
+  const parsedFullSha = parseBuildCommit(fullSha);
   const committedAtTime = Date.parse(committedAt);
 
-  if (!FULL_SHA_RE.test(fullSha) || !SHORT_SHA_RE.test(shortSha)) {
+  if (!parsedFullSha || !SHORT_SHA_RE.test(shortSha)) {
     return { available: false, unavailableReason: "invalid_git_metadata" };
   }
 
   return {
     available: true,
-    fullSha,
+    fullSha: parsedFullSha,
     shortSha,
     branchName,
     subject: subject.trim() || "No commit subject",
@@ -108,6 +110,7 @@ function readGitInfo(
   gitCommand: GitCommand = defaultGitCommand,
   gitStatusCommand: GitCommand = defaultGitStatusCommand,
   gitBranchCommand: GitCommand = defaultGitBranchCommand,
+  buildCommitCommand: BuildCommitCommand = readBuildCommit,
 ): ServerGitInfo {
   try {
     const output = gitCommand();
@@ -120,16 +123,43 @@ function readGitInfo(
     }
     return parseGitInfo(output, branchName, localChanges);
   } catch {
-    return { available: false, unavailableReason: "git_unavailable" };
+    const buildCommit = parseBuildCommit(buildCommitCommand());
+    if (!buildCommit) {
+      return { available: false, unavailableReason: "git_unavailable" };
+    }
+
+    return {
+      available: true,
+      fullSha: buildCommit,
+      shortSha: buildCommit.slice(0, 7),
+      branchName: null,
+      subject: "Source build",
+      committedAt: null,
+      localChanges: {
+        available: false,
+        unavailableReason: "git_status_unavailable",
+      },
+    };
   }
 }
 
 export function createServerInfoSnapshot(
-  opts: { now?: Date; gitCommand?: GitCommand; gitStatusCommand?: GitCommand; gitBranchCommand?: GitCommand } = {},
+  opts: {
+    now?: Date;
+    gitCommand?: GitCommand;
+    gitStatusCommand?: GitCommand;
+    gitBranchCommand?: GitCommand;
+    buildCommitCommand?: BuildCommitCommand;
+  } = {},
 ): ServerInfoSnapshot {
   return {
     processStartedAt: (opts.now ?? new Date()).toISOString(),
-    git: readGitInfo(opts.gitCommand, opts.gitStatusCommand, opts.gitBranchCommand),
+    git: readGitInfo(
+      opts.gitCommand,
+      opts.gitStatusCommand,
+      opts.gitBranchCommand,
+      opts.buildCommitCommand,
+    ),
   };
 }
 
@@ -143,12 +173,23 @@ const processStartedAt = new Date().toISOString();
 let gitInfoCache: { value: ServerGitInfo; expiresAt: number } | null = null;
 
 export function getServerInfoSnapshot(
-  opts: { now?: number; gitCommand?: GitCommand; gitStatusCommand?: GitCommand; gitBranchCommand?: GitCommand } = {},
+  opts: {
+    now?: number;
+    gitCommand?: GitCommand;
+    gitStatusCommand?: GitCommand;
+    gitBranchCommand?: GitCommand;
+    buildCommitCommand?: BuildCommitCommand;
+  } = {},
 ): ServerInfoSnapshot {
   const now = opts.now ?? Date.now();
   if (!gitInfoCache || now >= gitInfoCache.expiresAt) {
     gitInfoCache = {
-      value: readGitInfo(opts.gitCommand, opts.gitStatusCommand, opts.gitBranchCommand),
+      value: readGitInfo(
+        opts.gitCommand,
+        opts.gitStatusCommand,
+        opts.gitBranchCommand,
+        opts.buildCommitCommand,
+      ),
       expiresAt: now + GIT_INFO_CACHE_TTL_MS,
     };
   }

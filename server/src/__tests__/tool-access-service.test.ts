@@ -9,6 +9,7 @@ import {
   companies,
   companyMemberships,
   companySecretBindings,
+  connectionGrants,
   connectionTokenIssuances,
   companySecrets,
   companySecretVersions,
@@ -271,7 +272,8 @@ async function createBrokerConnection(
     companyId,
     applicationId: application!.id,
     name: `Pages connection ${randomUUID()}`,
-    transport: "remote_http",
+    uid: `test/${randomUUID()}`,
+    transport: "mcp_remote",
     status: "active",
     enabled: true,
     healthStatus: input.healthStatus ?? "ok",
@@ -329,7 +331,8 @@ async function createOAuthConnection(
     companyId,
     applicationId: application!.id,
     name: `OAuth connection ${randomUUID()}`,
-    transport: "remote_http",
+    uid: `test/${randomUUID()}`,
+    transport: "mcp_remote",
     status: "active",
     enabled: true,
     healthStatus: "ok",
@@ -378,7 +381,8 @@ async function createRemoteToolFixture(
     companyId,
     applicationId: application!.id,
     name: `Fixture Connection ${randomUUID()}`,
-    transport: "remote_http",
+    uid: `fixture/${randomUUID()}`,
+    transport: "mcp_remote",
     status: "active",
     enabled: true,
     config: { url: "https://fixture.example.test/mcp" },
@@ -492,7 +496,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
 
     const res = await request(app)
-      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
       .set("X-Paperclip-Run-Id", run.id)
       .send({ scope: "pages:publish:ns/dotta", requestedTtlSeconds: 5000 });
 
@@ -500,6 +504,8 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(res.body).toMatchObject({
       status: "minted",
       connectionId: connection.id,
+      connection: { id: connection.id, uid: connection.uid },
+      grantId: expect.any(String),
       path: "exchange",
       token: "child-pages-token",
       tokenType: "Bearer",
@@ -534,6 +540,157 @@ describeEmbeddedPostgres("tool access service", () => {
         outcome: "success",
       }),
     ]));
+  });
+
+  it("selects scoped credentials for array scopes and fails closed for unknown selectors", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, {
+      parentScopes: ["staging", "production"],
+    });
+    const productionSecret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `Production broker parent ${randomUUID()}`,
+      key: `broker.production.${randomUUID()}`,
+      value: "production-deploy-token",
+    });
+    await db.update(toolConnections).set({
+      config: {
+        ...connection.config,
+        tokenBroker: {
+          ...(connection.config.tokenBroker as Record<string, unknown>),
+          parentCredentialConfigPath: "credentials.production_token",
+        },
+      },
+      credentialSecretRefs: [
+        ...connection.credentialSecretRefs,
+        {
+          secretId: productionSecret.id,
+          versionSelector: "latest",
+          configPath: "credentials.production_token",
+          required: true,
+          label: "Production deploy token",
+          keyScope: "production",
+        },
+      ],
+      updatedAt: new Date(),
+    }).where(eq(toolConnections.id, connection.id));
+    await db.insert(companySecretBindings).values({
+      companyId: company.id,
+      secretId: productionSecret.id,
+      targetType: "tool_connection",
+      targetId: connection.id,
+      configPath: "credentials.production_token",
+    });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        token: "unexpected-production-token",
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        scope: "staging",
+      }),
+    } as Response);
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: "staging" });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ code: "parent_credential_missing" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const productionSecretEvents = await db.select().from(secretAccessEvents).where(and(
+      eq(secretAccessEvents.consumerId, connection.id),
+      eq(secretAccessEvents.configPath, "credentials.production_token"),
+    ));
+    expect(productionSecretEvents).toHaveLength(0);
+
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async (_url, init) => {
+      expect(init?.headers).toEqual(expect.objectContaining({ authorization: "Bearer production-deploy-token" }));
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({
+          token: "production-child-token",
+          expiresAt: new Date(Date.now() + 900_000).toISOString(),
+          scope: "production",
+        }),
+      } as Response;
+    });
+
+    const productionRes = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: ["production"] });
+
+    expect(productionRes.status).toBe(200);
+    expect(productionRes.body).toMatchObject({ token: "production-child-token", scope: ["production"] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns typed subject errors and rejects revoked grants immediately", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id);
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+
+    const denied = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .send({ subject: { type: "user", userId: "someone-else" } });
+    expect(denied.status).toBe(403);
+    expect(denied.body).toMatchObject({
+      code: "subject_not_permitted",
+      connection: { uid: connection.uid },
+      subject: { type: "user", userId: "someone-else" },
+    });
+
+    const missing = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .send({ subject: { type: "user", userId: "user-for-run" } });
+    expect(missing.status).toBe(409);
+    expect(missing.body).toMatchObject({ code: "user_authorization_required", remediation: { action: "start_authorization" } });
+
+    const service = toolAccessService(db);
+    const grant = await service.addConnectionInstallation(connection.id, { isDefault: false });
+    await service.revokeConnectionGrant(connection.id, grant.id);
+    const revoked = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ grantId: grant.id });
+    expect(revoked.status).toBe(409);
+    expect(revoked.body).toMatchObject({ code: "grant_revoked", grantId: grant.id });
+  });
+
+  it("returns daily connection usage buckets", async () => {
+    const company = await createCompany(db);
+    const { connection } = await createBrokerConnection(db, company.id);
+    const service = toolAccessService(db);
+    await db.insert(connectionTokenIssuances).values({
+      companyId: company.id,
+      applicationId: connection.applicationId,
+      connectionId: connection.id,
+      agentId: (await createAgent(db, company.id)).id,
+      path: "exchange",
+      requestedScope: [],
+      issuedScope: [],
+      outcome: "success",
+    });
+    await db.insert(toolInvocations).values({
+      companyId: company.id,
+      connectionId: connection.id,
+      toolName: "fixture",
+      riskLevel: "write",
+    });
+    const usage = await service.getConnectionUsage(connection.uid, "7d", company.id);
+    expect(usage.connection).toEqual({ id: connection.id, uid: connection.uid });
+    expect(usage.buckets.at(-1)).toMatchObject({
+      issuances: { total: 1, byOutcome: { success: 1 }, byPath: { exchange: 1 } },
+      invocations: { total: 1, byRiskLevel: { write: 1 } },
+    });
   });
 
   it("rejects connection token minting after the heartbeat run completes", async () => {
@@ -746,7 +903,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const connection = await service.createConnection(company.id, {
       name: "Remote fixture",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp", quarantineNewEntries: true },
       enabled: true,
       status: "active",
@@ -835,7 +992,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const connection = await service.createConnection(company.id, {
       name: "Streamable HTTP fixture",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "http://127.0.0.1:8848/mcp" },
       enabled: true,
       status: "active",
@@ -1018,7 +1175,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     await expect(service.createConnection(company.id, {
       name: "Metadata endpoint",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "http://169.254.169.254/latest/meta-data" },
       enabled: true,
       status: "active",
@@ -1049,7 +1206,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: `Profile Connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -1676,7 +1834,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: "Summary connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -1773,7 +1932,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: "Preview connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -1836,7 +1996,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: "Allow connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -2280,7 +2441,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const res = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
 
     expect(res.status).toBe(200);
-    expect(res.body.apps.map((entry: { key: string }) => entry.key)).toEqual([
+    expect(res.body.apps.map((app: { slug: string }) => app.slug)).toEqual([
       "zapier",
       "github",
       "slack",
@@ -2289,23 +2450,36 @@ describeEmbeddedPostgres("tool access service", () => {
       "google-sheets",
       "context7",
     ]);
-    expect(res.body.apps.map((entry: { key: string }) => entry.key)).not.toContain("google-drive");
+    expect(res.body.apps.map((app: { slug: string }) => app.slug)).not.toContain("google-drive");
     expect(res.body.apps).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          key: "slack",
-          authKind: "oauth",
-          oauth: expect.objectContaining({ provider: "slack" }),
+          slug: "slack",
+          methods: expect.arrayContaining([
+            expect.objectContaining({
+              auth: "oauth",
+              defaults: expect.objectContaining({ authorizationEndpoint: "https://slack.com/oauth/v2/authorize" }),
+            }),
+          ]),
+          ownershipAvailability: expect.objectContaining({
+            platform_shared: false,
+            platform_provisioned: false,
+            customer: true,
+            dcr: true,
+          }),
         }),
         expect.objectContaining({
-          key: "zapier",
-          credentialFields: [
+          slug: "zapier",
+          methods: expect.arrayContaining([
             expect.objectContaining({
-              configPath: "credentials.authorization",
-              placement: "header",
-              key: "Authorization",
+              credentialFields: [expect.objectContaining({ key: "authorization" })],
+              keyPlacement: expect.objectContaining({ location: "header", name: "Authorization" }),
             }),
-          ],
+          ]),
+        }),
+        expect.objectContaining({
+          slug: "google-sheets",
+          availability: expect.objectContaining({ available: false }),
         }),
       ]),
     );
@@ -2337,7 +2511,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(res.body.drafts).toEqual([
       expect.objectContaining({
         name: "secure",
-        transport: "remote_http",
+        transport: "mcp_remote",
         status: "draft",
         config: { url: "https://secure.example/mcp" },
         credentialFields: [
@@ -2406,7 +2580,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const connection = await service.createConnection(company.id, {
       applicationName: "Discord",
       name: "Discord bot token",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://discord.example.test/mcp" },
       enabled: false,
       status: "draft",
@@ -2463,7 +2637,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(service.createConnection(company.id, {
       applicationId: application!.id,
       name: "Blocked class-3 token",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://blocked.example.test/mcp" },
       enabled: false,
       status: "draft",
@@ -2641,7 +2815,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Sheets",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://sheets.example/mcp" },
@@ -2701,6 +2876,92 @@ describeEmbeddedPostgres("tool access service", () => {
       GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "same-company-sheet,new-company-sheet",
     });
     expect(updated.transportConfig).toEqual(updated.config);
+  });
+
+  it("creates and resolves an agent-initiated user authorization grant card", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack user auth" });
+
+    const workspaceStarted = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+    const workspaceState = new URL(workspaceStarted.authorizationUrl).searchParams.get("state")!;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        const userAuthorization = body.get("code") === "user-authorization-code";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: userAuthorization ? "user-access-token" : "workspace-access-token",
+            refresh_token: userAuthorization ? "user-refresh-token" : "workspace-refresh-token",
+            expires_in: 3600,
+          }),
+        } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: workspaceState,
+      code: "workspace-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+    const [workspaceConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    const workspaceSecretIds = workspaceConnection.credentialSecretRefs.map((ref) => ref.secretId).sort();
+
+    const started = await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["users:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    const authorizationUrl = new URL(started.authorizationUrl);
+    expect(authorizationUrl.searchParams.get("scope")).toBe("users:read");
+
+    const [state] = await db.select().from(toolOauthStates);
+    expect(state).toMatchObject({ subjectUserId: "user-for-run", issueId: issue.id, requestedScopes: ["users:read"] });
+    const [interaction] = await db.select().from(issueThreadInteractions);
+    expect(interaction).toMatchObject({
+      issueId: issue.id,
+      kind: "request_confirmation",
+      status: "pending",
+      title: "Connect your account",
+    });
+    expect(interaction.payload).toMatchObject({ target: { href: started.authorizationUrl } });
+
+    await service.completeOAuthCallback({
+      state: state.state,
+      code: "user-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    });
+
+    const [grant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, connected.connectionId),
+      eq(connectionGrants.subjectUserId, "user-for-run"),
+    ));
+    expect(grant).toMatchObject({ kind: "user", status: "active" });
+    expect(grant.credentialSecretRefs.map((ref) => ref.configPath).sort()).toEqual(["oauth.access_token", "oauth.refresh_token"]);
+    expect(grant.credentialSecretRefs.map((ref) => ref.secretId).sort()).not.toEqual(workspaceSecretIds);
+    const [unchangedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    expect(unchangedConnection.credentialSecretRefs.map((ref) => ref.secretId).sort()).toEqual(workspaceSecretIds);
+    const [resolved] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
+    expect(resolved).toMatchObject({ status: "accepted", result: { version: 1, outcome: "accepted" } });
   });
 
   it("starts and completes OAuth app sign-in with PKCE state and secret-backed tokens", async () => {
@@ -3084,7 +3345,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const service = toolAccessService(db);
     const connection = await service.createConnection(company.id, {
       name: "Machine OAuth",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: {
         url: "https://m2m.example.test/mcp",
         oauth: {
@@ -3240,7 +3501,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: `Attention connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -3252,7 +3514,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: `Healthy connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://healthy.example/mcp" },
@@ -3335,7 +3598,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: `Action review connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -3430,7 +3694,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: `Review connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://review.example/mcp" },
@@ -3590,7 +3855,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Auto connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://auto.example/mcp" },
@@ -3650,7 +3916,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Attention review connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://attention-review.example/mcp" },
@@ -4070,7 +4337,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: "Smoke OAuth masquerade connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: false,
       healthStatus: "unchecked",
@@ -4140,7 +4408,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: "Smoke Lab HTTP MCP fixture",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       healthStatus: "ok",
@@ -4773,7 +5042,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const connection = await service.createConnection(company.id, {
       applicationId: application.id,
       name: "Viewer guarded connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://viewer-guard.example/mcp" },
       status: "active",
       enabled: true,
@@ -4786,7 +5055,7 @@ describeEmbeddedPostgres("tool access service", () => {
         .send({ name: "Viewer create app", type: "mcp_http" }),
       await request(viewerApp)
         .post(`/api/companies/${company.id}/tools/connections`)
-        .send({ name: "Viewer create connection", transport: "remote_http", config: { url: "https://viewer-create.example/mcp" } }),
+        .send({ name: "Viewer create connection", transport: "mcp_remote", config: { url: "https://viewer-create.example/mcp" } }),
       await request(viewerApp)
         .patch(`/api/tool-applications/${application.id}`)
         .send({ name: "Viewer edited app" }),
@@ -4932,7 +5201,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const app = createRouteApp(db);
     const connection = await service.createConnection(company.id, {
       name: "Guarded connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
     });
 
@@ -4953,7 +5222,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const app = createRouteApp(db);
     const connection = await service.createConnection(company.id, {
       name: "Single connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
       status: "active",
       enabled: true,
@@ -4998,7 +5267,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const first = await service.createConnection(company.id, {
       applicationId: application.id,
       name: "First connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://one.example/mcp" },
       status: "active",
       enabled: true,
@@ -5006,7 +5275,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await service.createConnection(company.id, {
       applicationId: application.id,
       name: "Second connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://two.example/mcp" },
       status: "active",
       enabled: true,
@@ -5027,12 +5296,42 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(activities.some((activity) => activity.action === "tool_application.archived")).toBe(false);
   });
 
+  it("keeps normalized connection UIDs unique", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const firstApplication = await service.createApplication(company.id, {
+      name: "First UID app",
+      type: "mcp_http",
+    });
+    const secondApplication = await service.createApplication(company.id, {
+      name: "Second UID app",
+      type: "mcp_http",
+    });
+
+    const first = await service.createConnection(company.id, {
+      applicationId: firstApplication.id,
+      name: "Foo Bar",
+      transport: "mcp_remote",
+      config: { url: "https://one.example/mcp" },
+    });
+    const second = await service.createConnection(company.id, {
+      applicationId: secondApplication.id,
+      name: "foo-bar",
+      transport: "mcp_remote",
+      config: { url: "https://two.example/mcp" },
+    });
+
+    expect(first.uid).not.toBe(second.uid);
+    expect(first.uid).toMatch(/\/foo-bar-[0-9a-f]{8}$/);
+    expect(second.uid).toMatch(/\/foo-bar-[0-9a-f]{8}$/);
+  });
+
   it("fails closed at the database when a connection races an application delete (no silent cascade)", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
     const connection = await service.createConnection(company.id, {
       name: "Racy connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
     });
 
@@ -5062,7 +5361,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const service = toolAccessService(db);
     const connection = await service.createConnection(company.id, {
       name: "Company-scoped connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
     });
 
@@ -5151,7 +5450,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Remote MCP",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://example.invalid/mcp" },
@@ -5275,7 +5575,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "GitHub",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://github.example/mcp" },
@@ -5416,7 +5717,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Google Sheets (stdio smoke)",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://sheets.example/mcp" },
@@ -5480,7 +5782,7 @@ describeEmbeddedPostgres("tool access service", () => {
         action: "tool_connection.archived",
         entityType: "tool_connection",
         entityId: connection.id,
-        details: { transport: "remote_http" },
+        details: { transport: "mcp_remote" },
         createdAt: new Date("2026-06-12T10:04:00Z"),
       },
     ]);
@@ -5538,7 +5840,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Remote runtime",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -5551,7 +5854,7 @@ describeEmbeddedPostgres("tool access service", () => {
       slotKey: `${connection.id}:remote`,
       ownerScopeType: "connection",
       ownerScopeId: connection.id,
-      runtimeKind: "remote_http",
+      runtimeKind: "mcp_remote",
       status: "running",
       reuseKey: connection.id,
       provider: "paperclip",
@@ -5564,7 +5867,7 @@ describeEmbeddedPostgres("tool access service", () => {
         status: 422,
         details: expect.objectContaining({
           code: "runtime_control_unsupported",
-          runtimeKind: "remote_http",
+          runtimeKind: "mcp_remote",
         }),
       });
   });
@@ -5588,6 +5891,7 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Degraded local stdio",
+      uid: `test/${randomUUID()}`,
       transport: "local_stdio",
       status: "active",
       enabled: true,
@@ -5717,7 +6021,8 @@ describeEmbeddedPostgres("tool access service", () => {
         companyId: company.id,
         applicationId: application.id,
         name: "Imported draft",
-        transport: "remote_http",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
         status: "draft",
         enabled: false,
         config: { url: "https://draft.example/mcp" },
@@ -5729,7 +6034,8 @@ describeEmbeddedPostgres("tool access service", () => {
         companyId: company.id,
         applicationId: application.id,
         name: "OAuth connected, not enabled",
-        transport: "remote_http",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
         status: "active",
         enabled: false,
         config: { url: "https://not-enabled.example/mcp" },
@@ -5814,7 +6120,7 @@ describeEmbeddedPostgres("tool access service", () => {
       expect.arrayContaining([
         expect.objectContaining({
           name: "github",
-          transport: "remote_http",
+          transport: "mcp_remote",
           status: "draft",
           config: { url: "https://mcp.example/github" },
           warnings: [expect.stringContaining("Paperclip secret")],
@@ -5835,7 +6141,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const service = toolAccessService(db);
     const connection = await service.createConnection(company.id, {
       name: "Secret-backed remote",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
       enabled: true,
       status: "active",
@@ -5874,7 +6180,7 @@ describeEmbeddedPostgres("tool access service", () => {
       action: "tool_connection.health_check",
       outcome: "failure",
       reasonCode: "secret_missing",
-      details: { status: "missing_secret", transport: "remote_http" },
+      details: { status: "missing_secret", transport: "mcp_remote" },
     });
     expect(JSON.stringify(audit)).not.toContain("Bearer ");
     expect(JSON.stringify(audit)).not.toContain("Authorization");
@@ -5886,7 +6192,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("revoked token"));
     const connection = await service.createConnection(company.id, {
       name: "Swept remote",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
       enabled: true,
       status: "active",
@@ -5914,14 +6220,14 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const used = await service.createConnection(company.id, {
       name: "Used remote",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://used.example/mcp" },
       enabled: true,
       status: "active",
     });
     const unused = await service.createConnection(company.id, {
       name: "Unused remote",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://unused.example/mcp" },
       enabled: true,
       status: "active",

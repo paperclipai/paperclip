@@ -403,7 +403,16 @@ describe.sequential("agent skill routes", () => {
         opts?: { skipUserSecrets?: boolean },
       ) => {
         expect(config).toBe(adapterConfig);
-        expect(context).toBeUndefined();
+        // Audit-only actor context is threaded through for company `secret_ref`
+        // attribution; user secrets are still skipped (skipUserSecrets: true).
+        expect(context).toEqual({
+          consumerType: "agent",
+          consumerId: "11111111-1111-4111-8111-111111111111",
+          actorType: "user",
+          actorId: "local-board",
+          actorSource: "local_implicit",
+          responsibleUserId: "local-board",
+        });
         expect(opts).toEqual({ adapterType: "claude_local", skipUserSecrets: true });
         return { config: { env: { HOME: "/home/agent" } } };
       },
@@ -425,6 +434,51 @@ describe.sequential("agent skill routes", () => {
         }),
       }),
     );
+  });
+
+  it("threads a non-undefined actor secret context into resolveAdapterConfigForRuntime on both skills routes (audit fidelity, skipUserSecrets preserved)", async () => {
+    const expectedContext = {
+      consumerType: "agent",
+      consumerId: "11111111-1111-4111-8111-111111111111",
+      actorType: "user",
+      actorId: "local-board",
+      actorSource: "local_implicit",
+      responsibleUserId: "local-board",
+    };
+
+    // GET /agents/:id/skills
+    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
+    const listRes = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1"),
+    );
+    expect(listRes.status, JSON.stringify(listRes.body)).toBe(200);
+    const listCall = mockSecretService.resolveAdapterConfigForRuntime.mock.calls.at(-1);
+    expect(listCall?.[2]).toBeDefined();
+    expect(listCall?.[2]).toEqual(expectedContext);
+    expect(listCall?.[3]).toEqual({ adapterType: "claude_local", skipUserSecrets: true });
+
+    // POST /agents/:id/skills/sync
+    mockAdapter.syncSkills.mockResolvedValue({
+      adapterType: "claude_local",
+      supported: true,
+      mode: "ephemeral",
+      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      entries: [],
+      warnings: [],
+    });
+    const syncRes = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+        .send({ desiredSkills: ["paperclip"] }),
+    );
+    expect(syncRes.status, JSON.stringify(syncRes.body)).toBe(200);
+    const syncCall = mockSecretService.resolveAdapterConfigForRuntime.mock.calls.at(-1);
+    expect(syncCall?.[2]).toBeDefined();
+    expect(syncCall?.[2]).toEqual(expectedContext);
+    expect(syncCall?.[3]).toEqual({ adapterType: "claude_local", skipUserSecrets: true });
   });
 
   it("skips runtime materialization when listing Codex skills", async () => {
@@ -662,7 +716,16 @@ describe.sequential("agent skill routes", () => {
           type: "user_secret_ref",
           key: "github_pat_read_only",
         });
-        expect(context).toBeUndefined();
+        // Audit-only actor context is threaded through for company `secret_ref`
+        // attribution; user secrets are still skipped (skipUserSecrets: true).
+        expect(context).toEqual({
+          consumerType: "agent",
+          consumerId: "11111111-1111-4111-8111-111111111111",
+          actorType: "user",
+          actorId: "local-board",
+          actorSource: "local_implicit",
+          responsibleUserId: "local-board",
+        });
         expect(opts).toEqual({ adapterType: "claude_local", skipUserSecrets: true });
         return {
           config: {

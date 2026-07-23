@@ -184,6 +184,17 @@ export interface WorkerStartOptions {
   /** Environment variables passed to the child process. */
   env?: Record<string, string>;
   /**
+   * Companies this worker may act on from proactive (no-invocation) worker→host
+   * calls — the plugin's configured companies. Seeded onto the handle at
+   * creation, BEFORE the child process spawns, so a proactive plugin that
+   * issues host calls during setup() (e.g. the chat gateway's one-shot
+   * `events.subscribe`, which runs while `startWorker` is still awaiting the
+   * initialize response) is already authorized when those calls arrive. The set
+   * can still be replaced at runtime via `setProactiveCompanyScopes` (e.g. on a
+   * config change). Never widens access beyond the listed companies (LOOA-695).
+   */
+  proactiveCompanyScopes?: readonly string[];
+  /**
    * Callback for stream notifications from the worker (streams.open/emit/close).
    * The host wires this to the PluginStreamBus to fan out events to SSE clients.
    */
@@ -268,6 +279,13 @@ export interface PluginWorkerHandle {
    */
   notify(method: string, params: unknown): void;
 
+  /**
+   * Authorize the set of companies this worker may act on from proactive
+   * (non-invocation) context. Replaces any previously-authorized set. See the
+   * proactive-company-scope note in `createPluginWorkerHandle` for rationale.
+   */
+  setProactiveCompanyScopes(companyIds: readonly string[]): void;
+
   /** Subscribe to worker events. */
   on<K extends WorkerHandleEventName>(
     event: K,
@@ -337,6 +355,12 @@ export interface PluginWorkerManager {
   isRunning(pluginId: string): boolean;
 
   /**
+   * Authorize the companies a plugin's worker may act on from proactive
+   * (non-invocation) context. No-op if the worker is not registered.
+   */
+  setProactiveCompanyScopes(pluginId: string, companyIds: readonly string[]): void;
+
+  /**
    * Stop all managed workers. Called during server shutdown.
    */
   stopAll(): Promise<void>;
@@ -392,6 +416,33 @@ export function createPluginWorkerHandle(
   const pendingRequests = new Map<string | number, PendingRequest>();
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
+
+  // ------------------------------------------------------------------
+  // Proactive company scopes (LOOA-629)
+  // ------------------------------------------------------------------
+  // A proactive plugin (e.g. the chat gateway) does company-scoped work from
+  // its own timers/loops — not inside a host-issued top-level invocation
+  // (onEvent/performAction/executeTool/configChanged). Those worker→host calls
+  // carry no `paperclipInvocationId`, so the governed-access gate
+  // (host-client-factory.ts) rejects any company-scoped request with
+  // "company context is required" (regression class from #9557). The host
+  // authorizes a bounded set of companies — the plugin's configured companies,
+  // set by the loader after startup config delivery — for such proactive work.
+  // A no-invocation call that references one of these companies resolves to
+  // that company's scope; a call referencing any other company stays denied,
+  // and in-invocation calls keep their strict single-company match.
+  //
+  // Seeded from options at handle creation — before the child process is
+  // spawned — so a proactive plugin's setup()-time host calls (which land while
+  // `startWorker` is still awaiting initialize) are authorized in time. The
+  // loader used to call setProactiveCompanyScopes only AFTER startWorker
+  // resolved, which was too late for the gateway's one-shot events.subscribe
+  // and left outbound push permanently dead (LOOA-695).
+  const proactiveCompanyScopes = new Set<string>();
+  for (const id of options.proactiveCompanyScopes ?? []) {
+    const trimmed = readNonEmptyString(id);
+    if (trimmed) proactiveCompanyScopes.add(trimmed);
+  }
 
   // Optional methods reported by the worker during initialization
   let supportedMethods: string[] = [];
@@ -554,11 +605,60 @@ export function createPluginWorkerHandle(
     activeInvocations.delete(invocation.id);
   }
 
+  /**
+   * Extract the single company a worker→host call references, mirroring the SDK
+   * governed-access gate's own derivation (host-client-factory.ts
+   * `requestedCompanyScope`) so a proactive call resolves to exactly the company
+   * the gate would require:
+   *   - explicit `params.companyId`;
+   *   - a company-scoped state key (`scopeKind: "company"` + `scopeId`);
+   *   - `events.subscribe`'s `params.filter.companyId` (how the SDK's
+   *     `ctx.events.on(name, { companyId }, fn)` issues its subscribe).
+   *
+   * Returns null whenever the gate treats the call as a wildcard (`companies.list`,
+   * a `scopeKind: "company"` key with no `scopeId`) or as referencing no company
+   * (instance-scoped state, an unfiltered subscribe). A wildcard is deliberately
+   * NOT granted proactively: proactive resolution only ever admits a single,
+   * explicit company, never "all". This keeps the resolver and the gate in
+   * lockstep in the functional direction (LOOA-693 AC#4 / LOOA-695).
+   */
+  function referencedCompanyId(method: string, params: unknown): string | null {
+    // Gate returns { kind: "all" } for companies.list regardless of params —
+    // never a single company — so proactive access declines it here.
+    if (method === "companies.list") return null;
+    if (!isRecord(params)) return null;
+    const direct = readNonEmptyString(params.companyId);
+    if (direct) return direct;
+    if (params.scopeKind === "company") {
+      // scopeId present → that company; absent → wildcard ("all") in the gate,
+      // which we never grant proactively → null.
+      return readNonEmptyString(params.scopeId);
+    }
+    if (method === "events.subscribe" && isRecord(params.filter)) {
+      return readNonEmptyString(params.filter.companyId);
+    }
+    return null;
+  }
+
   function contextForWorkerMessage(message: JsonRpcRequest | JsonRpcNotification): WorkerHostCallContext {
     const invocationId = readNonEmptyString(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
+      // No host-issued invocation is being echoed. This is a genuinely
+      // proactive worker→host call (timer/loop). If it references a company the
+      // plugin is authorized to act on proactively, resolve it to that
+      // company's scope so the governed-access gate admits it. This never
+      // widens access beyond the plugin's configured companies, and only
+      // applies when the worker is NOT inside a host-issued invocation (which
+      // would carry an id and keep its strict single-company match below).
+      const proactiveCompanyId = referencedCompanyId(
+        message.method,
+        (message as { params?: unknown }).params,
+      );
+      if (proactiveCompanyId && proactiveCompanyScopes.has(proactiveCompanyId)) {
+        return { invocationScope: { companyId: proactiveCompanyId } };
+      }
       const hasActiveInvocation = activeInvocations.size > 0 ||
         Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
       return hasActiveInvocation ? { invalidInvocationScope: true } : {};
@@ -1285,6 +1385,14 @@ export function createPluginWorkerHandle(
       emitter.off(event, listener);
     },
 
+    setProactiveCompanyScopes(companyIds: readonly string[]): void {
+      proactiveCompanyScopes.clear();
+      for (const id of companyIds) {
+        const trimmed = readNonEmptyString(id);
+        if (trimmed) proactiveCompanyScopes.add(trimmed);
+      }
+    },
+
     diagnostics(): WorkerDiagnostics {
       return {
         pluginId,
@@ -1437,6 +1545,10 @@ export function createPluginWorkerManager(
     isRunning(pluginId: string): boolean {
       const handle = workers.get(pluginId);
       return handle?.status === "running";
+    },
+
+    setProactiveCompanyScopes(pluginId: string, companyIds: readonly string[]): void {
+      workers.get(pluginId)?.setProactiveCompanyScopes(companyIds);
     },
 
     async stopAll(): Promise<void> {

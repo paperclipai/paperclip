@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "slug": "oauth-generic",
+  "name": "OAuth app",
+  "description": "Connect a provider using your own OAuth client.",
+  "categories": [
+    "other"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=oauth.net&sz=128"
+  },
+  "urlPatterns": [],
+  "methods": [
+    {
+      "key": "oauth",
+      "transport": "rest_api",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer",
+        "dcr"
+      ],
+      "whenToUse": "Use credentials from your provider account.",
+      "defaults": {},
+      "guidanceMd": "Register an OAuth client with the provider and add Paperclip's redirect URI.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "clientId",
+          "label": "Client ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "Paste the client ID",
+          "secret": false
+        },
+        {
+          "key": "clientSecret",
+          "label": "Client secret",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste the client secret",
+          "secret": true
+        }
+      ]
+    }
+  ]
+}

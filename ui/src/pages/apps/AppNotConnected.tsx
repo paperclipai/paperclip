@@ -12,6 +12,12 @@ import { agentsApi } from "@/api/agents";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AppLogo } from "./AppLogo";
+import {
+  appDefinitionLogoUrl,
+  appDefinitionName,
+  appDefinitionSlug,
+  type AppGalleryDisplayEntry,
+} from "./app-definition-display";
 import { connectionAddress, connectionTransportLabel, DangerZone } from "./AppDetail";
 import { ActivityPanel } from "./app-detail/ActivityPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
@@ -121,10 +127,14 @@ export function AppNotConnected() {
     return <Navigate to={appTabHref(activeConnection.id, activeTab)} replace />;
   }
 
-  const gallery = galleryQuery.data?.apps ?? [];
+  const gallery = (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[];
   const logoUrl =
-    (application.applicationKey ? gallery.find((entry) => entry.key === application.applicationKey)?.logoUrl : undefined) ??
-    gallery.find((entry) => entry.name.toLowerCase() === application.name.toLowerCase())?.logoUrl;
+    (application.applicationKey
+      ? appDefinitionLogoUrl(gallery.find((entry) => appDefinitionSlug(entry) === application.applicationKey))
+      : undefined) ??
+    appDefinitionLogoUrl(
+      gallery.find((entry) => appDefinitionName(entry).toLowerCase() === application.name.toLowerCase()),
+    );
 
   const previousAddress = previousConnection ? connectionAddress(previousConnection) : null;
   const connectHref = reconnectHref({

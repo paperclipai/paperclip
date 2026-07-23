@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { constants as fsConstants, promises as fs, readFileSync } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -27,14 +27,6 @@ import {
 import { isRelativePathOrDescendant, shouldExcludePath } from "./exclude-patterns.js";
 
 const execFile = promisify(execFileCallback);
-const CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME = "codex-auth-merge-extract.sh";
-const CODEX_AUTH_MERGE_DECISION_SCRIPT_NAME = "codex-auth-merge-decision.cjs";
-const CODEX_AUTH_MERGE_EXTRACT_SCRIPT_BYTES = readFileSync(
-  new URL(`./${CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME}`, import.meta.url),
-);
-const CODEX_AUTH_MERGE_DECISION_SCRIPT_BYTES = readFileSync(
-  new URL(`./${CODEX_AUTH_MERGE_DECISION_SCRIPT_NAME}`, import.meta.url),
-);
 const SANDBOX_WORKSPACE_HEAVY_DIR_NAMES = [
   "node_modules",
   "vendor",
@@ -62,11 +54,61 @@ export interface SandboxRemoteExecutionSpec {
   apiKey: string | null;
 }
 
+/**
+ * Remote paths handed to an asset's `provision.extractCommand`. All are POSIX
+ * paths inside the sandbox: `assetTarPath` is the uploaded asset tarball,
+ * `assetDir` is where the asset should be materialized, and `runtimeRootDir`
+ * is the directory any `stageFiles` were written into.
+ */
+export interface SandboxManagedRuntimeAssetProvisionContext {
+  assetTarPath: string;
+  assetDir: string;
+  runtimeRootDir: string;
+}
+
+/**
+ * Per-asset inbound provisioning contribution. The core is adapter-agnostic:
+ * an asset that supplies neither `stageFiles` nor `extractCommand` is extracted
+ * with a plain `tar -xf`. An adapter that needs custom provisioning (e.g. a
+ * credential merge) supplies helper files via `stageFiles` and the shell
+ * command that consumes them via `extractCommand`.
+ */
+export interface SandboxManagedRuntimeAssetProvision {
+  /**
+   * Extra files written into `runtimeRootDir` (alongside the asset tar) before
+   * the extract command runs — typically helper scripts the extract command
+   * invokes. Contents may be raw bytes or a UTF-8 string.
+   */
+  stageFiles?: { name: string; contents: Buffer | string }[];
+  /**
+   * Builds the shell command that materializes the uploaded asset tar into
+   * `assetDir`. Defaults to a plain `tar -xf` extraction when omitted.
+   */
+  extractCommand?: (ctx: SandboxManagedRuntimeAssetProvisionContext) => string;
+}
+
+/**
+ * Context passed to an asset's `restore` contribution during teardown.
+ * `assetDir` is the asset's directory inside the sandbox and `readFile` reads
+ * a file back from the sandbox as raw bytes.
+ */
+export interface SandboxManagedRuntimeAssetRestoreContext {
+  assetDir: string;
+  readFile: (remotePath: string) => Promise<Buffer>;
+}
+
 export interface SandboxManagedRuntimeAsset {
   key: string;
   localDir: string;
   followSymlinks?: boolean;
   exclude?: string[];
+  /** Optional inbound provisioning contribution (staged files + extract command). */
+  provision?: SandboxManagedRuntimeAssetProvision;
+  /**
+   * Optional teardown/outbound contribution, invoked once per asset during
+   * `restoreWorkspace`. Defaults to a no-op when omitted.
+   */
+  restore?: (ctx: SandboxManagedRuntimeAssetRestoreContext) => Promise<void>;
 }
 
 /**
@@ -79,6 +121,37 @@ export interface SandboxTransferProgressOptions {
   onProgress?: (transferredBytes: number, totalBytes: number | null) => void | Promise<void>;
 }
 
+/**
+ * A single source→target file or directory transfer within a sync operation.
+ * Mirrors the plugin SDK `PluginSyncFileMapping`; kept as a local structural
+ * type so `adapter-utils` does not depend on the plugin SDK. For `syncIn`,
+ * `sourcePath` is a host path and `targetPath` a sandbox path; for `syncOut` the
+ * direction is reversed. Sandbox paths are POSIX.
+ */
+export interface SandboxSyncFileMapping {
+  sourcePath: string;
+  targetPath: string;
+  kind: "file" | "directory";
+  mode?: number;
+  exclude?: string[];
+  followSymlinks?: boolean;
+}
+
+/**
+ * An ordered, opaque unit of work handed to the native sync transport. The
+ * `operationId` is an opaque, non-sensitive token authored by the orchestrator
+ * (never a caller/asset identifier that could leak intent); a provider MUST NOT
+ * interpret it.
+ */
+export interface SandboxSyncOperation {
+  operationId: string;
+  files: SandboxSyncFileMapping[];
+}
+
+export interface SandboxSyncResult {
+  operations: { operationId: string; filesTransferred: number; bytesTransferred: number }[];
+}
+
 export interface SandboxManagedRuntimeClient {
   makeDir(remotePath: string): Promise<void>;
   writeFile(remotePath: string, bytes: ArrayBuffer, options?: SandboxTransferProgressOptions): Promise<void>;
@@ -89,6 +162,49 @@ export interface SandboxManagedRuntimeClient {
   listFiles(remotePath: string): Promise<string[]>;
   remove(remotePath: string): Promise<void>;
   run(command: string, options: { timeoutMs: number }): Promise<void>;
+  /**
+   * Optional native inbound transfer. Present only when the sandbox provider
+   * advertises both `environmentSyncIn` and `environmentSyncOut`; otherwise the
+   * orchestrator falls back to the tar + base64 `writeFile`/`run` path so
+   * behavior is byte-identical to a provider that never opted in.
+   */
+  syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  /** Optional native outbound transfer. See {@link syncIn}. */
+  syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+}
+
+/**
+ * Host-side complete-mediation guard for native sync operations. The orchestrator
+ * authors every `targetPath`, but the native transport crosses the host↔sandbox
+ * trust boundary, so we canonicalize and confine each mapping's source and target
+ * to an orchestrator-owned root before handing the operation to a provider.
+ * Absolute escapes and `..` traversal are rejected fail-closed. Sandbox and host
+ * paths on the server are POSIX.
+ */
+export function assertSyncOperationsConfined(
+  operations: SandboxSyncOperation[],
+  roots: { sourceRoots: string[]; targetRoots: string[] },
+): void {
+  const confine = (candidate: string, allowed: string[], label: string): void => {
+    const normalized = path.posix.normalize(candidate);
+    if (!path.posix.isAbsolute(normalized) || normalized === ".." || normalized.includes("/../") || normalized.endsWith("/..")) {
+      throw new Error(`sync operation ${label} path is not a confined absolute path: ${candidate}`);
+    }
+    const within = allowed.some((root) => {
+      const normalizedRoot = path.posix.normalize(root);
+      const prefix = normalizedRoot.endsWith("/") ? normalizedRoot : `${normalizedRoot}/`;
+      return normalized === normalizedRoot || normalized.startsWith(prefix);
+    });
+    if (!within) {
+      throw new Error(`sync operation ${label} path escapes its confinement root: ${candidate}`);
+    }
+  };
+  for (const operation of operations) {
+    for (const mapping of operation.files) {
+      confine(mapping.sourcePath, roots.sourceRoots, "source");
+      confine(mapping.targetPath, roots.targetRoots, "target");
+    }
+  }
 }
 
 export interface PreparedSandboxManagedRuntime {
@@ -118,26 +234,14 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-function buildExtractRuntimeAssetCommand(input: {
-  adapterKey: string;
-  assetKey: string;
+function buildDefaultExtractRuntimeAssetCommand(input: {
   remoteAssetDir: string;
   remoteAssetTar: string;
-  remoteCodexAuthMergeExtractScript?: string;
 }): string {
-  if (input.adapterKey !== "codex" || input.assetKey !== "home") {
-    return `rm -rf ${shellQuote(input.remoteAssetDir)} && ` +
-      `mkdir -p ${shellQuote(input.remoteAssetDir)} && ` +
-      `tar -xf ${shellQuote(input.remoteAssetTar)} -C ${shellQuote(input.remoteAssetDir)} && ` +
-      `rm -f ${shellQuote(input.remoteAssetTar)}`;
-  }
-
-  if (!input.remoteCodexAuthMergeExtractScript) {
-    throw new Error("Codex auth merge extract script path is required for codex home assets");
-  }
-
-  return `sh ${shellQuote(input.remoteCodexAuthMergeExtractScript)} ` +
-    `${shellQuote(input.remoteAssetDir)} ${shellQuote(input.remoteAssetTar)}`;
+  return `rm -rf ${shellQuote(input.remoteAssetDir)} && ` +
+    `mkdir -p ${shellQuote(input.remoteAssetDir)} && ` +
+    `tar -xf ${shellQuote(input.remoteAssetTar)} -C ${shellQuote(input.remoteAssetDir)} && ` +
+    `rm -f ${shellQuote(input.remoteAssetTar)}`;
 }
 
 export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteExecutionSpec | null {
@@ -487,6 +591,15 @@ export async function prepareSandboxManagedRuntime(input: {
     exclude: restoreExclude,
   });
 
+  // Prefer the provider's native file transport when it advertised the sync
+  // verbs; otherwise every branch below falls back to the byte-identical tar +
+  // base64 `writeFile`/`run` path. `nextSyncOperationId` emits opaque, ordered,
+  // non-sensitive tokens — never a caller/asset identifier.
+  const nativeSyncIn = typeof input.client.syncIn === "function";
+  const nativeSyncOut = typeof input.client.syncOut === "function";
+  let syncOperationSeq = 0;
+  const nextSyncOperationId = () => `sync-op-${++syncOperationSeq}`;
+
   await withTempDir("paperclip-sandbox-sync-", async (tempDir) => {
     const preservedNames = new Set([
       ".paperclip-runtime",
@@ -499,6 +612,12 @@ export async function prepareSandboxManagedRuntime(input: {
         localDir: input.workspaceLocalDir,
         snapshot: gitSnapshot,
       }, async (cloneDir) => {
+        // The git-workspace and workspace transfers preserve `.paperclip-runtime`
+        // on the target (and the git overlay merges on top rather than replacing),
+        // which the generic destroy-then-replace file mapping cannot express, so
+        // they always take the tar path. Native transfer is used for the clean
+        // destroy-then-replace cases (default-provision assets inbound; the
+        // workspace download into a fresh host dir outbound).
         const gitTarPath = path.join(tempDir, "git-workspace.tar");
         await createTarballFromDirectory({
           localDir: cloneDir,
@@ -584,6 +703,41 @@ export async function prepareSandboxManagedRuntime(input: {
 
     for (const asset of input.assets ?? []) {
       await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing runtime assets to sandbox");
+      const remoteAssetDir = path.posix.join(runtimeRootDir, asset.key);
+      // Assets with custom provisioning (staged helper files or a bespoke extract
+      // command such as a credential merge) do more than a plain directory
+      // replacement, so they cannot be expressed as a generic file mapping and
+      // always take the tar path. A default-provisioned asset is a clean
+      // destroy-then-replace of its own directory, which the native transport
+      // reproduces exactly.
+      const usesCustomProvision =
+        Boolean(asset.provision?.extractCommand) || (asset.provision?.stageFiles?.length ?? 0) > 0;
+      if (nativeSyncIn && !usesCustomProvision) {
+        const operations: SandboxSyncOperation[] = [{
+          operationId: nextSyncOperationId(),
+          files: [{
+            sourcePath: asset.localDir,
+            targetPath: remoteAssetDir,
+            kind: "directory",
+            exclude: asset.exclude,
+            followSymlinks: asset.followSymlinks,
+          }],
+        }];
+        assertSyncOperationsConfined(operations, {
+          sourceRoots: [asset.localDir],
+          targetRoots: [runtimeRootDir],
+        });
+        const assetUpload = makeTransferProgress(
+          input.onProgress,
+          "Syncing",
+          "to",
+          asset.key,
+          { sink: input.onRuntimeProgress, phase: "config_sync" },
+        );
+        await input.client.syncIn!(operations);
+        await assetUpload.finish(0, 0);
+        continue;
+      }
       const assetTarPath = path.join(tempDir, `${asset.key}.tar`);
       await createTarballFromDirectory({
         localDir: asset.localDir,
@@ -592,11 +746,7 @@ export async function prepareSandboxManagedRuntime(input: {
         exclude: asset.exclude,
       });
       const assetTarBytes = await fs.readFile(assetTarPath);
-      const remoteAssetDir = path.posix.join(runtimeRootDir, asset.key);
       const remoteAssetTar = path.posix.join(runtimeRootDir, `${asset.key}-upload.tar`);
-      const remoteCodexAuthMergeExtractScript = input.adapterKey === "codex" && asset.key === "home"
-        ? path.posix.join(runtimeRootDir, CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME)
-        : undefined;
       const assetUpload = makeTransferProgress(
         input.onProgress,
         "Syncing",
@@ -606,26 +756,26 @@ export async function prepareSandboxManagedRuntime(input: {
       );
       await input.client.writeFile(remoteAssetTar, toArrayBuffer(assetTarBytes), assetUpload.options);
       await assetUpload.finish(assetTarBytes.byteLength, assetTarBytes.byteLength);
-      if (remoteCodexAuthMergeExtractScript) {
+      for (const stageFile of asset.provision?.stageFiles ?? []) {
+        const stageBytes = typeof stageFile.contents === "string"
+          ? Buffer.from(stageFile.contents)
+          : stageFile.contents;
+        const safeName = stageFile.name;
+        if (/[\\/]|\.\.(\.|$)/.test(safeName) || safeName === "..") {
+          throw new Error(`provision stageFile.name must be a simple basename, got: ${safeName}`);
+        }
         await input.client.writeFile(
-          remoteCodexAuthMergeExtractScript,
-          toArrayBuffer(CODEX_AUTH_MERGE_EXTRACT_SCRIPT_BYTES),
-        );
-        await input.client.writeFile(
-          path.posix.join(runtimeRootDir, CODEX_AUTH_MERGE_DECISION_SCRIPT_NAME),
-          toArrayBuffer(CODEX_AUTH_MERGE_DECISION_SCRIPT_BYTES),
+          path.posix.join(runtimeRootDir, safeName),
+          toArrayBuffer(stageBytes),
         );
       }
+      const extractCommand = asset.provision?.extractCommand?.({
+        assetTarPath: remoteAssetTar,
+        assetDir: remoteAssetDir,
+        runtimeRootDir,
+      }) ?? buildDefaultExtractRuntimeAssetCommand({ remoteAssetDir, remoteAssetTar });
       await input.client.run(
-        `sh -c ${shellQuote(
-          buildExtractRuntimeAssetCommand({
-            adapterKey: input.adapterKey,
-            assetKey: asset.key,
-            remoteAssetDir,
-            remoteAssetTar,
-            remoteCodexAuthMergeExtractScript,
-          }),
-        )}`,
+        `sh -c ${shellQuote(extractCommand)}`,
         { timeoutMs: input.spec.timeoutMs },
       );
     }
@@ -691,34 +841,65 @@ export async function prepareSandboxManagedRuntime(input: {
             });
           }
 
-          const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
           await emitRuntimeStatus(input.onRuntimeProgress, "restore", "Restoring workspace from sandbox");
-          await input.client.run(
-            `sh -c ${shellQuote(createRemoteTarballFromDirectoryCommand({
-              remoteDir: workspaceRemoteDir,
-              archivePath: remoteWorkspaceTar,
-              exclude: restoreExclude,
-            }))}`,
-            { timeoutMs: input.spec.timeoutMs },
-          );
-          const workspaceRestore = makeTransferProgress(
-            restoreSink,
-            "Restoring",
-            "from",
-            "workspace",
-            { sink: input.onRuntimeProgress, phase: "restore" },
-          );
-          const archiveBytes = await input.client.readFile(remoteWorkspaceTar, workspaceRestore.options);
-          const archiveBuffer = toBuffer(archiveBytes);
-          await workspaceRestore.finish(archiveBuffer.byteLength, archiveBuffer.byteLength);
-          await input.client.remove(remoteWorkspaceTar).catch(() => undefined);
-          const localArchivePath = path.join(tempDir, "workspace.tar");
           const extractedDir = path.join(tempDir, "workspace");
-          await fs.writeFile(localArchivePath, archiveBuffer);
-          await extractTarballToDirectory({
-            archivePath: localArchivePath,
-            localDir: extractedDir,
-          });
+          if (nativeSyncOut) {
+            // Native outbound: the provider materializes the sandbox workspace into
+            // a fresh host directory. It is a clean destroy-then-replace into a
+            // temp dir the orchestrator just created, so it maps exactly to a
+            // generic directory file mapping; the host-side baseline merge below is
+            // unchanged.
+            const operations: SandboxSyncOperation[] = [{
+              operationId: nextSyncOperationId(),
+              files: [{
+                sourcePath: workspaceRemoteDir,
+                targetPath: extractedDir,
+                kind: "directory",
+                exclude: restoreExclude,
+              }],
+            }];
+            assertSyncOperationsConfined(operations, {
+              sourceRoots: [workspaceRemoteDir],
+              targetRoots: [extractedDir],
+            });
+            await fs.mkdir(extractedDir, { recursive: true });
+            const workspaceRestore = makeTransferProgress(
+              restoreSink,
+              "Restoring",
+              "from",
+              "workspace",
+              { sink: input.onRuntimeProgress, phase: "restore" },
+            );
+            await input.client.syncOut!(operations);
+            await workspaceRestore.finish(0, 0);
+          } else {
+            const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
+            await input.client.run(
+              `sh -c ${shellQuote(createRemoteTarballFromDirectoryCommand({
+                remoteDir: workspaceRemoteDir,
+                archivePath: remoteWorkspaceTar,
+                exclude: restoreExclude,
+              }))}`,
+              { timeoutMs: input.spec.timeoutMs },
+            );
+            const workspaceRestore = makeTransferProgress(
+              restoreSink,
+              "Restoring",
+              "from",
+              "workspace",
+              { sink: input.onRuntimeProgress, phase: "restore" },
+            );
+            const archiveBytes = await input.client.readFile(remoteWorkspaceTar, workspaceRestore.options);
+            const archiveBuffer = toBuffer(archiveBytes);
+            await workspaceRestore.finish(archiveBuffer.byteLength, archiveBuffer.byteLength);
+            await input.client.remove(remoteWorkspaceTar).catch(() => undefined);
+            const localArchivePath = path.join(tempDir, "workspace.tar");
+            await fs.writeFile(localArchivePath, archiveBuffer);
+            await extractTarballToDirectory({
+              archivePath: localArchivePath,
+              localDir: extractedDir,
+            });
+          }
           const gitHeadToIntegrate = importedHead;
           await mergeDirectoryWithBaseline({
             baseline: baselineSnapshot,
@@ -741,6 +922,17 @@ export async function prepareSandboxManagedRuntime(input: {
                 }
               : undefined,
           });
+
+          // Per-asset teardown/outbound contributions. Generic: an asset with
+          // no `restore` is a no-op. The contribution reads back from the
+          // sandbox (e.g. a refreshed credential) via the provided `readFile`.
+          for (const asset of input.assets ?? []) {
+            if (!asset.restore) continue;
+            await asset.restore({
+              assetDir: path.posix.join(runtimeRootDir, asset.key),
+              readFile: async (remotePath) => toBuffer(await input.client.readFile(remotePath)),
+            });
+          }
         } finally {
           await emitRuntimeStatus(input.onRuntimeProgress, "finalize", "Finalizing sandbox workspace");
           if (importedRef) {

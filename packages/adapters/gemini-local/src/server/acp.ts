@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -12,6 +13,7 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
+  runAdapterExecutionTargetShellCommand,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_ACP_ENGINE_MODE,
@@ -19,7 +21,11 @@ import {
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
-import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
+import type {
+  AcpxEngineExecutorOptions,
+  AcpxRemoteManagedHomeContext,
+  AcpxRemoteManagedHomeResult,
+} from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
   asString,
@@ -117,8 +123,111 @@ export function buildGeminiAcpConfig(config: Record<string, unknown>): Record<st
   return next;
 }
 
+/**
+ * Host skills dir the shared engine materializes this run's Gemini skills into.
+ * Derived here — inside the adapter boundary — from the same generic `config`
+ * the engine reads (`config.env.HOME` else the process home), so the remote seam
+ * ships exactly the dir the engine's `prepareGeminiSkillRuntime` prepared without
+ * the engine having to hand a Gemini-specific path across the seam.
+ */
+function resolveGeminiSkillsHome(config: Record<string, unknown>): string {
+  const envConfig = parseObject(config.env);
+  const configuredHome =
+    typeof envConfig.HOME === "string" && envConfig.HOME.trim().length > 0
+      ? path.resolve(envConfig.HOME.trim())
+      : os.homedir();
+  return path.join(configuredHome, ".gemini", "skills");
+}
+
+/**
+ * Gemini remote managed-home seed for the runner-backed remote sandbox ACP lane.
+ * Mirrors the Gemini CLI lane (`gemini-local/execute.ts`): set `HOME` to the
+ * managed runtime root, ship the prepared skills dir as the `skills` asset,
+ * `cp -a` it into `$HOME/.gemini/skills` in-sandbox, and — only when an API key
+ * is present — pre-select the api-key auth in `$HOME/.gemini/settings.json`
+ * (Gemini refuses headless runs without a persisted auth selection).
+ *
+ * The seed never writes key bytes: the key is only read as a boolean signal to
+ * decide whether to persist the auth-method selector. Gemini has no credential
+ * copy-back, so no teardown hook.
+ */
+async function prepareGeminiRemoteManagedHome(
+  input: AcpxRemoteManagedHomeContext,
+): Promise<AcpxRemoteManagedHomeResult> {
+  const { env, runId, onLog, executionTarget } = input;
+  const geminiSkillsHome = resolveGeminiSkillsHome(input.config);
+  const stagedRuntime = await input.stage(
+    geminiSkillsHome
+      ? [{ key: "skills", localDir: geminiSkillsHome, followSymlinks: true }]
+      : [],
+  );
+
+  // Managed HOME = the per-run runtime root. `useRemoteProcessSession` already
+  // guarantees a sandbox (managed-home) target, so the runtime root replaces the
+  // image home for this run.
+  const managedRemoteHomeDir = stagedRuntime.runtimeRootDir;
+  if (!managedRemoteHomeDir) {
+    // No runtime root resolved — leave HOME as-is (host fallback) and skip the
+    // in-sandbox seed; nothing to remap onto.
+    return { stagedRuntime };
+  }
+  env.HOME = managedRemoteHomeDir;
+
+  const shellOptions = {
+    cwd: stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir,
+    env,
+    timeoutSec: Math.max(input.timeoutSec, 15),
+    graceSec: 20,
+    onLog,
+  };
+
+  // Copy the shipped skills into $HOME/.gemini/skills so the CLI finds them under
+  // the managed home.
+  const remoteSkillsAssetDir = stagedRuntime.assetDirs.skills;
+  if (remoteSkillsAssetDir) {
+    const remoteSkillsDir = path.posix.join(managedRemoteHomeDir, ".gemini", "skills");
+    await runAdapterExecutionTargetShellCommand(
+      runId,
+      executionTarget,
+      `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(remoteSkillsAssetDir)} ${JSON.stringify(remoteSkillsDir)}`,
+      shellOptions,
+    );
+  }
+
+  // Pre-select api-key auth (file-only; no key bytes) so headless Gemini does not
+  // fail with "Invalid auth method selected". Only the credential's PRESENCE is
+  // used as a signal — no key bytes are written to settings.json.
+  //
+  // The presence check reads ONLY the resolved run `env` — the credential state
+  // this seam actually provisions into the sandbox (adapter-config env + resolved
+  // secret refs, repointed onto the in-sandbox HOME). A key that exists only in
+  // the host `process.env` is NOT a reliable signal: the remote sandbox does not
+  // inherit the host environment, so persisting a `gemini-api-key` selector off a
+  // host-only key would start headless Gemini with an auth method whose credential
+  // is unavailable in-sandbox and fail authentication. We therefore select api-key
+  // auth only when the key is present in the run env that reaches the sandbox. An
+  // existing settings.json (user-shipped via workspace) is left untouched.
+  const hasGeminiApiKey = Boolean(env.GEMINI_API_KEY || env.GOOGLE_API_KEY);
+  if (hasGeminiApiKey) {
+    const remoteSettingsPath = path.posix.join(managedRemoteHomeDir, ".gemini", "settings.json");
+    const authSettingsJson = JSON.stringify({
+      selectedAuthType: "gemini-api-key",
+      security: { auth: { selectedType: "gemini-api-key" } },
+    });
+    await runAdapterExecutionTargetShellCommand(
+      runId,
+      executionTarget,
+      `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSettingsPath))} && { [ -f ${JSON.stringify(remoteSettingsPath)} ] || printf '%s' ${JSON.stringify(authSettingsJson)} > ${JSON.stringify(remoteSettingsPath)}; }`,
+      shellOptions,
+    );
+  }
+
+  return { stagedRuntime };
+}
+
 function withGeminiAcpDefaults(options: GeminiAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
+    prepareRemoteManagedHome: prepareGeminiRemoteManagedHome,
     ...options,
     adapterType: "gemini_local",
     moduleDir,

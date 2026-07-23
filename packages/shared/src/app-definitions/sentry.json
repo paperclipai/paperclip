@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "slug": "sentry",
+  "name": "Sentry",
+  "description": "Investigate errors, releases, and production issues.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=sentry.io&sz=128"
+  },
+  "urlPatterns": [
+    "https://mcp.sentry.dev/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer",
+        "dcr"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {
+        "serverUrl": "https://mcp.sentry.dev/mcp",
+        "discoveryUrl": "https://sentry.io/.well-known/oauth-authorization-server"
+      },
+      "guidanceMd": "Connect the Sentry organization and projects agents need for incident work.",
+      "riskTier": "S2",
+      "requiredResourceFilters": [
+        "organization",
+        "project",
+        "environment"
+      ]
+    }
+  ]
+}

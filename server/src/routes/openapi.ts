@@ -12,6 +12,8 @@ import {
   createAgentKeySchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,
+  generateSummarySlotSchema,
+  writeSummarySlotSchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
@@ -47,6 +49,13 @@ import {
   updateRoutineTriggerSchema,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
+  // Folders
+  createFolderSchema,
+  ensureMySkillFolderSchema,
+  folderKindSchema,
+  moveFolderItemSchema,
+  moveFolderSchema,
+  updateFolderSchema,
   // Goal
   createGoalSchema,
   updateGoalSchema,
@@ -104,6 +113,7 @@ import {
   companySkillTestRunTemplateUpdateSchema,
   evaluateSkillPolicySchema,
   replaceSkillPolicySchema,
+  updateInboxAgentPolicySchema,
   // Issue tree
   createIssueTreeHoldSchema,
   previewIssueTreeControlSchema,
@@ -163,6 +173,7 @@ import {
   updateToolApplicationSchema,
   createToolConnectionSchema,
   connectionTokenRequestSchema,
+  startConnectionAuthorizationSchema,
   createToolStdioCommandTemplateSchema,
   disableToolStdioCommandTemplateSchema,
   finishToolAppSchema,
@@ -762,7 +773,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/tool-applications/{applicationId}",
   "GET /api/companies/{companyId}/tools/connections",
   "POST /api/companies/{companyId}/tools/connections",
+  "POST /api/companies/{companyId}/tools/connections/{connectionId}/start-authorization",
   "GET /api/tool-connections/{connectionId}",
+  "GET /api/tool-connections/{connectionId}/grants",
+  "POST /api/tool-connections/{connectionId}/grants/installations",
+  "DELETE /api/tool-connections/{connectionId}/grants/{grantId}",
+  "GET /api/tool-connections/{connectionId}/usage",
   "PATCH /api/tool-connections/{connectionId}",
   "DELETE /api/tool-connections/{connectionId}",
   "POST /api/tool-connections/{connectionId}/health-check",
@@ -773,6 +789,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/tool-connections/{connectionId}/test-agents",
   "POST /api/tool-connections/{connectionId}/test-calls",
   "GET /api/tool-connections/{connectionId}/test-calls/{actionRequestId}",
+  "POST /api/agents/me/connections/{connectionId}/start-authorization",
   "POST /api/agents/me/connections/{connectionId}/token",
   "POST /api/tools/oauth/{connectionId}/start",
   "GET /api/tools/oauth/callback",
@@ -862,6 +879,8 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/projects",
   "POST /api/projects/{id}/workspaces",
   "POST /api/companies/{companyId}/routines",
+  "POST /api/companies/{companyId}/folders",
+  "POST /api/companies/{companyId}/folders/ensure-my",
   "POST /api/routines/{id}/triggers",
   "POST /api/companies/{companyId}/secrets",
   "POST /api/companies/{companyId}/user-secret-definitions",
@@ -1358,6 +1377,65 @@ for (const route of [
   });
 }
 
+const summarySlotParams = z.object({
+  companyId: z.string(),
+  scopeKind: z.string(),
+  slotKey: z.string(),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}",
+  tags: ["summaries"],
+  summary: "Get a summary slot with its latest document and generation state",
+  request: { params: summarySlotParams },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/revisions",
+  tags: ["summaries"],
+  summary: "List dated revisions for a summary slot",
+  request: { params: summarySlotParams },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/generate",
+  tags: ["summaries"],
+  summary: "Manually generate (or refresh) a summary slot",
+  request: { params: summarySlotParams, body: jsonBody(generateSummarySlotSchema) },
+  responses: {
+    200: r.ok(),
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}",
+  tags: ["summaries"],
+  summary: "Write a summary revision (Summarizer built-in agent only)",
+  request: { params: summarySlotParams, body: jsonBody(writeSummarySlotSchema) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/agents",
@@ -1423,6 +1501,47 @@ registry.registerPath({
   tags: ["agents"],
   summary: "Get current agent inbox (lite)",
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+const AgentSecretListResponseSchema = z.object({
+  secrets: z.array(z.object({
+    key: z.string(),
+    name: z.string(),
+    description: z.string().nullable(),
+    delivery: z.enum(["env", "api", "both"]),
+    projectionClass: z.string(),
+    latestVersion: z.number().int().nonnegative(),
+    versionSelector: z.union([z.literal("latest"), z.number().int().positive()]),
+    resolvedVersion: z.number().int().positive(),
+  })),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/me/secrets",
+  tags: ["secrets"],
+  summary: "List secrets accessible to the current agent run",
+  responses: {
+    200: { description: "Accessible secret metadata", content: { "application/json": { schema: AgentSecretListResponseSchema } } },
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/me/secrets/{key}/value",
+  tags: ["secrets"],
+  summary: "Fetch one secret value for the current agent run",
+  request: { params: z.object({ key: z.string() }) },
+  responses: {
+    200: {
+      description: "Decrypted secret value",
+      content: { "application/json": { schema: z.object({ key: z.string(), value: z.string(), version: z.number().int().positive() }) } },
+    },
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
 });
 
 registry.registerPath({
@@ -2057,8 +2176,11 @@ registry.registerPath({
   path: "/api/issues/{id}/inbox-archive",
   tags: ["issues"],
   summary: "Archive issue from inbox",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ userId: z.string().min(1).optional() })),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -2066,8 +2188,11 @@ registry.registerPath({
   path: "/api/issues/{id}/inbox-archive",
   tags: ["issues"],
   summary: "Un-archive issue from inbox",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ userId: z.string().min(1).optional() })),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -2936,6 +3061,21 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/recovery-observability",
+  tags: ["dashboard"],
+  summary: "Get recovery observability report",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      weeks: z.string().optional(),
+      threshold: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -2954,6 +3094,81 @@ registry.registerPath({
   summary: "List decision-only attention feed items",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+// ─── Decision training ──────────────────────────────────────────────────────
+
+const decisionTrainingSourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-training",
+  tags: ["decision-training"],
+  summary: "Capture a decision training example",
+  body: z.object({
+    sourceKind: decisionTrainingSourceKindSchema,
+    sourceId: z.string().uuid(),
+    issueId: z.string().uuid(),
+    notes: z.string().max(100_000).default(""),
+  }).strict(),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-training/preview",
+  tags: ["decision-training"],
+  summary: "Preview a decision training snapshot",
+  body: z.object({
+    sourceKind: decisionTrainingSourceKindSchema,
+    sourceId: z.string().uuid(),
+    issueId: z.string().uuid(),
+  }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-training",
+  tags: ["decision-training"],
+  summary: "List decision training examples",
+  query: z.object({
+    project: z.string().uuid().optional(),
+    kind: decisionTrainingSourceKindSchema.optional(),
+    author: z.string().optional(),
+    q: z.string().max(500).optional(),
+  }),
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-training/export.jsonl",
+  tags: ["decision-training"],
+  summary: "Export decision training examples as JSONL",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Get a decision training example",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Update decision training notes",
+  body: z.object({ notes: z.string().max(100_000) }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Delete a decision training example",
+  responses: { 204: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -4029,6 +4244,48 @@ registry.registerPath({
     body: jsonBody(evaluateSkillPolicySchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/users/me/inbox-agent-policy",
+  tags: ["companies"],
+  summary: "Get the current user's inbox agent policy",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/users/me/inbox-agent-policy",
+  tags: ["companies"],
+  summary: "Update the current user's inbox agent policy",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(updateInboxAgentPolicySchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/users/{userId}/inbox-agent-policy",
+  tags: ["companies"],
+  summary: "Get a company user's inbox agent policy",
+  request: { params: z.object({ companyId: z.string(), userId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/users/{userId}/inbox-agent-policy",
+  tags: ["companies"],
+  summary: "Update a company user's inbox agent policy",
+  request: {
+    params: z.object({ companyId: z.string(), userId: z.string() }),
+    body: jsonBody(updateInboxAgentPolicySchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 
 // ─── Execution workspaces ─────────────────────────────────────────────────────
@@ -5151,6 +5408,7 @@ registerCurrentRoute({
 for (const route of [
   ["get", "/api/companies/import/jobs/{jobId}", "Get company import job status"],
   ["get", "/api/companies/{companyId}/search", "Search company data"],
+  ["get", "/api/companies/{companyId}/search/extract", "Extract company search matches"],
   ["get", "/api/companies/{companyId}/issues/count", "Count issues in a company"],
 ] as const) {
   registerCurrentRoute({
@@ -5160,6 +5418,61 @@ for (const route of [
     summary: route[2],
   });
 }
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/folders",
+  tags: ["folders"],
+  summary: "List folders for a company item kind",
+  query: z.object({ kind: folderKindSchema }),
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/folders",
+  tags: ["folders"],
+  summary: "Create a folder",
+  body: createFolderSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/folders/ensure-my",
+  tags: ["folders"],
+  summary: "Ensure the current user's personal skill folder exists",
+  body: ensureMySkillFolderSchema,
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/companies/{companyId}/folders/{folderId}",
+  tags: ["folders"],
+  summary: "Update a folder",
+  body: updateFolderSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/folders/items/move",
+  tags: ["folders"],
+  summary: "Move an item into or out of a folder",
+  body: moveFolderItemSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/folders/{folderId}/move",
+  tags: ["folders"],
+  summary: "Move or reorder a folder",
+  body: moveFolderSchema,
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/folders/{folderId}",
+  tags: ["folders"],
+  summary: "Delete a folder",
+});
 
 registerCurrentRoute({
   method: "get",
@@ -5717,6 +6030,51 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Get a tool connection",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/connections/{connectionId}/start-authorization",
+  tags: ["tool-access"],
+  summary: "Start user authorization for a tool connection",
+  body: startConnectionAuthorizationSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/agents/me/connections/{connectionId}/start-authorization",
+  tags: ["tool-access"],
+  summary: "Start user authorization for an agent tool connection",
+  body: startConnectionAuthorizationSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/grants",
+  tags: ["tool-access"],
+  summary: "List tool connection grants",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/grants/installations",
+  tags: ["tool-access"],
+  summary: "Add an installation grant to a tool connection",
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-connections/{connectionId}/grants/{grantId}",
+  tags: ["tool-access"],
+  summary: "Revoke a tool connection grant",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/usage",
+  tags: ["tool-access"],
+  summary: "Get tool connection usage",
 });
 
 registerCurrentRoute({

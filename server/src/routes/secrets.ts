@@ -60,6 +60,66 @@ export function secretRoutes(db: Db) {
   const svc = secretService(db);
   const defaultProvider = getConfiguredSecretProvider();
 
+  function agentSecretContext(req: Parameters<typeof assertBoard>[0]) {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
+      throw forbidden("Run-bound agent authentication required");
+    }
+    return {
+      companyId: req.actor.companyId,
+      agentId: req.actor.agentId,
+      actorSource: req.actor.source === "agent_jwt" ? "agent_jwt" as const : "agent_key" as const,
+      keyId: req.actor.keyId ?? null,
+      keyScope: req.actor.keyScope ?? null,
+      heartbeatRunId: req.actor.runId,
+      responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+    };
+  }
+
+  router.get("/agents/me/secrets", async (req, res) => {
+    const context = agentSecretContext(req);
+    const secrets = await svc.listAgentSecretAccess(context.companyId, context);
+    await logActivity(db, {
+      companyId: context.companyId,
+      actorType: "agent",
+      actorId: context.agentId,
+      action: "secret.access.listed",
+      entityType: "agent",
+      entityId: context.agentId,
+      agentId: context.agentId,
+      runId: context.heartbeatRunId,
+      details: { count: secrets.length },
+    });
+    res.json({
+      secrets: secrets.map(({ secretId: _secretId, bindingId: _bindingId, configPath: _configPath, ...secret }) => secret),
+    });
+  });
+
+  router.post("/agents/me/secrets/:key/value", async (req, res) => {
+    const context = agentSecretContext(req);
+    const available = await svc.listAgentSecretAccess(context.companyId, context);
+    const secret = available.find((entry) => entry.key === req.params.key);
+    const unresolvedSecret = secret ? null : await svc.getByKey(context.companyId, req.params.key);
+    if (!secret && !unresolvedSecret) throw forbidden("Secret access is not granted for this agent");
+    const resolution = await svc.resolveSecretValueForAgentAccess(
+      context.companyId,
+      secret?.secretId ?? unresolvedSecret!.id,
+      secret?.versionSelector ?? "latest",
+      {
+        ...context,
+        configPath: secret?.configPath ?? `access.${req.params.key}`,
+        bindingId: secret?.bindingId ?? null,
+        issueId: null,
+        registerForRedaction: () => undefined,
+      },
+    );
+    res.set("Cache-Control", "no-store");
+    res.json({
+      key: secret?.key ?? unresolvedSecret!.key,
+      value: resolution.value,
+      version: resolution.version,
+    });
+  });
+
   router.get("/companies/:companyId/secret-providers", (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;

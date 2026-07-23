@@ -20,6 +20,8 @@ export const companySkillVersionFileInventoryEntrySchema = companySkillFileInven
 export const companySkillSchema = z.object({
   id: z.string().uuid(),
   companyId: z.string().uuid(),
+  folderId: z.string().uuid().nullable().optional(),
+  folderPath: z.string().nullable().optional(),
   key: z.string().min(1),
   slug: z.string().min(1),
   name: z.string().min(1),
@@ -106,6 +108,8 @@ export const companySkillListQuerySchema = z.object({
   categories: z.array(z.string().min(1)).optional(),
   scope: companySkillSharingScopeSchema.optional(),
   include: z.array(companySkillListIncludeSchema).optional(),
+  folderId: z.string().uuid().optional(),
+  includeSubtree: z.boolean().optional(),
 });
 
 export const companySkillCategoryCountSchema = z.object({
@@ -320,6 +324,7 @@ export const companySkillProjectScanResultSchema = z.object({
 });
 
 export const companySkillCreateSchema = z.object({
+  folderId: z.string().uuid().nullable().optional(),
   name: z.string().min(1),
   slug: z.string().min(1).nullable().optional(),
   description: z.string().nullable().optional(),

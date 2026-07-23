@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "slug": "slack",
+  "name": "Slack",
+  "description": "Search channels and coordinate team communication.",
+  "categories": [
+    "communication"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=slack.com&sz=128"
+  },
+  "urlPatterns": [
+    "https://mcp.slack.com/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer",
+        "dcr"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {
+        "serverUrl": "https://mcp.slack.com/mcp",
+        "authorizationEndpoint": "https://slack.com/oauth/v2/authorize",
+        "tokenEndpoint": "https://slack.com/api/oauth.v2.access",
+        "scopesHint": [
+          "channels:read",
+          "chat:write",
+          "search:read"
+        ]
+      },
+      "guidanceMd": "Connect a Slack workspace and limit access to the channels agents need.",
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "workspace",
+        "channel"
+      ]
+    }
+  ]
+}
