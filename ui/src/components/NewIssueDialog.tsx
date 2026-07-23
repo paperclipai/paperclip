@@ -994,7 +994,7 @@ export function NewIssueDialog() {
     setAssigneeChrome(false);
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
-    setWorkMode("standard");
+    setWorkMode(loadWorkModePref());
   }
 
   function discardDraft() {
