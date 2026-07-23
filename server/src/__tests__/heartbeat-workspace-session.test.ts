@@ -2388,6 +2388,60 @@ describe("resolveNextSessionState", () => {
     });
   });
 
+  it("adopts a canonical Hermes session emitted by a timeout but not by a generic failure", () => {
+    const timedOutResult = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: true,
+        sessionParams: {
+          sessionId: "20260723_171700_timeout",
+        },
+        sessionDisplayId: "20260723_171700_",
+        errorMessage: "Timed out after 300s",
+      },
+      outcome: "timed_out",
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    });
+
+    expect(timedOutResult).toEqual({
+      params: {
+        sessionId: "20260723_171700_timeout",
+      },
+      displayId: "20260723_171700_timeout",
+      legacySessionId: "20260723_171700_timeout",
+    });
+
+    const failedResult = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        sessionParams: {
+          sessionId: "20260723_171700_timeout",
+        },
+        sessionDisplayId: "20260723_171700_",
+        errorMessage: "Adapter failed",
+      },
+      outcome: "failed",
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    });
+
+    expect(failedResult).toEqual({
+      params: null,
+      displayId: null,
+      legacySessionId: null,
+    });
+  });
+
   it("drops poisoned previous Hermes session state instead of passing it to the next run", () => {
     const result = resolveNextSessionState({
       adapterType: "hermes_local",
