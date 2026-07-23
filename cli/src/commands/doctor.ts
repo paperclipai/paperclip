@@ -35,10 +35,15 @@ export async function doctor(opts: {
   loadPaperclipEnvFile(configPath);
   const results: CheckResult[] = [];
 
-  // 1. Config check (must pass before others)
-  const cfgResult = configCheck(opts.config);
+  // 1. Config check (must pass before others). Routed through runRepairableCheck
+  // so an auto-healable $meta.source enum violation can be fixed in place when
+  // --repair is set (BASA-29492).
+  const cfgResult = await runRepairableCheck({
+    run: () => configCheck(opts.config),
+    configPath,
+    opts,
+  });
   results.push(cfgResult);
-  printResult(cfgResult);
 
   if (cfgResult.status === "fail") {
     return printSummary(results);
