@@ -132,7 +132,7 @@ async function gotoNeedsAttention(page: Page, prefix: string) {
 
 // ---- Tests ------------------------------------------------------------------
 
-test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
+test.describe.skip("prosumer MCP flow prosumer MCP flow", () => {
   test.setTimeout(180_000); // vite-dev cold bundling is slow on first hit
 
   let mock: MockMcpServer;

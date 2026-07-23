@@ -421,6 +421,7 @@ export type {
   ToolConnectionStatus,
   ToolConnectionKind,
   ConnectionGrant,
+  ConnectionGrantsResponse,
   ConnectionGrantKind,
   ConnectionGrantStatus,
   ToolCredentialSecretRef,

@@ -12,13 +12,13 @@ Apps v2 object model accepted in [PAP-13211](/PAP/issues/PAP-13211). The securit
 decisions survived the Connections v1 retirement; the v1 implementation details
 did not.
 
-Connections v3 adds forward security surfaces that later phases must threat-model
-in detail: subject-bound token requests, workspace/user grants, provider triggers,
-and the managed connector-service callback/webhook relay. Until those phases
-land, treat all four as untrusted boundaries: bind subjects and grants to the
-company, fail closed on revocation, authenticate and deduplicate triggers, and
-never trust relay-supplied tenant or connection identifiers without signed
-context and server-side ownership checks.
+Connections v3 now implements four first-class security surfaces that must be
+reviewed together: subject-bound token requests, workspace/user grants,
+provider-trigger delivery, and the managed connector-service callback/webhook
+relay. Treat all four as untrusted boundaries: bind redirect/subject state to
+the initiating company and actor, fail closed on revocation, authenticate and
+deduplicate trigger deliveries, and never trust relay-supplied tenant or
+connection identifiers without signed context plus server-side ownership checks.
 
 ## Required Security Decisions
 
@@ -115,6 +115,31 @@ Required controls:
   `degraded`, `failed`, `auth_required`, or disabled equivalents.
 - Error payloads and logs redact provider responses that may contain credentials.
 
+### Subject-Bound Grants And Brokered Token Requests
+
+Threats: agent-to-arbitrary-user impersonation, stale responsible-user replay,
+user-grant confusion, parent-scope escalation, and direct projection of stored
+upstream OAuth bearer tokens.
+
+Required controls:
+
+- Agent-started authorization binds the OAuth state to the initiating company,
+  connection, actor, issue context, requested subject user, requested scopes,
+  and original redirect URI.
+- Subject-bound callbacks accept only the requested user subject and reject
+  missing, expired, replayed, mismatched-state, and mismatched-redirect
+  completions.
+- User grants are unique per `(connection, subjectUserId)` and keep their own
+  vaulted credential refs; workspace grants and user grants must never share raw
+  bearer material.
+- Token minting re-checks the live responsible user, grant status, connection
+  status, profile/policy grant, and parent scope on every request.
+- Stored upstream OAuth access tokens are not projected to agents directly.
+  OAuth-backed broker paths must return `oauth_access_projection_disabled`
+  until a short-lived exchange path exists.
+- Revoked, missing, or reauthorization-required grants fail closed for both
+  interactive and queued work.
+
 ### Profile, Binding, And Policy Changes
 
 Threats: non-admin actors widening access, IDOR against another company's agent
@@ -184,6 +209,49 @@ Required controls:
 - Job config can narrow resource filters but never widen them.
 - Revoked/invalid scope failures emit audit/activity events and fail closed.
 
+### Connector-Service Callback, Custody, And Relay
+
+Threats: forged relay envelopes, cross-instance claim theft, request replay,
+revoked-instance reuse, webhook verification downgrade, ciphertext retention,
+and secret disclosure through service responses or logs.
+
+Required controls:
+
+- Every connector-service request from an instance is signed, audience/path
+  bound, time bounded, and replay protected per instance `jti`.
+- Claim redemption verifies that the claim owner instance matches the signed
+  request before consuming the claim, and repeated mismatches eventually retire
+  the claim server-side.
+- Revoked instances fail closed for handshake creation, claim redemption,
+  grant refresh/token vend, and relay-channel access.
+- Custody mode A/B2 material stays sealed in service custody or transit wraps;
+  transient B2 ciphertext is deleted after claim acknowledgement and by expiry
+  sweeps, with deletion audits retained.
+- Managed client secrets, relay secrets, access tokens, and refresh tokens must
+  never appear in issue-visible payloads, logs, or error bodies.
+- Relay channel tokens are short-lived and instance-bound; the connector
+  service re-signs exact transmitted relay bytes for instance-side
+  re-verification.
+
+### Trigger Delivery And Company Routing
+
+Threats: wrong-company routing, duplicate delivery side effects, instance-side
+trusted-bypass assumptions, and trigger destinations that escape the owning
+connection company.
+
+Required controls:
+
+- Instance-side relay processing verifies the connector-service signature
+  before parsing or persisting the envelope.
+- `connectionPublicRef` resolves server-side to the owning connection and
+  company; trigger payload ids do not decide routing.
+- Delivery ids are persisted and deduplicated before destination mutation, with
+  per-trigger completion markers so retries resume instead of duplicating work.
+- Routine, issue-wake, and plugin-worker destinations re-check company
+  ownership before dispatch.
+- Duplicate or failed relay attempts remain observable through delivery status,
+  retry attempts, and dead-letter state; they do not silently mutate state.
+
 ### Webhooks
 
 Threats: spoofing, replay, tampering, wrong-company routing, and unaudited
@@ -250,8 +318,21 @@ OAuth and callback integrity:
 
 - Missing, expired, mismatched, and replayed OAuth state is rejected.
 - Mismatched redirect URI is rejected.
+- Agent-started authorization for one responsible user cannot be completed or
+  minted for another user.
 - Callback cannot bind credentials into a company other than the OAuth start
   company.
+
+Connector-service and relay integrity:
+
+- Forged, tampered, replayed, or cross-instance relay/claim envelopes are
+  rejected before claim consumption or delivery persistence.
+- Revoked instances cannot handshake, claim, vend, refresh, or poll relay
+  deliveries with otherwise valid-looking envelopes or channel tokens.
+- Webhook verification downgrade attempts are rejected and exact relay bytes are
+  re-signed for instance-side verification.
+- Mode B/B2 transient grant ciphertext is provably deleted after claim ack and
+  expiry sweep.
 
 Webhook integrity:
 

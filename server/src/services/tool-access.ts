@@ -4791,6 +4791,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       companyId,
       connectionId: connection.id,
       codeVerifier,
+      redirectUri: input.redirectUri,
       createdByActorType: binding.actorType,
       createdByActorId: binding.actorId,
       createdBySessionId: binding.sessionId,
@@ -4912,6 +4913,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .limit(1);
     if (!stateRow) throw badRequest("OAuth state was not found or has already been used");
     if (stateRow.expiresAt.getTime() <= Date.now()) throw badRequest("OAuth state has expired");
+    if (stateRow.redirectUri !== input.redirectUri) {
+      throw badRequest("OAuth callback redirect URI does not match the original request");
+    }
     if (stateRow.subjectUserId) {
       if (input.actor?.actorType !== "user" || input.actor.actorId !== stateRow.subjectUserId) {
         throw forbidden("OAuth callback user does not match the requested subject");

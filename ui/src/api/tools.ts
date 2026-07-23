@@ -35,6 +35,7 @@ import type {
   UpdateToolPolicy,
   ReorderToolPolicies,
   AppDefinition,
+  ConnectionMethodDef,
   ToolAppsAttentionResponse,
   ToolConnectionActivityResponse,
   ToolConnectionTestAgentsResponse,
@@ -50,6 +51,12 @@ import type {
   CreateToolMcpGatewayToken,
   UpdateToolMcpGateway,
   CreateToolTrustRuleFromActionRequest,
+  ConnectionGrant,
+  ConnectionGrantsResponse,
+  ConnectionUsageResponse,
+  StartConnectionAuthorizationRequest,
+  StartConnectionAuthorizationResponse,
+  ToolCredentialSecretRef,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -230,10 +237,70 @@ export type ToolPolicyTestResponse = {
   auditEvent: unknown | null;
 };
 
+/**
+ * Defensive normalization for the tools gallery (PAP-14882).
+ *
+ * The `tools/gallery` response is untrusted at render time: a stale or partial
+ * backend can omit array fields (`categories`, `methods`, `urlPatterns`) or the
+ * `branding` object. Browse, the Add-Connection wizard, and the shared
+ * `getAvailableConnectionMethod`/`findAppByLink` helpers all iterate those
+ * fields unguarded, so a malformed entry blanks the whole page with
+ * `x is not iterable` instead of degrading. We harden once here at the trust
+ * boundary: coerce the iterated fields to arrays/objects, drop entries that are
+ * structurally unusable (no slug/name, or no connectable method), and de-dupe
+ * by slug — so a bad entry is skipped, not fatal.
+ */
+export function normalizeGalleryApps(response: unknown): AppDefinition[] {
+  const apps = (response as ToolGalleryResponse | null | undefined)?.apps;
+  if (!Array.isArray(apps)) return [];
+  const seen = new Set<string>();
+  const out: AppDefinition[] = [];
+  for (const raw of apps) {
+    const app = normalizeGalleryApp(raw);
+    if (!app || seen.has(app.slug)) continue;
+    seen.add(app.slug);
+    out.push(app);
+  }
+  return out;
+}
+
+function normalizeGalleryApp(raw: unknown): AppDefinition | null {
+  if (!raw || typeof raw !== "object") return null;
+  const app = raw as Record<string, unknown>;
+  if (typeof app.slug !== "string" || typeof app.name !== "string") return null;
+
+  // Methods drive the entire connect flow — an entry with none is not
+  // connectable, so skip it rather than dead-ending the wizard.
+  const rawMethods: unknown[] = Array.isArray(app.methods) ? app.methods : [];
+  const methods = rawMethods
+    .filter((m): m is ConnectionMethodDef => !!m && typeof m === "object")
+    .map((m) => ({
+      ...m,
+      // getAvailableConnectionMethod iterates this per method.
+      ownershipModes: Array.isArray(m.ownershipModes) ? m.ownershipModes : [],
+    }));
+  if (methods.length === 0) return null;
+
+  const branding =
+    app.branding && typeof app.branding === "object"
+      ? (app.branding as AppDefinition["branding"])
+      : { logoUrl: "" };
+
+  return {
+    ...(app as unknown as AppDefinition),
+    categories: Array.isArray(app.categories) ? (app.categories as AppDefinition["categories"]) : [],
+    urlPatterns: Array.isArray(app.urlPatterns) ? (app.urlPatterns as string[]) : [],
+    methods,
+    branding,
+  };
+}
+
 export const toolsApi = {
   // --- Applications ---
-  listGallery: (companyId: string) =>
-    api.get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`),
+  listGallery: (companyId: string): Promise<ToolGalleryResponse> =>
+    api
+      .get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`)
+      .then((res) => ({ apps: normalizeGalleryApps(res) })),
   connectApp: (companyId: string, input: {
     galleryKey?: string;
     link?: string;
@@ -299,6 +366,50 @@ export const toolsApi = {
     }),
   refreshCatalog: (connectionId: string) =>
     api.post<ToolCatalogRefreshResult>(`/tool-connections/${connectionId}/catalog/refresh`, {}),
+
+  // --- Grants / installations (Connections v3 P2, PAP-14830) ---
+  // Grants are the layer between a connection (config) and credential material:
+  // workspace grants = provider-tenant installations; user grants = per-user OAuth.
+  // The route returns a wrapper (`{ connection, grants }`), not a bare array, so
+  // we unwrap `.grants` here. Fall back gracefully if the server ever returns a
+  // bare array or an unexpected shape, to keep the Grants tab from hard-crashing
+  // on `grants.filter is not a function`. See PAP-14922.
+  listConnectionGrants: async (connectionId: string): Promise<ConnectionGrant[]> => {
+    const res = await api.get<ConnectionGrantsResponse | ConnectionGrant[]>(
+      `/tool-connections/${connectionId}/grants`,
+    );
+    if (Array.isArray(res)) return res;
+    return Array.isArray(res?.grants) ? res.grants : [];
+  },
+  addConnectionInstallation: (
+    connectionId: string,
+    input: {
+      providerTenant?: { name?: string; externalId?: string };
+      credentialSecretRefs?: ToolCredentialSecretRef[];
+      isDefault?: boolean;
+    },
+  ) =>
+    api.post<ConnectionGrant>(`/tool-connections/${connectionId}/grants/installations`, input),
+  revokeConnectionGrant: (connectionId: string, grantId: string) =>
+    api.delete<ConnectionGrant>(`/tool-connections/${connectionId}/grants/${grantId}`),
+
+  // --- Usage observability (P2/WS3, PAP-14830) ---
+  getConnectionUsage: (connectionId: string, range: "7d" | "30d" = "7d") =>
+    api.get<ConnectionUsageResponse>(
+      `/tool-connections/${connectionId}/usage?range=${range}`,
+    ),
+
+  // --- app-initiated user consent (startAuthorization, P2) ---
+  // Board users may authorize their own subject; returns the provider consent URL.
+  startConnectionAuthorization: (
+    companyId: string,
+    connectionId: string,
+    input: StartConnectionAuthorizationRequest,
+  ) =>
+    api.post<StartConnectionAuthorizationResponse>(
+      `/companies/${companyId}/tools/connections/${connectionId}/start-authorization`,
+      input,
+    ),
   listCatalog: (connectionId: string) =>
     api.get<ToolCatalogResponse>(`/tool-connections/${connectionId}/catalog`),
   listConnectionActivity: (connectionId: string, limit = 20) =>

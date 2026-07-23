@@ -46,6 +46,8 @@ import {
   connectionAddress,
   connectionTransportLabel,
 } from "./app-detail/AdvancedPanel";
+import { GrantsPanel } from "./app-detail/GrantsPanel";
+import { UsagePanel } from "./app-detail/UsagePanel";
 import type { AccessDraft } from "./app-detail/types";
 
 export { DangerZone, connectionAddress, connectionTransportLabel };
@@ -434,6 +436,8 @@ export function AppDetail() {
           onTurnOnQuarantined={(ids) => apply({ enabled: addAll(new Set(enabledIds), ids) })}
         />
       )}
+      {activeTab === "grants" && <GrantsPanel connectionId={connectionId} />}
+      {activeTab === "usage" && <UsagePanel connectionId={connectionId} />}
       {activeTab === "test" && (
         <TestPanel connectionId={connectionId} appName={appName} active={active} quarantined={quarantined} />
       )}

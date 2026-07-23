@@ -174,6 +174,16 @@ export interface ConnectionGrant {
   updatedAt: Date;
 }
 
+/**
+ * Response shape for `GET /api/tool-connections/:id/grants`. The route returns a
+ * wrapper (connection ref + grants) rather than a bare array, so clients must
+ * unwrap `.grants`. See PAP-14922.
+ */
+export interface ConnectionGrantsResponse {
+  connection: { id: string; uid: string };
+  grants: ConnectionGrant[];
+}
+
 export interface ToolConnectionInstall {
   id: string;
   companyId: string;
