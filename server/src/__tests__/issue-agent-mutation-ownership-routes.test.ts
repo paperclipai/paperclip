@@ -9,6 +9,9 @@ const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const issueBoundaryError = "Issue is outside this actor's authorization boundary";
+const issueBoundaryHint =
+  "Do not retry. Route instead: create a child issue assigned to the owner, comment on your own issue naming the ask, or open an issue-thread interaction for board escalation.";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -354,6 +357,14 @@ function boardActor() {
     source: "local_implicit",
     isInstanceAdmin: false,
   };
+}
+
+function expectIssueBoundaryDenied(body: Record<string, unknown>, reason: string) {
+  expect(body).toEqual({
+    error: issueBoundaryError,
+    reason,
+    hint: issueBoundaryHint,
+  });
 }
 
 describe("agent issue mutation checkout ownership", () => {
@@ -805,7 +816,26 @@ describe("agent issue mutation checkout ownership", () => {
       .send({ body: "I was not mentioned." });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expectIssueBoundaryDenied(res.body, "deny_missing_grant");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("passes through the issue mutate denial reason for peer agents", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "issue:mutate",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_scope" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Issue is outside scope." : "Allowed by test default.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expectIssueBoundaryDenied(res.body, "deny_scope");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
@@ -821,7 +851,7 @@ describe("agent issue mutation checkout ownership", () => {
       .get(`/api/issues/${issueId}/comments`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expectIssueBoundaryDenied(res.body, "deny_low_trust_boundary");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
   });
 
@@ -837,7 +867,7 @@ describe("agent issue mutation checkout ownership", () => {
       .get(`/api/issues/${issueId}/interactions`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expectIssueBoundaryDenied(res.body, "deny_low_trust_boundary");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
   });
@@ -883,7 +913,7 @@ describe("agent issue mutation checkout ownership", () => {
       .get(`/api/issues/${issueId}/comments/comment-1`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expectIssueBoundaryDenied(res.body, "deny_low_trust_boundary");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueService.getComment).not.toHaveBeenCalled();
   });
