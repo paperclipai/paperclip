@@ -409,6 +409,33 @@ describe("runChildProcess", () => {
     expect(result.stdout).toBe("done");
   });
 
+  it("redacts configured secrets split across process output chunks", async () => {
+    const secret = "opaque-runtime-credential";
+    let observed = "";
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        "const s=process.env.PAPERCLIP_API_KEY;process.stdout.write(s.slice(0,10));setTimeout(()=>process.stdout.write(s.slice(10)),25);",
+      ],
+      {
+        cwd: process.cwd(),
+        env: { PAPERCLIP_API_KEY: secret },
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async (_stream, chunk) => {
+          observed += chunk;
+        },
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(secret);
+    expect(observed).toBe("***REDACTED***");
+    expect(observed).not.toContain(secret);
+  });
+
   it("waits for onSpawn before sending stdin to the child", async () => {
     const spawnDelayMs = 150;
     const startedAt = Date.now();

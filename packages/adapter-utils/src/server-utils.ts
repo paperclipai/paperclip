@@ -9,7 +9,10 @@ import {
   type LocalProcessSandboxOptions,
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
-import { redactCommandText } from "./command-redaction.js";
+import {
+  createCredentialTextRedactor,
+  redactCommandText,
+} from "./command-redaction.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -56,6 +59,7 @@ interface SpawnTarget {
   args: string[];
   cwd?: string;
   env?: Record<string, string | undefined>;
+  stdinPrefix?: string;
   cleanup?: () => Promise<void>;
 }
 
@@ -2186,6 +2190,7 @@ async function resolveSpawnTarget(
       command: sshResolved,
       args: spawnTarget.args,
       cwd: process.cwd(),
+      stdinPrefix: spawnTarget.stdinPrefix,
       cleanup: spawnTarget.cleanup,
     };
   }
@@ -3072,7 +3077,7 @@ export async function runChildProcess(
           env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          stdio: [target.stdinPrefix != null || opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
@@ -3090,6 +3095,8 @@ export async function runChildProcess(
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
+        const stdoutRedactor = createCredentialTextRedactor(opts.env, REDACTED_LOG_VALUE);
+        const stderrRedactor = createCredentialTextRedactor(opts.env, REDACTED_LOG_VALUE);
         let terminalResultSeen = false;
         let terminalCleanupStarted = false;
         let terminalCleanupSignal: NodeJS.Signals | null = null;
@@ -3164,7 +3171,10 @@ export async function runChildProcess(
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
-            .then(() => opts.onLog("stdout", text))
+            .then(async () => {
+              const redacted = stdoutRedactor.redact(text);
+              if (redacted) await opts.onLog("stdout", redacted);
+            })
             .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
             .finally(() => {
               maybeArmTerminalResultCleanup();
@@ -3180,7 +3190,10 @@ export async function runChildProcess(
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
-            .then(() => opts.onLog("stderr", text))
+            .then(async () => {
+              const redacted = stderrRedactor.redact(text);
+              if (redacted) await opts.onLog("stderr", redacted);
+            })
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
             .finally(() => {
               maybeArmTerminalResultCleanup();
@@ -3189,10 +3202,11 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
-        if (opts.stdin != null && stdin) {
+        if ((target.stdinPrefix != null || opts.stdin != null) && stdin) {
+          if (target.stdinPrefix) stdin.write(target.stdinPrefix);
           void spawnPersistPromise.finally(() => {
             if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
+            if (opts.stdin != null) stdin.write(opts.stdin);
             stdin.end();
           });
         }
@@ -3219,6 +3233,12 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
+          logChain = logChain.then(async () => {
+            const finalStdout = stdoutRedactor.flush();
+            const finalStderr = stderrRedactor.flush();
+            if (finalStdout) await opts.onLog("stdout", finalStdout);
+            if (finalStderr) await opts.onLog("stderr", finalStderr);
+          }).catch((err) => onLogError(err, runId, "failed to flush redacted process logs"));
           void logChain.finally(() => {
             void Promise.resolve()
               .then(() => target.cleanup?.())
