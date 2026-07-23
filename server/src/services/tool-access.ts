@@ -65,6 +65,7 @@ import type {
   ToolConnectionInstallSnapshot,
   ToolConnectionHealthCheckResult,
   ToolConnectionHealthStatus,
+  ToolConnectionOwnership,
   ToolConnectionTransport,
   ToolOAuthStartResult,
   ToolAppsAttentionResponse,
@@ -107,6 +108,7 @@ import type {
   UpdateToolProfileWithEntries,
   UnbindToolProfileBinding,
 } from "@paperclipai/shared";
+import { applyConnectionOwnershipAvailability } from "../config/connection-ownership-availability.js";
 import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnectionMethod, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
@@ -429,8 +431,10 @@ export function googleSheetsRobotEmailFromEnv(
   return { available: false, reason: "Google Sheets is not available on this instance yet." };
 }
 
-function connectionMethodFor(app: AppDefinition) {
-  const method = getAvailableConnectionMethod(app);
+function connectionMethodFor(app: AppDefinition, methodKey?: string) {
+  const method = methodKey
+    ? app.methods.find((candidate) => candidate.key === methodKey) ?? null
+    : getAvailableConnectionMethod(app);
   if (!method) throw unprocessable("This app does not have an available connection method");
   return method;
 }
@@ -4146,7 +4150,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     input: ConnectToolApp,
     actor?: ActorInfo,
   ): Promise<ConnectToolAppResult> {
-    const galleryEntry = input.galleryKey ? getConnectableAppDefinition(input.galleryKey) : null;
+    const galleryDefinition = input.galleryKey ? getConnectableAppDefinition(input.galleryKey) : null;
+    const galleryEntry = galleryDefinition ? applyConnectionOwnershipAvailability(galleryDefinition) : null;
     if (input.galleryKey && !galleryEntry) throw notFound("Tool app gallery entry not found");
 
     let existingApplication: typeof toolApplications.$inferSelect | null = null;
@@ -4160,13 +4165,25 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
 
     const name = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
-    const method = galleryEntry ? connectionMethodFor(galleryEntry) : null;
+    const method = galleryEntry ? connectionMethodFor(galleryEntry, input.methodKey) : null;
+    const ownership: ToolConnectionOwnership = input.ownership ?? method?.ownershipModes[0] ?? "customer";
+    if (method && !method.ownershipModes.includes(ownership)) {
+      throw unprocessable("This ownership mode is not available for new connections", {
+        code: "ownership_mode_unavailable",
+      });
+    }
     const transport = method?.transport ?? "mcp_remote";
     const baseConfig = transport === "mcp_remote"
       ? { url: method?.defaults?.serverUrl ?? input.link ?? "" }
       : { templateId: method?.defaults?.templateKey };
     let config: Record<string, unknown> = galleryEntry
-      ? { ...baseConfig, sourceTemplateKey: galleryEntry.slug, quarantineNewEntries: true }
+      ? {
+          ...baseConfig,
+          sourceTemplateKey: galleryEntry.slug,
+          methodKey: method?.key,
+          ownership,
+          quarantineNewEntries: true,
+        }
       : { ...baseConfig, quarantineNewEntries: true };
     if (galleryEntry?.slug === GOOGLE_SHEETS_GALLERY_KEY) {
       const availability = googleSheetsRobotEmailFromEnv();
@@ -4276,6 +4293,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           transport,
           status: "draft",
           enabled: false,
+          ownership,
           config,
           transportConfig: config,
           credentialRefs,
@@ -4291,6 +4309,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           name,
           uid: connectionUid(applicationRow.applicationKey ?? applicationRow.name, name, connectionId),
           connectionKind: "managed",
+          ownership,
           authKind: galleryEntry ? connectionMethodFor(galleryEntry).auth : "none",
           transport,
           status: "draft",

@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -2481,6 +2484,38 @@ describeEmbeddedPostgres("tool access service", () => {
         }),
       ]),
     );
+  });
+
+  it("applies managed ownership flips live and rejects stale wizard submissions", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    const configDir = mkdtempSync(join(tmpdir(), "paperclip-ownership-"));
+    const configFile = join(configDir, "availability.json");
+    const previousFile = process.env.PAPERCLIP_CONNECTION_OWNERSHIP_AVAILABILITY_FILE;
+    process.env.PAPERCLIP_CONNECTION_OWNERSHIP_AVAILABILITY_FILE = configFile;
+
+    try {
+      writeFileSync(configFile, JSON.stringify({ slack: { platform_shared: false } }));
+      const hidden = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
+      const hiddenSlack = hidden.body.apps.find((entry: { slug: string }) => entry.slug === "slack");
+      expect(hiddenSlack.methods[0].ownershipModes).not.toContain("platform_shared");
+
+      writeFileSync(configFile, JSON.stringify({ slack: { platform_shared: true } }));
+      const visible = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
+      const visibleSlack = visible.body.apps.find((entry: { slug: string }) => entry.slug === "slack");
+      expect(visibleSlack.methods[0].ownershipModes).toContain("platform_shared");
+
+      writeFileSync(configFile, JSON.stringify({ slack: { platform_shared: false } }));
+      const staleSubmit = await request(app)
+        .post(`/api/companies/${company.id}/tools/apps/connect`)
+        .send({ galleryKey: "slack", methodKey: "mcp-oauth", ownership: "platform_shared" });
+      expect(staleSubmit.status).toBe(422);
+      expect(staleSubmit.body.details).toEqual(expect.objectContaining({ code: "ownership_mode_unavailable" }));
+    } finally {
+      if (previousFile === undefined) delete process.env.PAPERCLIP_CONNECTION_OWNERSHIP_AVAILABILITY_FILE;
+      else process.env.PAPERCLIP_CONNECTION_OWNERSHIP_AVAILABILITY_FILE = previousFile;
+      rmSync(configDir, { recursive: true, force: true });
+    }
   });
 
   it("previews remote mcp.json headers as secret replacement fields without echoing values", async () => {

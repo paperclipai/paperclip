@@ -19,6 +19,7 @@
       "transport": "mcp_remote",
       "auth": "api_key",
       "ownershipModes": [
+        "platform_shared",
         "customer"
       ],
       "whenToUse": "Use the provider-hosted connection for the quickest setup.",

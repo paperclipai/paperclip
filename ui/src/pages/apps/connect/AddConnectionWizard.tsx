@@ -174,6 +174,8 @@ export function AddConnectionWizard() {
       return toolsApi.connectApp(selectedCompanyId!, {
         galleryKey: chosen.slug,
         name: submit.name || undefined,
+        methodKey: method.key,
+        ownership: submit.ownership,
         credentialValues: values.credentialValues,
         configValues: values.configValues,
       });

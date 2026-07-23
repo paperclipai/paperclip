@@ -4,7 +4,6 @@ import { agents, companies } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
   CONNECTABLE_APP_DEFINITIONS,
-  DEFAULT_OWNERSHIP_AVAILABILITY,
   TOOL_ACTION_REQUEST_STATUSES,
   type DeploymentExposure,
   type DeploymentMode,
@@ -42,6 +41,7 @@ import {
   updateToolProfileEntrySchema,
   updateToolProfileWithEntriesSchema,
 } from "@paperclipai/shared";
+import { applyConnectionOwnershipAvailability } from "../config/connection-ownership-availability.js";
 import { validate } from "../middleware/validate.js";
 import { getActorInfo, assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, notFound, unprocessable } from "../errors.js";
@@ -242,16 +242,15 @@ export function toolAccessRoutes(
     assertCompanyAccess(req, companyId);
     const googleSheetsAvailability = googleSheetsRobotEmailFromEnv();
     res.json({
-      apps: CONNECTABLE_APP_DEFINITIONS.map((app) =>
+      apps: CONNECTABLE_APP_DEFINITIONS.map(applyConnectionOwnershipAvailability).map((app) =>
         app.slug === "google-sheets"
           ? {
               ...app,
-              ownershipAvailability: DEFAULT_OWNERSHIP_AVAILABILITY,
               availability: googleSheetsAvailability.available
                 ? { available: true, robotEmail: googleSheetsAvailability.robotEmail }
                 : { available: false, reason: googleSheetsAvailability.reason },
             }
-          : { ...app, ownershipAvailability: DEFAULT_OWNERSHIP_AVAILABILITY },
+          : app,
       ),
     });
   });

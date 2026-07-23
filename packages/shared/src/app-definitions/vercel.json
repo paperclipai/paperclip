@@ -19,6 +19,7 @@
       "transport": "mcp_remote",
       "auth": "oauth",
       "ownershipModes": [
+        "platform_shared",
         "customer",
         "dcr"
       ],

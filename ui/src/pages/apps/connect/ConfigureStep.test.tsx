@@ -73,4 +73,15 @@ describe("ConfigureStep grammar", () => {
     expect(container.textContent).toContain("Credential ownership");
     expect(container.textContent).toMatch(/Your own credentials|Dynamic registration/);
   });
+
+  it("managed ownership states the Paperclip consent-screen branding exactly", () => {
+    const def = {
+      ...bySlug("slack"),
+      ownershipAvailability: { platform_shared: true },
+    };
+    act(() => root.render(<ConfigureStep def={def} method={def.methods[0]!} />));
+    expect(container.textContent).toContain(
+      "You authorize Paperclip's Slack app; the consent screen will show Paperclip.",
+    );
+  });
 });

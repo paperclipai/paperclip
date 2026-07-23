@@ -350,6 +350,8 @@ export const toolsApi = {
     galleryKey?: string;
     link?: string;
     name?: string;
+    methodKey?: string;
+    ownership?: import("@paperclipai/shared").ToolConnectionOwnership;
     credentialValues?: Record<string, string>;
     configValues?: Record<string, unknown>;
     applicationId?: string;

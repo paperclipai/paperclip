@@ -439,8 +439,7 @@ export function ConfigureStep({
             <>You are responsible for managing your {def.name} client credentials.</>
           ) : (
             <>
-              You authorize Paperclip's {def.name} app; the provider consent screen will show
-              Paperclip.
+              You authorize Paperclip's {def.name} app; the consent screen will show Paperclip.
             </>
           )}
         </p>
