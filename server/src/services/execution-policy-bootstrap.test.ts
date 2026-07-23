@@ -132,6 +132,51 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
       ),
     ).toThrow(/PAPERCLIP_K8S_RPC_TIMEOUT_MS/);
   });
+
+  it("reads PAPERCLIP_K8S_COMPANY_SLUG into kubernetesConfig.companySlug", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(
+      env({
+        PAPERCLIP_EXECUTION_MODE: "kubernetes",
+        PAPERCLIP_K8S_COMPANY_SLUG: "my-company",
+      }),
+    );
+    expect(parsed?.kubernetesConfig.companySlug).toBe("my-company");
+  });
+
+  it("omits companySlug when PAPERCLIP_K8S_COMPANY_SLUG is absent", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
+    expect(parsed?.kubernetesConfig.companySlug).toBeUndefined();
+  });
+
+  it("reads PAPERCLIP_K8S_SERVER_NAMESPACE into kubernetesConfig.paperclipServerNamespace", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(
+      env({
+        PAPERCLIP_EXECUTION_MODE: "kubernetes",
+        PAPERCLIP_K8S_SERVER_NAMESPACE: "stuff-devops",
+      }),
+    );
+    expect(parsed?.kubernetesConfig.paperclipServerNamespace).toBe("stuff-devops");
+  });
+
+  it("omits paperclipServerNamespace when PAPERCLIP_K8S_SERVER_NAMESPACE is absent", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
+    expect(parsed?.kubernetesConfig.paperclipServerNamespace).toBeUndefined();
+  });
+
+  it("reads PAPERCLIP_K8S_SERVER_POD_APP_LABEL into kubernetesConfig.serverPodAppLabel", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(
+      env({
+        PAPERCLIP_EXECUTION_MODE: "kubernetes",
+        PAPERCLIP_K8S_SERVER_POD_APP_LABEL: "pc-server",
+      }),
+    );
+    expect(parsed?.kubernetesConfig.serverPodAppLabel).toBe("pc-server");
+  });
+
+  it("omits serverPodAppLabel when PAPERCLIP_K8S_SERVER_POD_APP_LABEL is absent", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
+    expect(parsed?.kubernetesConfig.serverPodAppLabel).toBeUndefined();
+  });
 });
 
 describe("applyExecutionPolicyBootstrap", () => {

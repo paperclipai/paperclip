@@ -1,6 +1,7 @@
 export interface BuildNetworkPolicyInput {
   namespace: string;
   paperclipServerNamespace: string;
+  serverPodAppLabel?: string;
   egressAllowCidrs: string[];
   /**
    * Adapter-configured FQDNs (e.g. `api.anthropic.com`). Standard
@@ -83,7 +84,7 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
           to: [
             {
               namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": input.paperclipServerNamespace } },
-              podSelector: { matchLabels: { app: "paperclip-server" } },
+              podSelector: { matchLabels: { app: input.serverPodAppLabel ?? "paperclip-server" } },
             },
           ],
           ports: [{ protocol: "TCP", port: 3100 }],

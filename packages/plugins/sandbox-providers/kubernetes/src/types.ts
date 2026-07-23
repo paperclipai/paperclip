@@ -12,6 +12,9 @@ export const kubernetesProviderConfigSchema = z
     namespacePrefix: z.string().regex(/^[a-z0-9-]{1,32}$/).default("paperclip-"),
     companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
 
+    paperclipServerNamespace: z.string().regex(/^[a-z0-9-]{1,63}$/).default("paperclip"),
+    serverPodAppLabel: z.string().min(1).default("paperclip-server"),
+
     imageRegistry: z.string().url().optional(),
     imageAllowList: z.array(z.string()).default([]),
     imagePullSecrets: z.array(z.string()).default([]),

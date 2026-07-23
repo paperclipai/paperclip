@@ -46,11 +46,6 @@ import {
   paperclipLabels,
 } from "./utils.js";
 
-// The namespace paperclip-server itself runs in. Used when building
-// NetworkPolicy manifests so the tenant namespace allows inbound traffic
-// from the server pod.
-const PAPERCLIP_SERVER_NAMESPACE = "paperclip";
-
 // Name of the ServiceAccount created inside each tenant namespace by ensureTenant.
 const TENANT_SERVICE_ACCOUNT = "paperclip-tenant-sa";
 
@@ -330,7 +325,8 @@ const plugin = definePlugin({
     await ensureTenant(clients, {
       namespace,
       companyId: params.companyId,
-      paperclipServerNamespace: PAPERCLIP_SERVER_NAMESPACE,
+      paperclipServerNamespace: config.paperclipServerNamespace,
+      serverPodAppLabel: config.serverPodAppLabel,
       serviceAccountAnnotations: config.serviceAccountAnnotations,
       egressMode: config.egressMode,
       egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],

@@ -92,4 +92,24 @@ describe("buildNetworkPolicyManifests", () => {
     );
     expect(fallback).toBeUndefined();
   });
+
+  it("accepts custom serverPodAppLabel in the callback pod selector", () => {
+    const [, egress] = buildNetworkPolicyManifests({
+      ...baseInput,
+      serverPodAppLabel: "pc-server",
+    });
+    const callbackRule = egress.spec.egress.find((r: { to: { podSelector?: { matchLabels?: Record<string, string> } }[] }) =>
+      r.to.some((t) => t.podSelector?.matchLabels?.app === "pc-server"),
+    );
+    expect(callbackRule).toBeDefined();
+    expect(callbackRule.ports[0].port).toBe(3100);
+  });
+
+  it("falls back to paperclip-server label when serverPodAppLabel is absent", () => {
+    const [, egress] = buildNetworkPolicyManifests(baseInput);
+    const callbackRule = egress.spec.egress.find((r: { to: { podSelector?: { matchLabels?: Record<string, string> } }[] }) =>
+      r.to.some((t) => t.podSelector?.matchLabels?.app === "paperclip-server"),
+    );
+    expect(callbackRule).toBeDefined();
+  });
 });
