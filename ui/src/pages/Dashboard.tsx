@@ -13,6 +13,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
+import { DailyBriefWidget } from "../components/DailyBriefWidget";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
@@ -109,6 +110,16 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+
+  const stalledCount = useMemo(() => {
+    if (!issues) return 0;
+    return issues.filter(
+      (i) =>
+        i.status !== "blocked" &&
+        (i.blockerAttention?.state === "stalled" ||
+          i.blockerAttention?.state === "needs_attention"),
+    ).length;
+  }, [issues]);
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -237,6 +248,8 @@ export function Dashboard() {
 
       {data && (
         <>
+          <DailyBriefWidget data={data} stalledCount={stalledCount} />
+
           {data.budgets.activeIncidents > 0 ? (
             <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-(image:--gradient-extract-1) px-4 py-3">
               <div className="flex items-start gap-2.5">
