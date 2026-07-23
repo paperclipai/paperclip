@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -39,6 +39,7 @@ import {
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
   createIssueSchema,
+  delegateIssueRecoveryActionSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
   feedbackTargetTypeSchema,
@@ -162,6 +163,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
+import { assertAssignableAgent } from "../services/agent-assignability.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -4218,6 +4220,93 @@ export function issueRoutes(
     return false;
   }
 
+  async function resolveDelegatedRecoveryTargetAgentId(companyId: string) {
+    const ceoCandidates = await db
+      .select({
+        id: agents.id,
+      })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.role, "ceo")))
+      .orderBy(sql`case when ${agents.reportsTo} is null then 0 else 1 end`, asc(agents.createdAt));
+
+    for (const candidate of ceoCandidates) {
+      try {
+        await assertAssignableAgent(db, companyId, candidate.id, { kind: "work" });
+        return candidate.id;
+      } catch (error) {
+        if (error instanceof HttpError && [404, 409, 422].includes(error.status)) continue;
+        throw error;
+      }
+    }
+
+    throw unprocessable("No assignable CEO recovery target exists in this company");
+  }
+
+  function delegatedRecoveryFingerprint(actionId: string, target: "ceo") {
+    return `delegated_recovery:${actionId}:target:${target}`;
+  }
+
+  function isDelegatedRecoveryIssueConflict(error: unknown) {
+    const constraintName = "issues_delegated_recovery_fingerprint_uq";
+    const queue: unknown[] = [error];
+    const messages: string[] = [];
+    let hasUniqueCode = false;
+    let hasConstraint = false;
+    for (const candidate of queue) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const typed = candidate as {
+        code?: string;
+        constraint?: string;
+        constraint_name?: string;
+        cause?: unknown;
+        message?: string;
+      };
+      if (typed.code === "23505") hasUniqueCode = true;
+      if (typed.constraint === constraintName || typed.constraint_name === constraintName) hasConstraint = true;
+      if (typed.message) messages.push(typed.message);
+      if (typed.cause) queue.push(typed.cause);
+    }
+    const message = messages.join("\n");
+    return (hasUniqueCode || message.includes("duplicate key value violates unique constraint")) &&
+      (hasConstraint || message.includes(constraintName));
+  }
+
+  async function getDelegatedRecoveryIssue(companyId: string, fingerprint: string) {
+    return db
+      .select()
+      .from(issueRows)
+      .where(
+        and(
+          eq(issueRows.companyId, companyId),
+          eq(issueRows.originKind, "delegated_recovery"),
+          eq(issueRows.originFingerprint, fingerprint),
+          isNull(issueRows.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issueRows.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function delegatedRecoveryDescription(input: {
+    sourceIssue: { id: string; identifier: string | null; title: string };
+    recoveryActionId: string;
+    target: "ceo";
+  }) {
+    const identifier = input.sourceIssue.identifier ?? input.sourceIssue.id;
+    const prefix = input.sourceIssue.identifier?.split("-")[0] || "PAP";
+    return [
+      "Paperclip delegated a source-scoped recovery action into a fresh repair task.",
+      "",
+      `- Source issue: [${identifier}](/${prefix}/issues/${identifier})`,
+      `- Source title: ${input.sourceIssue.title}`,
+      `- Recovery action: \`${input.recoveryActionId}\``,
+      `- Delegation target: \`${input.target}\``,
+      "",
+      "Repair the source issue's broken execution path or record a clear disposition, then resolve the source blocker.",
+    ].join("\n");
+  }
+
   async function resolveActiveIssueRun(issue: {
     id: string;
     assigneeAgentId: string | null;
@@ -5518,6 +5607,233 @@ export function issueRoutes(
       actions: active ? [active] : [],
     });
   });
+
+  router.post(
+    "/issues/:id/recovery-actions/delegate",
+    validate(delegateIssueRecoveryActionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!existing) return;
+      if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+
+      const { actionId, target } = req.body;
+      const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
+      if (activeRecoveryAction?.id !== actionId) {
+        const resolvedAction = await recoveryActionsSvc.getById(existing.companyId, actionId);
+        if (
+          resolvedAction?.sourceIssueId === existing.id &&
+          resolvedAction.status === "resolved" &&
+          resolvedAction.outcome === "delegated" &&
+          resolvedAction.recoveryIssueId
+        ) {
+          const recoveryIssue = await svc.getById(resolvedAction.recoveryIssueId);
+          if (recoveryIssue && recoveryIssue.companyId === existing.companyId) {
+            res.json({
+              issue: {
+                ...existing,
+                activeRecoveryAction: null,
+              },
+              recoveryIssue,
+              recoveryAction: resolvedAction,
+              reused: true,
+            });
+            return;
+          }
+        }
+        res.status(404).json({ error: "Active recovery action not found" });
+        return;
+      }
+
+      if (
+        !(await assertRecoveryActionAuthority(
+          req,
+          res,
+          existing,
+          activeRecoveryAction,
+          { source: "recovery_action_resolution" },
+        ))
+      ) {
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const assigneeAgentId = await resolveDelegatedRecoveryTargetAgentId(existing.companyId);
+      await assertCanAssignTasks(req, existing.companyId, {
+        projectId: await resolveAssignmentProjectId({
+          companyId: existing.companyId,
+          projectId: existing.projectId,
+          parentIssueId: existing.parentId,
+        }),
+        parentIssueId: existing.parentId ?? null,
+        assigneeAgentId,
+        assigneeUserId: null,
+      });
+      const fingerprint = delegatedRecoveryFingerprint(actionId, target);
+      let recoveryIssue = await getDelegatedRecoveryIssue(existing.companyId, fingerprint);
+      let createdRecoveryIssue = false;
+
+      if (!recoveryIssue) {
+        try {
+          recoveryIssue = await svc.create(existing.companyId, {
+            title: `Repair recovery path for ${existing.identifier ?? existing.title}`,
+            description: delegatedRecoveryDescription({
+              sourceIssue: existing,
+              recoveryActionId: actionId,
+              target,
+            }),
+            status: "todo",
+            priority: existing.priority,
+            workMode: "standard",
+            assigneeAgentId,
+            parentId: existing.parentId ?? null,
+            projectId: existing.projectId ?? null,
+            goalId: existing.goalId ?? null,
+            billingCode: existing.billingCode ?? null,
+            originKind: "delegated_recovery",
+            originId: existing.id,
+            originFingerprint: fingerprint,
+            executionWorkspaceId: null,
+            executionWorkspacePreference: null,
+            executionWorkspaceSettings: null,
+            createdByAgentId: actor.agentId,
+            createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+            actorRunId: actor.runId,
+            actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+            trustExplicitResponsibleUserId: actor.actorType === "user",
+          });
+          createdRecoveryIssue = true;
+        } catch (error) {
+          if (!isDelegatedRecoveryIssueConflict(error)) throw error;
+          recoveryIssue = await getDelegatedRecoveryIssue(existing.companyId, fingerprint);
+          if (!recoveryIssue) throw error;
+        }
+      }
+
+      const sourceRelations = await svc.getRelationSummaries(existing.id);
+      const existingBlockerIds = sourceRelations.blockedBy.map((blocker) => blocker.id);
+      const nextBlockedByIssueIds = [...new Set([...existingBlockerIds, recoveryIssue.id])];
+      const updatedSource = await svc.update(existing.id, {
+        status: "blocked",
+        blockedByIssueIds: nextBlockedByIssueIds,
+        actorAgentId: actor.agentId ?? null,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      if (!updatedSource) throw notFound("Issue not found");
+
+      let recoveryAction = await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: existing.companyId,
+        sourceIssueId: existing.id,
+        actionId,
+        recoveryIssueId: recoveryIssue.id,
+        status: "resolved",
+        outcome: "delegated",
+        resolutionNote: `Delegated to ${target} recovery issue ${recoveryIssue.identifier ?? recoveryIssue.id}.`,
+      });
+      if (!recoveryAction) {
+        const resolvedAction = await recoveryActionsSvc.getById(existing.companyId, actionId);
+        if (
+          resolvedAction?.sourceIssueId === existing.id &&
+          resolvedAction.status === "resolved" &&
+          resolvedAction.outcome === "delegated" &&
+          resolvedAction.recoveryIssueId === recoveryIssue.id
+        ) {
+          recoveryAction = resolvedAction;
+          res.json({
+            issue: {
+              ...updatedSource,
+              activeRecoveryAction: null,
+            },
+            recoveryIssue,
+            recoveryAction,
+            reused: true,
+          });
+          return;
+        }
+        throw notFound("Active recovery action not found");
+      }
+
+      await issueReferencesSvc.syncIssue(recoveryIssue.id);
+      await externalObjectsSvc.syncIssueSafely(recoveryIssue.id);
+      await routinesSvc.syncRunStatusForIssue(updatedSource.id);
+
+      if (createdRecoveryIssue) {
+        await logActivity(db, {
+          companyId: recoveryIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.created",
+          entityType: "issue",
+          entityId: recoveryIssue.id,
+          details: {
+            title: recoveryIssue.title,
+            identifier: recoveryIssue.identifier,
+            source: "recovery_action_delegate",
+            sourceIssueId: existing.id,
+            sourceIssueIdentifier: existing.identifier,
+            recoveryActionId: actionId,
+            target,
+          },
+        });
+      }
+
+      await logActivity(db, {
+        companyId: updatedSource.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: updatedSource.id,
+        details: {
+          identifier: updatedSource.identifier,
+          status: updatedSource.status,
+          source: "recovery_action_delegate",
+          recoveryActionId: actionId,
+          recoveryIssueId: recoveryIssue.id,
+          blockedByIssueIds: nextBlockedByIssueIds,
+          _previous: {
+            status: existing.status,
+            blockedByIssueIds: existingBlockerIds,
+          },
+        },
+      });
+
+      await logActivity(db, {
+        companyId: updatedSource.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.recovery_action_resolved",
+        entityType: "issue",
+        entityId: updatedSource.id,
+        details: {
+          identifier: updatedSource.identifier,
+          recoveryActionId: recoveryAction.id,
+          recoveryActionStatus: recoveryAction.status,
+          outcome: recoveryAction.outcome,
+          recoveryIssueId: recoveryIssue.id,
+          target,
+          sourceIssueStatus: updatedSource.status,
+          resolutionNote: recoveryAction.resolutionNote,
+        },
+      });
+
+      res.status(createdRecoveryIssue ? 201 : 200).json({
+        issue: {
+          ...updatedSource,
+          activeRecoveryAction: null,
+        },
+        recoveryIssue,
+        recoveryAction,
+        reused: !createdRecoveryIssue,
+      });
+    },
+  );
 
   router.post("/issues/:id/recovery-actions/resolve", validate(resolveIssueRecoveryActionSchema), async (req, res) => {
     const id = req.params.id as string;

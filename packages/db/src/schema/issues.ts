@@ -164,5 +164,12 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    delegatedRecoveryFingerprintIdx: uniqueIndex("issues_delegated_recovery_fingerprint_uq")
+      .on(table.companyId, table.originKind, table.originFingerprint)
+      .where(
+        sql`${table.originKind} = 'delegated_recovery'
+          and ${table.originFingerprint} <> 'default'
+          and ${table.hiddenAt} is null`,
+      ),
   }),
 );

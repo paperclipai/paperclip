@@ -272,6 +272,13 @@ export const issueRecoveryActionReadModelSchema = z.object({
 
 export type IssueRecoveryActionReadModel = z.infer<typeof issueRecoveryActionReadModelSchema>;
 
+export const delegateIssueRecoveryActionSchema = z.object({
+  actionId: z.string().uuid(),
+  target: z.enum(["ceo"]),
+}).strict();
+
+export type DelegateIssueRecoveryAction = z.infer<typeof delegateIssueRecoveryActionSchema>;
+
 const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",
   "false_positive",

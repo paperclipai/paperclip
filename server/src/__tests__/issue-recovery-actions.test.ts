@@ -12,10 +12,13 @@ import {
   environmentLeases,
   environments,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueRecoveryActions,
   issueRelations,
   issues,
+  goals,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -137,10 +140,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
     await db.delete(issues);
+    await db.delete(projects);
+    await db.delete(goals);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -198,6 +204,53 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
     const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     return { companyId, managerId, coderId, sourceIssueId, prefix, sourceIssue: sourceIssue! };
+  }
+
+  async function seedCeo(companyId: string) {
+    const ceoId = randomUUID();
+    await db.insert(agents).values({
+      id: ceoId,
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      reportsTo: null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return ceoId;
+  }
+
+  async function seedSourceContext(input: { companyId: string; sourceIssueId: string }) {
+    const goalId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(goals).values({
+      id: goalId,
+      companyId: input.companyId,
+      title: "Recovery Goal",
+      level: "company",
+      status: "active",
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId: input.companyId,
+      name: "Recovery Project",
+      status: "in_progress",
+      goalId,
+    });
+    await db
+      .update(issues)
+      .set({
+        projectId,
+        goalId,
+        billingCode: "platform-recovery",
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "reuse_existing" },
+      })
+      .where(eq(issues.id, input.sourceIssueId));
+    return { goalId, projectId, billingCode: "platform-recovery" };
   }
 
   async function seedHeartbeatRun(input: {
@@ -1252,6 +1305,381 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       nextAction: "Repair the worktree, then return the issue to the coder.",
       routingFallbackReason: null,
     });
+  });
+
+  it("delegates an active recovery action to a CEO-owned repair issue and blocks the source", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const ceoId = await seedCeo(companyId);
+    const context = await seedSourceContext({ companyId, sourceIssueId });
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace-validation:broken-worktree",
+      evidence: { reason: "git_worktree_branch_incoherence" },
+      nextAction: "Repair the source issue workspace link before resuming.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    const app = createApp();
+
+    const delegated = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+      .send({
+        actionId: action.id,
+        target: "ceo",
+      })
+      .expect(201);
+
+    expect(delegated.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "blocked",
+      activeRecoveryAction: null,
+    });
+    expect(delegated.body.recoveryIssue).toMatchObject({
+      assigneeAgentId: ceoId,
+      status: "todo",
+      projectId: context.projectId,
+      goalId: context.goalId,
+      billingCode: context.billingCode,
+      originKind: "delegated_recovery",
+      originId: sourceIssueId,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+      executionWorkspaceSettings: null,
+    });
+    expect(delegated.body.recoveryIssue.originFingerprint).toBe(`delegated_recovery:${action.id}:target:ceo`);
+    expect(delegated.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "delegated",
+      recoveryIssueId: delegated.body.recoveryIssue.id,
+    });
+
+    const [blockerRelation] = await db
+      .select()
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.issueId, delegated.body.recoveryIssue.id),
+          eq(issueRelations.relatedIssueId, sourceIssueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(blockerRelation).toBeTruthy();
+
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "resolved",
+      outcome: "delegated",
+      recoveryIssueId: delegated.body.recoveryIssue.id,
+    });
+
+    const activityRows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, sourceIssueId));
+    expect(activityRows.map((row) => row.action)).toEqual(
+      expect.arrayContaining(["issue.updated", "issue.recovery_action_resolved"]),
+    );
+  });
+
+  it("reuses the delegated recovery issue when the delegate action is clicked again", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await seedCeo(companyId);
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace-validation:duplicate-click",
+      evidence: { reason: "git_worktree_branch_incoherence" },
+      nextAction: "Repair the source issue workspace link before resuming.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    const app = createApp();
+
+    const first = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+      .send({ actionId: action.id, target: "ceo" })
+      .expect(201);
+    const second = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+      .send({ actionId: action.id, target: "ceo" })
+      .expect(200);
+
+    expect(second.body).toMatchObject({
+      reused: true,
+      issue: {
+        id: sourceIssueId,
+        activeRecoveryAction: null,
+      },
+      recoveryIssue: {
+        id: first.body.recoveryIssue.id,
+      },
+      recoveryAction: {
+        id: action.id,
+        status: "resolved",
+        outcome: "delegated",
+        recoveryIssueId: first.body.recoveryIssue.id,
+      },
+    });
+
+    const delegatedIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "delegated_recovery")));
+    expect(delegatedIssues).toHaveLength(1);
+  });
+
+  it("rejects delegated recovery when no assignable CEO target exists", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace-validation:no-ceo",
+      evidence: { reason: "git_worktree_branch_incoherence" },
+      nextAction: "Repair the source issue workspace link before resuming.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    const app = createApp();
+
+    const rejected = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+      .send({ actionId: action.id, target: "ceo" })
+      .expect(422);
+
+    expect(rejected.body.error).toContain("No assignable CEO recovery target");
+    const delegatedIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "delegated_recovery")));
+    expect(delegatedIssues).toHaveLength(0);
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow?.status).toBe("active");
+  });
+
+  it("enforces company scope when delegating recovery actions", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await seedCeo(companyId);
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace-validation:cross-company",
+      evidence: { reason: "git_worktree_branch_incoherence" },
+      nextAction: "Repair the source issue workspace link before resuming.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: randomUUID(),
+      companyId: randomUUID(),
+      runId: randomUUID(),
+      source: "agent_jwt",
+    });
+
+    await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+      .send({ actionId: action.id, target: "ceo" })
+      .expect(404);
+
+    const delegatedIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "delegated_recovery")));
+    expect(delegatedIssues).toHaveLength(0);
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow?.status).toBe("active");
+  });
+
+  it("returns the delegated recovery result to concurrent callers", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await seedCeo(companyId);
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace-validation:concurrent-delegation",
+      evidence: { reason: "git_worktree_branch_incoherence" },
+      nextAction: "Repair the source issue workspace link before resuming.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    const app = createApp();
+
+    const responses = await Promise.all([
+      request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+        .send({ actionId: action.id, target: "ceo" }),
+      request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+        .send({ actionId: action.id, target: "ceo" }),
+    ]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 201]);
+    expect(responses[0].body.recoveryIssue.id).toBe(responses[1].body.recoveryIssue.id);
+    expect(responses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          body: expect.objectContaining({
+            issue: expect.objectContaining({ activeRecoveryAction: null }),
+            reused: true,
+          }),
+        }),
+      ]),
+    );
+
+    const delegatedIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "delegated_recovery")));
+    expect(delegatedIssues).toHaveLength(1);
+  });
+
+  it("rejects peer-agent delegated recovery outside the recovery authority boundary", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await seedCeo(companyId);
+    const peerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: peerAgentId,
+      companyId,
+      name: "Peer",
+      role: "engineer",
+      status: "idle",
+      reportsTo: managerId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace-validation:peer-agent",
+      evidence: { reason: "git_worktree_branch_incoherence" },
+      nextAction: "Repair the source issue workspace link before resuming.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: peerAgentId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_jwt",
+    });
+
+    await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+      .send({ actionId: action.id, target: "ceo" })
+      .expect(403);
+
+    const delegatedIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "delegated_recovery")));
+    expect(delegatedIssues).toHaveLength(0);
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow?.status).toBe("active");
+  });
+
+  it("enforces assignment authorization when delegating recovery to a protected CEO", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db.insert(agents).values({
+      id: randomUUID(),
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      reportsTo: null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: { mode: "protected" },
+        },
+      },
+    });
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace-validation:protected-ceo",
+      evidence: { reason: "git_worktree_branch_incoherence" },
+      nextAction: "Repair the source issue workspace link before resuming.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    const runId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId,
+      issueId: sourceIssueId,
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+      .send({ actionId: action.id, target: "ceo" })
+      .expect(403);
+
+    const delegatedIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "delegated_recovery")));
+    expect(delegatedIssues).toHaveLength(0);
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow?.status).toBe("active");
   });
 
   it("resolves an active recovery action and removes it from active projections", async () => {
