@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { loadConfig } from "./config.js";
 
 function toGlobstarPath(candidate: string): string {
   return `${candidate.replaceAll(path.sep, "/")}/**`;
@@ -18,6 +19,7 @@ function addIgnorePath(target: Set<string>, candidate: string): void {
 }
 
 export function resolveServerDevWatchIgnorePaths(serverRoot: string): string[] {
+  const config = loadConfig();
   const ignorePaths = new Set<string>([
     "**/{node_modules,bower_components,vendor}/**",
     "**/.vite-temp/**",
@@ -33,6 +35,10 @@ export function resolveServerDevWatchIgnorePaths(serverRoot: string): string[] {
     process.env.HOME + "/.paperclip/adapter-plugins",
   ]) {
     addIgnorePath(ignorePaths, path.resolve(serverRoot, relativePath));
+  }
+
+  if (config.adapterPluginsDir) {
+    addIgnorePath(ignorePaths, config.adapterPluginsDir);
   }
 
   return [...ignorePaths];
