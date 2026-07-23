@@ -39,37 +39,37 @@ describe("copilot_local ACP configuration", () => {
     );
   });
 
-  it("gives managed safety flags final precedence over extra arguments", () => {
+  it("places managed safety flags after allowed extra arguments", () => {
     const command = buildCopilotAcpCommand({
-      extraArgs: [
-        "--auto-update",
-        "--remote",
-        "--remote-export",
-        "--color",
-        "--log-level",
-        "debug",
-        "--secret-env-vars=OTHER_TOKEN",
-      ],
+      extraArgs: ["--allow-all-tools"],
     });
 
-    expect(command.lastIndexOf("'--no-auto-update'")).toBeGreaterThan(
-      command.lastIndexOf("'--auto-update'"),
-    );
     expect(command.lastIndexOf("'--no-remote'")).toBeGreaterThan(
-      command.lastIndexOf("'--remote'"),
+      command.lastIndexOf("'--allow-all-tools'"),
     );
-    expect(command.lastIndexOf("'--no-remote-export'")).toBeGreaterThan(
-      command.lastIndexOf("'--remote-export'"),
+  });
+
+  it.each([
+    "--",
+    "--acp",
+    "--stdio",
+    "--auto-update",
+    "--no-auto-update",
+    "--remote",
+    "--remote=true",
+    "--no-remote",
+    "--remote-export",
+    "--no-remote-export",
+    "--color",
+    "--no-color",
+    "--log-level",
+    "--log-level=debug",
+    "--secret-env-vars",
+    "--secret-env-vars=OTHER_TOKEN",
+  ])("rejects managed or parsing-bypass extra argument %s", (extraArg) => {
+    expect(() => buildCopilotAcpCommand({ extraArgs: [extraArg] })).toThrow(
+      "extraArgs cannot override Paperclip-managed Copilot option",
     );
-    expect(command.lastIndexOf("'--no-color'")).toBeGreaterThan(
-      command.lastIndexOf("'--color'"),
-    );
-    expect(command.lastIndexOf("'error'")).toBeGreaterThan(command.lastIndexOf("'debug'"));
-    expect(
-      command.lastIndexOf(
-        "'--secret-env-vars=COPILOT_GITHUB_TOKEN,GH_TOKEN,GITHUB_TOKEN'",
-      ),
-    ).toBeGreaterThan(command.lastIndexOf("'--secret-env-vars=OTHER_TOKEN'"));
   });
 
   it("uses the normal Copilot home without overriding explicit config", () => {

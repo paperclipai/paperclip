@@ -22,6 +22,20 @@ import {
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
+const managedCopilotOptions = new Set([
+  "--acp",
+  "--stdio",
+  "--auto-update",
+  "--no-auto-update",
+  "--remote",
+  "--no-remote",
+  "--remote-export",
+  "--no-remote-export",
+  "--color",
+  "--no-color",
+  "--log-level",
+  "--secret-env-vars",
+]);
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -34,6 +48,15 @@ function firstNonEmptyString(...values: unknown[]): string | null {
     if (trimmed) return trimmed;
   }
   return null;
+}
+
+function validateExtraArgs(extraArgs: string[]): void {
+  for (const arg of extraArgs) {
+    const optionName = arg.split("=", 1)[0];
+    if (arg === "--" || managedCopilotOptions.has(optionName)) {
+      throw new Error(`extraArgs cannot override Paperclip-managed Copilot option: ${arg}`);
+    }
+  }
 }
 
 export function resolveCopilotHome(config: Record<string, unknown>): string {
@@ -53,13 +76,16 @@ export function buildCopilotAcpCommand(config: Record<string, unknown>): string 
   const model = asString(config.model, "").trim();
   const reasoningEffort = firstNonEmptyString(config.reasoningEffort, config.modelReasoningEffort);
   const contextTier = asString(config.contextTier, "").trim();
+  const extraArgs = asStringArray(config.extraArgs);
+  validateExtraArgs(extraArgs);
+
   const args = ["--acp", "--stdio"];
   if (model) args.push("--model", model);
   if (reasoningEffort) args.push("--effort", reasoningEffort);
   if (contextTier === "default" || contextTier === "long_context") {
     args.push("--context", contextTier);
   }
-  args.push(...asStringArray(config.extraArgs));
+  args.push(...extraArgs);
   args.push(
     "--no-auto-update",
     "--no-remote",
