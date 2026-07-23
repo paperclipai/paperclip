@@ -35,11 +35,16 @@ describe("status card update engine", () => {
       issue: { status: "in_progress", updatedAt: "2026-07-23T10:00:00.000Z", latestHumanCommentAt: null, identifier: "PAP-5", title: "Commented" },
     };
     const current = {
-      issue: { status: "in_progress", updatedAt: "2026-07-23T10:01:00.000Z", latestHumanCommentAt: "2026-07-23T10:01:00.000Z", identifier: "PAP-5", title: "Commented" },
+      issue: { status: "done", updatedAt: "2026-07-23T10:01:00.000Z", latestHumanCommentAt: "2026-07-23T10:01:00.000Z", identifier: "PAP-5", title: "Commented" },
     };
     const changes = diffStatusCardFingerprint(previous, current);
-    expect(changes).toMatchObject([{ identifier: "PAP-5", changeKind: "human_comment" }]);
-    expect(filterStatusCardChanges(changes, defaultPolicy)).toHaveLength(1);
+    expect(changes.map((change) => change.changeKind)).toEqual(["status", "human_comment"]);
+    const commentOnlyPolicy = statusCardRefreshPolicySchema.parse({
+      mode: "interval",
+      intervalMinutes: 15,
+      triggers: { statusTransitions: false, assigneeChanges: false, humanComments: true, membershipChanges: false, anyUpdate: false },
+    });
+    expect(filterStatusCardChanges(changes, commentOnlyPolicy)).toMatchObject([{ identifier: "PAP-5", changeKind: "human_comment" }]);
   });
 
   it("changes the pending signature when equal-sized change sets are replaced", () => {

@@ -43,19 +43,20 @@ export function diffStatusCardFingerprint(previous: StatusCardFingerprint | null
       changes.push({ issueId, identifier: next.identifier ?? issueId, title: next.title ?? "", from: null, to: next.status, changeKind: "new" });
       continue;
     }
+    let hasSpecificChange = false;
     if (prior.status !== next.status) {
       changes.push({ issueId, identifier: next.identifier ?? issueId, title: next.title ?? "", from: prior.status, to: next.status, changeKind: "status" });
-      continue;
+      hasSpecificChange = true;
     }
     if (prior.assigneeAgentId !== next.assigneeAgentId || prior.assigneeUserId !== next.assigneeUserId) {
       changes.push({ issueId, identifier: next.identifier ?? issueId, title: next.title ?? "", from: null, to: null, changeKind: "assignee" });
-      continue;
+      hasSpecificChange = true;
     }
     if (prior.latestHumanCommentAt !== next.latestHumanCommentAt && next.latestHumanCommentAt) {
       changes.push({ issueId, identifier: next.identifier ?? issueId, title: next.title ?? "", from: prior.latestHumanCommentAt ?? null, to: next.latestHumanCommentAt, changeKind: "human_comment" });
-      continue;
+      hasSpecificChange = true;
     }
-    if (prior.updatedAt !== next.updatedAt) {
+    if (prior.updatedAt !== next.updatedAt && !hasSpecificChange) {
       changes.push({ issueId, identifier: next.identifier ?? issueId, title: next.title ?? "", from: prior.status, to: next.status, changeKind: "updated" });
     }
   }
