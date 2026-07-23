@@ -229,6 +229,7 @@ import {
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { resolveRoutedShopifyConfig } from "./shopify-skill-router.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -12315,12 +12316,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       resolvedConfig,
       runScopedMentionedSkillKeys,
     );
-    const runtimeSkillPreference = readPaperclipSkillSyncPreference(effectiveResolvedConfig);
+    let shopifyRouterWarning: string | null = null;
+    const { config: routedResolvedConfig, routing: routedShopifySkillKeys } = await resolveRoutedShopifyConfig({
+      db,
+      companyId: agent.companyId,
+      issueId,
+      agent: {
+        role: agent.role ?? null,
+        capabilities: agent.capabilities ?? null,
+      },
+      resolvedConfig: effectiveResolvedConfig,
+      onWarning: (message) => { shopifyRouterWarning = message; },
+    });
+    const shopifyRouterLogLine =
+      `[paperclip] Shopify skill router: gated=${String(routedShopifySkillKeys.gated)}, matched=[${routedShopifySkillKeys.matchedRules.join(", ")}], keys=[${routedShopifySkillKeys.skillKeys.join(", ")}]\n`;
+    const runtimeSkillPreference = readPaperclipSkillSyncPreference(routedResolvedConfig);
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
       versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries),
     });
     let runtimeConfig: Record<string, unknown> = {
-      ...effectiveResolvedConfig,
+      ...routedResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
     const latestAgentConfigRevision = await getLatestAgentConfigRevision(agent.companyId, agent.id);
@@ -13249,6 +13264,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
         });
       };
+      await onLog("stdout", shopifyRouterLogLine);
+      if (shopifyRouterWarning) {
+        await onLog("stderr", shopifyRouterWarning);
+      }
       if (runScopedMentionedSkillKeys.length > 0) {
         await onLog(
           "stdout",
