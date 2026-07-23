@@ -79,18 +79,22 @@ source. Bundled skills are the curated defaults for any company; optional
 skills are role- or domain-specific.
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/skills/catalog?kind=bundled" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+# Write auth to a mode-600 config file so the token never appears in curl argv
+# (/proc/*/cmdline is world-readable on Linux). Reused across the calls below.
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
 
-curl -sS "$PAPERCLIP_API_URL/api/skills/catalog/ref?ref=github-pr-workflow" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/skills/catalog?kind=bundled"
 
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/install-catalog" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/skills/catalog/ref?ref=github-pr-workflow"
+
+curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/install-catalog" \
   -H "Content-Type: application/json" \
   -d '{
     "catalogSkillId": "paperclipai:bundled:software-development:github-pr-workflow"
   }'
+
+rm -f "$_AUTH"
 ```
 
 The install response records provenance (`catalogId`, `catalogKey`,
@@ -116,34 +120,43 @@ Import using a **skills.sh URL**, a key-style source string, a GitHub URL, or a 
 ### Example: skills.sh import (preferred)
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
   -H "Content-Type: application/json" \
   -d '{
     "source": "https://skills.sh/google-labs-code/stitch-skills/design-md"
   }'
+rm -f "$_AUTH"
 ```
 
 Or equivalently using the key-style string:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
   -H "Content-Type: application/json" \
   -d '{
     "source": "google-labs-code/stitch-skills/design-md"
   }'
+rm -f "$_AUTH"
 ```
 
 ### Example: GitHub import
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
   -H "Content-Type: application/json" \
   -d '{
     "source": "https://github.com/vercel-labs/agent-browser"
   }'
+rm -f "$_AUTH"
 ```
 
 You can also use source strings such as:
@@ -155,27 +168,37 @@ You can also use source strings such as:
 If the task is to discover skills from the company project workspaces first:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/scan-projects" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/scan-projects" \
   -H "Content-Type: application/json" \
   -d '{}'
+rm -f "$_AUTH"
 ```
 
 ## Inspect What Was Installed
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills"
+rm -f "$_AUTH"
 ```
 
 Read the skill entry and its `SKILL.md`:
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
 
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files?path=SKILL.md" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>"
+
+curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files?path=SKILL.md"
+
+rm -f "$_AUTH"
 ```
 
 ## Assign Skills To An Existing Agent
@@ -189,21 +212,27 @@ curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-i
 The server persists canonical company skill keys.
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
   -H "Content-Type: application/json" \
   -d '{
     "desiredSkills": [
       "vercel-labs/agent-browser/agent-browser"
     ]
   }'
+rm -f "$_AUTH"
 ```
 
 If you need the current state first:
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills"
+rm -f "$_AUTH"
 ```
 
 ## Include Skills During Hire Or Create
@@ -211,8 +240,10 @@ curl -sS "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills" \
 Use the same company skill keys or references in `desiredSkills` when hiring or creating an agent:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "QA Browser Agent",
@@ -225,13 +256,16 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
       "agent-browser"
     ]
   }'
+rm -f "$_AUTH"
 ```
 
 For direct create without approval:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "QA Browser Agent",
