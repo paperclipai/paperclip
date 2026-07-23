@@ -2064,9 +2064,19 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
   return shapedWorkspaceEnv;
 }
 
+const RC2_AGENT_ENV_DENYLIST = new Set([
+  "DATABASE_URL",
+  "GEMINI_API_KEY",
+  "HELP2DAY_QA_BYPASS_TOKEN",
+]);
+
 export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
+    if (RC2_AGENT_ENV_DENYLIST.has(key)) {
+      delete env[key];
+      continue;
+    }
     if (!key.startsWith("PAPERCLIP_")) continue;
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
     if (key === "PAPERCLIP_LISTEN_HOST") continue;
