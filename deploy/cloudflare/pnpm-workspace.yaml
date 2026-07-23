@@ -1,0 +1,11 @@
+# Marks deploy/cloudflare as its own single-package workspace so pnpm does
+# not attach it to the repo root workspace (same isolation rationale as
+# packages/plugins/sandbox-providers/*): the Cloudflare toolchain
+# (wrangler/workerd) never churns the root pnpm-lock.yaml.
+# sharp stays false: it is an optional wrangler dependency (static-asset
+# image processing) with no prebuilt binary on some platforms, and its
+# source build fails without node-addon-api. Wrangler works without it.
+allowBuilds:
+  esbuild: true
+  sharp: false
+  workerd: true
