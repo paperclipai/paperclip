@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
+import type { AcpRuntimeOptions } from "acpx/runtime";
 import { createAcpRuntime, createAgentRegistry, createRuntimeStore } from "acpx/runtime";
 
 // Load-bearing repro for the remote-ACP "process session" lane host-spawn bug.
@@ -33,6 +34,12 @@ const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
 const fixturePath = path.join(repoRoot, "scripts", "mcp-fixtures", "servers", "acp-cwd-report-agent.mjs");
 const tempRoots: string[] = [];
 
+type PatchedAcpRuntimeOptions = AcpRuntimeOptions & {
+  spawnCwd?: string;
+};
+
+type PatchedEnsureSessionOptions = Parameters<ReturnType<typeof createAcpRuntime>["ensureSession"]>[0];
+
 afterEach(async () => {
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
@@ -53,7 +60,7 @@ async function ensureRealAcpSession(input: { cwd: string; spawnCwd?: string }) {
   const stateRoot = await makeTempDir("paperclip-acpx-remote-spawn-state-");
   const stderrChunks: string[] = [];
   const agentCommand = `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixturePath.replaceAll("\\", "/"))}`;
-  const runtime = createAcpRuntime({
+  const runtimeOptions: PatchedAcpRuntimeOptions = {
     cwd: input.cwd,
     // `spawnCwd` is the host-only knob added by patches/acpx@0.12.0.patch; when
     // unset acpx falls back to `cwd`, so every non-proxy lane is byte-identical.
@@ -63,16 +70,18 @@ async function ensureRealAcpSession(input: { cwd: string; spawnCwd?: string }) {
     permissionMode: "approve-all",
     nonInteractivePermissions: "deny",
     onAgentStderr: (chunk: string) => stderrChunks.push(chunk),
-  } as never);
+  };
+  const runtime = createAcpRuntime(runtimeOptions);
 
   try {
-    const handle = await runtime.ensureSession({
+    const sessionInput: PatchedEnsureSessionOptions = {
       sessionKey: "remote-spawn-smoke",
       agent: "custom",
       mode: "oneshot",
       cwd: input.cwd,
       sessionOptions: { env: {} },
-    } as never);
+    };
+    const handle = await runtime.ensureSession(sessionInput);
     await (runtime as { close: (i: unknown) => Promise<void> }).close({ handle, reason: "done" }).catch(() => {});
     return { resolved: true as const, stderr: stderrChunks.join("") };
   } catch (err) {
