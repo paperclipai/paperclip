@@ -33,12 +33,13 @@ industry · type · description · **cVertriebsstatus** (sales status: "Noch off
   Opportunity amount × probability). Never estimate a forecast yourself.
 - `espo_pipeline` — status/coverage counts (the manager scoreboard).
 
-## Opportunities auto-write now (2026-07-07) — you rarely create them by hand
+## Opportunities auto-write now (owner-corrected 2026-07-23) — you rarely create them by hand
 The pipeline writes itself deterministically: a real `espo_send_email` moves the venue's Opportunity
 to **contacted**; a booked `espo_create_meeting` advances it to **booked** (forward-only, one per
-venue, never duplicated). Espo's base currency is **CHF**; `espo_upsert_opportunity` now defaults
-`amount` (CK_DEFAULT_DEAL_CHF, 600) + `closeDate` (+90d) so a deal can be created from just
-account_id + stage. You still upsert manually for stages the tools don't cover — **replied** (a venue
+venue, never duplicated). `amount` and `closeDate` stay empty until a real quote, order, or agreed
+schedule supplies evidence. Never insert a nominal/default amount or a guessed close date merely to
+populate the forecast. The tool requires `commercial_evidence` whenever `amount_chf` or `close_date`
+is supplied. You still upsert manually for stages the tools don't cover — **replied** (a venue
 answered) and **won/lost** (outcome) — via `espo_upsert_opportunity`.
 
 ## Rules
@@ -50,7 +51,8 @@ answered) and **won/lost** (outcome) — via `espo_upsert_opportunity`.
 ## New tools (2026-07-02): mail + calendar
 - `espo_read_emails` — read the ACTUAL inbound mail you must answer (search by sender/subject).
   Never reconstruct a mail from memory.
-- `espo_create_meeting` — put a PLANNED slot on Alan's CRM calendar (name, 'YYYY-MM-DD HH:MM' Swiss
-  time, account_id). Internal record only — it never emails an invitation; the date PROPOSAL goes in
-  the human-approved draft. Bonus: a running bridge syncs CRM Meetings to Alan's Google Calendar/
-  TimeTree, so a created meeting reaches his phone.
+- `espo_create_meeting` — put a PLANNED slot on Alan's CRM calendar only after the venue has confirmed
+  that exact date and time in a real CRM email. A request for Alan to propose dates is not a booking:
+  draft the proposed dates for human approval first, and wait for the venue's acceptance. The record
+  is internal and never emails an invitation. A running bridge syncs CRM Meetings to Alan's Google
+  Calendar/TimeTree, so speculative placeholders are forbidden.

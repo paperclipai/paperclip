@@ -37,6 +37,14 @@ test("German strength wording remains valid", () => {
   assert.equal(result.pass, true);
 });
 
+test("a masculine formal German greeting passes the outreach gate", () => {
+  const result = reviewOutreachMessage(
+    "Degustation",
+    "Sehr geehrter Herr Gasser\n\nVielen Dank für Ihre Antwort.\n\nFreundliche Grüsse\nAlan Christopherson\nTres Hermanos",
+  );
+  assert.equal(result.pass, true);
+});
+
 test("German outreach rejects the French product-line label", () => {
   const result = reviewDraft(
     "Sehr geehrte Damen und Herren\n\nUnsere Ligne classique umfasst verschiedene Zigarren.\n\nFreundliche Grüsse\nAlan Christopherson",

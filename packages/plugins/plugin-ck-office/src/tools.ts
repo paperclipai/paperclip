@@ -24,7 +24,7 @@ import {
 } from "./approval-lifecycle.js";
 import { rejectionFeedbackLesson } from "./outreach-learning.js";
 import { isEspoRecordId } from "./espo-record-id.js";
-import { validateMeetingWrite } from "./meeting-write-guard.js";
+import { quoteMentionsMeetingDate, validateMeetingWrite } from "./meeting-write-guard.js";
 
 // CK agent tools — registered NATIVELY via ctx.tools.register (agent.tools.register capability), so any
 // agent/adapter can discover them (GET /api/plugins/tools) and run them (POST /api/plugins/tools/execute).
@@ -154,6 +154,7 @@ export interface LinkedPendingSend {
   to_email?: unknown;
   subject?: unknown;
   body?: unknown;
+  in_reply_to?: unknown;
 }
 
 export function resolveApprovedSendContent(
@@ -744,7 +745,7 @@ export function reviewOutreachMessage(
   // lines even though the approval was labelled gate-passed.
   const result = reviewDraft(`${String(subject || "")}\n\n${String(body || "")}`, "first_contact", opts);
   if (
-    !/^\s*(?:Sehr\s+geehrte|Guten\s+Tag|Grüezi|Bonjour|Madame|Monsieur|Buongiorno|Gentil[ei]|Hello|Dear)\b/i.test(String(body || ""))
+    !/^\s*(?:Sehr\s+geehrt(?:e|er)|Guten\s+Tag|Grüezi|Bonjour|Madame|Monsieur|Buongiorno|Gentil[ei]|Hello|Dear)\b/i.test(String(body || ""))
   ) {
     result.violations.push("Missing a professional greeting at the start of the first-contact body.");
     result.pass = false;
@@ -1026,6 +1027,25 @@ async function verifyVenueRecipient(espo: EspoLike, accountId: string, to: strin
       }
     }
   } catch { /* no contacts relation */ }
+  // Some Espo versions omit virtual emailAddress fields from the Account relationship response even
+  // though the Contact and account_contact link are valid. Query Contacts by accountId as the
+  // authoritative fallback so a real inbound sender is not rejected after being registered.
+  try {
+    const cs = await espo.list("Contact", {
+      where: [{ type: "equals", attribute: "accountId", value: accountId }],
+      select: ["id", "name", "firstName", "lastName", "emailAddress"],
+      maxSize: 50,
+    });
+    for (const c of cs.list || []) {
+      if (!c.emailAddress) continue;
+      const email = String(c.emailAddress).trim().toLowerCase();
+      known.add(email);
+      if (email === recipient) {
+        const contactName = String(c.name || `${c.firstName || ""} ${c.lastName || ""}`).trim();
+        if (contactName) contactNames.push(contactName);
+      }
+    }
+  } catch { /* Contacts list unavailable */ }
   if (!known.has(recipient)) return { ok: false, error: `recipient '${to}' is not a CRM-verified email on this Account (known: ${[...known].join(", ") || "none"})` };
   return { ok: true, name: String(acct.name), to: recipient, contactNames: [...new Set(contactNames)] };
 }
@@ -1079,7 +1099,6 @@ const OPP_STAGE_MAP_M: Record<string, { stage: string; probability: number }> = 
 async function advanceOppM(espo: EspoLike, accountId: string, canonStage: string, name?: string): Promise<void> {
   const m = OPP_STAGE_MAP_M[canonStage];
   if (!m || !accountId) return;
-  const defaultChf = Number(process.env.CK_DEFAULT_DEAL_CHF) || 600;
   try {
     const ex = await espo.list("Opportunity", { where: [{ type: "equals", attribute: "accountId", value: accountId }], select: ["id", "stage", "probability", "amount"], orderBy: "createdAt", order: "desc", maxSize: 5 });
     const opp = (ex.list || [])[0];
@@ -1087,17 +1106,16 @@ async function advanceOppM(espo: EspoLike, accountId: string, canonStage: string
       if (opp.stage === "Closed Won" || opp.stage === "Closed Lost") return;
       const attrs: Record<string, unknown> = {};
       if (m.probability > Number(opp.probability ?? 0)) { attrs.stage = m.stage; attrs.probability = m.probability; }
-      if (opp.amount == null || Number(opp.amount) === 0) { attrs.amount = defaultChf; attrs.amountCurrency = "CHF"; }
       if (Object.keys(attrs).length) await espo.update("Opportunity", String(opp.id), attrs);
       return;
     }
-    await espo.create("Opportunity", { name: name || "Deal", accountId, stage: m.stage, probability: m.probability, amount: defaultChf, amountCurrency: "CHF", closeDate: new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10) });
+    await espo.create("Opportunity", { name: name || "Deal", accountId, stage: m.stage, probability: m.probability });
   } catch { /* best-effort — a pipeline hiccup must never fail the send */ }
 }
 // The actual send (used by the panel action). Verifies the recipient again at send time, applies the
 // send-guard (test-lock by default; live only when CK_ESPO_SEND_LIVE=1), creates + sends the Espo
 // Email as alan@treshermanos.ch, advances the pipeline.
-async function sendVenueEmailM(espo: EspoLike, o: { to: string; subject: string; body: string; account_id: string }): Promise<{ ok: true; email_id: unknown; delivered_to: string; test_lock: boolean; live_send?: boolean; requested_to?: string } | { ok: false; error: string }> {
+async function sendVenueEmailM(espo: EspoLike, o: { to: string; subject: string; body: string; account_id: string; in_reply_to?: string }): Promise<{ ok: true; email_id: unknown; delivered_to: string; test_lock: boolean; live_send?: boolean; requested_to?: string } | { ok: false; error: string }> {
   const route = resolveEspoSendRoute({ to: o.to, subject: o.subject, body: o.body });
   if (!route.ok) return route;
   const v = await verifyVenueRecipient(espo, o.account_id, o.to);
@@ -1115,6 +1133,7 @@ async function sendVenueEmailM(espo: EspoLike, o: { to: string; subject: string;
       parentType: "Account",
       parentId: o.account_id,
       assignedUserId: "6a3b607a33b6f5c55",
+      ...(o.in_reply_to ? { repliedId: o.in_reply_to } : {}),
     });
     if (route.liveSend) await advanceOppM(espo, o.account_id, "contacted", `${v.name} — Tres Hermanos`);
     return {
@@ -1143,6 +1162,7 @@ async function ensurePendingSendTable(sql: any): Promise<void> {
     draft_body text not null,
     body text not null,
     from_name text,
+    in_reply_to text,
     agent_id uuid,
     status text not null default 'pending',
     edited boolean not null default false,
@@ -1151,6 +1171,7 @@ async function ensurePendingSendTable(sql: any): Promise<void> {
     updated_at timestamptz not null default now(),
     resolved_at timestamptz)`;
   await sql`alter table ck_eval.pending_send add column if not exists updated_at timestamptz not null default now()`;
+  await sql`alter table ck_eval.pending_send add column if not exists in_reply_to text`;
   await sql`create unique index if not exists pending_send_one_live_per_issue_idx
     on ck_eval.pending_send (company_id, issue_id)
     where status = 'pending' and issue_id is not null`;
@@ -1635,10 +1656,10 @@ export function registerCkTools(
       displayName: "Queue an outreach email for Alan's approval (edit + send in the Approvals panel)",
       description:
         "Hand a finished B2B outreach email to Alan for approval. The inbox card's Accept sends the exact bound copy once; alternatively Alan can EDIT it in Outreach outbox and then Approve & Send. Use this INSTEAD of a generic request_decision. Checks the recipient is CRM-verified, validates any named salutation against the Contact who owns the exact address, applies do-not-contact, and runs review_draft. One stable approval per issue: while Alan is deciding, repeat calls return the existing card without replacing it.",
-      parametersSchema: { type: "object", properties: { issue_id: { type: "string", description: "Optional fallback outside a live task; Paperclip resolves the current task automatically." }, account_id: { type: "string", description: "the venue Account (CRM verify + timeline)" }, to: { type: "string", description: "recipient — must be a CRM-verified email on the Account" }, subject: { type: "string" }, body: { type: "string", description: "plain-text draft (no dashes/hyphens — the gate enforces it)" }, from_name: { type: "string" } }, required: ["account_id", "to", "subject", "body"] },
+      parametersSchema: { type: "object", properties: { issue_id: { type: "string", description: "Optional fallback outside a live task; Paperclip resolves the current task automatically." }, account_id: { type: "string", description: "the venue Account (CRM verify + timeline)" }, to: { type: "string", description: "recipient — must be a CRM-verified email on the Account" }, subject: { type: "string" }, body: { type: "string", description: "plain-text draft (no dashes/hyphens — the gate enforces it)" }, from_name: { type: "string" }, in_reply_to: { type: "string", description: "Espo Email id of the inbound message being answered; required for reply drafts so Espo preserves the thread." } }, required: ["account_id", "to", "subject", "body"] },
     },
     async (params, runCtx) => {
-      const p = params as { issue_id?: string; account_id?: string; to?: string; subject?: string; body?: string; from_name?: string };
+      const p = params as { issue_id?: string; account_id?: string; to?: string; subject?: string; body?: string; from_name?: string; in_reply_to?: string };
       // The authenticated run context is authoritative. A model may see a
       // duplicate/reference identifier in comments and guess "CK-364"; never
       // let that bind an approval to the wrong task.
@@ -1689,8 +1710,8 @@ export function registerCkTools(
       const gate = reviewOutreachMessage(String(p.subject), String(p.body), { venueName: v.name });
       if (!gate.pass) return { content: JSON.stringify({ ok: false, gate_failed: true, violations: gate.violations }) };
       try {
-        const ins = (await sql`insert into ck_eval.pending_send (company_id, issue_id, account_id, venue_name, to_email, subject, draft_body, body, from_name, agent_id)
-          values (${runCtx.companyId}, ${issueId}, ${String(p.account_id)}, ${v.name}, ${String(p.to).trim().toLowerCase()}, ${String(p.subject)}, ${String(p.body)}, ${String(p.body)}, ${p.from_name ? String(p.from_name) : null}, ${runCtx.agentId})
+        const ins = (await sql`insert into ck_eval.pending_send (company_id, issue_id, account_id, venue_name, to_email, subject, draft_body, body, from_name, in_reply_to, agent_id)
+          values (${runCtx.companyId}, ${issueId}, ${String(p.account_id)}, ${v.name}, ${String(p.to).trim().toLowerCase()}, ${String(p.subject)}, ${String(p.body)}, ${String(p.body)}, ${p.from_name ? String(p.from_name) : null}, ${p.in_reply_to ? String(p.in_reply_to) : null}, ${runCtx.agentId})
           on conflict do nothing
           returning id`) as Array<{ id: string }>;
         const pendingId = ins[0]?.id;
@@ -1887,7 +1908,7 @@ export function registerCkTools(
         set status = 'sending', updated_at = now()
         where interaction_id = ${approvalId}
           and status = 'pending'
-        returning account_id, to_email, subject, body
+        returning account_id, to_email, subject, body, in_reply_to
       `) as Array<LinkedPendingSend>;
       const linkedPending = linkedRows[0] ?? null;
       if (!linkedPending) {
@@ -2052,6 +2073,7 @@ export function registerCkTools(
           attrs.parentType = "Account";
           attrs.parentId = accountId;
         }
+        if (linkedPending?.in_reply_to) attrs.repliedId = String(linkedPending.in_reply_to);
         const em = await espo.create<{ id?: string; status?: string }>("Email", attrs);
         await sql`
           update issue_thread_interactions
@@ -2118,9 +2140,9 @@ export function registerCkTools(
   // ── Pipeline auto-writer (deterministic): find-or-advance the ONE Opportunity for a venue to
   // `canonStage`, FORWARD-ONLY (never regresses; never touches a Closed Won/Lost deal). Called
   // best-effort by espo_send_email (→ contacted) and espo_create_meeting (→ booked) so the pipeline
-  // + forecast can never be left at zero by a forgotten agent step. Default deal size
-  // (CK_DEFAULT_DEAL_CHF, 600) is a tunable placeholder so the stage-weighted forecast is non-zero;
-  // refine the amount per venue in the CRM / via espo_upsert_opportunity.
+  // + pipeline state cannot be left stale by a forgotten agent step. Amount and close date remain
+  // NULL until a real quote/order or an agreed timetable supplies evidence; pipeline accounting must
+  // never manufacture commercial values merely to make a forecast non-zero.
   const OPP_STAGE_MAP: Record<string, { stage: string; probability: number }> = {
     signal: { stage: "Prospecting", probability: 5 },
     qualified: { stage: "Qualification", probability: 15 },
@@ -2136,8 +2158,6 @@ export function registerCkTools(
     if (!m || !accountId) return { ok: false, skipped: "bad_args" };
     const espo = await deps.getEspo();
     if (!espo) return { ok: false, skipped: "no_espo" };
-    const defaultChf = Number(process.env.CK_DEFAULT_DEAL_CHF) || 600;
-    const defaultCloseDate = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
     const ex = await espo.list<Record<string, unknown>>("Opportunity", {
       where: [{ type: "equals", attribute: "accountId", value: String(accountId) }],
       select: ["id", "stage", "probability", "amount"], orderBy: "createdAt", order: "desc", maxSize: 10,
@@ -2147,15 +2167,13 @@ export function registerCkTools(
       if (opp.stage === "Closed Won" || opp.stage === "Closed Lost") return { ok: true, opportunity_id: opp.id, action: "terminal_unchanged" };
       const attrs: Record<string, unknown> = {};
       if (m.probability > Number(opp.probability ?? 0)) { attrs.stage = m.stage; attrs.probability = m.probability; }
-      if (opp.amount == null || Number(opp.amount) === 0) { attrs.amount = defaultChf; attrs.amountCurrency = "CHF"; }
       if (Object.keys(attrs).length === 0) return { ok: true, opportunity_id: opp.id, action: "no_change" };
       await espo.update("Opportunity", String(opp.id), attrs);
       return { ok: true, opportunity_id: opp.id, action: attrs.stage ? "advanced" : "amount_set", to_stage: canonStage };
     }
     const created = await espo.create<{ id?: string }>("Opportunity", {
       name: name || "Deal", accountId: String(accountId),
-      stage: m.stage, probability: m.probability, amount: defaultChf, amountCurrency: "CHF",
-      closeDate: defaultCloseDate,
+      stage: m.stage, probability: m.probability,
     });
     return { ok: true, opportunity_id: created.id, action: "created", to_stage: canonStage };
   }
@@ -3429,13 +3447,25 @@ export function registerCkTools(
           stage: { type: "string", enum: ["signal", "qualified", "contacted", "replied", "booked", "proposal", "won", "lost"] },
           amount_chf: { type: "number" },
           close_date: { type: "string", description: "YYYY-MM-DD" },
+          commercial_evidence: { type: "string", description: "Required when setting amount_chf or close_date: identify the quote, order, or confirmed timetable that supports the value." },
         },
       },
     },
     async (params) => {
       const espo = await deps.getEspo();
       if (!espo) return { content: JSON.stringify({ ok: false, error: "no Espo config" }) };
-      const p = params as { opportunity_id?: string; account_id?: string; name?: string; stage?: string; amount_chf?: number; close_date?: string };
+      const p = params as { opportunity_id?: string; account_id?: string; name?: string; stage?: string; amount_chf?: number; close_date?: string; commercial_evidence?: string };
+      if ((p.amount_chf != null || p.close_date) && String(p.commercial_evidence || "").trim().length < 12) {
+        return {
+          content: JSON.stringify({
+            ok: false,
+            error: "commercial_evidence is required before setting amount_chf or close_date; nominal amounts and guessed dates are forbidden",
+          }),
+        };
+      }
+      if (p.amount_chf != null && (!Number.isFinite(p.amount_chf) || p.amount_chf <= 0)) {
+        return { content: JSON.stringify({ ok: false, error: "amount_chf must be a positive evidenced value" }) };
+      }
       // Espo's real stage enum has only 6 values (Prospecting/Qualification/Proposal/Negotiation/Closed
       // Won/Closed Lost) — coarser than our 8-stage REV funnel, so several canon stages share an Espo
       // stage. We still set `probability` per OUR canon stage (the ADR-020 canonical weights * 100), so
@@ -3479,9 +3509,8 @@ export function registerCkTools(
           if (Object.keys(attrs).length) await espo.update("Opportunity", String(opp.id), attrs);
           return { content: JSON.stringify({ ok: true, opportunity_id: opp.id, action: "updated_existing" }), data: { ok: true, opportunity_id: opp.id } };
         }
-        // No existing opportunity → create. Espo requires amount (+currency) and closeDate.
-        if (attrs.amount == null) { attrs.amount = Number(process.env.CK_DEFAULT_DEAL_CHF) || 600; attrs.amountCurrency = "CHF"; }
-        if (attrs.closeDate == null) attrs.closeDate = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+        // No existing opportunity → create. Espo accepts nullable commercial fields. Never invent
+        // an amount or close date: only set them when the caller supplies evidence-backed values.
         if (attrs.stage == null) { attrs.stage = "Qualification"; attrs.probability = 25; }
         const created = await espo.create<{ id?: string }>("Opportunity", { ...attrs, name: p.name || "Deal", accountId: p.account_id });
         return { content: JSON.stringify({ ok: true, opportunity_id: created.id, action: "created" }), data: { ok: true, opportunity_id: created.id } };
@@ -3548,7 +3577,7 @@ export function registerCkTools(
     {
       displayName: "Espo: create meeting (Alan's calendar)",
       description:
-        "Create a PLANNED meeting on Alan's EspoCRM calendar (name, start/end as 'YYYY-MM-DD HH:MM' Swiss local time, account_id, and evidence_email_id). Use only for a real proposed slot grounded in a CRM communication. Test, placeholder, probe, or diagnostic meetings are refused. The record is internal and sends no invitation.",
+        "Create a PLANNED meeting on Alan's EspoCRM calendar only after the venue confirms the exact date in a real CRM email. Pass an exact confirmation_quote from that email. A request to propose dates is not confirmation. Test, placeholder, probe, or diagnostic meetings are refused. The record is internal and sends no invitation.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -3557,19 +3586,21 @@ export function registerCkTools(
           date_end: { type: "string", description: "YYYY-MM-DD HH:MM (Europe/Zurich); default = start + 1h" },
           account_id: { type: "string" },
           evidence_email_id: { type: "string", description: "Espo Email id that proves the real venue communication behind this meeting." },
+          confirmation_quote: { type: "string", description: "Exact excerpt from the evidence email in which the venue confirms this specific date." },
           description: { type: "string" },
         },
-        required: ["name", "date_start", "account_id", "evidence_email_id"],
+        required: ["name", "date_start", "account_id", "evidence_email_id", "confirmation_quote"],
       },
     },
     async (params) => {
       const espo = await deps.getEspo();
       if (!espo) return { content: JSON.stringify({ ok: false, error: "no Espo config" }) };
-      const p = params as { name?: string; date_start?: string; date_end?: string; account_id?: string; evidence_email_id?: string; description?: string };
+      const p = params as { name?: string; date_start?: string; date_end?: string; account_id?: string; evidence_email_id?: string; confirmation_quote?: string; description?: string };
       const writeGuard = validateMeetingWrite({
         name: p.name,
         accountId: p.account_id,
         evidenceEmailId: p.evidence_email_id,
+        confirmationQuote: p.confirmation_quote,
       });
       if (!writeGuard.ok) return { content: JSON.stringify({ ok: false, error: writeGuard.error }) };
       try {
@@ -3583,6 +3614,14 @@ export function registerCkTools(
               error: "REFUSED: evidence_email_id is not linked to the requested account_id",
             }),
           };
+        }
+        const evidenceBody = String(evidence.bodyPlain || evidence.body || "").replace(/\s+/g, " ").trim();
+        const quote = String(p.confirmation_quote || "").replace(/\s+/g, " ").trim();
+        if (!evidenceBody.toLocaleLowerCase().includes(quote.toLocaleLowerCase())) {
+          return { content: JSON.stringify({ ok: false, error: "REFUSED: confirmation_quote was not found in the evidence email" }) };
+        }
+        if (!quoteMentionsMeetingDate(quote, String(p.date_start || ""))) {
+          return { content: JSON.stringify({ ok: false, error: "REFUSED: confirmation_quote does not name the requested meeting date" }) };
         }
       } catch {
         return { content: JSON.stringify({ ok: false, error: "REFUSED: evidence_email_id was not found in EspoCRM" }) };

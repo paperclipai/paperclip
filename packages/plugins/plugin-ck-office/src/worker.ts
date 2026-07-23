@@ -565,7 +565,7 @@ const plugin = definePlugin({
       }
       const espo = await resolveEspo(ctx);
       if (!espo) { await sql`update ck_eval.pending_send set status = 'pending' where id = ${id}`; throw new Error("no Espo config"); }
-      const res = await sendVenueEmailM(espo, { to: String(row.to_email), subject: finalSubject, body: finalBody, account_id: String(row.account_id) });
+      const res = await sendVenueEmailM(espo, { to: String(row.to_email), subject: finalSubject, body: finalBody, account_id: String(row.account_id), in_reply_to: row.in_reply_to ? String(row.in_reply_to) : undefined });
       if (!res.ok) { await sql`update ck_eval.pending_send set status = 'pending' where id = ${id}`; throw new Error(res.error); }
       const editedFromDraft = finalBody.trim() !== String(row.draft_body).trim() || finalSubject.trim() !== String(row.subject).trim();
       await sql`update ck_eval.pending_send set status = 'sent', body = ${finalBody}, subject = ${finalSubject}, edited = ${editedFromDraft}, email_id = ${String((res as { email_id?: unknown }).email_id ?? "")}, resolved_at = now() where id = ${id}`;

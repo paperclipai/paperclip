@@ -218,7 +218,7 @@ const manifest: PaperclipPluginManifestV1 = {
       name: "queue_email_for_approval",
       displayName: "Queue an outreach email for Alan's approval",
       description: "Hand a finished B2B outreach email to Alan: it appears in Outreach outbox and as a task card where he can edit, Approve & Send, or Hold. Verifies the recipient, rejects a named salutation unless the exact address belongs to that CRM Contact, applies do-not-contact, and runs review_draft. The first queue ends the agent run; repeat calls preserve the same pending decision instead of replacing it.",
-      parametersSchema: { type: "object", properties: { issue_id: { type: "string", description: "Optional fallback outside a live task; Paperclip resolves the current task automatically." }, account_id: { type: "string" }, to: { type: "string" }, subject: { type: "string" }, body: { type: "string" }, from_name: { type: "string" } }, required: ["account_id", "to", "subject", "body"] },
+      parametersSchema: { type: "object", properties: { issue_id: { type: "string", description: "Optional fallback outside a live task; Paperclip resolves the current task automatically." }, account_id: { type: "string" }, to: { type: "string" }, subject: { type: "string" }, body: { type: "string" }, from_name: { type: "string" }, in_reply_to: { type: "string", description: "Espo Email id being answered, for reply threading." } }, required: ["account_id", "to", "subject", "body"] },
     },
     {
       name: "find_and_enrich_prospects",
@@ -430,7 +430,7 @@ const manifest: PaperclipPluginManifestV1 = {
       name: "espo_upsert_opportunity",
       displayName: "Espo: create/update an opportunity",
       description: "Create or update the real Opportunity for a venue deal (stage/amount/probability/closeDate) instead of only the Account status enum.",
-      parametersSchema: { type: "object", properties: { opportunity_id: { type: "string" }, account_id: { type: "string" }, name: { type: "string" }, stage: { type: "string" }, amount_chf: { type: "number" }, close_date: { type: "string" } } },
+      parametersSchema: { type: "object", properties: { opportunity_id: { type: "string" }, account_id: { type: "string" }, name: { type: "string" }, stage: { type: "string" }, amount_chf: { type: "number" }, close_date: { type: "string" }, commercial_evidence: { type: "string", description: "Required for amount or close date; cite the quote, order, or confirmed timetable." } } },
     },
     {
       name: "espo_forecast",
@@ -447,8 +447,8 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       name: "espo_create_meeting",
       displayName: "Espo: create meeting (Alan's calendar)",
-      description: "Create a PLANNED meeting on Alan's EspoCRM calendar only when grounded in a real CRM email linked to the venue. Test, placeholder, probe, and diagnostic records are refused; no invitation is sent.",
-      parametersSchema: { type: "object", properties: { name: { type: "string" }, date_start: { type: "string" }, date_end: { type: "string" }, account_id: { type: "string" }, evidence_email_id: { type: "string" }, description: { type: "string" } }, required: ["name", "date_start", "account_id", "evidence_email_id"] },
+      description: "Create a PLANNED meeting only after the venue confirms the exact date in a real linked CRM email. Requires an exact confirmation_quote naming that date; a request to propose dates is not confirmation. No invitation is sent.",
+      parametersSchema: { type: "object", properties: { name: { type: "string" }, date_start: { type: "string" }, date_end: { type: "string" }, account_id: { type: "string" }, evidence_email_id: { type: "string" }, confirmation_quote: { type: "string" }, description: { type: "string" } }, required: ["name", "date_start", "account_id", "evidence_email_id", "confirmation_quote"] },
     },
   ],
   jobs: [

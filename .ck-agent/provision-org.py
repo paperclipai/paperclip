@@ -64,7 +64,7 @@ ROSTER = [
  ("REV-05","Contact-Finder","Find and validate a venue's contact details. Format/deliverability check."),
  ("REV-06","Outreach-Drafter","Draft personalized B2B first-contact to a cigar venue to place Tres Hermanos. Passes Disclosure-Guard; Alan approves the send."),
  ("REV-07","Reply-Classifier","Classify a venue's reply (interested/no/unclear). Vs labeled set."),
- ("REV-08","Meeting-Booker","Schedule from a confirmed positive reply. Calendar event created."),
+ ("REV-08","Meeting-Booker","Create a calendar event only after the venue confirms the exact date/time in a real CRM email. A request to propose dates requires a human-approved reply draft first; never book a speculative slot."),
  ("REV-09","CRM-Updater","Write pipeline state to EspoCRM. Schema-valid row that reconciles."),
  ("REV-10","Pipeline-Forecaster","Compute the commission forecast and follow-up dates. Reconciles to the CRM."),
  ("REV-11","Follow-up-Nudger","Surface overdue venue follow-ups. Matches due/overdue dates."),
