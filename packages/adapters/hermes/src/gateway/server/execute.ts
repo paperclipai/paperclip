@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -71,7 +72,14 @@ const SENSITIVE_KEY_PATTERN =
 const BEARER_TOKEN_PATTERN = /Bearer\s+\S+/gi;
 const HERMES_SESSION_KEY_HEADER_PATTERN = /(X-Hermes-Session-Key\s*[:=]\s*)([^\s,;]+)/gi;
 const PAPERCLIP_SESSION_KEY_PATTERN =
-  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)\b/gi;
+  /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+|[iar]:[0-9a-f]{48})\b/gi;
+
+// Hermes forwards X-Hermes-Session-Key to its OpenAI-family transport as `prompt_cache_key`,
+// which OpenAI hard-caps at 64 characters (requests over that limit are rejected with HTTP 400).
+// Composed keys with UUID company/agent/issue ids blow well past this (issue ~140 chars,
+// agent ~97 chars), so every over-length key must be compacted before it leaves this adapter.
+const MAX_SESSION_KEY_CHARS = 64;
+const SESSION_KEY_HASH_HEX_CHARS = 48;
 
 const TERMINAL_STATUSES = new Set([
   "completed",
@@ -147,7 +155,28 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
   return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
 }
 
-export function resolveSessionKey(input: {
+// Short, human-debuggable label kept ahead of the hash so a compacted key still hints at which
+// strategy produced it (e.g. "paperclip:i:<hash>" reads as issue-scoped) without needing to
+// reverse the hash. The "issue" strategy's run-id fallback (no issueId on the run) still uses
+// "i" since it is the issue strategy falling back, not the run strategy itself.
+function sessionKeyScopeLabel(strategy: Exclude<SessionKeyStrategy, "none">): string {
+  if (strategy === "agent") return "a";
+  if (strategy === "run") return "r";
+  return "i";
+}
+
+// Deterministically compacts a composed session key to fit within MAX_SESSION_KEY_CHARS.
+// Keys already within the limit pass through unchanged. Over-length keys are rehashed with
+// SHA-256 (not truncated) so that scopes sharing a long common prefix — e.g. two issues under
+// the same company/agent — cannot collide, and the same logical scope always produces the same
+// compacted key (no randomness, no timestamps).
+function compactSessionKey(strategy: Exclude<SessionKeyStrategy, "none">, key: string): string {
+  if (key.length <= MAX_SESSION_KEY_CHARS) return key;
+  const digest = createHash("sha256").update(key).digest("hex").slice(0, SESSION_KEY_HASH_HEX_CHARS);
+  return `paperclip:${sessionKeyScopeLabel(strategy)}:${digest}`;
+}
+
+function composeRawSessionKey(input: {
   strategy: SessionKeyStrategy;
   companyId: string;
   agentId: string;
@@ -163,6 +192,20 @@ export function resolveSessionKey(input: {
   }
   const issuePart = input.issueId ? `issue:${input.issueId}` : `run:${input.runId}`;
   return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`;
+}
+
+export function resolveSessionKey(input: {
+  strategy: SessionKeyStrategy;
+  companyId: string;
+  agentId: string;
+  runId: string;
+  issueId: string | null;
+}): string | null {
+  const rawKey = composeRawSessionKey(input);
+  if (rawKey === null) return null;
+  // input.strategy is guaranteed to not be "none" here since composeRawSessionKey only
+  // returns null for that case.
+  return compactSessionKey(input.strategy as Exclude<SessionKeyStrategy, "none">, rawKey);
 }
 
 function stringifyForLog(value: unknown, maxChars = 4_000): string {
