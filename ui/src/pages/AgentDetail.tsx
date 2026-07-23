@@ -1506,7 +1506,7 @@ function AgentOverview({
 }: {
   agent: AgentDetailRecord;
   runs: HeartbeatRun[];
-  assignedIssues: { id: string; title: string; status: string; priority: string; identifier?: string | null; createdAt: Date }[];
+  assignedIssues: { id: string; title: string; status: string; priority: string; identifier?: string | null; createdAt: string | Date }[];
   runtimeState?: AgentRuntimeState;
   agentId: string;
   agentRouteId: string;
@@ -3800,7 +3800,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           color: asNonEmptyString(payload.color),
           message: asNonEmptyString(payload.message),
           payload: asRecord(payload.payload),
-          createdAt: new Date(event.createdAt),
+          createdAt: event.createdAt,
         };
 
         setEvents((prev) => {
