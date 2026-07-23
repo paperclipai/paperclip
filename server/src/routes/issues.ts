@@ -7959,11 +7959,25 @@ export function issueRoutes(
       }
     }
 
+    const nextParentId = updateFields.parentId === undefined
+      ? existing.parentId
+      : updateFields.parentId as string | null;
     const shouldRelayStop =
-      Boolean(existing.parentId) &&
+      Boolean(nextParentId) &&
       existing.status !== updateFields.status &&
       (updateFields.status === "blocked" || updateFields.status === "cancelled") &&
-      await directParentReportDisabledForIssue(existing);
+      await directParentReportDisabledForIssue({
+        companyId: existing.companyId,
+        projectId: updateFields.projectId === undefined
+          ? existing.projectId
+          : updateFields.projectId as string | null,
+        executionPolicy: updateFields.executionPolicy === undefined
+          ? existing.executionPolicy
+          : updateFields.executionPolicy,
+        assigneeAgentId: nextAssigneeAgentId,
+        checkoutRunId: existing.checkoutRunId,
+        executionRunId: existing.executionRunId,
+      });
     const stopRelayResult: {
       value: Awaited<ReturnType<typeof svc.addStopRelayCommentIfNeeded>>;
     } = { value: null };

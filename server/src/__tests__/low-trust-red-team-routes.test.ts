@@ -859,9 +859,12 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "todo" }).expect(200);
     await db
       .update(issues)
-      .set({ parentId: fixture.issues.reviewGrandparent.id })
+      .set({ parentId: null })
       .where(eq(issues.id, fixture.issues.assignedReview.id));
-    await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "blocked" }).expect(200);
+    await request(app)
+      .patch(`/api/issues/${fixture.issues.assignedReview.id}`)
+      .send({ parentId: fixture.issues.reviewGrandparent.id, status: "blocked" })
+      .expect(200);
 
     await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "blocked" }).expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "todo" }).expect(200);
