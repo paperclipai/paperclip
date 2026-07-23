@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-15T22:20:53.895Z",
+  "generatedAt": "2026-07-23T19:56:45.849Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -115,7 +115,7 @@
       "category": "paperclip-operations",
       "slug": "summarize-status",
       "name": "summarize-status",
-      "description": "Write a short, colloquial summary for a Paperclip summary slot: open with the one or two decisions the reader must make — or, when nothing needs deciding, what to review — each with a recommendation, close with one or two recent pieces of work and where they stand, streaming status as it works.",
+      "description": "Write a short, colloquial summary for a Paperclip summary slot: open with the 1–3 specific, concrete actions the reader needs to take right now to unblock the work, then a brief plain-language status, streaming progress as it works.",
       "path": "catalog/bundled/paperclip-operations/summarize-status",
       "entrypoint": "SKILL.md",
       "trustLevel": "markdown_only",
@@ -137,11 +137,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 16744,
-          "sha256": "6bfacf153b602cdbba4c0edef64956adf8d11c1819bf1b9494a67abb6d4705eb"
+          "sizeBytes": 8682,
+          "sha256": "c5f459ced4e97e6ae33c3ffbe7b3fb7d4c1fe7bfb0121187f0c2f9000a670b37"
         }
       ],
-      "contentHash": "sha256:d7e2a979d95f99ee9d7a341a860602dcdfb7a2feb4d2390fccbaddc838d2da51"
+      "contentHash": "sha256:32d2f231a35fc3a658b244f13dd726b2f2bc642db6d3512559fdf9a2b680838d"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:task-planning",
