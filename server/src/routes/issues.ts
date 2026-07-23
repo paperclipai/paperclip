@@ -2651,6 +2651,32 @@ export function issueRoutes(
     return resolveActorSourceTrustForIssue({ db, issue, actor });
   }
 
+  async function isCommentAttributedToAssigneeRun(
+    issue: { id: string; companyId: string; assigneeAgentId?: string | null },
+    actor: ReturnType<typeof getActorInfo>,
+  ) {
+    if (!actor.runId || !issue.assigneeAgentId) return false;
+
+    const run = await heartbeat.getRun(actor.runId).catch((err) => {
+      logger.warn(
+        { err, issueId: issue.id, runId: actor.runId },
+        "failed to resolve run attribution for issue comment wake",
+      );
+      return null;
+    });
+    if (
+      !run ||
+      run.companyId !== issue.companyId ||
+      run.agentId !== issue.assigneeAgentId
+    ) return false;
+
+    const context = run.contextSnapshot && typeof run.contextSnapshot === "object"
+      ? run.contextSnapshot as Record<string, unknown>
+      : null;
+    const runIssueId = readNonEmptyString(context?.issueId) ?? readNonEmptyString(context?.taskId);
+    return runIssueId === issue.id;
+  }
+
   function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
     return input.parentId !== undefined ||
       input.inheritExecutionWorkspaceFromIssueId !== undefined ||
@@ -8597,7 +8623,9 @@ export function issueRoutes(
       if (commentBody && comment) {
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
-        const selfComment = actorIsAgent && actor.actorId === assigneeId;
+        const selfComment =
+          (actorIsAgent && actor.actorId === assigneeId) ||
+          await isCommentAttributedToAssigneeRun(issue, actor);
         const skipAssigneeCommentWake = selfComment || isClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
@@ -10123,7 +10151,9 @@ export function issueRoutes(
 
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      const selfComment =
+        (actorIsAgent && actor.actorId === assigneeId) ||
+        await isCommentAttributedToAssigneeRun(currentIssue, actor);
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
