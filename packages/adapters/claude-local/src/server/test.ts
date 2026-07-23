@@ -32,7 +32,7 @@ import {
   parseClaudeStreamJson,
 } from "./parse.js";
 import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
-import { isBedrockModelId } from "./models.js";
+import { isBedrockModelId, validateModelProfileModels } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -285,6 +285,11 @@ export async function testEnvironment(
       message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
     });
   }
+
+  // Validate adapter-owned model profiles resolve to ids valid for the active
+  // auth mode, so an invalid profile id (e.g. an Anthropic short id under
+  // Bedrock) surfaces at config load rather than as a mid-run 400. (MAS-221)
+  checks.push(...(await validateModelProfileModels()));
 
   const canRunProbe =
     checks.every(
