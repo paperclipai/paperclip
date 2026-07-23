@@ -8,54 +8,66 @@ from .config import Config
 # Obergrenze fuer Git-Operationen. Haengt der Repo-Pfad (z.B. Netz-/Cloud-Mount
 # ohne Zugriff), muss der Lauf scheitern statt unbegrenzt zu blockieren.
 WORKTREE_TIMEOUT = 120
+# npm ci kann bei kaltem Cache lange dauern (nur beim allerersten Lauf noetig).
+NPM_INSTALL_TIMEOUT = 1800
+
+
+def _is_valid_worktree(cfg: Config, runner) -> bool:
+    """Existiert am Zielpfad bereits ein funktionierender Git-Worktree?"""
+    try:
+        proc = runner(
+            ["git", "-C", str(cfg.worktree_path), "rev-parse", "--is-inside-work-tree"],
+            check=False, capture_output=True, text=True, timeout=WORKTREE_TIMEOUT,
+        )
+        return getattr(proc, "returncode", 1) == 0
+    except Exception:
+        return False
+
+
+def ensure_dependencies(cfg: Config, runner=subprocess.run) -> bool:
+    """npm ci — nur wenn node_modules fehlt.
+
+    Ohne Dependencies misst das Gate nichts und die Triage findet nichts.
+    Der Worktree ist persistent, deshalb faellt das nur beim ersten Lauf an.
+    """
+    nm = Path(cfg.worktree_path) / "node_modules"
+    try:
+        if nm.is_dir() and any(nm.iterdir()):
+            return True
+    except OSError:
+        pass
+    try:
+        proc = runner(
+            ["npm", "ci"], cwd=str(cfg.worktree_path),
+            check=False, capture_output=True, text=True, timeout=NPM_INSTALL_TIMEOUT,
+        )
+        return getattr(proc, "returncode", 1) == 0
+    except Exception:
+        return False
 
 
 def prepare_worktree(cfg: Config, runner=subprocess.run) -> Path:
-    """Frischen, isolierten Worktree auf dem Agenten-Branch herstellen.
+    """Isolierten Worktree auf dem Agenten-Branch bereitstellen.
 
-    Entfernt einen evtl. vorhandenen Worktree (Fehler toleriert) und legt ihn
-    neu an. Verändert NIE main oder die Haupt-Arbeitskopie.
+    Persistent: existiert er bereits, wird er in-place auf den Basis-Branch
+    zurueckgesetzt (`reset --hard` + `clean -fd`). `clean` ohne `-x` laesst
+    ignorierte Dateien wie node_modules stehen — sonst muesste jede Nacht neu
+    installiert werden und npm raeumt Symlinks weg.
+    Veraendert NIE das Haupt-Repo oder dessen Branch.
     """
     repo = str(cfg.academy_repo)
     wt = str(cfg.worktree_path)
 
-    # 1) Alten Worktree entfernen — darf fehlschlagen (existiert evtl. nicht)
-    runner(
-        ["git", "-C", repo, "worktree", "remove", "--force", wt],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=WORKTREE_TIMEOUT,
-    )
+    if _is_valid_worktree(cfg, runner):
+        runner(["git", "-C", wt, "reset", "--hard", cfg.base_branch],
+               check=True, capture_output=True, text=True, timeout=WORKTREE_TIMEOUT)
+        runner(["git", "-C", wt, "clean", "-fd"],
+               check=True, capture_output=True, text=True, timeout=WORKTREE_TIMEOUT)
+    else:
+        runner(["git", "-C", repo, "worktree", "remove", "--force", wt],
+               check=False, capture_output=True, text=True, timeout=WORKTREE_TIMEOUT)
+        runner(["git", "-C", repo, "worktree", "add", "-B", cfg.branch, wt],
+               check=True, capture_output=True, text=True, timeout=WORKTREE_TIMEOUT)
 
-    # 2) Neuen Worktree auf dem Agenten-Branch anlegen (Branch bei Bedarf neu)
-    runner(
-        ["git", "-C", repo, "worktree", "add", "-B", cfg.branch, wt],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=WORKTREE_TIMEOUT,
-    )
-    _link_node_modules(cfg)
+    ensure_dependencies(cfg, runner=runner)
     return cfg.worktree_path
-
-
-def _link_node_modules(cfg: Config) -> bool:
-    """node_modules aus dem Haupt-Repo in den Worktree verlinken.
-
-    Ein frischer Worktree hat keine node_modules (gitignored) — ohne sie
-    koennen jest/tsc/lint nicht laufen und das Gate misst nichts.
-    Symlink statt Installation: der Worktree wird jeden Lauf neu erzeugt.
-    Fail-soft: fehlt die Quelle, laeuft der Lauf trotzdem weiter.
-    """
-    src = Path(cfg.academy_repo) / "node_modules"
-    dst = Path(cfg.worktree_path) / "node_modules"
-    try:
-        if not src.is_dir():
-            return False
-        if dst.is_symlink() or dst.exists():
-            return True
-        dst.symlink_to(src, target_is_directory=True)
-        return True
-    except OSError:
-        return False

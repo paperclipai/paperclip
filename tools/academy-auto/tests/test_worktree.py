@@ -1,108 +1,106 @@
 from pathlib import Path
 from academy_auto.config import Config
-from academy_auto.worktree import prepare_worktree
+from academy_auto.worktree import (
+    prepare_worktree, ensure_dependencies, WORKTREE_TIMEOUT, NPM_INSTALL_TIMEOUT,
+)
 
 
-class FakeRunner:
-    def __init__(self):
+class Rec:
+    """Runner-Attrappe: zeichnet Kommandos auf, steuert rev-parse-Ergebnis."""
+    def __init__(self, worktree_valid: bool):
         self.calls = []
+        self.worktree_valid = worktree_valid
 
     def __call__(self, cmd, **kwargs):
         self.calls.append((cmd, kwargs))
-
+        rc = 0
+        if "rev-parse" in cmd:
+            rc = 0 if self.worktree_valid else 128
         class R:
-            returncode = 0
+            returncode = rc
             stdout = ""
             stderr = ""
         return R()
 
-
-def test_prepare_worktree_resets_then_adds_on_branch(tmp_path):
-    cfg = Config.default()
-    fake = FakeRunner()
-    result = prepare_worktree(cfg, runner=fake)
-
-    assert result == cfg.worktree_path
-    joined = [" ".join(c[0]) for c in fake.calls]
-    # 1) alten Worktree entfernen (force, darf fehlschlagen -> check=False)
-    assert any("worktree remove" in j and "--force" in j for j in joined)
-    # 2) neuen Worktree auf dem Agenten-Branch anlegen
-    assert any(
-        "worktree add" in j and cfg.branch in j for j in joined
-    )
-    # Alle git-Aufrufe laufen gegen das Academy-Repo, nie woanders
-    for cmd, _ in fake.calls:
-        assert cmd[0] == "git"
-        assert "-C" in cmd
-        assert cmd[cmd.index("-C") + 1] == str(cfg.academy_repo)
+    def joined(self):
+        return [" ".join(c) for c, _ in self.calls]
 
 
-def test_prepare_worktree_remove_failure_is_tolerated():
-    cfg = Config.default()
-
-    class FlakyRemove:
-        def __init__(self):
-            self.calls = []
-
-        def __call__(self, cmd, **kwargs):
-            self.calls.append(cmd)
-
-            class R:
-                returncode = 1 if "remove" in cmd else 0
-                stdout = ""
-                stderr = "no such worktree"
-            # remove wird mit check=False aufgerufen -> kein Raise erwartet
-            if kwargs.get("check") and R.returncode != 0:
-                raise AssertionError("remove darf nicht check=True sein")
-            return R()
-
-    flaky = FlakyRemove()
-    prepare_worktree(cfg, runner=flaky)  # darf nicht werfen
+def _cfg(tmp_path, **over):
+    base = dict(Config.default().__dict__)
+    base["worktree_path"] = tmp_path / "wt"
+    base.update(over)
+    return Config(**base)
 
 
-def test_prepare_worktree_passes_timeout():
-    from academy_auto.worktree import WORKTREE_TIMEOUT
+def test_existing_worktree_is_refreshed_in_place(tmp_path):
+    wt = tmp_path / "wt"; (wt / "node_modules").mkdir(parents=True)
+    (wt / "node_modules" / "x").write_text("1")
+    cfg = _cfg(tmp_path)
+    rec = Rec(worktree_valid=True)
+    prepare_worktree(cfg, runner=rec)
+    j = rec.joined()
+    assert any("reset --hard" in x and cfg.base_branch in x for x in j)
+    assert any("clean -fd" in x for x in j)
+    assert not any("worktree add" in x for x in j)      # NICHT neu erzeugt
+    assert not any(" -fdx" in x for x in j)             # niemals -x: wuerde node_modules loeschen
 
-    cfg = Config.default()
-    seen = []
 
-    def runner(cmd, **kwargs):
-        seen.append(kwargs.get("timeout"))
+def test_missing_worktree_is_created(tmp_path):
+    cfg = _cfg(tmp_path)
+    rec = Rec(worktree_valid=False)
+    prepare_worktree(cfg, runner=rec)
+    j = rec.joined()
+    assert any("worktree remove --force" in x for x in j)
+    assert any("worktree add -B" in x and cfg.branch in x for x in j)
+    assert not any("reset --hard" in x for x in j)
 
-        class R:
-            returncode = 0
-            stdout = ""
-            stderr = ""
+
+def test_all_git_calls_use_repo_or_worktree_and_timeout(tmp_path):
+    cfg = _cfg(tmp_path)
+    rec = Rec(worktree_valid=True)
+    prepare_worktree(cfg, runner=rec)
+    for cmd, kwargs in rec.calls:
+        if cmd[0] == "git":
+            assert "-C" in cmd
+            assert cmd[cmd.index("-C") + 1] in (str(cfg.academy_repo), str(cfg.worktree_path))
+            assert kwargs.get("timeout") == WORKTREE_TIMEOUT
+
+
+def test_ensure_dependencies_skips_when_present(tmp_path):
+    wt = tmp_path / "wt"; (wt / "node_modules").mkdir(parents=True)
+    (wt / "node_modules" / "pkg").write_text("x")
+    cfg = _cfg(tmp_path)
+    called = []
+    def runner(cmd, **k):
+        called.append(cmd)
+        class R: returncode = 0; stdout = ""; stderr = ""
         return R()
+    assert ensure_dependencies(cfg, runner=runner) is True
+    assert called == []                                  # kein npm ci noetig
 
-    prepare_worktree(cfg, runner=runner)
-    assert seen == [WORKTREE_TIMEOUT, WORKTREE_TIMEOUT]  # beide Git-Aufrufe mit Timeout
 
-
-def test_link_node_modules_creates_symlink(tmp_path):
-    from academy_auto.worktree import _link_node_modules
-    repo = tmp_path / "repo"; (repo / "node_modules").mkdir(parents=True)
-    (repo / "node_modules" / "marker.txt").write_text("x")
+def test_ensure_dependencies_installs_when_missing(tmp_path):
     wt = tmp_path / "wt"; wt.mkdir()
-    cfg = Config(**{**Config.default().__dict__, "academy_repo": repo, "worktree_path": wt})
-    assert _link_node_modules(cfg) is True
-    assert (wt / "node_modules").is_symlink()
-    assert (wt / "node_modules" / "marker.txt").read_text() == "x"   # wirklich nutzbar
+    cfg = _cfg(tmp_path)
+    seen = {}
+    def runner(cmd, **k):
+        seen["cmd"] = cmd; seen["timeout"] = k.get("timeout"); seen["cwd"] = k.get("cwd")
+        class R: returncode = 0; stdout = ""; stderr = ""
+        return R()
+    assert ensure_dependencies(cfg, runner=runner) is True
+    assert seen["cmd"] == ["npm", "ci"]
+    assert seen["timeout"] == NPM_INSTALL_TIMEOUT
+    assert seen["cwd"] == str(wt)
 
 
-def test_link_node_modules_fail_soft_without_source(tmp_path):
-    from academy_auto.worktree import _link_node_modules
-    repo = tmp_path / "repo"; repo.mkdir()
-    wt = tmp_path / "wt"; wt.mkdir()
-    cfg = Config(**{**Config.default().__dict__, "academy_repo": repo, "worktree_path": wt})
-    assert _link_node_modules(cfg) is False        # keine Quelle -> False
-    assert not (wt / "node_modules").exists()      # aber kein Crash
+def test_ensure_dependencies_fail_soft(tmp_path):
+    (tmp_path / "wt").mkdir()
+    cfg = _cfg(tmp_path)
+    def boom(cmd, **k):
+        raise OSError("npm weg")
+    assert ensure_dependencies(cfg, runner=boom) is False
 
 
-def test_prepare_worktree_links_node_modules(tmp_path, monkeypatch):
-    from academy_auto import worktree as wtmod
-    repo = tmp_path / "repo"; (repo / "node_modules").mkdir(parents=True)
-    wt = tmp_path / "wt"; wt.mkdir()
-    cfg = Config(**{**Config.default().__dict__, "academy_repo": repo, "worktree_path": wt})
-    wtmod.prepare_worktree(cfg, runner=lambda *a, **k: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
-    assert (wt / "node_modules").is_symlink()
+def test_config_has_base_branch():
+    assert Config.default().base_branch == "main"

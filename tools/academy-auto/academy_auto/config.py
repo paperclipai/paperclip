@@ -9,6 +9,7 @@ class Config:
     academy_repo: Path
     worktree_path: Path
     branch: str
+    base_branch: str
     pause_flag: Path
     dry_run_flag: Path
     gate_commands: list[list[str]]
@@ -31,6 +32,7 @@ class Config:
             academy_repo=academy,
             worktree_path=base / "worktree",
             branch="agents/academy-auto",
+            base_branch="main",
             pause_flag=home / ".paperclip" / "academy-auto.pause",
             dry_run_flag=home / ".paperclip" / "academy-auto.dryrun",
             gate_commands=[
