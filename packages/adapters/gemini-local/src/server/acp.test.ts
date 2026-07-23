@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
+import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import {
   buildGeminiAcpConfig,
   createGeminiAcpExecutor,
@@ -11,6 +12,35 @@ import {
   resolveGeminiExecutionEngineForRun,
   testGeminiAcpEnvironment,
 } from "./acp.js";
+
+// A local stand-in for a sandbox runner: runs the managed-runtime staging
+// scripts (mkdir/tar/find) as real child processes so the remote ACP lane can
+// be exercised end-to-end against the host filesystem.
+function createLocalSandboxRunner() {
+  let counter = 0;
+  return {
+    execute: async (input: {
+      command: string;
+      args?: string[];
+      cwd?: string;
+      env?: Record<string, string>;
+      stdin?: string;
+      timeoutMs?: number;
+      onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    }) => {
+      counter += 1;
+      const command = input.command === "bash" ? "/bin/bash" : input.command;
+      return await runChildProcess(`gemini-acp-sandbox-run-${counter}`, command, input.args ?? [], {
+        cwd: input.cwd ?? process.cwd(),
+        env: input.env ?? {},
+        stdin: input.stdin,
+        timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+        graceSec: 5,
+        onLog: input.onLog ?? (async () => {}),
+      });
+    },
+  };
+}
 
 type FakeRuntimeOptions = Record<string, unknown>;
 type FakeRuntimeEvent = { type: string; text?: string; stream?: string; tag?: string };
@@ -385,6 +415,75 @@ describe("gemini_local ACP lane", () => {
       command: "fake-gemini --acp",
     });
     expect(logs.some((entry) => entry.text.includes("\"type\":\"acpx.session\""))).toBe(true);
+  });
+
+  it("creates the ACP session on the in-sandbox workspace cwd for runner-backed remote runs", async () => {
+    const root = await makeTempRoot("paperclip-gemini-acp-remote-cwd-");
+    process.env.HOME = path.join(root, "home");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+
+    const runtime = new FakeRuntime({});
+    const execute = createGeminiAcpExecutor({
+      createRuntime: (options) => {
+        Object.assign(runtime.options, options);
+        return runtime as never;
+      },
+    });
+
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          // Throwaway ACP command so the process-session bridge does not require
+          // a real gemini binary in the local sandbox stand-in.
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipTaskMarkdown: "Task context",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.readFile(path.join(remoteCwd, "hello.txt"), "utf8")).resolves.toBe("hi");
+    expect(runtime.ensureInputs[0]?.cwd).toBe(remoteCwd);
+    expect(runtime.ensureInputs[0]?.cwd).not.toBe(localCwd);
+  });
+
+  it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
+    setNodeVersion("v22.13.0");
+    await expect(
+      resolveGeminiExecutionEngineForRun({
+        config: { agentCommand: "gemini --acp" },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("bidirectional remote process"),
+    });
   });
 
   it("reports Gemini ACP environment readiness", async () => {

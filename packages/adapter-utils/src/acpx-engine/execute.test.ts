@@ -1,10 +1,30 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
 import type { AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
-import { DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC } from "@paperclipai/adapter-utils/execution-target";
+import {
+  DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+  prepareAdapterExecutionTargetRuntime,
+  startAdapterExecutionTargetPaperclipBridge,
+  startAdapterExecutionTargetProcessSessionBridge,
+} from "@paperclipai/adapter-utils/execution-target";
+
+// Wrap the staging seam + both sandbox bridges in call-recording spies that
+// still delegate to the real implementations (a runner-backed sandbox test
+// exercises them end-to-end against a local runner). This lets the staging
+// tests assert the exact `runtimeRootDir`/`workspaceLocalDir`/`assets` the
+// engine threads without changing any real behavior for the other tests.
+vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
+  const actual = await importActual<typeof import("@paperclipai/adapter-utils/execution-target")>();
+  return {
+    ...actual,
+    prepareAdapterExecutionTargetRuntime: vi.fn(actual.prepareAdapterExecutionTargetRuntime),
+    startAdapterExecutionTargetPaperclipBridge: vi.fn(actual.startAdapterExecutionTargetPaperclipBridge),
+    startAdapterExecutionTargetProcessSessionBridge: vi.fn(actual.startAdapterExecutionTargetProcessSessionBridge),
+  };
+});
 import {
   createAcpxEngineExecutor,
   findAncestorBin,
@@ -1672,5 +1692,138 @@ describe("summarizeAcpxTurnUsage no-report turns", () => {
     expect(summary.usageDetail).toBeNull();
     expect(summary.costUsd).toBeCloseTo(0.25);
     expect(summary.cumulativeCostUsd).toBeCloseTo(0.75);
+  });
+});
+
+describe("ACPX engine remote sandbox staging seam (PR 1: workspace + cwd)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function setupRemoteSandbox() {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    // A file present only in the HOST worktree proves the workspace is shipped
+    // into the sandbox: the local runner extracts the staged tar into remoteCwd.
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+    const runner = createLocalSandboxRunner();
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner,
+    };
+    return { root, stateDir, localCwd, remoteCwd, executionTarget };
+  }
+
+  it("test_remote_buildRuntime_crosses_staging_seam", async () => {
+    const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    const { sessionInputs } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget },
+    );
+
+    // Staging seam crossed exactly once, shipping the HOST worktree.
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(1);
+    const stageArgs = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0];
+    expect(stageArgs.workspaceLocalDir).toBe(localCwd);
+    expect(stageArgs.target).toMatchObject({ kind: "remote", transport: "sandbox" });
+    // No credential/home asset staged in PR 1 (that is PR 2's per-adapter seed).
+    expect(stageArgs.assets ?? []).toEqual([]);
+    expect(stageArgs.installCommand ?? null).toBeNull();
+
+    // Both bridges receive the real (non-null) runtimeRootDir from staging.
+    const paperclipArgs = vi.mocked(startAdapterExecutionTargetPaperclipBridge).mock.calls[0]![0];
+    const processArgs = vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mock.calls[0]![0];
+    expect(paperclipArgs.runtimeRootDir).toBeTruthy();
+    expect(processArgs.runtimeRootDir).toBeTruthy();
+    expect(String(paperclipArgs.runtimeRootDir)).toContain(".paperclip-runtime");
+    expect(processArgs.runtimeRootDir).toBe(paperclipArgs.runtimeRootDir);
+
+    // The workspace really landed in the sandbox workspace dir.
+    await expect(fs.readFile(path.join(remoteCwd, "hello.txt"), "utf8")).resolves.toBe("hi");
+    // And session/new is created on the in-sandbox workspace cwd.
+    expect(sessionInputs[0]?.cwd).toBe(remoteCwd);
+  });
+
+  it("test_remote_session_new_uses_in_sandbox_cwd", async () => {
+    const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    const { sessionInputs, runtimeOptions } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget },
+    );
+
+    // The ACP runtime + session/new both bind to the in-sandbox workspace dir,
+    // not the HOST worktree path.
+    expect(runtimeOptions[0]?.cwd).toBe(remoteCwd);
+    expect(sessionInputs[0]?.cwd).toBe(remoteCwd);
+    expect(sessionInputs[0]?.cwd).not.toBe(localCwd);
+  });
+
+  it("test_remote_warm_handle_reused_after_cwd_change", async () => {
+    const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      createRuntime: () => buildRuntime(undefined, (input) => ensureInputs.push(input)) as never,
+    });
+    const base = {
+      agent: { id: "agent-1", companyId: "company-1" },
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        mode: "persistent",
+        warmHandleIdleMs: 60_000,
+      },
+      context: {},
+      authToken: "real-run-jwt",
+      executionTarget,
+      onLog: async () => {},
+      onMeta: async () => {},
+    };
+
+    const first = await execute({ runId: "run-remote-a", runtime: {}, ...base } as never);
+    const second = await execute({
+      runId: "run-remote-b",
+      runtime: { sessionParams: first.sessionParams },
+      ...base,
+    } as never);
+
+    expect(first.exitCode).toBe(0);
+    expect(second.exitCode).toBe(0);
+    // Both runs resolve session/new to the in-sandbox cwd...
+    expect(ensureInputs[0]?.cwd).toBe(remoteCwd);
+    expect(ensureInputs[1]?.cwd).toBe(remoteCwd);
+    // ...and the second run RESUMES the first session: fingerprint/compat/persist
+    // all read the same in-sandbox `sessionCwd`, so a handle created with the
+    // in-sandbox cwd is reused, not invalidated, after the HOST→sandbox cwd swap.
+    expect(ensureInputs[1]?.resumeSessionId).toBe(first.sessionId);
+  });
+
+  it("test_local_foundation_unchanged", async () => {
+    const root = await makeTempRoot();
+    const localCwd = path.join(root, "worktree");
+    await fs.mkdir(localCwd, { recursive: true });
+    const { sessionInputs, runtimeOptions } = await runExecutor({
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      stateDir: path.join(root, "state"),
+      cwd: localCwd,
+    });
+
+    // A local (non-remote) run never crosses the staging seam or starts a
+    // bridge, and session/new stays on the HOST cwd — byte-identical to today.
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).not.toHaveBeenCalled();
+    expect(vi.mocked(startAdapterExecutionTargetPaperclipBridge)).not.toHaveBeenCalled();
+    expect(vi.mocked(startAdapterExecutionTargetProcessSessionBridge)).not.toHaveBeenCalled();
+    expect(sessionInputs[0]?.cwd).toBe(localCwd);
+    expect(runtimeOptions[0]?.cwd).toBe(localCwd);
   });
 });

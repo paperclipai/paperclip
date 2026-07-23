@@ -14,15 +14,19 @@ import type {
 } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetSessionIdentity,
+  describeAdapterExecutionTarget,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
   startAdapterExecutionTargetPaperclipBridge,
   startAdapterExecutionTargetProcessSessionBridge,
+  type AdapterExecutionTarget,
   type AdapterExecutionTargetPaperclipBridgeHandle,
   type AdapterExecutionTargetProcessSessionBridgeHandle,
   type AdapterExecutionTargetTimeoutResolution,
+  type PreparedAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -176,6 +180,12 @@ interface AcpxPreparedRuntime {
   agentRegistry: AcpAgentRegistry;
   processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null;
   paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null;
+  // The workspace/runtime staged into a runner-backed remote sandbox (null for
+  // local runs and the runner-less ACP→CLI fallback). PR 1 stages the workspace
+  // + cwd only; the `assetDirs`/`runtimeRootDir`/`restoreWorkspace` it carries
+  // are what PR 2 (managed-home seeding + codex copy-back) and PR 3 (session
+  // lifecycle re-staging) build on.
+  stagedRuntime: PreparedAdapterExecutionTargetRuntime | null;
   remoteExecutionIdentity: Record<string, unknown> | null;
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
@@ -963,6 +973,38 @@ async function writePaperclipClaudeSettings(input: {
   };
 }
 
+// Cross the CLI's staging seam for a runner-backed remote sandbox: ship the
+// workspace into the sandbox and obtain the in-sandbox `workspaceRemoteDir`
+// plus the non-null `runtimeRootDir`/`assetDirs` the bridges and later PRs
+// consume. This is the shared-engine mirror of the CLI lanes (codex/claude/
+// gemini `*-local/execute.ts`). PR 1 stages the workspace + cwd ONLY: it ships
+// no managed-home credential/home asset (no `assets`, no per-adapter home
+// seed) — that is PR 2. The returned `restoreWorkspace` is carried on the
+// prepared runtime for PR 3's session-lifecycle wiring.
+async function stageAcpRemoteRuntime(input: {
+  runId: string;
+  target: AdapterExecutionTarget;
+  adapterKey: string;
+  workspaceLocalDir: string;
+  timeoutSec: number;
+  onLog: AdapterExecutionContext["onLog"];
+  onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
+}): Promise<PreparedAdapterExecutionTargetRuntime> {
+  await input.onLog(
+    "stdout",
+    `[paperclip] Syncing workspace to ${describeAdapterExecutionTarget(input.target)}.\n`,
+  );
+  return await prepareAdapterExecutionTargetRuntime({
+    runId: input.runId,
+    target: input.target,
+    adapterKey: input.adapterKey,
+    timeoutSec: input.timeoutSec,
+    workspaceLocalDir: input.workspaceLocalDir,
+    onProgress: (line) => input.onLog("stdout", line),
+    onRuntimeProgress: input.onRuntimeProgress,
+  });
+}
+
 async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
   engine: AcpxEngineSettings;
@@ -1196,17 +1238,42 @@ async function buildRuntime(input: {
   }
   const childStderrDir = path.join(stateDir, "run-stderr");
   const childStderrLogPath = agentCommand ? path.join(childStderrDir, `${runId}.log`) : null;
-  let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
-  if (
+  // A runner-backed remote sandbox is the only lane that crosses the staging
+  // seam: the runner-less ACP→CLI fallback (no `runner`) and local runs keep
+  // their historical behavior untouched. This is the single gate shared by the
+  // workspace stage and both sandbox bridges.
+  const useRemoteProcessSession =
     executionTarget?.kind === "remote" &&
     executionTarget.transport === "sandbox" &&
     Boolean(executionTarget.runner) &&
-    agentCommandShell
-  ) {
+    Boolean(agentCommandShell);
+  // Ship the workspace into the sandbox and capture `{ workspaceRemoteDir,
+  // runtimeRootDir, assetDirs, restoreWorkspace }`. Done once here, before the
+  // bridges, so both bridges receive the real (non-null) `runtimeRootDir`.
+  const stagedRuntime: PreparedAdapterExecutionTargetRuntime | null = useRemoteProcessSession
+    ? await stageAcpRemoteRuntime({
+        runId,
+        target: executionTarget,
+        adapterKey: input.engine.adapterType,
+        workspaceLocalDir: cwd,
+        timeoutSec,
+        onLog: input.ctx.onLog,
+        onRuntimeProgress: input.ctx.onRuntimeProgress,
+      })
+    : null;
+  // The ACP `session/new` cwd and every cwd-keyed session-state site
+  // (fingerprint, compat, persist, ensureSession, error) bind to THIS single
+  // value so a warm/resumable session created with the in-sandbox cwd is reused
+  // — not invalidated — on the next run. Remote runner-backed → the staged
+  // in-sandbox workspace dir; local and the runner-less fallback → the HOST cwd,
+  // byte-identical to today.
+  const sessionCwd = stagedRuntime?.workspaceRemoteDir ?? cwd;
+  let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
+  if (useRemoteProcessSession) {
     paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
       runId,
       target: { ...executionTarget, streamRunLogs: false },
-      runtimeRootDir: null,
+      runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
       adapterKey: input.engine.adapterType,
       timeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
@@ -1224,24 +1291,20 @@ async function buildRuntime(input: {
   );
   let processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null = null;
   try {
-    processSessionBridge =
-      executionTarget?.kind === "remote" &&
-      executionTarget.transport === "sandbox" &&
-      Boolean(executionTarget.runner) &&
-      agentCommandShell
-        ? await startAdapterExecutionTargetProcessSessionBridge({
-            runId,
-            target: executionTarget,
-            runtimeRootDir: null,
-            adapterKey: input.engine.adapterType,
-            command: "sh",
-            args: ["-lc", `exec ${agentCommandShell}`],
-            cwd: effectiveExecutionCwd,
-            env: runtimeEnv,
-            timeoutSec,
-            onLog: input.ctx.onLog,
-          })
-        : null;
+    processSessionBridge = useRemoteProcessSession
+      ? await startAdapterExecutionTargetProcessSessionBridge({
+          runId,
+          target: executionTarget,
+          runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
+          adapterKey: input.engine.adapterType,
+          command: "sh",
+          args: ["-lc", `exec ${agentCommandShell}`],
+          cwd: sessionCwd,
+          env: runtimeEnv,
+          timeoutSec,
+          onLog: input.ctx.onLog,
+        })
+      : null;
   } catch (err) {
     await paperclipBridge?.stop().catch(() => {});
     throw err;
@@ -1252,7 +1315,7 @@ async function buildRuntime(input: {
   const fingerprint = shortHash({
     acpxAgent,
     agentCommand: agentCommand ?? acpxAgent,
-    cwd: path.resolve(cwd),
+    cwd: path.resolve(sessionCwd),
     mode,
     permissionMode,
     nonInteractivePermissions,
@@ -1291,7 +1354,10 @@ async function buildRuntime(input: {
   return {
     acpxAgent,
     mode,
-    cwd,
+    // Remote runner-backed → the in-sandbox workspace dir; local / runner-less
+    // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
+    // reads `prepared.cwd`, so binding it once here keeps them consistent.
+    cwd: sessionCwd,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
@@ -1311,6 +1377,7 @@ async function buildRuntime(input: {
     agentRegistry,
     processSessionBridge,
     paperclipBridge,
+    stagedRuntime,
     remoteExecutionIdentity,
     skillPromptInstructions,
     skillsIdentity: {
