@@ -559,6 +559,9 @@ export function createPluginWorkerHandle(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
+      if (message.method === "onEvent") {
+        return {};
+      }
       const hasActiveInvocation = activeInvocations.size > 0 ||
         Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
       return hasActiveInvocation ? { invalidInvocationScope: true } : {};
