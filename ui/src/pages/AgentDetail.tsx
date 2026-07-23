@@ -3049,6 +3049,15 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     },
     onSuccess: (newRun) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
+      // The server may redirect a retry to the issue's current assignee when
+      // the issue was reassigned after the failure, so navigate using the
+      // returned run's agent — not this page's agent — to land on the run
+      // that actually exists.
+      if (newRun.agentId !== run.agentId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, newRun.agentId) });
+        navigate(`/agents/${newRun.agentId}/runs/${newRun.id}`);
+        return;
+      }
       navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
     },
   });

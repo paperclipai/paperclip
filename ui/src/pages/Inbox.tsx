@@ -1615,7 +1615,14 @@ export function Inbox() {
     onSuccess: ({ newRun, originalRun }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId, originalRun.agentId) });
-      navigate(`/agents/${originalRun.agentId}/runs/${newRun.id}`);
+      // The server may redirect a retry to the issue's current assignee when
+      // the issue was reassigned after the failure, so navigate using the
+      // returned run's agent — not the failed run's agent — to land on the
+      // run that actually exists.
+      if (newRun.agentId !== originalRun.agentId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId, newRun.agentId) });
+      }
+      navigate(`/agents/${newRun.agentId}/runs/${newRun.id}`);
     },
     onSettled: (_data, _error, run) => {
       if (!run) return;

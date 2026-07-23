@@ -3,7 +3,7 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
-import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, not, or, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
@@ -3425,14 +3425,88 @@ export function agentRoutes(
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
-    if (agent.orgChainHealth?.status === "invalid_org_chain") {
+
+    // A manual "retry failed run" wake targets the failed run's agent, but the
+    // issue may have been reassigned since the failure. Without redirection
+    // the queued run is dead on arrival: the queued-run staleness gate cancels
+    // it at claim time (issue_assignee_changed) and nothing wakes the new
+    // owner, so the user's retry is a silent no-op. Redirect the wake to the
+    // issue's current assignee agent instead, and answer honestly when there
+    // is no wakeable assignee (user-assigned, unassigned, or a terminated /
+    // missing assignee agent). Agent actors keep the existing behavior: they
+    // can only invoke themselves.
+    let targetAgent = agent;
+    let retryRedirect: { redirectedFromAgentId: string; issueId: string } | null = null;
+    if (req.actor.type !== "agent" && req.body.reason === "retry_failed_run") {
+      const rawIssueId = (req.body.payload as Record<string, unknown> | null | undefined)?.issueId;
+      const issueRef = typeof rawIssueId === "string" && rawIssueId.trim() ? rawIssueId.trim() : null;
+      if (issueRef) {
+        // Accept UUID or human identifier, always scoped to the agent's
+        // company (mirrors enqueueWakeup's issue lookup). Guard the UUID arm:
+        // issues.id is a Postgres uuid column and a non-UUID value would fail
+        // with a cast error before the OR is evaluated.
+        const idMatch = isUuidLike(issueRef)
+          ? or(eq(issuesTable.id, issueRef), eq(issuesTable.identifier, issueRef.toUpperCase()))
+          : eq(issuesTable.identifier, issueRef.toUpperCase());
+        const issue = await db
+          .select({
+            id: issuesTable.id,
+            assigneeAgentId: issuesTable.assigneeAgentId,
+            assigneeUserId: issuesTable.assigneeUserId,
+          })
+          .from(issuesTable)
+          .where(and(eq(issuesTable.companyId, agent.companyId), idMatch))
+          .then((rows) => rows[0] ?? null);
+        // A missing issue keeps the existing behavior: the queued-run
+        // staleness gate already cancels that run with issue_not_found.
+        if (issue && issue.assigneeAgentId !== agent.id) {
+          const respondRetrySkipped = async (message: string) => {
+            const base = await opts.skippedResponse(agent);
+            res.status(202).json({
+              ...(base && typeof base === "object" ? base : {}),
+              reason: "issue_reassigned",
+              message,
+            });
+          };
+          if (issue.assigneeAgentId) {
+            const assignee = await svc.getById(issue.assigneeAgentId);
+            if (!assignee || assignee.companyId !== agent.companyId) {
+              await respondRetrySkipped(
+                "This issue is now assigned to an agent that no longer exists; no run was started.",
+              );
+              return;
+            }
+            if (assignee.status === "terminated") {
+              await respondRetrySkipped(
+                `This issue is now assigned to ${assignee.name}, which has been terminated; no run was started.`,
+              );
+              return;
+            }
+            targetAgent = assignee;
+            retryRedirect = { redirectedFromAgentId: agent.id, issueId: issue.id };
+          } else if (issue.assigneeUserId) {
+            await respondRetrySkipped(
+              "This issue is now assigned to a user; no run was started.",
+            );
+            return;
+          } else {
+            await respondRetrySkipped(
+              "This issue is now unassigned; assign it to an agent before retrying.",
+            );
+            return;
+          }
+        }
+      }
+    }
+
+    if (targetAgent.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
-        error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
+        error: targetAgent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
       });
       return;
     }
 
-    const run = await heartbeat.wakeup(id, {
+    const run = await heartbeat.wakeup(targetAgent.id, {
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
       reason: req.body.reason ?? null,
@@ -3448,13 +3522,13 @@ export function agentRoutes(
     });
 
     if (!run) {
-      res.status(202).json(await opts.skippedResponse(agent));
+      res.status(202).json(await opts.skippedResponse(targetAgent));
       return;
     }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
-      companyId: agent.companyId,
+      companyId: targetAgent.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
@@ -3462,7 +3536,9 @@ export function agentRoutes(
       action: "heartbeat.invoked",
       entityType: "heartbeat_run",
       entityId: run.id,
-      details: { agentId: id },
+      details: retryRedirect
+        ? { agentId: targetAgent.id, redirectedFromAgentId: retryRedirect.redirectedFromAgentId, issueId: retryRedirect.issueId }
+        : { agentId: id },
     });
 
     res.status(202).json(run);
