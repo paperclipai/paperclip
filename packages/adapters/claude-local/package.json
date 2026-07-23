@@ -55,6 +55,7 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.59.0",
     "@paperclipai/adapter-utils": "workspace:*",
+    "@paperclipai/mcp-server": "workspace:*",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
