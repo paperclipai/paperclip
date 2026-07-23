@@ -96,13 +96,13 @@ export function CreateStatusCardDialog({
           <>
             <DialogHeader>
               <DialogTitle>New status card</DialogTitle>
-              <DialogDescription>Step 1 of 2 — describe what you want to watch</DialogDescription>
+              <DialogDescription>Step 1 of 2</DialogDescription>
             </DialogHeader>
 
             {error ? <InlineBanner tone="danger" title="Create failed">{error}</InlineBanner> : null}
 
             <div className="space-y-3">
-              <label htmlFor="status-card-interest" className="text-sm font-semibold">
+              <label htmlFor="status-card-interest" className="block pb-1 text-sm font-semibold">
                 What do you want to keep an eye on?
               </label>
               <Textarea
@@ -114,9 +114,6 @@ export function CreateStatusCardDialog({
                 placeholder="Issues in the Cloud, ID and Content projects that were recently updated. Tell me what I need to do next and what your advice is."
                 className="text-sm"
               />
-              <p className="text-xs text-muted-foreground">
-                Plain language is fine. The summary agent turns this into a saved issue query and keeps it up to date.
-              </p>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs font-medium text-muted-foreground">Examples</span>
                 {EXAMPLES.map((example) => (
@@ -132,10 +129,7 @@ export function CreateStatusCardDialog({
               </div>
             </div>
 
-            <DialogFooter className="items-center sm:justify-between">
-              <span className="hidden text-xs text-muted-foreground sm:block">
-                Creates the card immediately; the query builds in the background.
-              </span>
+            <DialogFooter>
               <div className="flex gap-2">
                 <Button variant="outline" onClick={close} disabled={createMutation.isPending}>
                   Cancel
@@ -154,9 +148,7 @@ export function CreateStatusCardDialog({
           <>
             <DialogHeader>
               <DialogTitle>Configure card</DialogTitle>
-              <DialogDescription>
-                Step 2 of 2 — optional; the card already exists and is building in the background
-              </DialogDescription>
+              <DialogDescription>Step 2 of 2</DialogDescription>
             </DialogHeader>
 
             {error ? <InlineBanner tone="danger" title="Save failed">{error}</InlineBanner> : null}
@@ -173,10 +165,7 @@ export function CreateStatusCardDialog({
               <StatusCardSettingsForm value={settings} onChange={setSettings} />
             </div>
 
-            <DialogFooter className="items-center sm:justify-between">
-              <span className="hidden text-xs text-muted-foreground sm:block">
-                You can change all of this later from the card’s ⋯ menu.
-              </span>
+            <DialogFooter>
               <div className="flex gap-2">
                 <Button variant="outline" onClick={close} disabled={saveSettingsMutation.isPending}>
                   Skip

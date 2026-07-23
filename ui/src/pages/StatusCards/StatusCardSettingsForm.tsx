@@ -1,12 +1,14 @@
 import type { StatusCardRefreshPolicy } from "@paperclipai/shared";
-import { Check } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 
 type StatusCardInstructionsMode = "none" | "append" | "replace";
 
 import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { estimateStatusCardCost } from "./format";
 
@@ -93,10 +95,9 @@ export function StatusCardSettingsForm({
   showInstructions?: boolean;
 }) {
   const { refreshPolicy: policy } = value;
-  // Change triggers and the active-hours window only govern *automatic* updates;
-  // in Manual mode the card only refreshes on demand, so those controls are
-  // dimmed to signal they don't apply (they stay editable so a policy switch
-  // keeps the chosen values).
+  // Change triggers, active-hours, and the daily token cap only govern
+  // *automatic* updates. In Manual mode none of them apply, so the whole
+  // "Advanced" group is hidden rather than shown-but-dimmed.
   const autoUpdating = policy.mode !== "manual";
   const costEstimate = estimateStatusCardCost(policy);
 
@@ -202,7 +203,6 @@ export function StatusCardSettingsForm({
                   ))}
                 </SelectContent>
               </Select>
-              <span className="text-xs">cheap check, no agent run if nothing changed</span>
             </div>
           </RadioRow>
           <RadioRow
@@ -243,95 +243,104 @@ export function StatusCardSettingsForm({
         </div>
       </section>
 
-      <section className={cn("space-y-2", !autoUpdating && "opacity-50")}>
-        <div className="flex items-baseline justify-between gap-2">
-          <h3 className="text-sm font-semibold">Count as a change</h3>
-          {!autoUpdating ? (
-            <span className="text-xs text-muted-foreground">applies to automatic updates only</span>
-          ) : null}
-        </div>
-        <div className="space-y-2">
-          {TRIGGER_ROWS.map((row) => (
-            <label key={row.key} className="flex items-start gap-2.5 text-sm">
-              <Checkbox
-                checked={policy.triggers[row.key]}
-                onCheckedChange={() => toggleTrigger(row.key)}
-                className="mt-0.5"
-                aria-label={row.label}
-              />
-              <span className={cn(row.noisy && "text-muted-foreground")}>{row.label}</span>
-            </label>
-          ))}
-        </div>
-      </section>
+      {/*
+        Change triggers, active hours, and the daily token cap only apply to
+        automatic updates, so they are hidden entirely in Manual mode and tucked
+        under a collapsed "Advanced" disclosure otherwise.
+      */}
+      {autoUpdating ? (
+        <Collapsible className="rounded-md border border-border">
+          <CollapsibleTrigger className="group flex w-full items-center justify-between gap-2 px-3 py-2.5 text-sm font-semibold">
+            Advanced
+            <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="space-y-6 border-t border-border px-3 py-3">
+            <section className="space-y-2">
+              <h3 className="text-sm font-semibold">Count as a change</h3>
+              <div className="space-y-2">
+                {TRIGGER_ROWS.map((row) => (
+                  <label key={row.key} className="flex items-start gap-2.5 text-sm">
+                    <Checkbox
+                      checked={policy.triggers[row.key]}
+                      onCheckedChange={() => toggleTrigger(row.key)}
+                      className="mt-0.5"
+                      aria-label={row.label}
+                    />
+                    <span className={cn(row.noisy && "text-muted-foreground")}>{row.label}</span>
+                  </label>
+                ))}
+              </div>
+            </section>
 
-      <section className="space-y-3">
-        <h3 className="text-sm font-semibold">Guardrails</h3>
-        <label className={cn("flex items-start gap-2.5 text-sm", !autoUpdating && "opacity-50")}>
-          <Checkbox checked={Boolean(activeHours)} onCheckedChange={(checked) => setActiveHoursEnabled(Boolean(checked))} className="mt-0.5" aria-label="Limit to active hours" />
-          <span>
-            Only auto-update during active hours
-            {!autoUpdating ? <span className="ml-1 text-xs text-muted-foreground">(automatic updates only)</span> : null}
-          </span>
-        </label>
-        {activeHours ? (
-          <div className="flex flex-wrap items-center gap-2 pl-6 text-sm">
-            <Input
-              type="time"
-              value={activeHours.start}
-              onChange={(event) => setPolicy({ activeHours: { ...activeHours, start: event.target.value } })}
-              className="h-8 w-32"
-              aria-label="Active hours start"
-            />
-            <span className="text-muted-foreground">–</span>
-            <Input
-              type="time"
-              value={activeHours.end}
-              onChange={(event) => setPolicy({ activeHours: { ...activeHours, end: event.target.value } })}
-              className="h-8 w-32"
-              aria-label="Active hours end"
-            />
-            <Input
-              value={activeHours.timezone}
-              onChange={(event) => setPolicy({ activeHours: { ...activeHours, timezone: event.target.value } })}
-              className="h-8 w-40"
-              placeholder="Timezone"
-              aria-label="Active hours timezone"
-            />
-            <span className="text-xs text-muted-foreground">outside these hours: batch into one update</span>
-          </div>
-        ) : null}
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="w-32 shrink-0">Daily token cap</span>
-          <Input
-            type="number"
-            min={0}
-            step={1000}
-            value={policy.dailyTokenCap ?? ""}
-            onChange={(event) => {
-              const parsed = Number(event.target.value);
-              setPolicy({ dailyTokenCap: event.target.value === "" || parsed <= 0 ? undefined : parsed });
-            }}
-            className="h-8 w-36"
-            placeholder="no cap"
-            aria-label="Daily token cap"
-          />
-          <span className="text-xs text-muted-foreground">card pauses + banner when the cap is hit</span>
-        </div>
-      </section>
+            <section className="space-y-3">
+              <h3 className="text-sm font-semibold">Guardrails</h3>
+              <label className="flex items-start gap-2.5 text-sm">
+                <Checkbox checked={Boolean(activeHours)} onCheckedChange={(checked) => setActiveHoursEnabled(Boolean(checked))} className="mt-0.5" aria-label="Limit to active hours" />
+                <span>Only auto-update during active hours</span>
+              </label>
+              {activeHours ? (
+                <div className="flex flex-wrap items-center gap-2 pl-6 text-sm">
+                  <Input
+                    type="time"
+                    value={activeHours.start}
+                    onChange={(event) => setPolicy({ activeHours: { ...activeHours, start: event.target.value } })}
+                    className="h-8 w-32"
+                    aria-label="Active hours start"
+                  />
+                  <span className="text-muted-foreground">–</span>
+                  <Input
+                    type="time"
+                    value={activeHours.end}
+                    onChange={(event) => setPolicy({ activeHours: { ...activeHours, end: event.target.value } })}
+                    className="h-8 w-32"
+                    aria-label="Active hours end"
+                  />
+                  <Input
+                    value={activeHours.timezone}
+                    onChange={(event) => setPolicy({ activeHours: { ...activeHours, timezone: event.target.value } })}
+                    className="h-8 w-40"
+                    placeholder="Timezone"
+                    aria-label="Active hours timezone"
+                  />
+                </div>
+              ) : null}
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="w-32 shrink-0">Daily token cap</span>
+                <Input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={policy.dailyTokenCap ?? ""}
+                  onChange={(event) => {
+                    const parsed = Number(event.target.value);
+                    setPolicy({ dailyTokenCap: event.target.value === "" || parsed <= 0 ? undefined : parsed });
+                  }}
+                  className="h-8 w-36"
+                  placeholder="no cap"
+                  aria-label="Daily token cap"
+                />
+              </div>
+            </section>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : null}
 
-      <section className="space-y-2">
-        <h3 className="text-sm font-semibold">Estimated cost</h3>
-        <div className="rounded-md border border-border bg-muted/40 px-3 py-2.5">
-          <p className="text-sm font-medium text-foreground">{costEstimate.primary}</p>
-          {costEstimate.note ? (
-            <p className="mt-1 text-xs text-muted-foreground">{costEstimate.note}</p>
-          ) : null}
-          <p className="mt-1.5 text-(length:--text-micro) text-muted-foreground/70">
-            Rough estimate from typical update sizes; actual cost is tracked per update.
-          </p>
-        </div>
-      </section>
+      <div className="flex items-center gap-2 text-sm">
+        <span className="font-semibold">Estimated cost</span>
+        <span className="text-muted-foreground">=</span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="cursor-default font-medium text-foreground underline decoration-dotted decoration-muted-foreground/50 underline-offset-4">
+              {costEstimate.cost}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-(--sz-18rem) text-left">
+            <p>{costEstimate.primary}</p>
+            {costEstimate.note ? <p className="mt-1 opacity-80">{costEstimate.note}</p> : null}
+            <p className="mt-1 opacity-80">Rough estimate from typical update sizes; actual cost is tracked per update.</p>
+          </TooltipContent>
+        </Tooltip>
+      </div>
     </div>
   );
 }

@@ -81,6 +81,8 @@ function activeWindowMinutes(policy: StatusCardRefreshPolicy): number {
 }
 
 export interface StatusCardCostEstimate {
+  /** Bare cost, e.g. "$0.48 · 96.0k tok" — shown to the right of the "=" sign. */
+  cost: string;
   /** Headline cost line, e.g. "Up to ~48 updates/day ≈ $0.48 · 96.0k tok". */
   primary: string;
   /** Secondary qualifier (cap / no-op-check / manual-only), or null. */
@@ -94,8 +96,10 @@ export interface StatusCardCostEstimate {
  */
 export function estimateStatusCardCost(policy: StatusCardRefreshPolicy): StatusCardCostEstimate {
   if (policy.mode === "manual") {
+    const cost = `${formatCents(EST_FULL_CENTS)} · ${formatTokens(EST_FULL_TOKENS)}`;
     return {
-      primary: `~1 rebuild per refresh ≈ ${formatCents(EST_FULL_CENTS)} · ${formatTokens(EST_FULL_TOKENS)}`,
+      cost,
+      primary: `~1 rebuild per refresh ≈ ${cost}`,
       note: "Manual cards only cost tokens when you press Refresh.",
     };
   }
@@ -121,9 +125,11 @@ export function estimateStatusCardCost(policy: StatusCardRefreshPolicy): StatusC
   const tokens = effective * EST_INCREMENTAL_TOKENS;
   const cents = effective * EST_INCREMENTAL_CENTS;
   const withinHours = policy.activeHours ? " during active hours" : "";
+  const cost = `${formatCents(cents)} · ${formatTokens(tokens)}`;
 
   return {
-    primary: `Up to ~${effective} updates/day (${cadence}${withinHours}) ≈ ${formatCents(cents)} · ${formatTokens(tokens)}`,
+    cost,
+    primary: `Up to ~${effective} updates/day (${cadence}${withinHours}) ≈ ${cost}`,
     note: cappedByTokenCap
       ? `Capped by your ${formatTokens(cap!)} daily token cap — the card pauses when it's hit.`
       : "Only runs when something changed; a cheap no-op check otherwise.",
