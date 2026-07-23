@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +18,7 @@ import {
   stopSshEnvLabFixture,
 } from "./ssh.js";
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
 
 const SSH_FIXTURE_TEST_TIMEOUT_MS = 30_000;
 let sshEnvLabUnsupportedReason: string | null = null;
@@ -317,6 +319,125 @@ describe("ssh env-lab fixture", () => {
     await expect(readFile(path.join(restoreDir, "blob-0.bin"))).resolves.toEqual(
       Buffer.alloc(256 * 1024, 1),
     );
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  // Regression: sync-back staged its whole-workspace tar in os.tmpdir(). Where that is
+  // a quota-capped RAM tmpfs, a large workspace exhausts the quota, and the failure then
+  // surfaces on an unrelated write (the few-hundred-byte SSH key) as EDQUOT. Staging must
+  // land beside the destination workspace instead.
+  it("stages the sync-back tar beside the workspace, not in os.tmpdir()", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "sync-source");
+    // Restoring into runRoot/workspace means staging must appear in runRoot/.
+    const runRoot = path.join(rootDir, "run");
+    const restoreDir = path.join(runRoot, "workspace");
+    // os.tmpdir() is resolved from TMPDIR on every call, so pointing it at a private
+    // directory isolates this assertion from staging done by any concurrent test.
+    const privateTmp = path.join(rootDir, "private-tmp");
+
+    await mkdir(localDir, { recursive: true });
+    await mkdir(restoreDir, { recursive: true });
+    await mkdir(privateTmp, { recursive: true });
+    for (let index = 0; index < 8; index += 1) {
+      await writeFile(path.join(localDir, `blob-${index}.bin`), Buffer.alloc(1024 * 1024, index + 1));
+    }
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH staging directory test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+    const remoteDir = path.posix.join(started.workspaceDir, "staging-source");
+
+    await syncDirectoryToSsh({ spec, localDir, remoteDir });
+
+    // The mkdtemp staging dir is removed once the sync completes, so it can only be
+    // caught in flight. Poll tmpdir for one: any sighting there is the bug.
+    const stagedIn = { tmpdir: false };
+    const scan = () => {
+      let entries: string[] = [];
+      try {
+        entries = readdirSync(privateTmp);
+      } catch {
+        return;
+      }
+      if (entries.some((entry) => entry.startsWith("paperclip-ssh-sync-back-"))) {
+        stagedIn.tmpdir = true;
+      }
+    };
+    const poller = setInterval(scan, 10);
+
+    const previousTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = privateTmp;
+    try {
+      await syncDirectoryFromSsh({ spec, remoteDir, localDir: restoreDir });
+    } finally {
+      clearInterval(poller);
+      if (previousTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTmpdir;
+    }
+
+    // The staging root itself survives the sync (only the mkdtemp child is cleaned up),
+    // so this is the load-bearing assertion: it holds regardless of poll timing.
+    expect(existsSync(path.join(runRoot, ".paperclip-staging"))).toBe(true);
+    // The poller can only ever observe an in-flight staging dir, so a positive sighting
+    // is timing-dependent and not asserted on. A sighting under tmpdir is not: nothing
+    // in this sync may stage there, at any tick.
+    expect(stagedIn.tmpdir).toBe(false);
+    // Staging off tmpdir must not change what lands in the workspace.
+    await expect(readFile(path.join(restoreDir, "blob-0.bin"))).resolves.toEqual(
+      Buffer.alloc(1024 * 1024, 1),
+    );
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  // Regression: the baseline-restore path stages the sync-back tar in a scratch dir under
+  // the workspace's .paperclip-staging root, then hands that scratch dir to the inner
+  // syncDirectoryFromSsh as its localDir. Before the fix the inner call re-resolved a
+  // staging root relative to the scratch dir, appending a second ".paperclip-staging" and
+  // leaving an empty nested ".paperclip-staging/.paperclip-staging" behind on every restore
+  // — accumulating cruft on a code path whose whole purpose is disk hygiene.
+  it("does not leave a nested .paperclip-staging behind after a baseline restore", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    // Restoring into runRoot/workspace means the staging root is runRoot/.paperclip-staging.
+    const runRoot = path.join(rootDir, "run");
+    const localDir = path.join(runRoot, "workspace");
+
+    await mkdir(localDir, { recursive: true });
+    await writeFile(path.join(localDir, "baseline.txt"), "baseline\n", "utf8");
+    // Non-git workspace + a baseline snapshot drives restoreWorkspaceFromSshExecution
+    // down the baseline-merge branch, which is the one that double-stages.
+    const baselineSnapshot = await captureDirectorySnapshot(localDir);
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "nested staging regression test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+    const remoteDir = path.posix.join(started.workspaceDir, "baseline-source");
+
+    await syncDirectoryToSsh({ spec, localDir, remoteDir });
+    await runSshCommand(
+      config,
+      `printf "from remote\\n" > ${JSON.stringify(path.posix.join(remoteDir, "remote-only.txt"))}`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await restoreWorkspaceFromSshExecution({
+      spec,
+      localDir,
+      remoteDir,
+      baselineSnapshot,
+    });
+
+    // The remote edit still round-trips into the workspace.
+    await expect(readFile(path.join(localDir, "remote-only.txt"), "utf8")).resolves.toBe(
+      "from remote\n",
+    );
+    // A single staging root beside the workspace, and no nested one under it.
+    expect(existsSync(path.join(runRoot, ".paperclip-staging"))).toBe(true);
+    expect(existsSync(path.join(runRoot, ".paperclip-staging", ".paperclip-staging"))).toBe(false);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("reports exact git-history import percentage from the known bundle size", async () => {
