@@ -4,6 +4,37 @@
       "title": "最初の会社を作成",
       "description": "会社を作成して始めましょう。",
       "newCompany": "新しい会社"
+    },
+    "onboardingRoute": {
+      "addAgent": {
+        "title": "Add another agent to {{companyName}}",
+        "description": "Run onboarding again to add an agent and a starter task for this company.",
+        "cta": "Add Agent"
+      },
+      "createAnother": {
+        "title": "Create another company",
+        "description": "Run onboarding again to create another company and seed its first agent."
+      },
+      "createFirst": {
+        "title": "Create your first company",
+        "description": "Get started by creating a company and your first agent."
+      },
+      "startCta": "Start Onboarding"
+    },
+    "onboardingWizard": {
+      "close": "Close",
+      "stepLabel": "Step {{step}}",
+      "backToStart": "← Back to start",
+      "step1": {
+        "title": "Name your company",
+        "description": "What should we call your company?",
+        "companyName": "Company name",
+        "placeholder": "Acme Corp"
+      },
+      "navigation": {
+        "back": "Back",
+        "next": "Next"
+      }
     }
   }
 }
