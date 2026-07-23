@@ -1276,6 +1276,13 @@ export async function startServer(): Promise<StartedServer> {
       const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
       appShutdown?.();
 
+      try {
+        const { killAllRunningProcessesGraceful } = await import("./adapters/utils.js");
+        await killAllRunningProcessesGraceful();
+      } catch {
+        // Best-effort — adapter-utils may not be available in all configurations.
+      }
+
       if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
         logger.info({ signal }, "Stopping embedded PostgreSQL");
         try {

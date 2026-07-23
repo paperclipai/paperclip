@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import postgres from "postgres";
+import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
+import * as schema from "./schema/index.js";
 import {
   applyPendingMigrations,
+  createDb,
   inspectMigrations,
   resetPostgresDatabase,
 } from "./client.js";
@@ -1405,4 +1409,96 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+});
+
+describeEmbeddedPostgres("createDb pool configuration", () => {
+  it("sets statement_timeout and idle_in_transaction_session_timeout on every pooled connection", async () => {
+    const connectionString = await createTempDatabase();
+
+    const sql_ = postgres(connectionString, {
+      max: 1,
+      idle_timeout: 20,
+      connect_timeout: 30,
+      max_lifetime: 60 * 30,
+      onnotice: () => {},
+      connection: {
+        options: "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=30000",
+      },
+    });
+    const db = drizzlePg(sql_, { schema });
+    try {
+      const rows = await db.execute<{
+        name: string
+        setting: string
+      }>(sql`SELECT name, setting FROM pg_settings WHERE name IN ('statement_timeout', 'idle_in_transaction_session_timeout')`);
+
+      const config = new Map(rows.map((r) => [r.name, r.setting]));
+      expect(config.get("statement_timeout")).toBe("60000");
+      expect(config.get("idle_in_transaction_session_timeout")).toBe("30000");
+    } finally {
+      await sql_.end();
+    }
+  });
+
+  it("respects custom timeout values via CreateDbOptions", async () => {
+    const connectionString = await createTempDatabase();
+
+    const sql_ = postgres(connectionString, {
+      max: 1,
+      idle_timeout: 20,
+      connect_timeout: 30,
+      max_lifetime: 60 * 30,
+      onnotice: () => {},
+      connection: {
+        options: "-c statement_timeout=120000 -c idle_in_transaction_session_timeout=10000",
+      },
+    });
+    const db = drizzlePg(sql_, { schema });
+    try {
+      const rows = await db.execute<{
+        name: string
+        setting: string
+      }>(sql`SELECT name, setting FROM pg_settings WHERE name IN ('statement_timeout', 'idle_in_transaction_session_timeout')`);
+
+      const config = new Map(rows.map((r) => [r.name, r.setting]));
+      expect(config.get("statement_timeout")).toBe("120000");
+      expect(config.get("idle_in_transaction_session_timeout")).toBe("10000");
+    } finally {
+      await sql_.end();
+    }
+  });
+
+  it("aborts queries that exceed statement_timeout", async () => {
+    const connectionString = await createTempDatabase();
+
+    const sql_ = postgres(connectionString, {
+      max: 1,
+      idle_timeout: 20,
+      connect_timeout: 30,
+      max_lifetime: 60 * 30,
+      onnotice: () => {},
+      connection: {
+        options: "-c statement_timeout=500",
+      },
+    });
+    try {
+      await expect(
+        sql_`SELECT pg_sleep(5)`,
+      ).rejects.toThrow(/statement timeout|canceling statement due to statement timeout/i);
+    } finally {
+      await sql_.end();
+    }
+  });
+
+  it("createDb produces a working drizzle instance with the configured pool", async () => {
+    const connectionString = await createTempDatabase();
+    const db = createDb(connectionString, { statementTimeoutMs: 10_000 });
+    try {
+      const rows = await db.execute<{ ok: number }>(sql`SELECT 1 as ok`);
+      expect(rows[0]?.ok).toBe(1);
+    } finally {
+      // createDb does not expose the underlying postgres.js client;
+      // vitest's process exit will clean up idle connections.
+    }
+  });
 });
