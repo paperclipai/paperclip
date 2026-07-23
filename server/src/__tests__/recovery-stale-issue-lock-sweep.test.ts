@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -100,6 +100,17 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     return { companyId, agentId, failedRunId, runningRunId };
   }
 
+  async function waitForHeartbeatLockWait() {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const waiting = await db.execute(sql`
+        select 1 from pg_locks where not granted limit 1
+      `);
+      if (waiting.length > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("sweeper did not wait for the heartbeat row lock");
+  }
+
   it("clears lock columns when checkoutRunId points at a terminal heartbeat run", async () => {
     const { companyId, agentId, failedRunId } = await seed();
     const issueId = randomUUID();
@@ -171,6 +182,52 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
     expect(row).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId });
+  });
+
+  it("does not sweep when the owner refreshes while the sweeper waits for its row lock", async () => {
+    const { companyId, agentId } = await seed();
+    const staleRunId = randomUUID();
+    const issueId = randomUUID();
+    const staleAt = new Date(Date.now() - 10 * 60 * 1000);
+    await db.insert(heartbeatRuns).values({
+      id: staleRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: staleAt,
+      updatedAt: staleAt,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Heartbeat refresh during stale-lock sweep",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: staleRunId,
+      executionRunId: staleRunId,
+      executionLockedAt: staleAt,
+    });
+
+    let sweep!: Promise<any>;
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select id from heartbeat_runs where id = ${staleRunId} for update`);
+      sweep = heartbeatService(db).sweepStaleIssueLocks();
+      await waitForHeartbeatLockWait();
+      await tx
+        .update(heartbeatRuns)
+        .set({ updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, staleRunId));
+    });
+    await expect(sweep).resolves.toMatchObject({ cleared: 0, issueIds: [] });
+
+    const row = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ checkoutRunId: staleRunId, executionRunId: staleRunId });
   });
 
   it("does not clear when checkoutRunId is terminal but executionRunId is still running", async () => {
