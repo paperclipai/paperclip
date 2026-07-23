@@ -149,6 +149,24 @@ export function parseCursorJsonl(stdout: string) {
   };
 }
 
+export function isCursorEmptySuccessfulExecution(input: {
+  exitCode: number | null | undefined;
+  errorMessage?: string | null;
+  usage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } | null;
+  summary?: string | null;
+}): boolean {
+  const parsedError = typeof input.errorMessage === "string" ? input.errorMessage.trim() : "";
+  if ((input.exitCode ?? 0) !== 0 || parsedError) return false;
+
+  const usage = input.usage ?? {};
+  const hasTokenUsage =
+    (usage.inputTokens ?? 0) > 0 ||
+    (usage.cachedInputTokens ?? 0) > 0 ||
+    (usage.outputTokens ?? 0) > 0;
+  const hasAssistantOutput = (input.summary ?? "").trim().length > 0;
+  return !hasTokenUsage && !hasAssistantOutput;
+}
+
 export function isCursorUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)
