@@ -78,6 +78,25 @@ export type {
   RuntimeStatusUpdate,
 } from "./runtime-progress.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export type {
+  InferenceFailureCode,
+  InferenceFailureClassification,
+  InferenceFailureRetryPolicy,
+  InferenceFailureDescription,
+  InferenceFailureInput,
+} from "./inference-failure.js";
+export {
+  classifyInferenceFailure,
+  inferenceFailureRetryPolicy,
+  inferenceFailureErrorCode,
+  describeRunFailure,
+} from "./inference-failure.js";
+export type { SandboxInfraFailureCode } from "./sandbox-infra-failure.js";
+export {
+  SANDBOX_NOT_READY_ERROR_CODE,
+  SANDBOX_UNSCHEDULABLE_ERROR_CODE,
+  classifySandboxInfraFailure,
+} from "./sandbox-infra-failure.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {
