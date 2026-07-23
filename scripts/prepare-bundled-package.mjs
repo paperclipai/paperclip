@@ -31,6 +31,21 @@ export function materializePublishManifest(pkg) {
   return publishManifest;
 }
 
+export function createBundledInstallManifest(publishManifest, bundledDependencies) {
+  const bundledDependencyNames = new Set(bundledDependencies);
+  const installManifest = structuredClone(publishManifest);
+
+  for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+    if (!installManifest[section]) continue;
+    installManifest[section] = Object.fromEntries(
+      Object.entries(installManifest[section]).filter(([name]) => bundledDependencyNames.has(name)),
+    );
+    if (Object.keys(installManifest[section]).length === 0) delete installManifest[section];
+  }
+
+  return installManifest;
+}
+
 function patchedDependencyPackageName(specifier) {
   const versionSeparator = specifier.lastIndexOf("@");
   return versionSeparator > 0 ? specifier.slice(0, versionSeparator) : specifier;
@@ -77,15 +92,7 @@ export function prepareBundledPackage(sourceDir, destinationDir) {
 
   const deployedPackagePath = resolve(destinationDir, "package.json");
   const publishManifest = materializePublishManifest(sourcePackage);
-  const installManifest = structuredClone(publishManifest);
-  for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
-    if (!installManifest[section] || !sourcePackage[section]) continue;
-    for (const [name, specifier] of Object.entries(sourcePackage[section])) {
-      if (typeof specifier === "string" && specifier.startsWith("workspace:")) {
-        delete installManifest[section][name];
-      }
-    }
-  }
+  const installManifest = createBundledInstallManifest(publishManifest, bundledDependencies);
   writeFileSync(deployedPackagePath, `${JSON.stringify(installManifest, null, 2)}\n`);
 
   execFileSync(

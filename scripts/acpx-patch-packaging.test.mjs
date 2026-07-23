@@ -16,7 +16,10 @@ import test from "node:test";
 
 import cliEsbuildConfig from "../cli/esbuild.config.mjs";
 import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
-import { materializePublishManifest } from "./prepare-bundled-package.mjs";
+import {
+  createBundledInstallManifest,
+  materializePublishManifest,
+} from "./prepare-bundled-package.mjs";
 
 const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const adapterUtilsPackage = JSON.parse(
@@ -70,6 +73,27 @@ test("bundled package staging materializes workspace dependency versions", () =>
     caret: "^2026.723.0",
     tilde: "~2026.723.0",
   });
+});
+
+test("bundled package staging installs only dependencies included in the tarball", () => {
+  const installManifest = createBundledInstallManifest(
+    {
+      name: "@paperclipai/db",
+      version: "2026.723.0-canary.8",
+      dependencies: {
+        "@paperclipai/shared": "2026.723.0-canary.8",
+        "drizzle-orm": "^0.45.2",
+        "embedded-postgres": "^18.1.0-beta.16",
+      },
+      bundleDependencies: ["embedded-postgres"],
+    },
+    ["embedded-postgres"],
+  );
+
+  assert.deepEqual(installManifest.dependencies, {
+    "embedded-postgres": "^18.1.0-beta.16",
+  });
+  assert.deepEqual(installManifest.bundleDependencies, ["embedded-postgres"]);
 });
 
 test("bundled package staging rebuilds npm dependencies and applies the acpx patch", (t) => {
