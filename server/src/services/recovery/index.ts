@@ -55,11 +55,17 @@ export {
   buildSuccessfulRunHandoffInstruction,
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
+  dispositionForIssueStatus,
   findExistingFinishSuccessfulRunHandoffWake,
   isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
+  readFinishHandoffSourceRunId,
+  recordSuccessfulRunDisposition,
+  SUCCESSFUL_RUN_HANDOFF_RESOLVED_ACTION,
 } from "./successful-run-handoff.js";
 export type {
   SuccessfulRunHandoffNotice,
   SuccessfulRunHandoffDecision,
+  RecordSuccessfulRunDispositionInput,
+  RecordSuccessfulRunDispositionResult,
 } from "./successful-run-handoff.js";
