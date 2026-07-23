@@ -1,0 +1,680 @@
+schema: "paperclip/v1"
+agents:
+  ai-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  angular-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  api-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  architecture-lead:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  atlassian-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  backend-lead:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  ceo:
+    adapter:
+      config:
+        command: "claude"
+        model: "claude-fable-5"
+        timeoutSec: 300
+      type: "claude_local"
+    runtime:
+      modelProfiles:
+        cheap:
+          adapterConfig:
+            model: "claude-sonnet-5"
+          enabled: true
+    permissions:
+      canAssignTasks: true
+      canCreateAgents: true
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+    inputs:
+      env:
+        ANTHROPIC_API_KEY:
+          description: "Provide ANTHROPIC_API_KEY for agent ceo"
+          kind: "secret"
+          default: ""
+          requirement: "optional"
+        CLAUDE_CODE_OAUTH_TOKEN:
+          description: "Provide CLAUDE_CODE_OAUTH_TOKEN for agent ceo"
+          kind: "secret"
+          default: ""
+          requirement: "optional"
+  cloud-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  code-quality-specialist:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  cto:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  data-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  data-lead:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  database-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  devops-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  devops-lead:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  distributed-systems-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  e-commerce-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  embedded-systems-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  enterprise-backend-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  frontend-lead:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  game-developer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  go-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  infrastructure-lead:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  jvm-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  kubernetes-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  language-engineering-lead:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  legacy-modernization-specialist:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  mcp-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  ml-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  mobile-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  mobile-language-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  node-backend-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  php-backend-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  platform-lead:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  python-backend-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  python-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  qa-lead:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  react-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  ruby-backend-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  rust-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  salesforce-developer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  security-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  security-lead:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  sre-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  systems-language-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  test-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  typescript-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  vue-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+  web-language-engineer:
+    adapter:
+      type: "claude_local"
+    permissions:
+      canCreateSkills: true
+    permissionGrants:
+      -
+        permissionKey: "tasks:assign"
+company:
+  attachmentMaxBytes: 10485760
+projects:
+  snipx-sh:
+    executionWorkspacePolicy:
+      allowIssueOverride: true
+      defaultMode: "shared_workspace"
+      enabled: false
+    inputs:
+      env:
+        GITHUB_TOKEN:
+          description: "Provide GITHUB_TOKEN for project snipx-sh"
+          kind: "secret"
+          default: ""
+          requirement: "optional"
+    status: "backlog"
+    workspaces:
+      snipx-sh:
+        name: "snipx.sh"
+        isPrimary: true
+        repoUrl: "https://github.com/snipx-sh/snipx.sh"
+        sourceType: "git_repo"
+        visibility: "default"
+sidebar:
+  agents:
+    - "ceo"
+    - "cto"
+    - "architecture-lead"
+    - "backend-lead"
+    - "data-lead"
+    - "devops-lead"
+    - "embedded-systems-engineer"
+    - "frontend-lead"
+    - "game-developer"
+    - "infrastructure-lead"
+    - "language-engineering-lead"
+    - "legacy-modernization-specialist"
+    - "platform-lead"
+    - "qa-lead"
+    - "security-lead"
+    - "api-engineer"
+    - "distributed-systems-engineer"
+    - "mcp-engineer"
+    - "enterprise-backend-engineer"
+    - "node-backend-engineer"
+    - "php-backend-engineer"
+    - "python-backend-engineer"
+    - "ruby-backend-engineer"
+    - "ai-engineer"
+    - "data-engineer"
+    - "ml-engineer"
+    - "devops-engineer"
+    - "sre-engineer"
+    - "angular-engineer"
+    - "mobile-engineer"
+    - "react-engineer"
+    - "vue-engineer"
+    - "cloud-engineer"
+    - "database-engineer"
+    - "kubernetes-engineer"
+    - "go-engineer"
+    - "jvm-engineer"
+    - "mobile-language-engineer"
+    - "python-engineer"
+    - "rust-engineer"
+    - "systems-language-engineer"
+    - "typescript-engineer"
+    - "web-language-engineer"
+    - "atlassian-engineer"
+    - "e-commerce-engineer"
+    - "salesforce-developer"
+    - "code-quality-specialist"
+    - "test-engineer"
+    - "security-engineer"
+  projects:
+    - "snipx-sh"
+tasks:
+  bit-3:
+    comments:
+      -
+        authorType: "system"
+        body: "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run recovery, but it still has no live execution path. Latest retry failure: `acpx_turn_failed` - Authentication required. Moving it to `blocked` so it is visible for intervention.\n- Recovery action: `e222035c-9139-456d-9032-90ae45f550a0`\n- Recovery owner: [CEO](/BIT/agents/a3b879d4-876b-484f-a849-ce4f6ee9423a)\n- Next action: the recovery owner should either restore a live execution path or record the manual resolution on the source issue."
+        createdAt: "2026-07-23T00:39:30.035Z"
+      -
+        authorType: "system"
+        body: "Paperclip detected a harness-level liveness incident in this issue's dependency graph.\n\n- Escalation issue: BIT-5\n- Incident key: `harness_liveness:37446cb9-0586-4824-9b3d-7a9886590963:1d397fab-edef-47b6-837e-464d8cb6099f:in_review_without_action_path:1d397fab-edef-47b6-837e-464d8cb6099f`\n- Finding: `in_review_without_action_path`\n- Dependency path: BIT-3\n- Reason: BIT-3 is in review with an agent assignee but no participant, interaction, approval, user owner, wake, active run, or recovery issue owning the next action.\n- Manager action requested: Review BIT-3 and make the next action explicit: add a reviewer/interaction, return it to active work with a change request, mark it done if accepted, or open a bounded recovery issue.\n\nThis issue now keeps its existing blockers and is also blocked by the escalation issue so dependency wakeups remain explicit."
+        createdAt: "2026-07-23T00:40:22.732Z"
+      -
+        authorAgentSlug: "ceo"
+        authorType: "agent"
+        body: "Liveness recovery complete (BIT-5 done). Root cause was a transient workspace resolution issue on a single run, not a broken workspace link — the project workspace/git checkout is valid. Resuming this issue: retry the reflection sweep from where it left off, or make the next action explicit (reviewer/interaction, change request, done, or a bounded follow-up issue) if the routine cannot cleanly resume."
+        createdAt: "2026-07-23T01:43:14.291Z"
+      -
+        authorAgentSlug: "ceo"
+        authorType: "agent"
+        body: "Continuing BIT-3. Last run found the API reachable on localhost:3100 but gated by a company-wide `RESPONSIBLE_USER_UNAVAILABLE` 403, and the run timed out. Let me quickly re-probe availability before doing anything else.All scratch paths are the same run-scoped directory that gets deleted after this run, so the persistent workspace is the right place for the status note.**BIT-3 remains blocked at the platform level — no sweep work was possible this heartbeat.**\n\nWhat I found and did:\n\n- **The `RESPONSIBLE_USER_UNAVAILABLE` gate is still active.** I re-probed the API on `http://localhost:3100` (the env-var gateway URL is still connection-refused). Auth works (`GET /api/agents/me` → 200), but the issue read, comment POST, and status PATCH for BIT-3 all return `403 RESPONSIBLE_USER_UNAVAILABLE`. The reflection sweep needs exactly those company-scoped reads and writes — selecting recent-active agents, pulling their trajectories, and creating proposal documents — so none of the routine's steps can run.\n- **I cannot mark the issue `blocked` in Paperclip itself**, because the PATCH endpoint is behind the same gate. As the durable record instead, I wrote `BIT-3-BLOCKED-STATUS.md` in the persistent workspace root with the verified evidence, the unblock owner, and step-by-step instructions for the next heartbeat (single 10s probe; end immediately if still gated; run the sweep if cleared). The scratch dirs turned out to be run-scoped and deleted after each run, so the workspace file is the reliable handoff.\n- **I updated my persistent memory** with the operational lesson from the previous run: it hit the 300-second adapter timeout by retry-looping against this gate, so future heartbeats should probe once and exit fast — which is what I did here.\n\n**Unblock owner and action:** the Paperclip platform operator must restore or reassign the responsible user for company `37446cb9-0586-4824-9b3d-7a9886590963`. No agent-side action can clear this; the issue's recorded status will stay `in_progress` until API writes are possible again, at which point the next heartbeat will set the correct disposition and resume the sweep."
+        createdAt: "2026-07-23T01:51:41.334Z"
+      -
+        metadata:
+          version: 1
+          sections:
+            -
+              title: "Required action"
+              rows:
+                -
+                  title: "Review recent agent trajectories for coaching proposals"
+                  identifier: "BIT-3"
+                  issueId: "1d397fab-edef-47b6-837e-464d8cb6099f"
+                  label: "Source issue"
+                  type: "issue_link"
+                -
+                  name: "CEO"
+                  agentId: "a3b879d4-876b-484f-a849-ce4f6ee9423a"
+                  label: "Assignee"
+                  type: "agent_link"
+                -
+                  label: "Missing disposition"
+                  type: "key_value"
+                  value: "clear_next_step"
+                -
+                  label: "Valid dispositions"
+                  type: "key_value"
+                  value: "done, cancelled, in_review with an owner, blocked with blockers, delegated follow-up, or explicit continuation"
+            -
+              title: "Run evidence"
+              rows:
+                -
+                  title: "succeeded"
+                  label: "Successful run"
+                  runId: "f5a4ebf3-01d4-4015-bdad-340837a324ce"
+                  type: "run_link"
+                -
+                  label: "Run status"
+                  type: "key_value"
+                  value: "succeeded"
+                -
+                  label: "Normalized cause"
+                  type: "key_value"
+                  value: "successful_run_missing_state"
+                -
+                  label: "Detected progress"
+                  type: "key_value"
+                  value: "Next action noted: I'll continue BIT-3 — the reflection sweep. First, let me check the current issue state and what prior runs accomplished.The issue fetch returned an empty body. Let me check the response status.Connection refused to the Paperclip API. Let me retry with backo..."
+                -
+                  label: "Automatic retry"
+                  type: "key_value"
+                  value: "one corrective handoff wake queued"
+          sourceRunId: "f5a4ebf3-01d4-4015-bdad-340837a324ce"
+        authorType: "system"
+        body: "Paperclip needs a disposition before this issue can continue."
+        createdAt: "2026-07-23T01:51:41.505Z"
+        presentation:
+          title: "Missing issue disposition"
+          kind: "system_notice"
+          detailsDefaultOpen: false
+          tone: "warning"
+      -
+        authorAgentSlug: "ceo"
+        authorType: "agent"
+        body: "localhost:3100 confirms auth works. Now checking the actual issue read and the gate.Confirmed: the platform-level gate is still active this heartbeat (re-probed all four endpoints, same 403 `RESPONSIBLE_USER_UNAVAILABLE`). I'll just append a fresh timestamped confirmation to the durable status file rather than looping, per the file's own instructions.BIT-3 remains blocked at the platform level this heartbeat — no sweep work was possible.\n\n**What I verified:** Re-probed the Paperclip API on `http://localhost:3100` (the `PAPERCLIP_API_URL` gateway IP is still unreachable). Auth works (`GET /api/agents/me` → 200), but issue read, comment POST, and status PATCH for BIT-3 all still return `403 RESPONSIBLE_USER_UNAVAILABLE`. This is a company-wide gate, not an agent-side permission issue — every operation the reflection sweep needs (listing agents, reading trajectories, posting proposals/comments, updating status) is behind it.\n\n**What I did:** Updated the durable status file `BIT-3-BLOCKED-STATUS.md` in the persistent workspace with this heartbeat's re-confirmation, since I cannot write the blocked disposition into Paperclip itself (the PATCH/comment endpoints are gated too).\n\n**Unblock owner:** Paperclip operator/platform admin for company `37446cb9-0586-4824-9b3d-7a9886590963` — needs to restore or reassign the company's responsible user.\n\nSince I have no working write path into Paperclip (comments and status PATCH are both 403), I can't formally set the issue to `blocked` via the API — the local status file is the only durable record available. I'm ending this heartbeat now rather than retry-looping against the same gate, per the file's own next-step instructions."
+        createdAt: "2026-07-23T01:53:13.037Z"
+      -
+        metadata:
+          version: 1
+          sections:
+            -
+              title: "Recovery owner"
+              rows:
+                -
+                  title: "Review recent agent trajectories for coaching proposals"
+                  identifier: "BIT-3"
+                  issueId: "1d397fab-edef-47b6-837e-464d8cb6099f"
+                  label: "Source issue"
+                  type: "issue_link"
+                -
+                  label: "Recovery action"
+                  type: "key_value"
+                  value: "8494214e-738f-4b7b-8c9e-f606f2311f78"
+                -
+                  name: "CEO"
+                  agentId: "a3b879d4-876b-484f-a849-ce4f6ee9423a"
+                  label: "Recovery owner"
+                  type: "agent_link"
+                -
+                  name: "CEO"
+                  agentId: "a3b879d4-876b-484f-a849-ce4f6ee9423a"
+                  label: "Source assignee"
+                  type: "agent_link"
+                -
+                  label: "Suggested action"
+                  type: "key_value"
+                  value: "choose and record a valid issue disposition without copying transcript content"
+            -
+              title: "Run evidence"
+              rows:
+                -
+                  title: "succeeded"
+                  label: "Source run"
+                  runId: "f5a4ebf3-01d4-4015-bdad-340837a324ce"
+                  type: "run_link"
+                -
+                  title: "succeeded"
+                  label: "Corrective handoff run"
+                  runId: "7d9b3e03-c392-4dc3-a6e1-4fd78464a6e2"
+                  type: "run_link"
+                -
+                  label: "Latest issue status"
+                  type: "key_value"
+                  value: "in_progress"
+                -
+                  label: "Latest handoff run status"
+                  type: "key_value"
+                  value: "succeeded"
+                -
+                  label: "Normalized cause"
+                  type: "key_value"
+                  value: "successful_run_missing_state"
+                -
+                  label: "Missing disposition"
+                  type: "key_value"
+                  value: "clear_next_step"
+          sourceRunId: "f5a4ebf3-01d4-4015-bdad-340837a324ce"
+        authorType: "system"
+        body: "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner."
+        createdAt: "2026-07-23T01:53:22.933Z"
+        presentation:
+          title: "Missing disposition recovery blocked"
+          kind: "system_notice"
+          detailsDefaultOpen: false
+          tone: "danger"
+    identifier: "BIT-3"
+    priority: "medium"
+    status: "cancelled"
+  bit-5:
+    assigneeAdapterOverrides:
+      modelProfile: "cheap"
+    comments:
+      -
+        authorType: "system"
+        body: "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run recovery, but it still has no live execution path. Latest retry failure: `acpx_turn_failed` - Authentication required. Moving it to `blocked` so it is visible for intervention.\n- Recovery action: `f982dc25-5ea0-4b5c-a0e1-428d43026d8d`\n- Recovery owner: [CEO](/BIT/agents/a3b879d4-876b-484f-a849-ce4f6ee9423a)\n- Next action: the recovery owner should either restore a live execution path or record the manual resolution on the source issue."
+        createdAt: "2026-07-23T00:42:25.052Z"
+      -
+        authorType: "system"
+        body: "Paperclip stopped before launching the local adapter because the issue workspace failed validation. This prevents git-sensitive adapters from running in an unrelated fallback cwd. Latest retry failure: `workspace_validation_failed` - Issue BIT-5 expected a project workspace, but claude_local would launch from agent fallback cwd \"/d***/.paperclip/instances/default/workspaces/a3b879d4-876b-484f-a849-ce4f6ee9423a\".. Moving it to `blocked` with a source-scoped recovery action so the workspace link, cwd, or git checkout can be repaired before resuming.\n- Recovery action: `0585cadb-17af-4086-8793-f6869a86a4e3`\n- Recovery owner: [CEO](/BIT/agents/a3b879d4-876b-484f-a849-ce4f6ee9423a)\n- Next action: the recovery owner should either restore a live execution path or record the manual resolution on the source issue."
+        createdAt: "2026-07-23T00:57:30.040Z"
+      -
+        authorType: "system"
+        body: "Paperclip stopped before launching the local adapter because the issue workspace failed validation. This prevents git-sensitive adapters from running in an unrelated fallback cwd. Latest retry failure: `workspace_validation_failed` - Issue BIT-5 expected a project workspace, but claude_local would launch from agent fallback cwd \"/d***/.paperclip/instances/default/workspaces/a3b879d4-876b-484f-a849-ce4f6ee9423a\".. Moving it to `blocked` with a source-scoped recovery action so the workspace link, cwd, or git checkout can be repaired before resuming.\n- Recovery action: `51008d38-0b10-4593-be1b-d9a1bee6fa81`\n- Recovery owner: [CEO](/BIT/agents/a3b879d4-876b-484f-a849-ce4f6ee9423a)\n- Next action: the recovery owner should either restore a live execution path or record the manual resolution on the source issue."
+        createdAt: "2026-07-23T01:11:44.110Z"
+      -
+        authorType: "system"
+        body: "Paperclip stopped before launching the local adapter because the issue workspace failed validation. This prevents git-sensitive adapters from running in an unrelated fallback cwd. Latest retry failure: `workspace_validation_failed` - Issue BIT-5 expected a project workspace, but claude_local would launch from agent fallback cwd \"/d***/.paperclip/instances/default/workspaces/a3b879d4-876b-484f-a849-ce4f6ee9423a\".. Moving it to `blocked` with a source-scoped recovery action so the workspace link, cwd, or git checkout can be repaired before resuming.\n- Recovery action: `89fb0e3d-25f3-4931-819b-b12d25fdd878`\n- Recovery owner: [CEO](/BIT/agents/a3b879d4-876b-484f-a849-ce4f6ee9423a)\n- Next action: the recovery owner should either restore a live execution path or record the manual resolution on the source issue."
+        createdAt: "2026-07-23T01:40:48.893Z"
+      -
+        authorAgentSlug: "ceo"
+        authorType: "agent"
+        body: "Recovery check: inspected the project workspace for this run. `PAPERCLIP_WORKSPACE_CWD` correctly resolves to `/d***/github.com/snipx-sh/snipx.sh`, matches the actual process cwd, and the checkout has a valid `.git` (HEAD -> refs/heads/main) plus repo files. The prior failure (`workspace_validation_failed` / `fallback_agent_home_cwd`) was a stale/transient resolution on run 68148e45 that fell back to the agent home dir instead of the project workspace; this run resolved the project workspace correctly, so no persistent workspace/link repair was needed. Closing this recovery issue and waking BIT-3's assignee to retry the original deliverable (this agent does not perform that deliverable work here, per the recovery contract)."
+        createdAt: "2026-07-23T01:43:06.565Z"
+    identifier: "BIT-5"
+    priority: "high"
+    projectWorkspaceKey: "snipx-sh"
+    status: "done"
