@@ -338,7 +338,11 @@ export async function testEnvironment(
       }
 
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
-      args.push(...buildClaudeProbePermissionArgs({ dangerouslySkipPermissions, targetIsRemote }));
+      args.push(...buildClaudeProbePermissionArgs({
+        dangerouslySkipPermissions,
+        targetIsRemote,
+        localProcessUid: process.getuid?.() ?? null,
+      }));
       if (chrome) args.push("--chrome");
       // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
       if (model && (!hasBedrock || isBedrockModelId(model))) {
