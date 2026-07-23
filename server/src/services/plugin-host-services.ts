@@ -2071,11 +2071,22 @@ export function buildHostServices(
         // `issue` snapshot: a concurrent close/unassign/reassign landing
         // between the initial fetch and here would otherwise wake the wrong
         // (or no-longer-relevant) agent off stale state.
+        //
+        // The comment is already committed above, so this best-effort wake
+        // must never change that outcome: a failed re-fetch is logged and
+        // falls back to the in-hand snapshot rather than rejecting
+        // createComment — a rejection would surface to the caller as a failed
+        // write and invite a retry that inserts a duplicate comment.
         if (params.actorUserId) {
-          const postCommentIssue = await issues.getById(issue.id);
+          const postCommentIssue = (await issues.getById(issue.id).catch((err) => {
+            logger.warn(
+              { err, issueId: issue.id, commentId: comment.id },
+              "failed to re-fetch issue for plugin-relayed human comment wake; falling back to pre-insert snapshot",
+            );
+            return null;
+          })) ?? issue;
           if (
-            postCommentIssue
-            && postCommentIssue.assigneeAgentId
+            postCommentIssue.assigneeAgentId
             && postCommentIssue.status !== "done"
             && postCommentIssue.status !== "cancelled"
           ) {

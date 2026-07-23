@@ -1029,6 +1029,34 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("keeps the comment write successful and falls back to the in-hand snapshot when the wake re-fetch fails", async () => {
+    const app = await installActor(createApp());
+    // The comment is already committed before the wake-decision re-fetch runs.
+    // If that best-effort re-fetch throws, the route must still return 201 for
+    // the persisted comment (a 5xx would invite a retry that duplicates it) and
+    // fall back to the in-hand snapshot so a legitimate wake isn't dropped.
+    mockIssueService.getById
+      .mockResolvedValueOnce(makeIssue("in_progress"))
+      .mockRejectedValueOnce(new Error("transient read failure"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-refetch-fail",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "Still here?",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Still here?" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_commented" }),
+    ));
+  });
+
   it("passes validated comment presentation fields to trusted board comment writes", async () => {
     const app = await installActor(createApp());
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
