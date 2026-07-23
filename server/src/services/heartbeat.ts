@@ -4115,15 +4115,7 @@ export function shouldAutoCheckoutIssueForWake(input: {
   const executionState = parseIssueExecutionState(input.issueExecutionState);
   if (executionState?.status === "pending") return false;
 
-  const issueStatus = readNonEmptyString(input.issueStatus);
-  if (
-    issueStatus !== "todo" &&
-    issueStatus !== "backlog" &&
-    issueStatus !== "blocked" &&
-    issueStatus !== "in_progress"
-  ) {
-    return false;
-  }
+  if (!issueStatusOwnsExecutionLock(input.issueStatus)) return false;
 
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
@@ -4131,6 +4123,22 @@ export function shouldAutoCheckoutIssueForWake(input: {
   if (wakeReason === "source_scoped_recovery_action") return false;
   if (wakeReason.startsWith("execution_")) return false;
 
+  return true;
+}
+
+function issueStatusOwnsExecutionLock(status: string | null | undefined) {
+  const issueStatus = readNonEmptyString(status);
+  return issueStatus === "todo" ||
+    issueStatus === "backlog" ||
+    issueStatus === "blocked" ||
+    issueStatus === "in_progress";
+}
+
+function shouldWakeOwnIssueExecutionLock(contextSnapshot: Record<string, unknown> | null | undefined) {
+  if (contextSnapshot?.dependencyBlockedInteraction === true) return false;
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  if (wakeReason === "issue_comment_mentioned") return false;
+  if (wakeReason === "source_scoped_recovery_action") return false;
   return true;
 }
 
@@ -10765,8 +10773,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // not at queue time. Guard is idempotent — safe if called more than once.
     const claimedContext = parseObject(claimed.contextSnapshot);
     const claimedIssueId = readNonEmptyString(claimedContext.issueId);
-    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
+    const wakeOwnsExecutionLock = shouldWakeOwnIssueExecutionLock(claimedContext);
+    if (claimedIssueId && wakeOwnsExecutionLock) {
       const claimedAgent = await getAgent(claimed.agentId);
       await db
         .update(issues)
@@ -10780,10 +10788,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           and(
             eq(issues.id, claimedIssueId),
             eq(issues.companyId, claimed.companyId),
+            inArray(issues.status, ["todo", "backlog", "blocked", "in_progress"]),
             // Mention/context runs can touch an issue, but only the current assignee
             // owns the issue execution lock shown as the active run.
             eq(issues.assigneeAgentId, claimed.agentId),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+          ),
+        );
+    } else if (claimedIssueId) {
+      await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: claimedAt,
+        })
+        .where(
+          and(
+            eq(issues.id, claimedIssueId),
+            eq(issues.companyId, claimed.companyId),
+            eq(issues.executionRunId, claimed.id),
           ),
         );
     }
@@ -14752,16 +14777,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: newRun.id,
-            executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
-            executionLockedAt: now,
-            updatedAt: now,
-          })
-          // Promoted mention wakes are issue-scoped, not issue ownership transfers.
-          .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)));
+        if (shouldWakeOwnIssueExecutionLock(promotedContextSnapshot)) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: newRun.id,
+              executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
+              executionLockedAt: now,
+              updatedAt: now,
+            })
+            // Promoted mention wakes are issue-scoped, not issue ownership transfers.
+            .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)));
+        }
 
         return {
           kind: "promoted" as const,
@@ -15664,47 +15691,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .where(eq(issues.id, issue.id));
         }
 
-        if (!activeExecutionRun) {
-          const legacyRun = await tx
-            .select()
-            .from(heartbeatRuns)
-            .where(
-              and(
-                eq(heartbeatRuns.companyId, issue.companyId),
-                inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-              ),
-            )
-            .orderBy(
-              sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
-              asc(heartbeatRuns.createdAt),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-
-          if (legacyRun) {
-            if (await cancelStaleScheduledRetry(legacyRun)) {
-              activeExecutionRun = null;
-            } else {
-              activeExecutionRun = legacyRun;
-              const legacyAgent = await tx
-                .select({ name: agents.name })
-                .from(agents)
-                .where(eq(agents.id, legacyRun.agentId))
-                .then((rows) => rows[0] ?? null);
-              await tx
-                .update(issues)
-                .set({
-                  executionRunId: legacyRun.id,
-                  executionAgentNameKey: normalizeAgentNameKey(legacyAgent?.name),
-                  executionLockedAt: new Date(),
-                  updatedAt: new Date(),
-                })
-                .where(eq(issues.id, issue.id));
-            }
-          }
-        }
-
         const dependencyReadiness = await issuesSvc.listDependencyReadiness(
           issue.companyId,
           [issue.id],
@@ -15729,6 +15715,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             issue.id,
             dependencyReadiness.unresolvedBlockerIssueIds,
           );
+        }
+
+        if (
+          !activeExecutionRun &&
+          issue.assigneeAgentId &&
+          !blockedInteractionWake &&
+          issueStatusOwnsExecutionLock(issue.status)
+        ) {
+          // Legacy backfill must honor the same assignee-only ownership boundary as
+          // claimQueuedRun(); otherwise a blocked interaction wake can re-stamp a
+          // helper run as the active execution owner immediately after the helper
+          // has already returned the issue to blocked/unlocked state.
+          const legacyRun = await tx
+            .select()
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, issue.companyId),
+                eq(heartbeatRuns.agentId, issue.assigneeAgentId),
+                inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              ),
+            )
+            .orderBy(
+              sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
+              asc(heartbeatRuns.createdAt),
+            )
+            .limit(20)
+            .then((rows) =>
+              rows.find((row) => shouldWakeOwnIssueExecutionLock(parseObject(row.contextSnapshot))) ?? null
+            );
+
+          if (legacyRun) {
+            if (await cancelStaleScheduledRetry(legacyRun)) {
+              activeExecutionRun = null;
+            } else {
+              activeExecutionRun = legacyRun;
+              const legacyAgent = await tx
+                .select({ name: agents.name })
+                .from(agents)
+                .where(eq(agents.id, legacyRun.agentId))
+                .then((rows) => rows[0] ?? null);
+              await tx
+                .update(issues)
+                .set({
+                  executionRunId: legacyRun.id,
+                  executionAgentNameKey: normalizeAgentNameKey(legacyAgent?.name),
+                  executionLockedAt: new Date(),
+                  updatedAt: new Date(),
+                })
+                .where(eq(issues.id, issue.id));
+            }
+          }
         }
 
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {

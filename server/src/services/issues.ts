@@ -3762,15 +3762,41 @@ export function issueService(db: Db) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
   }
 
+  async function materializeReadableIssue(row: typeof issues.$inferSelect | null) {
+    if (!row) return null;
+
+    // Read paths should not surface orphaned lock pointers after the owning
+    // heartbeat run has already finished or disappeared.
+    const clearedCheckout =
+      row.checkoutRunId
+        ? await clearCheckoutRunIfTerminal(row.id)
+        : false;
+    const clearedExecution =
+      !clearedCheckout && row.executionRunId && (row.checkoutRunId == null || row.executionRunId === row.checkoutRunId)
+        ? await clearExecutionRunIfTerminal(row.id)
+        : false;
+
+    const stableRow =
+      clearedCheckout || clearedExecution
+        ? await db
+          .select()
+          .from(issues)
+          .where(eq(issues.id, row.id))
+          .then((rows) => rows[0] ?? null)
+        : row;
+    if (!stableRow) return null;
+
+    const [enriched] = await withIssueLabels(db, [stableRow]);
+    return enriched;
+  }
+
   async function getIssueByUuid(id: string) {
     const row = await db
       .select()
       .from(issues)
       .where(eq(issues.id, id))
       .then((rows) => rows[0] ?? null);
-    if (!row) return null;
-    const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    return materializeReadableIssue(row);
   }
 
   async function getIssueByIdentifier(identifier: string) {
@@ -3779,9 +3805,7 @@ export function issueService(db: Db) {
       .from(issues)
       .where(eq(issues.identifier, identifier.toUpperCase()))
       .then((rows) => rows[0] ?? null);
-    if (!row) return null;
-    const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    return materializeReadableIssue(row);
   }
 
   async function getCurrentScheduledRetryForIssue(issueId: string, companyId: string): Promise<IssueScheduledRetryRow | null> {
