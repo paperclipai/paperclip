@@ -1,0 +1,25 @@
+services:
+  api:
+    build: ./backend
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - jarvis_data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  frontend:
+    image: python:3.12-slim
+    working_dir: /frontend
+    volumes:
+      - ./frontend:/frontend:ro
+    command: python -m http.server 5173
+    ports:
+      - "5173:5173"
+    restart: unless-stopped
+volumes:
+  jarvis_data:

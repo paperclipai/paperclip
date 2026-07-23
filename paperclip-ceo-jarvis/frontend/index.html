@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Paperclip CEO Jarvis v5</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Paperclip CEO Operating System · JARVIS v5</p>
+        <h1>Executive Command Center</h1>
+        <p class="sub">Always-on chief of staff: briefings, transparent rationale, agent swarms, approvals, temporal foresight, risk, mission-control playbooks, autonomy kernel, enchantment lab, constitutional AI, zero-trust, carbon-aware routing, continuous evaluation, workforce marketplace, company ecosystem, engineering catalog, integrations, and enough British restraint to avoid becoming a supervillain dashboard.</p>
+      </div>
+      <div class="hero-actions">
+        <div class="status" id="status">Checking API…</div>
+        <button onclick="loadUnifiedDashboard()">Refresh Live Dashboard</button>
+      </div>
+    </section>
+
+    <section class="tabs">
+      <button class="active" onclick="showTab('overview', this)">Overview</button>
+      <button onclick="showTab('jarvis2', this)">Command Center</button>
+      <button onclick="showTab('briefing', this)">Briefing</button>
+      <button onclick="showTab('intelligence', this)">Intelligence</button>
+      <button onclick="showTab('agents', this)">Agents</button>
+      <button onclick="showTab('governance', this)">Governance</button>
+      <button onclick="showTab('temporal', this)">Temporal</button>
+      <button onclick="showTab('content', this)">Content</button>
+      <button onclick="showTab('mission', this)">Mission Control</button>
+      <button onclick="showTab('federation', this)">Federation</button>
+      <button onclick="showTab('capabilities', this)">Capabilities</button>
+      <button onclick="showTab('autonomy', this)">Autonomy</button>
+      <button onclick="showTab('enchantments', this)">Enchantments</button>
+      <button onclick="showTab('v5systems', this)">V5 Systems</button>
+      <button onclick="showTab('integrations', this)">Integrations</button>
+    </section>
+
+    <section id="overview" class="panel active grid">
+      <article class="card wide">
+        <div class="card-head"><h2>Unified Live Dashboard</h2><button onclick="loadUnifiedDashboard()">Refresh</button></div>
+        <div id="unifiedDashboard" class="jarvis2-view">Loading live dashboard…</div>
+      </article>
+      <article class="card wide">
+        <div class="card-head"><h2>AI Provider Catalog</h2><button onclick="loadUnifiedDashboard(true)">Refresh Catalog</button></div>
+        <div class="jarvis2-provider-toolbar">
+          <input id="providerSearch" placeholder="Search providers or models" oninput="unifiedProviderSearchChanged()" />
+          <select id="providerSelect" onchange="unifiedSelectProvider(this.value)"></select>
+          <select id="modelSelect" onchange="unifiedSelectModel(this.value)"></select>
+        </div>
+        <div id="providerCatalog" class="jarvis2-view">Loading providers…</div>
+      </article>
+      <article class="card wide">
+        <div class="card-head"><h2>Corporate Analytics</h2><button onclick="loadUnifiedDashboard(true)">Refresh Analytics</button></div>
+        <div id="corpAnalytics" class="jarvis2-view">Loading analytics…</div>
+      </article>
+      <article class="card wide">
+        <div class="card-head"><h2>Raw Snapshot</h2><button onclick="loadSnapshot()">Load</button></div>
+        <pre id="snapshot">No snapshot loaded.</pre>
+      </article>
+      <article class="card">
+        <h2>Chat</h2>
+        <textarea id="chatInput" placeholder="Morning, Jarvis. What needs my attention?"></textarea>
+        <button onclick="sendChat()">Send</button>
+        <pre id="chatOutput">Standing by.</pre>
+      </article>
+    </section>
+
+    <section id="jarvis2" class="panel grid">
+      <article class="card wide jarvis2-shell">
+        <div class="card-head jarvis2-head">
+          <div>
+            <h2>JARVIS Command Center</h2>
+            <p class="jarvis2-kicker">Imported Jarvis2 views: dashboard, portfolio, decisions, agents, analytics, briefing.</p>
+          </div>
+          <div class="jarvis2-hero">
+            <div class="status" id="jarvis2Status">Open the tab to load the live command center.</div>
+            <div class="jarvis2-clock"><span>System Time</span><strong id="jarvis2Time">--:--:--</strong></div>
+          </div>
+        </div>
+        <div class="jarvis2-nav">
+          <button data-view="dashboard" onclick="jarvis2SetView('dashboard')">Dashboard</button>
+          <button data-view="portfolio" onclick="jarvis2SetView('portfolio')">Portfolio</button>
+          <button data-view="decisions" onclick="jarvis2SetView('decisions')">Decisions</button>
+          <button data-view="agents" onclick="jarvis2SetView('agents')">Agents</button>
+          <button data-view="analytics" onclick="jarvis2SetView('analytics')">Analytics</button>
+          <button data-view="briefing" onclick="jarvis2SetView('briefing')">Briefing</button>
+          <button class="ghost" onclick="loadJarvis2(true)">Refresh</button>
+        </div>
+        <div class="jarvis2-meta" id="jarvis2Meta">Live snapshot pending.</div>
+        <div id="jarvis2View" class="jarvis2-view">Open the command center to load the live portfolio, decisions, agents, analytics, and briefing views.</div>
+      </article>
+    </section>
+
+    <section id="briefing" class="panel grid">
+      <article class="card wide">
+        <div class="card-head"><h2>Morning Briefing</h2><button onclick="loadBriefing()">Generate</button></div>
+        <pre id="briefingOut">No briefing loaded.</pre>
+      </article>
+      <article class="card">
+        <h2>Decision Simulator</h2>
+        <input id="decisionTitle" placeholder="Decision title" value="" />
+        <textarea id="decisionBody"></textarea>
+        <button onclick="simulateDecision()">Simulate</button>
+        <pre id="decisionOut">Awaiting decision.</pre>
+      </article>
+      <article class="card">
+        <h2>Board Pack</h2>
+        <button onclick="loadBoardPack()">Generate</button>
+        <pre id="boardOut">No board pack.</pre>
+      </article>
+    </section>
+
+    <section id="intelligence" class="panel grid">
+      <article class="card wide">
+        <h2>Transparent Rationale</h2>
+        <textarea id="reasonQuestion"></textarea>
+        <button onclick="reason()">Analyze</button>
+        <pre id="reasonOut">No rationale yet.</pre>
+      </article>
+      <article class="card">
+        <h2>Knowledge Search</h2>
+        <input id="knowledgeQuery" value="" />
+        <button onclick="searchKnowledge()">Search</button>
+        <pre id="knowledgeOut">No search.</pre>
+      </article>
+      <article class="card">
+        <h2>Context Bundle</h2>
+        <button onclick="loadContext()">Load</button>
+        <pre id="contextOut">No context.</pre>
+      </article>
+    </section>
+
+    <section id="agents" class="panel grid">
+      <article class="card">
+        <div class="card-head"><h2>Agent Federation</h2><button onclick="loadAgents()">Load</button></div>
+        <pre id="agentsOut">No agents loaded.</pre>
+      </article>
+      <article class="card wide">
+        <h2>Run Swarm</h2>
+        <input id="swarmMode" value="consensus" />
+        <textarea id="swarmTask"></textarea>
+        <button onclick="runSwarm()">Run Swarm</button>
+        <pre id="swarmOut">No swarm run.</pre>
+      </article>
+    </section>
+
+    <section id="governance" class="panel grid">
+      <article class="card">
+        <div class="card-head"><h2>Approvals</h2><button onclick="loadApprovals()">Load</button></div>
+        <pre id="approvalsOut">No approvals loaded.</pre>
+      </article>
+      <article class="card">
+        <h2>Create Approval</h2>
+        <input id="approvalTitle" value="" />
+        <textarea id="approvalAction"></textarea>
+        <button onclick="createApproval()">Create</button>
+        <pre id="approvalCreateOut">No approval created.</pre>
+      </article>
+      <article class="card">
+        <h2>Risk Register</h2>
+        <button onclick="loadRisks()">Load</button>
+        <pre id="riskOut">No risks loaded.</pre>
+      </article>
+      <article class="card">
+        <h2>Audit Log</h2>
+        <button onclick="loadAudit()">Load</button>
+        <pre id="auditOut">No audit loaded.</pre>
+      </article>
+    </section>
+
+    <section id="temporal" class="panel grid">
+      <article class="card wide">
+        <div class="card-head"><h2>Execution Timeline</h2><button onclick="loadTimeline()">Forecast</button></div>
+        <pre id="timelineOut">No timeline.</pre>
+      </article>
+      <article class="card">
+        <h2>Opportunity Windows</h2>
+        <button onclick="loadWindows()">Load</button>
+        <pre id="windowsOut">No windows.</pre>
+      </article>
+      <article class="card">
+        <h2>Promise / Tech Debt</h2>
+        <button onclick="loadDebt()">Load</button>
+        <pre id="debtOut">No debt loaded.</pre>
+      </article>
+    </section>
+
+    <section id="content" class="panel grid">
+      <article class="card wide">
+        <h2>Executive Content Generator</h2>
+        <select id="contentKind">
+          <option>investor_update</option>
+          <option>team_update</option>
+          <option>press_release</option>
+          <option>pitch_deck</option>
+          <option>blog_post</option>
+        </select>
+        <input id="contentTopic" value="" />
+        <textarea id="contentFacts"></textarea>
+        <button onclick="generateContent()">Draft</button>
+        <pre id="contentOut">No draft.</pre>
+      </article>
+    </section>
+
+
+    <section id="mission" class="panel grid">
+      <article class="card wide">
+        <h2>Mission-Control Command</h2>
+        <textarea id="missionCommand"></textarea>
+        <label class="check"><input type="checkbox" id="missionAutonomous" /> Start workflow automatically when safe</label>
+        <button onclick="triageCommand()">Triage Command</button>
+        <pre id="missionCommandOut">No command triaged.</pre>
+      </article>
+      <article class="card">
+        <div class="card-head"><h2>Playbooks</h2><button onclick="loadPlaybooks()">Load</button></div>
+        <pre id="playbooksOut">No playbooks loaded.</pre>
+      </article>
+      <article class="card">
+        <h2>Start Playbook</h2>
+        <input id="playbookKey" value="" />
+        <input id="playbookTitle" value="" />
+        <button onclick="startPlaybook()">Start</button>
+        <pre id="playbookStartOut">No workflow started.</pre>
+      </article>
+      <article class="card">
+        <div class="card-head"><h2>Active Workflows</h2><button onclick="loadWorkflows()">Load</button></div>
+        <pre id="workflowsOut">No workflows loaded.</pre>
+      </article>
+      <article class="card">
+        <div class="card-head"><h2>Daily Ritual</h2><button onclick="loadDailyRitual()">Run</button></div>
+        <pre id="dailyRitualOut">No daily ritual.</pre>
+      </article>
+      <article class="card wide">
+        <div class="card-head"><h2>Next Best Actions</h2><button onclick="loadNextBestActions()">Load</button></div>
+        <pre id="nextActionsOut">No actions loaded.</pre>
+      </article>
+    </section>
+
+    <section id="federation" class="panel grid">
+      <article class="card wide">
+        <div class="card-head"><h2>System Status</h2><button onclick="loadFederationSystems()">Load</button></div>
+        <pre id="federationSystemsOut">No system status.</pre>
+      </article>
+      <article class="card wide">
+        <h2>Cross-System Briefing</h2>
+        <input id="federationFocus" value="" />
+        <button onclick="loadFederationBriefing()">Brief</button>
+        <pre id="federationBriefingOut">No briefing.</pre>
+      </article>
+      <article class="card">
+        <h2>Route Work</h2>
+        <input id="federationRouteTask" value="" />
+        <select id="federationRouteSystem">
+          <option value="auto">auto</option>
+          <option value="paperclip">paperclip</option>
+          <option value="hermes">hermes</option>
+          <option value="pi">pi</option>
+          <option value="opencode">opencode</option>
+        </select>
+        <label class="check"><input type="checkbox" id="federationAllowExecution" checked /> Allow execution</label>
+        <button onclick="routeFederationTask()">Route</button>
+        <pre id="federationRouteOut">No route.</pre>
+      </article>
+      <article class="card">
+        <h2>Execute Approved Work</h2>
+        <input id="federationExecuteTask" value="" />
+        <select id="federationExecuteSystem">
+          <option value="auto">auto</option>
+          <option value="paperclip">paperclip</option>
+          <option value="hermes">hermes</option>
+          <option value="pi">pi</option>
+          <option value="opencode">opencode</option>
+        </select>
+        <label class="check"><input type="checkbox" id="federationApproved" checked /> Approved</label>
+        <button onclick="executeFederationTask()">Execute</button>
+        <pre id="federationExecuteOut">No execution.</pre>
+      </article>
+      <article class="card wide">
+        <div class="card-head"><h2>Recent Traces</h2><button onclick="loadFederationTraces()">Load</button></div>
+        <pre id="federationTracesOut">No traces.</pre>
+      </article>
+    </section>
+
+    <section id="capabilities" class="panel grid">
+      <article class="card wide">
+        <div class="card-head"><h2>Capability Readiness</h2><button onclick="loadReadiness()">Check</button></div>
+        <pre id="readinessOut">No readiness report.</pre>
+      </article>
+      <article class="card wide">
+        <div class="card-head"><h2>Tool Capability Registry</h2><button onclick="loadCapabilities()">Load</button></div>
+        <pre id="capabilitiesOut">No capabilities loaded.</pre>
+      </article>
+      <article class="card wide">
+        <div class="card-head"><h2>SOP Library</h2><button onclick="loadSOPs()">Load</button></div>
+        <pre id="sopsOut">No SOPs loaded.</pre>
+      </article>
+    </section>
+
+
+    <section id="autonomy" class="panel grid">
+      <article class="card wide">
+        <h2>Autonomy Evaluator</h2>
+        <textarea id="autonomyAction"></textarea>
+        <button onclick="evaluateAutonomy()">Evaluate Action</button>
+        <pre id="autonomyEvalOut">No evaluation yet.</pre>
+      </article>
+      <article class="card">
+        <div class="card-head"><h2>Authority Policies</h2><button onclick="loadPolicies()">Load</button></div>
+        <pre id="policiesOut">No policies loaded.</pre>
+      </article>
+      <article class="card">
+        <div class="card-head"><h2>Watch Rules</h2><button onclick="loadWatchRules()">Load</button></div>
+        <pre id="watchRulesOut">No rules loaded.</pre>
+      </article>
+      <article class="card wide">
+        <div class="card-head"><h2>Proactive Watch Cycle</h2><button onclick="runWatchCycle()">Run</button></div>
+        <pre id="watchCycleOut">No watch cycle run.</pre>
+      </article>
+      <article class="card wide">
+        <div class="card-head"><h2>System Insights</h2><button onclick="loadInsights()">Load</button></div>
+        <pre id="insightsOut">No insights loaded.</pre>
+      </article>
+    </section>
+
+    <section id="enchantments" class="panel grid">
+      <article class="card wide">
+        <div class="card-head"><h2>V4 Maturity Audit</h2><button onclick="loadEnchantmentAudit()">Audit</button></div>
+        <pre id="enchantmentAuditOut">No audit loaded.</pre>
+      </article>
+      <article class="card wide">
+        <div class="card-head"><h2>Enchantment Backlog</h2><button onclick="loadEnchantments()">Load</button></div>
+        <pre id="enchantmentsOut">No backlog loaded.</pre>
+      </article>
+      <article class="card wide">
+        <h2>Implementation Planner</h2>
+        <input id="planCategories" value="" />
+        <select id="planCapacity"><option>normal</option><option>low</option><option>aggressive</option></select>
+        <label class="check"><input type="checkbox" id="planHighRisk" /> Include high-risk features</label>
+        <button onclick="planEnchantments()">Plan</button>
+        <pre id="planOut">No plan generated.</pre>
+      </article>
+      <article class="card wide">
+        <div class="card-head"><h2>Brainstorm Matrix</h2><button onclick="loadBrainstorm()">Load</button></div>
+        <pre id="brainstormOut">No brainstorm loaded.</pre>
+      </article>
+    </section>
+
+
+    <section id="v5systems" class="panel grid">
+      <article class="card wide"><div class="card-head"><h2>V5 Missing-System Audit</h2><button onclick="loadV5Audit()">Audit</button></div><pre id="v5AuditOut">No v5 audit loaded.</pre></article>
+      <article class="card"><h2>Constitutional Check</h2><textarea id="constitutionalAction"></textarea><button onclick="runConstitutionalCheck()">Check</button><pre id="constitutionalOut">No check yet.</pre></article>
+      <article class="card"><h2>Zero-Trust Decision</h2><input id="ztActor" value="" /><input id="ztResource" value="" /><input id="ztScope" value="" /><button onclick="runZeroTrustDecision()">Decide</button><pre id="zeroTrustOut">No decision yet.</pre></article>
+      <article class="card"><h2>Carbon-Aware Route</h2><input id="carbonTask" value="" /><button onclick="chooseCarbonRoute()">Choose Route</button><pre id="carbonOut">No route yet.</pre></article>
+      <article class="card"><h2>Continuous Evaluation</h2><button onclick="runV5Evaluation()">Run Eval Suites</button><pre id="evalOut">No eval run.</pre></article>
+      <article class="card wide"><h2>Context Engineering Bundle</h2><input id="contextTask" value="" /><button onclick="loadV5ContextBundle()">Build Bundle</button><pre id="v5ContextOut">No bundle.</pre></article>
+      <article class="card wide"><div class="card-head"><h2>Workforce Skill Marketplace</h2><button onclick="loadWorkforceMarketplace()">Load</button></div><pre id="marketplaceOut">No marketplace loaded.</pre></article>
+      <article class="card wide"><div class="card-head"><h2>Company Ecosystem</h2><button onclick="loadCompanyEcosystem()">Load</button></div><pre id="ecosystemOut">No ecosystem loaded.</pre></article>
+      <article class="card"><h2>Advisory Board Vote</h2><textarea id="boardProposal"></textarea><button onclick="runBoardVote()">Vote</button><pre id="boardVoteOut">No vote yet.</pre></article>
+      <article class="card"><h2>Team Creation Proposal</h2><input id="teamSignal" value="" /><button onclick="proposeTeam()">Propose Team</button><pre id="teamProposalOut">No team proposed.</pre></article>
+      <article class="card"><div class="card-head"><h2>R&D Lab</h2><button onclick="loadRnDLab()">Load</button></div><pre id="rndOut">No R&D loaded.</pre></article>
+      <article class="card"><div class="card-head"><h2>Engineering Catalog</h2><button onclick="loadEngineeringCatalog()">Load</button></div><pre id="engineeringCatalogOut">No catalog loaded.</pre></article>
+      <article class="card"><div class="card-head"><h2>Compliance Automation</h2><button onclick="loadComplianceAutomation()">Load</button></div><pre id="complianceOut">No compliance report.</pre></article>
+      <article class="card"><div class="card-head"><h2>Culture Intelligence</h2><button onclick="loadCultureIntelligence()">Load</button></div><pre id="cultureOut">No culture report.</pre></article>
+    </section>
+
+    <section id="integrations" class="panel grid">
+      <article class="card wide">
+        <div class="card-head"><h2>Integration Registry</h2><button onclick="loadIntegrations()">Load</button></div>
+        <pre id="integrationsOut">No integrations loaded.</pre>
+      </article>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
