@@ -30,7 +30,7 @@ import {
   formatCents,
   formatTokens,
   formatTokenSplit,
-  rollupUpdates,
+  rollupUpdatesToday,
   updateKindLabel,
 } from "./format";
 import type { StatusCardView } from "./types";
@@ -113,7 +113,7 @@ export function StatusCardDetailDrawer({
 
   const updates = updatesQuery.data ?? [];
   const latestUpdate = updates[0] ?? null;
-  const rollup = rollupUpdates(updates);
+  const todayRollup = rollupUpdatesToday(updates);
 
   // Each successful summary-producing update is a summary revision (reuses the
   // SummarySlotCard revision-history pattern). The full per-revision summary
@@ -283,8 +283,9 @@ export function StatusCardDetailDrawer({
                       </p>
                     ))}
                     <p className="pt-1 text-xs text-foreground">
-                      Today: {rollup.updateCount} updates · {formatTokens(rollup.totalTokens)} ·{" "}
-                      {formatCents(rollup.totalCostCents)}
+                      Today: {todayRollup.updateCount}{" "}
+                      {todayRollup.updateCount === 1 ? "update" : "updates"} ·{" "}
+                      {formatTokens(todayRollup.totalTokens)} · {formatCents(todayRollup.totalCostCents)}
                       {card.refreshPolicy.dailyTokenCap ? ` · daily cap ${formatTokens(card.refreshPolicy.dailyTokenCap)}` : ""}
                     </p>
                   </>

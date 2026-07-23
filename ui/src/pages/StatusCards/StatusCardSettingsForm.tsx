@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { estimateStatusCardCost } from "./format";
 
 export interface StatusCardSettingsValue {
   instructionsMode: StatusCardInstructionsMode;
@@ -97,6 +98,7 @@ export function StatusCardSettingsForm({
   // dimmed to signal they don't apply (they stay editable so a policy switch
   // keeps the chosen values).
   const autoUpdating = policy.mode !== "manual";
+  const costEstimate = estimateStatusCardCost(policy);
 
   const setPolicy = (patch: Partial<StatusCardRefreshPolicy>) =>
     onChange({ ...value, refreshPolicy: { ...policy, ...patch } });
@@ -315,6 +317,19 @@ export function StatusCardSettingsForm({
             aria-label="Daily token cap"
           />
           <span className="text-xs text-muted-foreground">card pauses + banner when the cap is hit</span>
+        </div>
+      </section>
+
+      <section className="space-y-2">
+        <h3 className="text-sm font-semibold">Estimated cost</h3>
+        <div className="rounded-md border border-border bg-muted/40 px-3 py-2.5">
+          <p className="text-sm font-medium text-foreground">{costEstimate.primary}</p>
+          {costEstimate.note ? (
+            <p className="mt-1 text-xs text-muted-foreground">{costEstimate.note}</p>
+          ) : null}
+          <p className="mt-1.5 text-[11px] text-muted-foreground/70">
+            Rough estimate from typical update sizes; actual cost is tracked per update.
+          </p>
         </div>
       </section>
     </div>
