@@ -126,6 +126,7 @@ import {
   formatManagedGitWorktreeBranchInspection,
   inspectManagedGitWorktreeBranch,
   persistAdapterManagedRuntimeServices,
+  reconcilePendingForwardBranchAfterPersistence,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
   type ExecutionWorkspaceInput,
@@ -12710,6 +12711,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       throw error;
     }
     await workspaceOperationRecorder.attachExecutionWorkspaceId(persistedExecutionWorkspace?.id ?? null);
+    if (persistedExecutionWorkspace && pendingForwardBranchReconcile) {
+      const reconcileResult = await reconcilePendingForwardBranchAfterPersistence({
+        db,
+        executionWorkspaceId: persistedExecutionWorkspace.id,
+        pending: pendingForwardBranchReconcile,
+        heartbeatRunId: run.id,
+        reconcileOperationPhase: "worktree_prepare",
+        recorder: workspaceOperationRecorder,
+      });
+      persistedExecutionWorkspace = reconcileResult.workspace;
+    }
     await recordWorkspaceConfigFreshnessOperation({
       recorder: workspaceOperationRecorder,
       runId: run.id,
