@@ -1316,6 +1316,8 @@ export const PLUGIN_CAPABILITIES = [
   "local.folders",
   // Agent Tools
   "agent.tools.register",
+  // Cross-plugin peer reads
+  "plugins.peer-reads.read",
   // UI
   "instance.settings.register",
   "ui.sidebar.register",
