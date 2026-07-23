@@ -2994,10 +2994,8 @@ export function shouldResetTaskSessionForWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (
     wakeReason === "issue_assigned" ||
-    wakeReason === "execution_review_requested" ||
     wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON ||
     wakeReason === "execution_approval_requested" ||
-    wakeReason === "execution_changes_requested" ||
     // PF-4: timer-driven wakes are exploratory ("any new work?"). They do not
     // carry meaningful continuation state, so reusing the prior task session
     // for repeated timer wakes accumulates low-value context and pushes the
@@ -3109,12 +3107,10 @@ export function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
-  if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON) {
     return `wake reason is ${EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON}`;
   }
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
-  if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
   // PF-4: paired with shouldResetTaskSessionForWake — keep the reason wording
   // explicit so run logs make session reuse/reset behavior legible.
   if (wakeReason === "heartbeat_timer") return "wake reason is heartbeat_timer (timer-driven wake starts fresh)";
