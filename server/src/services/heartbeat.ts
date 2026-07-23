@@ -484,6 +484,23 @@ function isSpawnLikeFailureMessage(value: unknown) {
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
+// A permanent authentication failure: the agent has no valid provider credential
+// (e.g. an agent activated without connecting a model key), so every heartbeat
+// run completes with `outcome:"failed"` + this errorCode and will keep failing
+// until a human wires up a credential. Pause the agent instead of looping.
+const PERMANENT_AUTH_FAILURE_CODES = new Set(["claude_auth_required", "inference_auth_invalid"]);
+function isPermanentAuthFailureRun(run: { errorCode: string | null }): boolean {
+  return run.errorCode != null && PERMANENT_AUTH_FAILURE_CODES.has(run.errorCode);
+}
+
+// Generic failure-storm breaker: when this many consecutive terminal runs of an
+// agent all failed with the same errorCode (no success in between), the agent is
+// not making progress and every further automated re-invocation burns the same
+// failure again. Pause it and route the reason to a human. This is the fallback
+// for failure shapes that no dedicated branch (transient retry contracts, the
+// permanent-auth pause) already handles.
+export const CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD = 6;
+
 function isRetryableInteractionContinuationInfrastructureFailure(
   run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
 ) {
@@ -11068,6 +11085,66 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return trimmed.length > 500 ? `${trimmed.slice(0, 499)}…` : trimmed;
   }
 
+  // Failure-storm breaker (see CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD):
+  // pause the agent when its most recent terminal runs, including the run that
+  // just finalized, all failed with the same errorCode. Dedicated branches
+  // (transient retry contracts, permanent-auth) run before this and take
+  // precedence.
+  async function maybePauseAgentForRepeatedIdenticalFailure(
+    agent: Pick<typeof agents.$inferSelect, "id" | "status">,
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "errorCode">,
+  ) {
+    const errorCode = readNonEmptyString(run.errorCode);
+    if (!errorCode) return;
+    if (agent.status === "paused" || agent.status === "terminated") return;
+
+    const recentTerminalRuns = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agent.id),
+          inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD)
+      .catch((queryErr) => {
+        logger.warn(
+          { err: queryErr, agentId: agent.id, runId: run.id },
+          "failed to evaluate repeated identical failure streak",
+        );
+        return null;
+      });
+    if (!recentTerminalRuns || recentTerminalRuns.length < CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD) {
+      return;
+    }
+    if (!recentTerminalRuns.every((recent) => recent.status === "failed" && recent.errorCode === errorCode)) {
+      return;
+    }
+
+    await db
+      .update(agents)
+      .set({
+        status: "paused",
+        pauseReason: truncateAgentErrorReason(
+          `Paused after ${CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD} consecutive failed runs with the same error (${errorCode}). Fix the underlying issue, then resume.`,
+        ),
+        pausedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      // Guard on the persisted status, not just the in-memory snapshot: an agent
+      // externally terminated (or already paused) between the snapshot above and
+      // this update must not be flipped back to paused.
+      .where(and(eq(agents.id, agent.id), notInArray(agents.status, ["paused", "terminated"])))
+      .catch((pauseErr) => {
+        logger.warn(
+          { err: pauseErr, agentId: agent.id, runId: run.id },
+          "failed to pause agent after repeated identical failures",
+        );
+      });
+  }
+
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
@@ -13942,6 +14019,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
+        } else if (
+          outcome === "failed" &&
+          isPermanentAuthFailureRun(livenessRun) &&
+          agent.status !== "paused" &&
+          agent.status !== "terminated"
+        ) {
+          // No valid provider credential: pause the agent so its heartbeat stops
+          // re-running (and failing auth) every interval, and surface the reason so
+          // a human connects a model key and resumes.
+          await db
+            .update(agents)
+            .set({
+              status: "paused",
+              pauseReason: truncateAgentErrorReason(
+                "Connect a model key to run this agent. Paused after an authentication failure. Add a provider credential in the agent's adapter config, then resume.",
+              ),
+              pausedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            // Guard on the persisted status, not just the in-memory snapshot: an
+            // agent externally terminated (or already paused) between the check
+            // above and this update must not be flipped back to paused.
+            .where(and(eq(agents.id, agent.id), notInArray(agents.status, ["paused", "terminated"])))
+            .catch((pauseErr) => {
+              logger.warn(
+                { err: pauseErr, agentId: agent.id, runId: livenessRun.id },
+                "failed to pause agent after permanent auth failure",
+              );
+            });
+        } else if (outcome === "failed") {
+          // Fallback storm breaker for failure codes no dedicated branch handles.
+          await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
@@ -14115,6 +14224,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await finalizeIssueCommentPolicy(livenessRun, agent);
         }
         await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, agent);
+        // Thrown adapter failures never reach the finalize chain above, so the
+        // storm breaker also runs here for repeated identical failure codes.
+        await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
         await releaseIssueExecutionAndPromote(livenessRun);
 
         await updateRuntimeState(agent, livenessRun, {
