@@ -121,6 +121,33 @@ test("first contact rejects German sample promises regardless of word order", ()
   assert.match(result.violations.join("\n"), /samples or goods/);
 });
 
+test("owner-approved first-contact Muster passes with presentation samples and approved references", () => {
+  const result = reviewOutreachMessage(
+    "Tres Hermanos Cigars im Bad Eptingen",
+    "Sehr geehrte Damen und Herren\n\nIch bin Alan Christopherson von Tres Hermanos Cigars. Wir sind eine qualitätsorientierte Zigarrenmarke mit eigener Fabrik in der Dominikanischen Republik. Das ermöglicht uns, ein sehr zuverlässiger Schweizer Partner zu sein und Zigarren zu produzieren, die für uns echte Meisterwerke sind.\n\nIch bin auf das Bad Eptingen aufmerksam geworden, weil Sie Bankette und private Feiern veranstalten. Ich möchte Sie freundlich um die Gelegenheit bitten, Ihnen unsere Zigarren und den Rum Don Isidro vorzustellen und Ihnen einige Muster zum Probieren zu geben.\n\nWir konzentrieren uns mehr darauf, unsere Leidenschaft für die Herstellung und den Genuss grossartiger Zigarren zu teilen, als einfach nur zu verkaufen. Bezahlt zu werden ist vor allem eine Bestätigung, die uns motiviert, weiterzumachen.\n\nAuch wenn wir nur eine kleine Boutique-Fabrik sind, hat uns unsere Qualität bereits die Türen zu renommierten Häusern wie dem Bürgenstock Resort Lake Lucerne, dem Suvretta House, dem Hotel Schweizerhof Bern und vielen anderen geöffnet.\n\nIch würde sehr gerne eine Zigarrendegustation bei Ihnen machen. Könnte das für Sie interessant sein?\n\nFreundliche Grüsse\nAlan Christopherson\nTres Hermanos",
+    {
+      venueName: "Hotel Bad Eptingen",
+      otherVenueNames: [
+        "Bürgenstock Resort Lake Lucerne",
+        "Suvretta House",
+        "Hotel Schweizerhof Bern",
+        "Hotel Euler",
+      ],
+    },
+  );
+  assert.equal(result.pass, true, result.violations.join("\n"));
+});
+
+test("owner-approved references do not disable unrelated cross-venue protection", () => {
+  const result = reviewOutreachMessage(
+    "Tres Hermanos Cigars im Bad Eptingen",
+    "Sehr geehrte Damen und Herren\n\nDas Hotel Euler ist unser Vorbild.\n\nFreundliche Grüsse\nAlan Christopherson\nTres Hermanos",
+    { venueName: "Hotel Bad Eptingen", otherVenueNames: ["Hotel Euler"] },
+  );
+  assert.equal(result.pass, false);
+  assert.match(result.violations.join("\n"), /cross-venue information mixing/);
+});
+
 test("first contact asks before committing to a personal visit", () => {
   const result = reviewDraft(
     "Sehr geehrte Damen und Herren\n\nIch komme persönlich vorbei, um die Möglichkeiten zu besprechen.\n\nFreundliche Grüsse\nAlan Christopherson\nTres Hermanos",

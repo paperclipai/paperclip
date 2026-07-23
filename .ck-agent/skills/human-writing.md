@@ -16,7 +16,8 @@ for structure and [[th-product-facts]] for what you may claim). Human voice, nev
    `review_draft` gate — a draft with one FAILS. (Owner: dashes make people think "AI wrote this.")
 2. **NO connective/suspended hyphens** — write "Zigarrenlounge", not "Zigarren-Lounge"; "Premiumzigarren",
    not "Premium-Zigarren"; not "Fumoir- und Zigarrenlounge". Close the compound or reword. Also gate-ENFORCED.
-   (Legit hyphens like "E-Mail" are fine.)
+   Legit hyphens such as "E-Mail" and the owner-approved "Boutique-Fabrik" in
+   the first-contact Muster are fine.
 3. **NO bullet points / numbered lists / markdown / bold / headers** in an email or message. Write prose.
 4. **Swiss German: "ss" never "ß"** ("Strasse", "gross", "Grüsse"). Gate-ENFORCED.
 5. **NO collaborative AI-speak**: "Ich hoffe, das hilft", "Gerne stehe ich für Fragen zur Verfügung" as
@@ -95,40 +96,59 @@ moreover, notably, undoubtedly, in conclusion, in order to, in terms of. German 
     administrative openers (`Ich wende mich heute an Sie`, `Ich möchte Ihnen ...
     vorstellen`). Start with the normal sender introduction. Ask one
     low-pressure question shaped by the dossier.
-11. First contact may ask whether a presentation or degustation is interesting.
-    It must not offer or promise a sample package, goods, delivery, a visit,
-    commercial conditions, minimum order value, discount, or margin before the
-    prospect engages.
+11. The owner-approved first-contact Muster asks for the opportunity to present
+    the cigars and Rum Don Isidro and give a few samples to taste. This is an
+    in-person presentation offer, not permission to send a sample package,
+    promise delivery, or commit a date before the prospect answers. Commercial
+    conditions, minimum order values, discounts, and margins remain out of first
+    contact.
 12. If Alan chose Hold or wrote revision feedback, treat every concrete point in
     his latest feedback as an acceptance criterion. Re-read it immediately before
     `review_draft`. Do not replace a requested sourced fact with an easier generic
     CRM description, and do not queue the replacement until every point is visibly
     satisfied.
 
-## First-contact shape for REV-06
+## Owner-approved first-contact Muster (2026-07-23)
 
-Aim for 70–110 words before the signature. This is a personal introduction, not
-a miniature catalogue or a hotel review.
+This is now the canonical model for every new first-contact mail. Preserve its
+order, voice, meaning, and fixed paragraphs. Adapt only:
 
-Use four short blocks:
+- the subject's natural preposition and venue name;
+- the greeting, using a name only when the exact address is verified for that
+  person;
+- `{venue}` and `{one verified reason}` from the dossier;
+- grammar required by the venue's name.
 
-1. Neutral greeting, then one normal sender sentence:
-   `Mein Name ist Alan Christopherson und ich vertrete Tres Hermanos.`
-2. Continue with the company truth in first-person language: `Wir sind ein
-   Schweizer Unternehmen ...`. A short verified-reference sentence may follow
-   when it provides useful trust.
-3. State the purpose naturally. For a hotel with event facilities:
-   `Ich wollte Sie fragen, ob eine Zigarrendegustation im Rahmen eines Banketts
-   oder Hotelanlasses für Sie interessant sein könnte.` For an existing lounge,
-   ask whether they would like to get to know Tres Hermanos through a short
-   degustation. This is where dossier knowledge should shape the idea without
-   being recited back to the recipient.
-4. Stop. Use one question. Do not list multiple products, recommend formats
-   unasked, describe pairings, repeat obvious facts about the venue, or offer
-   several competing calls to action.
+Do not shorten this into the old minimal four-block formula, replace Alan's
+candid payment sentence, remove the passion paragraph, or add new sales copy.
 
-Avoid sales-copy bridges such as “Da liegt eine gute Zigarre nah”, “das Passende
-für jeden Gast”, “eine echte Ergänzung”, “Neugier wecken”, “Gespräche
+```text
+Betreff: Tres Hermanos Cigars {natural venue phrase}
+
+{verified greeting}
+
+Ich bin Alan Christopherson von Tres Hermanos Cigars. Wir sind eine qualitätsorientierte Zigarrenmarke mit eigener Fabrik in der Dominikanischen Republik. Das ermöglicht uns, ein sehr zuverlässiger Schweizer Partner zu sein und Zigarren zu produzieren, die für uns echte Meisterwerke sind.
+
+Ich bin auf {venue} aufmerksam geworden, weil {one verified reason}. Ich möchte Sie freundlich um die Gelegenheit bitten, Ihnen unsere Zigarren und den Rum Don Isidro vorzustellen und Ihnen einige Muster zum Probieren zu geben.
+
+Wir konzentrieren uns mehr darauf, unsere Leidenschaft für die Herstellung und den Genuss grossartiger Zigarren zu teilen, als einfach nur zu verkaufen. Bezahlt zu werden ist vor allem eine Bestätigung, die uns motiviert, weiterzumachen.
+
+Auch wenn wir nur eine kleine Boutique-Fabrik sind, hat uns unsere Qualität bereits die Türen zu renommierten Häusern wie dem Bürgenstock Resort Lake Lucerne, dem Suvretta House, dem Hotel Schweizerhof Bern und vielen anderen geöffnet.
+
+Ich würde sehr gerne eine Zigarrendegustation bei Ihnen machen. Könnte das für Sie interessant sein?
+
+Freundliche Grüsse
+Alan Christopherson
+Tres Hermanos
+```
+
+The three named houses are owner-approved social proof, not accidental
+cross-venue mixing. Do not substitute or add another reference without Alan's
+approval. `Rum Don Isidro` must stay distinct from the cigar factory: the mail
+may present it, but must never imply that Tres Hermanos produces the rum.
+
+Avoid extra sales-copy bridges such as “Da liegt eine gute Zigarre nah”, “das
+Passende für jeden Gast”, “eine echte Ergänzung”, “Neugier wecken”, “Gespräche
 einleiten”, “verdient”, and “passt ausgezeichnet”. They are polished prose, not
 Alan speaking.
 

@@ -1148,3 +1148,27 @@ instead of appending contradictory history.
   Do not wake it or create another Les Amis draft during the writing-quality
   hold; resolve the obsolete recovery lineage deliberately in a controlled
   maintenance change.
+
+## Owner-approved first-contact Muster (2026-07-23)
+
+- Alan approved the Bad Eptingen draft as the canonical Muster for all future
+  first-contact emails. Its paragraphs, claims, reference houses, tone, and
+  order are fixed. Only the natural subject phrase, evidence-backed greeting,
+  venue name, one verified reason for writing, and grammar needed by those
+  substitutions may vary.
+- The fixed introduction is `Ich bin Alan Christopherson von Tres Hermanos
+  Cigars.` The fixed body retains the own Dominican factory, reliable Swiss
+  partner, masterpiece, passion/payment, Boutique-Fabrik, and degustation
+  language. The approved social proof is Bürgenstock Resort Lake Lucerne,
+  Suvretta House, and Hotel Schweizerhof Bern; do not substitute or add names
+  without Alan's approval.
+- Offering a few samples while presenting the cigars and Rum Don Isidro is now
+  explicitly permitted. Promising a sample package, shipment, delivery date,
+  stock, prices, or other commercial terms in first contact remains blocked.
+- The live REV-06 instructions and company skills were synchronized. CK
+  Evaluation Office `0.43.7` was rebuilt/upgraded and the exact Muster passed
+  the live `review_draft` gate with 12 checks and zero violations. The complete
+  CK Office suite passes 90/90 and typecheck/build pass.
+- The twelve existing pending outreach approvals were deliberately left
+  unchanged. No email was sent and no approval was resolved as part of adopting
+  the Muster.

@@ -31,31 +31,32 @@ Grounded pattern, adapted from Alan's Hotel Walther message:
 > gestalten. Dabei teile ich Einblicke aus der Welt der Zigarre. Für das Haus
 > entsteht ein besonderes Erlebnis, ohne dass es sein Sortiment ändern muss.
 
-This is a positioning pattern, not copy to paste into every message. Tailor it
-to the venue and only mention rum when the venue or event context fits. Never
-promise dates, attendance, free products, commercial terms, or historical
-claims that are not grounded. A first contact can ask whether a short
-introduction or degustation would be interesting, but should have one clear
-call to action rather than a list of options. It must not offer or promise
-samples, a sample package, goods, delivery, a visit, conditions, minimum order
-values, discounts, or margins before the prospect engages.
+This older positioning pattern is background, not the current first-contact
+copy. The owner-approved Muster below supersedes it. The Muster may offer to
+present Rum Don Isidro and give a few samples to taste. Never promise a date,
+ship an unsolicited sample package, commit delivery or inventory, introduce
+commercial terms, or make historical claims that are not grounded.
 
-For a cold first contact, keep it deliberately small: identify Alan, say what
-Tres Hermanos is, give restrained proof where useful, and ask one relevant
-question. Research shapes the proposal; it does not have to appear as a venue
-description. Do not tell a hotel that it operates a hotel, list its restaurant
-and event rooms back to it, or begin with `Sie führen ...`. That is CRM data
-converted into prose, not personalization. Usually name no specific format;
-never name more than one. Product recommendations and pairings belong after the
-venue shows interest.
+For a cold first contact, use the owner-approved 2026-07-23 Muster in
+`human-writing` as the canonical structure and voice. Preserve its fixed
+paragraphs, including Alan's passion/payment sentence, the three approved hotel
+references, the request to present the cigars and Rum Don Isidro with a few
+samples to taste, and the final degustation question. Research supplies one
+plain, verified reason after `Ich bin auf {venue} aufmerksam geworden, weil ...`;
+it must not become a recital of the venue's website. Usually name no specific
+cigar format; product recommendations and pairings belong after the venue shows
+interest.
 
-For a general mailbox, prefer the ordinary introduction `Mein Name ist Alan
-Christopherson und ich vertrete Tres Hermanos.` Then move to the purpose. Do not
-use administrative phrases such as `Ich wende mich heute an Sie`, but do not
-force a researched venue observation merely to prove the email was tailored.
+For a general mailbox, use the Muster's exact introduction: `Ich bin Alan
+Christopherson von Tres Hermanos Cigars.` Then continue in the approved order.
+Do not use administrative phrases such as `Ich wende mich heute an Sie` or add
+another researched venue observation merely to prove the email was tailored.
 Use branded venue names in a grammatically natural construction (`in der Lounge
 The Council`, not `in Ihrer The Council Lounge`). Never add a catalogue-like
 sentence fragment such as `Handgerollte Premiumzigarren, von mild bis kräftig.`
+The Muster offers samples as part of a requested presentation. It does not
+authorize sending an unsolicited sample package, promising delivery, or fixing
+a visit date before the prospect responds.
 
 ## Recipient identity is an evidence rule
 

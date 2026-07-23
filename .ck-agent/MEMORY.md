@@ -226,3 +226,14 @@
   `adapter_config.model` and heartbeat `usage_json.model` as authoritative;
   regenerate `ck-org-map` after any model change so handoff documentation does
   not drift.
+- Alan's canonical first-contact Muster is the owner-approved Bad Eptingen text
+  dated 2026-07-23. Preserve its fixed paragraphs and order. Vary only the
+  natural subject phrase, evidence-backed greeting, venue, one verified reason
+  for writing, and the grammar required by those substitutions.
+- In that Muster, offering a few samples during the requested presentation is
+  allowed. A package, shipment, delivery promise/date, inventory, prices, and
+  commercial terms remain forbidden in first contact.
+- Bürgenstock Resort Lake Lucerne, Suvretta House, and Hotel Schweizerhof Bern
+  are the approved fixed social-proof references in the Muster. Their mention
+  is not cross-venue leakage, but other venue names remain blocked unless Alan
+  approves them.

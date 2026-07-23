@@ -495,6 +495,13 @@ export interface CrossVenueAccount {
   type?: string;
 }
 
+function isApprovedFirstContactReference(name: string): boolean {
+  const normalized = String(name || "").toLocaleLowerCase("de-CH");
+  return normalized.includes("bürgenstock")
+    || normalized.includes("suvretta house")
+    || normalized.includes("schweizerhof bern");
+}
+
 export function crossVenueNames(accounts: CrossVenueAccount[], targetAccountId: string): string[] {
   return accounts
     .filter((account) => String(account.id) !== String(targetAccountId))
@@ -532,7 +539,7 @@ export function reviewDraft(
   {
     // suspended ('Fumoir- und ...') or compound ('Zigarren-Lounge', 'cremig-milde') hyphens; allow a
     // tiny set of genuinely-hyphenated terms. Fix = close the compound (Zigarrenlounge) or reword.
-    const scrubbed = t.replace(/\b(E-Mail|E-Mails|Make-up|Know-how|Center-|Café-)\b/gi, " ");
+    const scrubbed = t.replace(/\b(E-Mail|E-Mails|Make-up|Know-how|Boutique-Fabrik|Center-|Café-)\b/gi, " ");
     const hy = scrubbed.match(/[A-Za-zÀ-ÿ]+-(?:\s|[A-Za-zÀ-ÿ])/g);
     if (hy) v.push(`Contains connective/suspended hyphen(s) (e.g. ${[...new Set(hy)].slice(0, 3).map((s) => s.trim() + "…").join(", ")}) — FORBIDDEN: close the compound (e.g. 'Zigarrenlounge') or reword. Hyphenated compounds read as AI-written (owner rule).`);
   }
@@ -697,7 +704,7 @@ export function reviewDraft(
       || /\b(?:send(?:e|en|et|est)|schick(?:e|en|t|st)|zustell(?:e|en|t|st)|vorbeibringen|mitbringen|bringen)\b[\s\S]{0,80}\b(?:Kollektion|Sortiment|Zigarren|Produkte|Auswahl)\b/i.test(t)
     )
   ) {
-    v.push("Promises to send samples or goods in first contact — ask whether a presentation or tasting is of interest; do not commit inventory or delivery before agreement.");
+    v.push("Promises to send samples or goods in first contact — the owner-approved Muster may offer a few samples during a requested presentation, but must not commit a package, shipment, delivery, or inventory before agreement.");
   }
   // Anti-mixing: cross-PRODUCT contamination. Owner-corrected 2026-07-02: Bordas makes ONLY Rum Don
   // Isidro — any Bordas mention in text that isn't about that rum is the "Manufaktur Bordas" failure
@@ -716,7 +723,10 @@ export function reviewDraft(
     const own = opts.venueName.toLowerCase();
     const leaked = opts.otherVenueNames.filter((n) => {
       const nn = String(n || "").trim();
-      return nn.length >= 5 && !own.includes(nn.toLowerCase()) && t.toLowerCase().includes(nn.toLowerCase());
+      return nn.length >= 5
+        && !isApprovedFirstContactReference(nn)
+        && !own.includes(nn.toLowerCase())
+        && t.toLowerCase().includes(nn.toLowerCase());
     });
     if (leaked.length)
       v.push(`Mentions other venue(s) from the CRM: ${leaked.slice(0, 3).join(", ")} — cross-venue information mixing; a draft may only reference its own venue.`);
