@@ -1745,6 +1745,70 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   return true;
 }
 
+function normalizeIssueReopenGuardText(value: string | null | undefined) {
+  return (value ?? "").toLowerCase();
+}
+
+function isSentryLifecycleMissingFixHeartbeatComment(body: string | null | undefined) {
+  const normalized = normalizeIssueReopenGuardText(body);
+  return (
+    normalized.includes("## sentry lifecycle heartbeat")
+    && normalized.includes("no merged fix pr was found for this sentry family yet")
+    && normalized.includes("stale > 24h without merged fix pr")
+  );
+}
+
+function issueLooksLikeSentryFamily(input: {
+  title: string | null | undefined;
+  description: string | null | undefined;
+}) {
+  const title = normalizeIssueReopenGuardText(input.title);
+  const description = normalizeIssueReopenGuardText(input.description);
+  return title.includes("[sentry]") || description.includes("sentryfamily:");
+}
+
+function priorSentryIssueTextSignalsNoPrIgnoreDecision(text: string) {
+  const hasNoPrExpected =
+    text.includes("no merged fix pr is expected")
+    || text.includes("no pr is expected");
+  if (!hasNoPrExpected) return false;
+  const hasExplicitIgnoreSignal =
+    text.includes("explicit ignore")
+    || text.includes("ignored with reason")
+    || text.includes("ignore/no-action")
+    || text.includes("resolved/no-action")
+    || text.includes("no-action decision");
+  const hasReopenOnlyOnNewEvidenceSignal =
+    text.includes("reopen this grouped family only if")
+    || text.includes("reopen only if")
+    || (text.includes("new evidence") && text.includes("recurrence") && text.includes("contradictory"));
+  return hasExplicitIgnoreSignal || hasReopenOnlyOnNewEvidenceSignal;
+}
+
+async function shouldSuppressImplicitReopenForSentryLifecycleHeartbeat(input: {
+  svc: {
+    listComments: (
+      issueId: string,
+      opts?: { afterCommentId?: string | null; order?: "asc" | "desc"; limit?: number | null },
+    ) => Promise<Array<{ body?: string | null }>>;
+  };
+  issue: {
+    id: string;
+    title: string | null | undefined;
+    description: string | null | undefined;
+  };
+  commentBody: string | null | undefined;
+}) {
+  if (!isSentryLifecycleMissingFixHeartbeatComment(input.commentBody)) return false;
+  if (!issueLooksLikeSentryFamily(input.issue)) return false;
+  const priorComments = await input.svc.listComments(input.issue.id, { order: "desc" });
+  const priorText = [
+    input.issue.description ?? "",
+    ...priorComments.map((comment) => comment.body ?? ""),
+  ].join("\n");
+  return priorSentryIssueTextSignalsNoPrIgnoreDecision(normalizeIssueReopenGuardText(priorText));
+}
+
 function shouldHumanCommentResumeInProgressScheduledRetry(input: {
   hasComment: boolean;
   issueStatus: string | null | undefined;
@@ -7713,10 +7777,19 @@ export function issueRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
     });
+    const suppressImplicitReopenForLifecycleHeartbeat =
+      !explicitMoveToTodoRequested &&
+      !assigneeSelfCommentOnTerminal &&
+      await shouldSuppressImplicitReopenForSentryLifecycleHeartbeat({
+        svc,
+        issue: existing,
+        commentBody,
+      });
     const effectiveMoveToTodoRequested =
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
         (!!commentBody &&
+          !suppressImplicitReopenForLifecycleHeartbeat &&
           shouldImplicitlyMoveCommentedIssueToTodo({
             issueStatus: existing.status,
             assigneeAgentId: requestedAssigneeAgentId,
@@ -9732,18 +9805,27 @@ export function issueRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
     });
+    const suppressImplicitReopenForLifecycleHeartbeat =
+      !explicitMoveToTodoRequested &&
+      !assigneeSelfCommentOnTerminal &&
+      await shouldSuppressImplicitReopenForSentryLifecycleHeartbeat({
+        svc,
+        issue,
+        commentBody: req.body.body,
+      });
     const effectiveMoveToTodoRequested =
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
-        shouldImplicitlyMoveCommentedIssueToTodo({
-          issueStatus: issue.status,
-          assigneeAgentId: issue.assigneeAgentId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          actorRunId: actor.runId,
-          checkoutRunId: issue.checkoutRunId,
-          executionRunId: issue.executionRunId,
-        }) ||
+        (!suppressImplicitReopenForLifecycleHeartbeat &&
+          shouldImplicitlyMoveCommentedIssueToTodo({
+            issueStatus: issue.status,
+            assigneeAgentId: issue.assigneeAgentId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            actorRunId: actor.runId,
+            checkoutRunId: issue.checkoutRunId,
+            executionRunId: issue.executionRunId,
+          })) ||
         shouldResumeInProgressScheduledRetry);
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
