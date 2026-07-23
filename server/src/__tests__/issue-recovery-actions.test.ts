@@ -328,6 +328,150 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("unblocks dependents to todo and wakes assignee when escalateStrandedAssignedIssue permanently strands", async () => {
+    const { companyId, managerId, coderId, sourceIssue, prefix } = await seedCompany();
+    const dependentIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: dependentIssueId,
+      companyId,
+      title: "Waiting on stranded blocker",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: sourceIssue.id,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "adapter failed",
+      errorCode: "adapter_failed",
+      contextSnapshot: { retryReason: "issue_continuation_needed" },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun,
+      comment: "No live execution path.",
+    });
+
+    // Sedno: zależny musi RUSZYĆ (todo), nie tylko dostać wake przy status=blocked.
+    const [dependent] = await db.select().from(issues).where(eq(issues.id, dependentIssueId));
+    expect(dependent.status).toBe("todo");
+    const remainingBlockers = await db
+      .select()
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.relatedIssueId, dependentIssueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(remainingBlockers.map((row) => row.issueId)).not.toContain(sourceIssue.id);
+    expect(remainingBlockers).toHaveLength(0);
+
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      managerId,
+      expect.objectContaining({
+        reason: "issue_blocker_stranded",
+        payload: expect.objectContaining({
+          dependentIssueId,
+          deadBlockerIssueId: sourceIssue.id,
+          blockerFate: "stranded",
+          mutation: "blocker_stranded",
+          message: expect.stringContaining("no live execution path"),
+        }),
+        contextSnapshot: expect.objectContaining({
+          wakeReason: "issue_blocker_stranded",
+          blockerFate: "stranded",
+          deadBlockerIssueId: sourceIssue.id,
+        }),
+      }),
+    );
+    // Pre-existing: recovery owner still gets the source-scoped recovery wake.
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      managerId,
+      expect.objectContaining({
+        reason: "source_scoped_recovery_action",
+      }),
+    );
+  });
+
+  it("does not wake blocked dependents when escalateStrandedAssignedIssue is a provider_quota wait", async () => {
+    const { companyId, managerId, coderId, sourceIssue, prefix } = await seedCompany();
+    const dependentIssueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(issues).values({
+      id: dependentIssueId,
+      companyId,
+      title: "Waiting on quota-wait blocker",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: sourceIssue.id,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "You've hit your usage limit for GPT-5. Try again at 12:00 AM (UTC).",
+      errorCode: "provider_quota",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssue.id },
+      resultJson: {
+        errorFamily: "provider_quota",
+        providerQuotaRetryNotBefore: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      },
+    });
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const [latestRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: latestRun!,
+      recoveryCause: "provider_quota",
+    });
+
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(updatedIssue).toMatchObject({ status: "blocked" });
+    expect(enqueueWakeup).not.toHaveBeenCalledWith(
+      managerId,
+      expect.objectContaining({ reason: "issue_blocker_stranded" }),
+    );
+    expect(enqueueWakeup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        reason: "issue_blocker_stranded",
+        payload: expect.objectContaining({ blockerFate: "stranded" }),
+      }),
+    );
+  });
+
   it.each([
     ["process_lost", undefined, "coder"],
     ["adapter_failed", "successful_run_missing_state", "coder"],

@@ -1174,6 +1174,74 @@ async function listIssueDependencyReadinessMap(
   return readinessMap;
 }
 
+/**
+ * Assigned issues that list `blockerIssueId` as a blocker.
+ * When requireDependencyReady is true (happy-path done wake), only dependents whose
+ * full blocker set is ready are returned. When false (blocker died), all assigned
+ * non-terminal dependents are returned so they can re-triage.
+ */
+async function listAssignedDependentsOfBlocker(
+  dbOrTx: Db,
+  blockerIssueId: string,
+  opts: { requireDependencyReady: boolean },
+) {
+  const blockerIssue = await dbOrTx
+    .select({ id: issues.id, companyId: issues.companyId })
+    .from(issues)
+    .where(eq(issues.id, blockerIssueId))
+    .then((rows) => rows[0] ?? null);
+  if (!blockerIssue) return [];
+
+  const candidates = await dbOrTx
+    .select({
+      id: issues.id,
+      assigneeAgentId: issues.assigneeAgentId,
+      status: issues.status,
+    })
+    .from(issueRelations)
+    .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+    .where(
+      and(
+        eq(issueRelations.companyId, blockerIssue.companyId),
+        eq(issueRelations.type, "blocks"),
+        eq(issueRelations.issueId, blockerIssueId),
+      ),
+    );
+  if (candidates.length === 0) return [];
+
+  const wakeableCandidates = candidates.filter(
+    (candidate) =>
+      candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status),
+  );
+  if (wakeableCandidates.length === 0) return [];
+
+  // Defer to the unified readiness check so that a dependent only fires when
+  // (a) every blocker is done AND (b) every done blocker's workspace has
+  // recorded a successful workspace_finalize. The finalize hook also calls
+  // this function on completion, so a wake initially gated by an in-flight
+  // sync-back will re-fire once the restore lands locally.
+  const readinessMap = await listIssueDependencyReadinessMap(
+    dbOrTx,
+    blockerIssue.companyId,
+    wakeableCandidates.map((candidate) => candidate.id),
+  );
+
+  return wakeableCandidates
+    .map((candidate) => {
+      const readiness = readinessMap.get(candidate.id) ?? createIssueDependencyReadiness(candidate.id);
+      return { candidate, readiness };
+    })
+    .filter(({ readiness }) =>
+      readiness.blockerIssueIds.length > 0 &&
+      (!opts.requireDependencyReady || readiness.isDependencyReady),
+    )
+    .map(({ candidate, readiness }) => ({
+      id: candidate.id,
+      assigneeAgentId: candidate.assigneeAgentId!,
+      blockerIssueIds: readiness.blockerIssueIds,
+    }));
+}
+
 async function listUnresolvedBlockerIssueIds(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -5658,59 +5726,17 @@ export function issueService(db: Db) {
       return listIssueProductivityReviewMap(dbOrTx, companyId, sourceIssueIds);
     },
 
+    /**
+     * Assigned issues blocked by `blockerIssueId`, excluding terminal/backlog.
+     * Unlike listWakeableBlockedDependents, does NOT require dependency readiness —
+     * used when the blocker dies (cancelled/stranded) and dependents must re-triage.
+     */
+    listAssignedDependentsBlockedBy: async (blockerIssueId: string) => {
+      return listAssignedDependentsOfBlocker(db, blockerIssueId, { requireDependencyReady: false });
+    },
+
     listWakeableBlockedDependents: async (blockerIssueId: string) => {
-      const blockerIssue = await db
-        .select({ id: issues.id, companyId: issues.companyId })
-        .from(issues)
-        .where(eq(issues.id, blockerIssueId))
-        .then((rows) => rows[0] ?? null);
-      if (!blockerIssue) return [];
-
-      const candidates = await db
-        .select({
-          id: issues.id,
-          assigneeAgentId: issues.assigneeAgentId,
-          status: issues.status,
-        })
-        .from(issueRelations)
-        .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
-        .where(
-          and(
-            eq(issueRelations.companyId, blockerIssue.companyId),
-            eq(issueRelations.type, "blocks"),
-            eq(issueRelations.issueId, blockerIssueId),
-          ),
-        );
-      if (candidates.length === 0) return [];
-
-      const wakeableCandidates = candidates.filter(
-        (candidate) =>
-          candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status),
-      );
-      if (wakeableCandidates.length === 0) return [];
-
-      // Defer to the unified readiness check so that a dependent only fires when
-      // (a) every blocker is done AND (b) every done blocker's workspace has
-      // recorded a successful workspace_finalize. The finalize hook also calls
-      // this function on completion, so a wake initially gated by an in-flight
-      // sync-back will re-fire once the restore lands locally.
-      const readinessMap = await listIssueDependencyReadinessMap(
-        db,
-        blockerIssue.companyId,
-        wakeableCandidates.map((candidate) => candidate.id),
-      );
-
-      return wakeableCandidates
-        .map((candidate) => {
-          const readiness = readinessMap.get(candidate.id) ?? createIssueDependencyReadiness(candidate.id);
-          return { candidate, readiness };
-        })
-        .filter(({ readiness }) => readiness.isDependencyReady && readiness.blockerIssueIds.length > 0)
-        .map(({ candidate, readiness }) => ({
-          id: candidate.id,
-          assigneeAgentId: candidate.assigneeAgentId!,
-          blockerIssueIds: readiness.blockerIssueIds,
-        }));
+      return listAssignedDependentsOfBlocker(db, blockerIssueId, { requireDependencyReady: true });
     },
 
     getWakeableParentAfterChildCompletion: async (parentIssueId: string) => {
