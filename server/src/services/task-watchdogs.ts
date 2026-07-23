@@ -74,6 +74,15 @@ export type TaskWatchdogClassifierIssue = Pick<
   latestCommentAt?: Date | string | null;
   latestDocumentAt?: Date | string | null;
   latestWorkProductAt?: Date | string | null;
+  // Counts (not timestamps) of documents/work-products attached to the issue.
+  // Unlike comments, which a routine no-op heartbeat legitimately posts every
+  // cycle as its status-report evidence, documents/work-products are not
+  // created as a byproduct of routine status reporting — a count increase is
+  // a reliable signal that genuinely new source evidence exists. See the
+  // fingerprint construction below for why these participate structurally
+  // while the *At timestamp siblings do not.
+  documentCount?: number | null;
+  workProductCount?: number | null;
 };
 
 export type TaskWatchdogClassifierPath = {
@@ -115,6 +124,8 @@ export type TaskWatchdogStoppedLeaf = {
   latestCommentAt: string | null;
   latestDocumentAt: string | null;
   latestWorkProductAt: string | null;
+  documentCount: number;
+  workProductCount: number;
 };
 
 export type TaskWatchdogClassifierResult =
@@ -269,7 +280,7 @@ function waitingPathIds(
 function stableStopFingerprint(input: {
   companyId: string;
   watchedIssueId: string;
-  leaves: TaskWatchdogStoppedLeaf[];
+  leaves: Omit<TaskWatchdogStoppedLeaf, "updatedAt" | "latestCommentAt" | "latestDocumentAt" | "latestWorkProductAt">[];
 }) {
   const payload = JSON.stringify({
     version: 1,
@@ -397,11 +408,39 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       latestCommentAt: optionalIso(issue.latestCommentAt),
       latestDocumentAt: optionalIso(issue.latestDocumentAt),
       latestWorkProductAt: optionalIso(issue.latestWorkProductAt),
+      documentCount: issue.documentCount ?? 0,
+      workProductCount: issue.workProductCount ?? 0,
     }));
+  // The fingerprint must only change when something structurally relevant to
+  // "is this subtree actually stalled" changes (status, assignee, blockers,
+  // pending interactions/approvals, or genuinely new/changed document/
+  // work-product evidence). It deliberately excludes touch-only timestamps
+  // (`updatedAt`, `latestCommentAt`): a legitimately blocked/waiting issue
+  // whose owning agent posts a routine "still waiting" status heartbeat (same
+  // status, same named unblock condition, no new blockers) bumps those
+  // timestamps on every cycle without changing anything the watchdog needs to
+  // re-review. Feeding them into the fingerprint defeats
+  // `lastReviewedFingerprint` dedupe and re-flips an already-reviewed stop
+  // verdict back to "stopped" every cycle, re-triggering the watchdog wake
+  // with no new information.
+  //
+  // `documentCount`/`workProductCount` AND `latestDocumentAt`/
+  // `latestWorkProductAt` are all kept in the structural projection (unlike
+  // `latestCommentAt`) because, unlike comments, documents and work products
+  // are not created or edited as a byproduct of routine status reporting.
+  // Counts alone catch new evidence but miss in-place edits to an existing
+  // document/work product (e.g. updated source evidence with the row count
+  // unchanged); including the latest-touched timestamp for those two tables
+  // closes that gap without reintroducing the comment-churn problem, since
+  // routine "still waiting" heartbeats never touch the documents/work-products
+  // tables.
+  const fingerprintLeaves = leaves.map(
+    ({ updatedAt: _updatedAt, latestCommentAt: _latestCommentAt, ...structural }) => structural,
+  );
   const stopFingerprint = stableStopFingerprint({
     companyId: input.watchdog.companyId,
     watchedIssueId: input.watchdog.issueId,
-    leaves,
+    leaves: fingerprintLeaves,
   });
 
   if (input.watchdog.lastReviewedFingerprint === stopFingerprint) {
@@ -915,6 +954,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .select({
           issueId: issueDocuments.issueId,
           latestAt: sql<Date | null>`MAX(${issueDocuments.updatedAt})`,
+          count: sql<number>`COUNT(*)`,
         })
         .from(issueDocuments)
         .where(and(
@@ -926,6 +966,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .select({
           issueId: issueWorkProducts.issueId,
           latestAt: sql<Date | null>`MAX(${issueWorkProducts.updatedAt})`,
+          count: sql<number>`COUNT(*)`,
         })
         .from(issueWorkProducts)
         .where(and(
@@ -937,6 +978,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const latestCommentByIssueId = new Map(commentActivityRows.map((row) => [row.issueId, row.latestAt]));
     const latestDocumentByIssueId = new Map(documentActivityRows.map((row) => [row.issueId, row.latestAt]));
     const latestWorkProductByIssueId = new Map(workProductActivityRows.map((row) => [row.issueId, row.latestAt]));
+    const documentCountByIssueId = new Map(documentActivityRows.map((row) => [row.issueId, Number(row.count)]));
+    const workProductCountByIssueId = new Map(workProductActivityRows.map((row) => [row.issueId, Number(row.count)]));
 
     const evaluatedAt = new Date();
     const evaluatedAtMs = evaluatedAt.getTime();
@@ -959,6 +1002,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         latestCommentAt: latestCommentByIssueId.get(issue.id) ?? null,
         latestDocumentAt: latestDocumentByIssueId.get(issue.id) ?? null,
         latestWorkProductAt: latestWorkProductByIssueId.get(issue.id) ?? null,
+        documentCount: documentCountByIssueId.get(issue.id) ?? 0,
+        workProductCount: workProductCountByIssueId.get(issue.id) ?? 0,
       })),
       activeRuns: activeRunRows.map((row) => ({
         companyId: row.companyId,

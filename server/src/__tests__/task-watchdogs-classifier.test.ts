@@ -93,6 +93,134 @@ describe("task watchdog subtree classifier", () => {
     });
   });
 
+  it("does not re-flip an already-reviewed verdict when only touch timestamps change on a repeat no-op status heartbeat", () => {
+    const stopped = classify({
+      issues: [
+        issue({
+          status: "blocked",
+          updatedAt: new Date("2026-07-11T08:00:00.000Z"),
+          latestCommentAt: new Date("2026-07-11T08:00:00.000Z"),
+        }),
+      ],
+    });
+    expect(stopped.state).toBe("stopped");
+    if (stopped.state !== "stopped") return;
+
+    // Simulate the next heartbeat cycle: the assignee agent finds no
+    // actionable work (calendar gate not reached yet), posts another
+    // identical "still blocked, waiting on <date>" status comment, and
+    // re-affirms status=blocked. Status/assignee/blockers are unchanged, but
+    // latestCommentAt/updatedAt both advance because a comment was posted and
+    // the issue row was touched.
+    const reviewed = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: stopped.stopFingerprint,
+      },
+      issues: [
+        issue({
+          status: "blocked",
+          updatedAt: new Date("2026-07-11T09:00:00.000Z"),
+          latestCommentAt: new Date("2026-07-11T09:00:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(reviewed).toMatchObject({
+      state: "already_reviewed",
+      stopFingerprint: stopped.stopFingerprint,
+    });
+  });
+
+  it("still re-evaluates when a structural field actually changes despite unchanged timestamps", () => {
+    const stopped = classify({
+      issues: [issue({ status: "blocked" })],
+    });
+    expect(stopped.state).toBe("stopped");
+    if (stopped.state !== "stopped") return;
+
+    const changed = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: stopped.stopFingerprint,
+      },
+      issues: [issue({ status: "blocked", assigneeAgentId: "agent-2" })],
+    });
+
+    expect(changed.state).toBe("stopped");
+    expect(changed.stopFingerprint).not.toBe(stopped.stopFingerprint);
+  });
+
+  it("re-evaluates when an existing document is edited in place even though the document count is unchanged", () => {
+    const stopped = classify({
+      issues: [
+        issue({
+          status: "blocked",
+          documentCount: 1,
+          latestDocumentAt: new Date("2026-07-11T08:00:00.000Z"),
+        }),
+      ],
+    });
+    expect(stopped.state).toBe("stopped");
+    if (stopped.state !== "stopped") return;
+
+    // Same document row count (no insert/delete), but the existing document's
+    // content was edited — e.g. a blocked issue's attached evidence doc was
+    // updated with new source information. The count alone would miss this;
+    // latestDocumentAt must still bust the fingerprint.
+    const edited = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: stopped.stopFingerprint,
+      },
+      issues: [
+        issue({
+          status: "blocked",
+          documentCount: 1,
+          latestDocumentAt: new Date("2026-07-11T09:00:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(edited.state).toBe("stopped");
+    expect(edited.stopFingerprint).not.toBe(stopped.stopFingerprint);
+  });
+
+  it("re-evaluates when an existing work product is edited in place even though the work-product count is unchanged", () => {
+    const stopped = classify({
+      issues: [
+        issue({
+          status: "blocked",
+          workProductCount: 1,
+          latestWorkProductAt: new Date("2026-07-11T08:00:00.000Z"),
+        }),
+      ],
+    });
+    expect(stopped.state).toBe("stopped");
+    if (stopped.state !== "stopped") return;
+
+    const edited = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: stopped.stopFingerprint,
+      },
+      issues: [
+        issue({
+          status: "blocked",
+          workProductCount: 1,
+          latestWorkProductAt: new Date("2026-07-11T09:00:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(edited.state).toBe("stopped");
+    expect(edited.stopFingerprint).not.toBe(stopped.stopFingerprint);
+  });
+
   it("excludes task-watchdog issues and their descendants from watched subtree scans", () => {
     const result = classify({
       issues: [
@@ -119,6 +247,58 @@ describe("task watchdog subtree classifier", () => {
 
     expect(result.state).toBe("stopped");
     expect(result.includedIssueIds).toEqual([sourceId]);
+  });
+
+  it("does not change the stop fingerprint when a task-watchdog-origin review issue is commented on or closed (SFB-87 repro)", () => {
+    // Regression for SFB-87: a watchdog agent commenting on / closing its own
+    // review issue (originKind: task_watchdog, parented under the watched
+    // source issue) must never perturb the *source* issue's stop fingerprint.
+    // excludedOriginKinds is supposed to make task_watchdog children fully
+    // invisible to the parent's fingerprint computation -- this proves it,
+    // independent of the separate touch-timestamp churn bug tracked by SFB-58.
+    const first = classify({
+      issues: [
+        issue({ status: "blocked" }),
+        issue({
+          id: watchdogId,
+          identifier: "PAP-3",
+          title: "Watchdog review",
+          parentId: sourceId,
+          originKind: "task_watchdog",
+          status: "in_progress",
+          latestCommentAt: new Date("2026-07-11T20:30:00.000Z"),
+        }),
+      ],
+    });
+    expect(first.state).toBe("stopped");
+    if (first.state !== "stopped") return;
+
+    const afterWatchdogChurn = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: first.stopFingerprint,
+      },
+      issues: [
+        issue({ status: "blocked" }),
+        issue({
+          id: watchdogId,
+          identifier: "PAP-3",
+          title: "Watchdog review",
+          parentId: sourceId,
+          originKind: "task_watchdog",
+          status: "done",
+          latestCommentAt: new Date("2026-07-11T21:07:44.975Z"),
+          documentCount: 1,
+          latestDocumentAt: new Date("2026-07-11T21:07:00.000Z"),
+        }),
+      ],
+    });
+
+    expect(afterWatchdogChurn).toMatchObject({
+      state: "already_reviewed",
+      stopFingerprint: first.stopFingerprint,
+    });
   });
 
   it("defers a stopped verdict for an issue created inside the first-run grace window", () => {
