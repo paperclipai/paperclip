@@ -47,6 +47,7 @@ import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { useSecondTick } from "../hooks/useSecondTick";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
+import { useEnterToSendPreference } from "../hooks/useEnterToSendPreference";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
@@ -3564,6 +3565,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canAcceptFiles = Boolean(onImageUpload || onAttachImage);
+  const [enterToSend] = useEnterToSendPreference();
 
   function queueViewportRestore(snapshot: ReturnType<typeof captureComposerViewportSnapshot>) {
     if (!snapshot) return;
@@ -3931,6 +3933,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         placeholder="Reply"
         mentions={mentions}
         onSubmit={handleSubmit}
+        submitOnEnter={enterToSend}
         imageUploadHandler={onImageUpload}
         fileDropTarget="parent"
         bordered={false}
