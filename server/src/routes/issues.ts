@@ -7911,6 +7911,31 @@ export function issueRoutes(
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");
     }
+    const descriptor = updateFields.unblockDescriptor ?? null;
+    if (descriptor && typeof descriptor === "object") {
+      const owner = descriptor.owner;
+      if (req.actor.type === "agent" && (owner === "board" || "userId" in owner)) {
+        throw forbidden("Agents may only name themselves as an unblock owner");
+      }
+      if (owner !== "board" && "agentId" in owner) {
+        const target = await db.select({ id: agents.id }).from(agents).where(and(
+          eq(agents.id, owner.agentId),
+          eq(agents.companyId, existing.companyId),
+        )).limit(1).then((rows) => rows[0] ?? null);
+        if (!target) throw unprocessable("Unblock owner agent must belong to the issue company");
+        if (req.actor.type === "agent" && req.actor.agentId !== owner.agentId) {
+          throw forbidden("Agents may only name themselves as an unblock owner");
+        }
+      } else if (owner !== "board" && "userId" in owner) {
+        const member = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, existing.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, owner.userId),
+          eq(companyMemberships.status, "active"),
+        )).limit(1).then((rows) => rows[0] ?? null);
+        if (!member) throw unprocessable("Unblock owner user must be an active company member");
+      }
+    }
     const enteringBlocked = existing.status !== "blocked" && updateFields.status === "blocked";
     if (enteringBlocked) {
       const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
@@ -7935,34 +7960,9 @@ export function issueRoutes(
           eq(approvals.status, "pending"),
         )).limit(1).then((rows) => rows[0] ?? null),
       ]);
-      const descriptor = updateFields.unblockDescriptor ?? null;
       if (!hasUnresolvedBlocker && !pendingInteraction && !pendingApproval && !descriptor) {
         res.status(422).json({ error: "Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor" });
         return;
-      }
-      if (descriptor && typeof descriptor === "object") {
-        const owner = descriptor.owner;
-        if (req.actor.type === "agent" && (owner === "board" || "userId" in owner)) {
-          throw forbidden("Agents may only name themselves as an unblock owner");
-        }
-        if (owner !== "board" && "agentId" in owner) {
-          const target = await db.select({ id: agents.id }).from(agents).where(and(
-            eq(agents.id, owner.agentId),
-            eq(agents.companyId, existing.companyId),
-          )).then((rows) => rows[0] ?? null);
-          if (!target) throw unprocessable("Unblock owner agent must belong to the issue company");
-          if (req.actor.type === "agent" && req.actor.agentId !== owner.agentId) {
-            throw forbidden("Agents may only name themselves as an unblock owner");
-          }
-        } else if (owner !== "board" && "userId" in owner) {
-          const member = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
-            eq(companyMemberships.companyId, existing.companyId),
-            eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.principalId, owner.userId),
-            eq(companyMemberships.status, "active"),
-          )).then((rows) => rows[0] ?? null);
-          if (!member) throw unprocessable("Unblock owner user must be an active company member");
-        }
       }
     }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
