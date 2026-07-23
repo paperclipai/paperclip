@@ -2853,6 +2853,7 @@ export function accessRoutes(
       memberships: accessSnapshot.memberships,
       source: req.actor.source ?? "none",
       keyId: req.actor.source === "board_key" ? req.actor.keyId ?? null : null,
+      cloudStack: req.actor.source === "cloud_tenant" ? req.actor.cloudStack ?? null : null,
     });
   });
 

@@ -59,6 +59,23 @@ pnpm paperclipai onboard
 # Choose "authenticated" -> "public"
 ```
 
+### Tenant company creation (trusted-header gateways)
+
+When a trusted gateway fronts the instance with `x-paperclip-cloud-*` headers,
+the stack's company is **not** pre-provisioned. The first stack **owner or
+admin** to sign in is taken through the standard onboarding wizard; the company
+they create is bound to a deterministic id derived from the stack id, so
+gateway slug→company routing needs no coordination. Stack **members** and
+**support** users see a "workspace is being set up" page until onboarding
+completes; their memberships are established automatically on their next
+request afterwards. A concurrent second create for the same stack fails with
+`409 Conflict` (first to complete wins).
+
+> Behavior change (2026-07): earlier builds auto-created a placeholder company
+> ("<Name>'s company") on the first authenticated request. Deployments relying
+> on that should complete onboarding once per stack instead; existing company
+> rows are unaffected.
+
 ## Board Claim Flow
 
 When migrating from `local_trusted` to `authenticated`, Paperclip emits a one-time claim URL at startup:
