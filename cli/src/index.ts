@@ -7,6 +7,7 @@ import { addAllowedHostname } from "./commands/allowed-hostname.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
+import { seedInstanceAdmin } from "./commands/auth-seed-instance-admin.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
 import { registerContextCommands } from "./commands/client/context.js";
@@ -199,6 +200,17 @@ auth
   .option("--expires-hours <hours>", "Invite expiration window in hours", (value) => Number(value))
   .option("--base-url <url>", "Public base URL used to print invite link")
   .action(bootstrapCeoInvite);
+
+auth
+  .command("seed-instance-admin")
+  .description(
+    "Idempotently seed a platform instance_admin (non-interactive; reads PAPERCLIP_SEED_ADMIN_* env)",
+  )
+  .option("-c, --config <path>", "Path to config file")
+  .option("--db-url <url>", "Database connection string (defaults to DATABASE_URL)")
+  .action((options: { config?: string; dbUrl?: string }) =>
+    seedInstanceAdmin({ config: options.config, dbUrl: options.dbUrl }),
+  );
 
 registerClientAuthCommands(auth);
 
