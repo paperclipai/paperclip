@@ -104,6 +104,7 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import { claudeHostLoginUnavailableReason } from "../services/execution-allowlist.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
   agentInstructionsChangeTargetKey,
@@ -3563,6 +3564,16 @@ export function agentRoutes(
     await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     if (agent.adapterType !== "claude_local") {
       res.status(400).json({ error: "Login is only supported for claude_local agents" });
+      return;
+    }
+
+    // `claude login` runs on the server host; when the instance forces all
+    // execution onto the Kubernetes sandbox, sandboxed runs can never see that
+    // host-local login state, so refuse before spawning anything.
+    const { executionMode } = await instanceSettings.getGeneral();
+    const hostLoginUnavailableReason = claudeHostLoginUnavailableReason(executionMode);
+    if (hostLoginUnavailableReason) {
+      res.status(409).json({ error: hostLoginUnavailableReason });
       return;
     }
 
