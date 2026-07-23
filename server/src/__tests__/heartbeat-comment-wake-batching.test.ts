@@ -15,6 +15,7 @@ import {
 import { runningProcesses } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
+import { getRunLogStore } from "../services/run-log-store.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -2057,6 +2058,134 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       expect(wakeups.some((wakeup) => wakeup.reason === "missing_issue_comment")).toBe(false);
       expect(wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toBe(true);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 20_000);
+
+  it("uses a run-log-attributed issue comment instead of queuing a missing-comment retry", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Use run-log comment",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      });
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const comment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorAgentId: agentId,
+          authorUserId: null,
+          createdByRunId: null,
+          body: "Completion comment posted without run id.",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const store = getRunLogStore();
+      const handle = await store.begin({ companyId, agentId, runId: firstRun!.id });
+      const logBytes = await store.append(handle, {
+        stream: "stdout",
+        chunk: `POST /api/issues/${issueId}/comments -> comment id: ${comment.id}\n`,
+        ts: new Date().toISOString(),
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({
+          logStore: handle.store,
+          logRef: handle.logRef,
+          logBytes,
+        })
+        .where(eq(heartbeatRuns.id, firstRun!.id));
+
+      gateway.releaseFirstWait();
+
+      await waitFor(async () => {
+        const sourceRun = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return sourceRun?.status === "succeeded" && sourceRun.issueCommentStatus === "satisfied";
+      });
+
+      const sourceRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, firstRun!.id))
+        .then((rows) => rows[0] ?? null);
+
+      expect(sourceRun?.issueCommentStatus).toBe("satisfied");
+      expect(sourceRun?.issueCommentSatisfiedByCommentId).toBe(comment.id);
+
+      const wakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+
+      expect(wakeups.some((wakeup) => wakeup.reason === "missing_issue_comment")).toBe(false);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
