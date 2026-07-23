@@ -6780,6 +6780,33 @@ export function issueService(db: Db) {
         }
 
         if (!removedIssue) return null;
+
+        // Cancel pending wakeup requests that reference this deleted issue
+        // (agentWakeupRequests and heartbeatRuns have no FK to issues — they store
+        // the issueId inside JSONB columns, so they survive the delete otherwise)
+        await tx
+          .update(agentWakeupRequests)
+          .set({ status: "cancelled" })
+          .where(
+            and(
+              inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+              or(
+                sql`${agentWakeupRequests.payload} ->> 'issueId' = ${id}`,
+                sql`${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${id}`,
+              ),
+            ),
+          );
+
+        await tx
+          .update(heartbeatRuns)
+          .set({ status: "cancelled" })
+          .where(
+            and(
+              eq(heartbeatRuns.status, "queued"),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${id}`,
+            ),
+          );
+
         const [enriched] = await withIssueLabels(tx, [removedIssue]);
         return enriched;
       }),
