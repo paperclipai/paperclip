@@ -542,6 +542,22 @@ function hasIssueWorkspaceAuditChange(previous: Record<string, unknown>) {
   return Object.keys(previous).some((key) => ISSUE_WORKSPACE_AUDIT_FIELDS.has(key));
 }
 
+function isClosedExecutionWorkspaceMetadataCleanupUpdate(
+  updateFields: Record<string, unknown>,
+  issue: { executionWorkspaceId?: string | null },
+) {
+  if (!issue.executionWorkspaceId) return false;
+  const updateKeys = Object.keys(updateFields);
+  if (updateKeys.length === 0) return false;
+  if (updateKeys.some((key) => !ISSUE_WORKSPACE_AUDIT_FIELDS.has(key))) return false;
+
+  const nextExecutionWorkspaceId =
+    updateFields.executionWorkspaceId === undefined
+      ? issue.executionWorkspaceId
+      : updateFields.executionWorkspaceId;
+  return nextExecutionWorkspaceId === null;
+}
+
 function labelIssueWorkspaceMode(mode: string | null) {
   switch (mode) {
     case "shared_workspace":
@@ -3512,6 +3528,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options: { skipTaskWatchdogScope?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3527,20 +3544,22 @@ export function issueRoutes(
     // watched subtree). The watchdog scope can only widen access to the watched
     // subtree; downstream status-transition, assignment, recovery, and budget
     // guards in the route handlers still apply.
-    const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
-    if (watchdogScope.kind !== "none") {
-      const scopeResult = await taskWatchdogScopeAllowsIssueMutation(db, watchdogScope, issue);
-      if (scopeResult.kind === "invalid") {
-        res.status(403).json({
-          error: scopeResult.detail,
-          details: {
-            issueId: issue.id,
-            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
-          },
-        });
-        return false;
+    if (!options.skipTaskWatchdogScope) {
+      const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+      if (watchdogScope.kind !== "none") {
+        const scopeResult = await taskWatchdogScopeAllowsIssueMutation(db, watchdogScope, issue);
+        if (scopeResult.kind === "invalid") {
+          res.status(403).json({
+            error: scopeResult.detail,
+            details: {
+              issueId: issue.id,
+              securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+            },
+          });
+          return false;
+        }
+        return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
       }
-      return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
@@ -7625,8 +7644,6 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
-    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -7740,8 +7757,23 @@ export function issueRoutes(
     }
     let interruptedRunId: string | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
+    const isClosedWorkspaceMetadataCleanupUpdate = isClosedExecutionWorkspaceMetadataCleanupUpdate(
+      updateFields,
+      existing,
+    );
     const isAgentWorkUpdate =
-      req.actor.type === "agent" && (Object.keys(updateFields).length > 0 || reviewRequest !== undefined);
+      req.actor.type === "agent" &&
+      ((Object.keys(updateFields).length > 0 && !isClosedWorkspaceMetadataCleanupUpdate) ||
+        reviewRequest !== undefined);
+
+    if (
+      !(await assertAgentIssueMutationAllowed(req, res, existing, {
+        skipTaskWatchdogScope: isClosedWorkspaceMetadataCleanupUpdate,
+      }))
+    ) {
+      return;
+    }
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
