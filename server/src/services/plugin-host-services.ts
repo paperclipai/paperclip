@@ -46,6 +46,7 @@ import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { pluginRegistryService } from "./plugin-registry.js";
+import { pluginCompanyEnablementService } from "./plugin-company-enablement.js";
 import { pluginStateStore } from "./plugin-state-store.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { pluginManagedAgentService } from "./plugin-managed-agents.js";
@@ -591,11 +592,16 @@ export function buildHostServices(
   };
 
   /**
-   * Plugins are instance-wide in the current runtime. Company IDs are still
-   * required for company-scoped data access, but there is no per-company
-   * availability gate to enforce here.
+   * Per-company availability gate: companies can disable an installed
+   * plugin via plugin_company_settings (manifest `companyEnablement`
+   * default applies when no row exists). Every company-scoped host
+   * operation awaits this before touching company data; a disabled
+   * plugin gets the typed 403 `plugin_not_enabled_for_company`.
    */
-  const ensurePluginAvailableForCompany = async (_companyId: string) => {};
+  const companyEnablement = pluginCompanyEnablementService(registry);
+  const ensurePluginAvailableForCompany = async (companyId: string) => {
+    await companyEnablement.ensurePluginEnabledForCompany(pluginId, companyId);
+  };
 
   const getLocalFolderDeclaration = (folderKey: string) =>
     requireLocalFolderDeclaration(options.manifest?.localFolders, folderKey);

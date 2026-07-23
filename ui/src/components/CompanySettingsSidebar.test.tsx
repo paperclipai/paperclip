@@ -3,14 +3,15 @@
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockSidebarBadgesApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 const mockPluginsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -74,8 +75,8 @@ vi.mock("@/api/sidebarBadges", () => ({
   sidebarBadgesApi: mockSidebarBadgesApi,
 }));
 
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("@/api/plugins", () => ({
@@ -114,17 +115,14 @@ describe("CompanySettingsSidebar", () => {
       failedRuns: 0,
       joinRequests: 2,
     });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableCloudSync: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true }),
+    );
     mockPluginsApi.list.mockResolvedValue([]);
     mockUsePluginSlots.mockReturnValue({
       slots: [],
       isLoading: false,
       errorMessage: null,
-    });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableCloudSync: false,
     });
   });
 
@@ -234,10 +232,10 @@ describe("CompanySettingsSidebar", () => {
     });
   });
 
-  it("shows cloud upstream only when cloud sync is enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableCloudSync: true,
-    });
+  it("shows cloud upstream nav item when cloud sync is enabled for an instance admin", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true, features: { enableCloudSync: true } }),
+    );
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -312,10 +310,10 @@ describe("CompanySettingsSidebar", () => {
     });
   });
 
-  it("shows cloud upstream only when cloud sync is enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableCloudSync: true,
-    });
+  it("registers the cloud upstream nav item with the expected route and label when cloud sync is enabled", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true, features: { enableCloudSync: true } }),
+    );
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -398,6 +396,123 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Linear");
     expect(container.textContent).toContain("Hybrid");
     expect(container.textContent).not.toContain("Sandbox only");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("company member: renders only exposed company surfaces and no instance section", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        isInstanceAdmin: false,
+        exposedSurfaces: ["company.general", "company.members"],
+      }),
+    );
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Members");
+    expect(container.textContent).not.toContain("Invites");
+    expect(container.textContent).not.toContain("Secrets");
+    expect(container.textContent).not.toContain("Instance settings");
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/company/settings/instance/general" }),
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("instance admin: sees every company surface and the instance section regardless of policy", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true }),
+    );
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Invites");
+    expect(container.textContent).toContain("Secrets");
+    expect(container.textContent).toContain("Instance settings");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("degrades closed: gated entries hidden while capabilities are unavailable", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockRejectedValue(new Error("offline"));
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Members");
+    expect(container.textContent).not.toContain("Instance settings");
+    // The chrome itself still renders — the page is not blocked.
+    expect(container.textContent).toContain("Company Settings");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("enabled plugins' companySettingsPage entries render even when the policy hides everything", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: false, exposedSurfaces: [] }),
+    );
+    mockUsePluginSlots.mockReturnValue({
+      slots: [
+        {
+          type: "companySettingsPage",
+          id: "billing",
+          displayName: "Billing",
+          exportName: "BillingPage",
+          routePath: "billing",
+          pluginId: "plugin-billing",
+          pluginKey: "billing",
+          pluginDisplayName: "Billing",
+          pluginVersion: "0.1.0",
+        },
+      ],
+      isLoading: false,
+      errorMessage: null,
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Billing");
 
     await act(async () => {
       root.unmount();
