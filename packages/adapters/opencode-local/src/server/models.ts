@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import { readdirSync, unlinkSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import {
   asString,
@@ -10,6 +13,7 @@ import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+const DISK_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -109,6 +113,50 @@ function pruneExpiredDiscoveryCache(now: number) {
   }
 }
 
+// ── Persistent disk cache ──────────────────────────────────────────────────
+
+interface DiskCacheEntry {
+  models: AdapterModel[];
+  discoveredAt: number;
+}
+
+function diskCacheDir(): string {
+  return process.env.PAPERCLIP_OPENCODE_MODELS_CACHE_DIR || os.tmpdir();
+}
+
+function diskCacheFilePath(key: string): string {
+  const keyHash = createHash("sha256").update(key).digest("hex").slice(0, 32);
+  return path.join(diskCacheDir(), `paperclip-opencode-models-${keyHash}.json`);
+}
+
+async function readDiskCache(filePath: string): Promise<DiskCacheEntry | null> {
+  try {
+    const content = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(content) as unknown;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !Array.isArray((parsed as DiskCacheEntry).models) ||
+      typeof (parsed as DiskCacheEntry).discoveredAt !== "number"
+    ) {
+      return null;
+    }
+    return parsed as DiskCacheEntry;
+  } catch {
+    return null;
+  }
+}
+
+async function writeDiskCache(filePath: string, models: AdapterModel[]): Promise<void> {
+  try {
+    await fs.writeFile(filePath, JSON.stringify({ models, discoveredAt: Date.now() }), "utf8");
+  } catch {
+    // Best-effort write; disk cache is opportunistic
+  }
+}
+
+// ── Public API ─────────────────────────────────────────────────────────────
+
 export async function discoverOpenCodeModels(input: {
   command?: unknown;
   cwd?: unknown;
@@ -175,6 +223,74 @@ export async function discoverOpenCodeModelsCached(input: {
   return models;
 }
 
+export type ModelDiscoverySource = "live" | "disk_cache" | "configured_model";
+
+export interface ModelDiscoveryResult {
+  models: AdapterModel[];
+  source: ModelDiscoverySource;
+  /** Milliseconds since the disk-cache entry was written. Only present when source === "disk_cache". */
+  cacheAge?: number;
+}
+
+/**
+ * Like discoverOpenCodeModelsCached but never throws when a fallback is available.
+ *
+ * Priority order on probe failure:
+ *  1. Persistent on-disk cache (returned even when stale)
+ *  2. Configured model trusted as a single-entry list
+ *  3. Throw (no fallback, same contract as bare discoverOpenCodeModels)
+ */
+export async function discoverOpenCodeModelsResilient(input: {
+  command?: unknown;
+  cwd?: unknown;
+  env?: unknown;
+  /** Configured model ID used as last-resort fallback when probe fails and no cache exists. */
+  model?: unknown;
+} = {}): Promise<ModelDiscoveryResult> {
+  const command = resolveOpenCodeCommand(input.command);
+  const cwd = asString(input.cwd, process.cwd());
+  const env = normalizeEnv(input.env);
+  const key = discoveryCacheKey(command, cwd, env);
+  const cachePath = diskCacheFilePath(key);
+
+  // In-memory cache hit — treat as live (same TTL as discoverOpenCodeModelsCached)
+  const now = Date.now();
+  pruneExpiredDiscoveryCache(now);
+  const inMemory = discoveryCache.get(key);
+  if (inMemory && inMemory.expiresAt > now) {
+    return { models: inMemory.models, source: "live" };
+  }
+
+  let probeError: unknown = null;
+  try {
+    const models = await discoverOpenCodeModels({ command, cwd, env });
+    discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
+    // Write disk cache best-effort in background
+    void writeDiskCache(cachePath, models);
+    return { models, source: "live" };
+  } catch (err) {
+    probeError = err;
+  }
+
+  // Probe failed: try persistent disk cache
+  const diskEntry = await readDiskCache(cachePath);
+  if (diskEntry) {
+    const cacheAge = Date.now() - diskEntry.discoveredAt;
+    // Promote into in-memory cache so repeated calls don't re-read disk
+    discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models: diskEntry.models });
+    return { models: diskEntry.models, source: "disk_cache", cacheAge };
+  }
+
+  // No disk cache: trust configured model if valid
+  const modelStr = asString(input.model, "").trim();
+  if (modelStr && isValidOpenCodeModelId(modelStr)) {
+    return { models: [{ id: modelStr, label: modelStr }], source: "configured_model" };
+  }
+
+  // Nothing to fall back to
+  throw probeError instanceof Error ? probeError : new Error(String(probeError));
+}
+
 export function isTruthyEnvFlag(value: string | undefined): boolean {
   if (value === undefined) return false;
   const v = value.trim().toLowerCase();
@@ -199,11 +315,14 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     return [{ id: model, label: model }];
   }
 
-  const models = await discoverOpenCodeModelsCached({
+  const result = await discoverOpenCodeModelsResilient({
     command: input.command,
     cwd: input.cwd,
     env: input.env,
+    model, // last-resort: trust configured model if probe times out and no cache
   });
+
+  const models = result.models;
 
   if (models.length === 0) {
     throw new Error("OpenCode returned no models. Run `opencode models` and verify provider auth.");
@@ -227,6 +346,37 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
   }
 }
 
-export function resetOpenCodeModelsCacheForTests() {
+/** Clears only the in-memory cache. Use in tests that simulate a process restart (disk persists). */
+export function resetOpenCodeModelsMemoryCacheForTests() {
   discoveryCache.clear();
 }
+
+/** Full reset: clears in-memory cache AND any disk cache files in the test cache dir. */
+export function resetOpenCodeModelsCacheForTests() {
+  discoveryCache.clear();
+  // When a test-specific cache dir is set, synchronously remove all cache files so
+  // each test starts with a clean disk state.
+  const testCacheDir = process.env.PAPERCLIP_OPENCODE_MODELS_CACHE_DIR;
+  if (testCacheDir) {
+    try {
+      for (const file of readdirSync(testCacheDir)) {
+        if (file.startsWith("paperclip-opencode-models-") && file.endsWith(".json")) {
+          try { unlinkSync(path.join(testCacheDir, file)); } catch { /* best-effort */ }
+        }
+      }
+    } catch { /* best-effort */ }
+  }
+}
+
+export async function populateOpenCodeModelsDiskCacheForTests(
+  input: { command?: unknown; cwd?: unknown; env?: unknown },
+  models: AdapterModel[],
+): Promise<void> {
+  const command = resolveOpenCodeCommand(input.command);
+  const cwd = asString(input.cwd, process.cwd());
+  const env = normalizeEnv(input.env);
+  const key = discoveryCacheKey(command, cwd, env);
+  await writeDiskCache(diskCacheFilePath(key), models);
+}
+
+export { DISK_CACHE_TTL_MS };
