@@ -3,9 +3,15 @@ import type { Db } from "@paperclipai/db";
 import { statusCards, statusCardUpdates } from "@paperclipai/db";
 import type { IssueStatus } from "@paperclipai/shared";
 
-const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+// A status-card generation run stops making progress when its task reaches one
+// of these statuses. `done`/`cancelled` are terminal; `blocked` is not, but a
+// blocked setup/update task is stuck awaiting human help and will never write a
+// summary on its own — so we release the card's `generatingIssueId` claim in all
+// three cases. The board tile keys "run in flight" off `generatingIssueId`, so
+// clearing it here is what flips a wedged card back to offering "Run now".
+const STALLED_GENERATION_STATUSES = new Set<IssueStatus>(["done", "cancelled", "blocked"]);
 
-interface TerminalGenerationIssue {
+interface StalledGenerationIssue {
   id: string;
   companyId: string;
   identifier: string | null;
@@ -13,18 +19,22 @@ interface TerminalGenerationIssue {
   status: IssueStatus;
 }
 
-function failureReasonForIssue(issue: TerminalGenerationIssue) {
+function failureReasonForIssue(issue: StalledGenerationIssue) {
   const label = issue.identifier ? `${issue.identifier}: ${issue.title}` : issue.title;
-  return issue.status === "cancelled"
-    ? `Status-card generation task ${label} was cancelled before writing a summary.`
-    : `Status-card generation task ${label} finished without writing a summary.`;
+  if (issue.status === "cancelled") {
+    return `Status-card generation task ${label} was cancelled before writing a summary.`;
+  }
+  if (issue.status === "blocked") {
+    return `Status-card generation task ${label} was blocked before writing a summary; re-run to retry.`;
+  }
+  return `Status-card generation task ${label} finished without writing a summary.`;
 }
 
-export async function finalizeStatusCardsForTerminalIssue(
+export async function finalizeStatusCardsForStalledGeneration(
   dbOrTx: Pick<Db, "update">,
-  issue: TerminalGenerationIssue,
+  issue: StalledGenerationIssue,
 ) {
-  if (!TERMINAL_ISSUE_STATUSES.has(issue.status)) return [];
+  if (!STALLED_GENERATION_STATUSES.has(issue.status)) return [];
 
   const now = new Date();
   const failureReason = failureReasonForIssue(issue);

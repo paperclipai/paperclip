@@ -324,7 +324,11 @@ export function statusCardService(db: Db) {
     if (card.generatingIssueId) {
       const active = await db.select().from(issues).where(eq(issues.id, card.generatingIssueId)).then((rows) => rows[0] ?? null);
       const payload = parseGenerationPayload(active?.description ?? null);
-      if (active && !TERMINAL_ISSUE_STATUSES.has(active.status) && payload?.promptHash === hash) {
+      // Only treat an existing setup task as "already generating" while it is
+      // genuinely in flight. A `blocked` task is stuck awaiting a human and will
+      // never finish on its own, so a manual re-kick must supersede it (reopened
+      // to `todo` below) rather than silently no-op.
+      if (active && !TERMINAL_ISSUE_STATUSES.has(active.status) && active.status !== "blocked" && payload?.promptHash === hash) {
         return { card, generatingIssue: active, alreadyGenerating: true };
       }
     }
@@ -345,7 +349,10 @@ export function statusCardService(db: Db) {
         deduplicated = reason === "idempotency_key";
       },
     });
-    const reopened = deduplicated && TERMINAL_ISSUE_STATUSES.has(created.status)
+    // Re-open a superseded setup task so the Summarizer picks it back up. This
+    // covers idempotency-key hits that resolve to a terminal task (done/cancelled)
+    // as well as a `blocked` one that a manual re-kick is reviving.
+    const reopened = deduplicated && (TERMINAL_ISSUE_STATUSES.has(created.status) || created.status === "blocked")
       ? await issuesSvc.update(created.id, { status: "todo", assigneeAgentId: builtIn.agentId })
       : created;
     const generationIssue = await issuesSvc.update(reopened!.id, {
@@ -359,7 +366,10 @@ export function statusCardService(db: Db) {
     return {
       card: nextCard!,
       generatingIssue: generationIssue!,
-      alreadyGenerating: deduplicated && !TERMINAL_ISSUE_STATUSES.has(created.status),
+      // Only "already generating" when we joined a genuinely in-flight task. A
+      // deduplicated `blocked` task was just revived (reopened to todo) above, so
+      // that is a fresh re-kick, not a no-op.
+      alreadyGenerating: deduplicated && !TERMINAL_ISSUE_STATUSES.has(created.status) && created.status !== "blocked",
     };
   }
 
@@ -498,7 +508,11 @@ export function statusCardService(db: Db) {
     if (card.queries.length === 0) throw conflict("Compile the status-card query before refreshing it");
     if (card.generatingIssueId) {
       const active = await db.select().from(issues).where(eq(issues.id, card.generatingIssueId)).then((rows) => rows[0] ?? null);
-      if (active && !TERMINAL_ISSUE_STATUSES.has(active.status)) return { card, generatingIssue: active, alreadyGenerating: true, enqueued: false };
+      // As in requestCompile: a `blocked` update task is stuck, not in flight, so
+      // a manual refresh must be allowed to supersede it instead of no-opping.
+      if (active && !TERMINAL_ISSUE_STATUSES.has(active.status) && active.status !== "blocked") {
+        return { card, generatingIssue: active, alreadyGenerating: true, enqueued: false };
+      }
     }
 
     const now = input.now ?? new Date();

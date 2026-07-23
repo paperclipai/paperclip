@@ -606,6 +606,46 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(await db.select().from(issues)).toHaveLength(1);
   });
 
+  it("re-offers and re-kicks Run now when a setup task stalls as blocked", async () => {
+    // Regression: a compile task that the Summarizer *blocks* (stuck awaiting a
+    // human, e.g. after the refresh 500 it never finished) left the card wedged —
+    // generatingIssueId stayed set, so the board tile spun forever and "Run now"
+    // was suppressed, and recompile no-opped as "already generating".
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    const app = createApp(db, localBoardActor());
+    const created = await request(app)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Blocked launch tasks" });
+    const cardId = created.body.id as string;
+    const generationIssueId = created.body.generatingIssueId as string;
+    expect(generationIssueId).toBeTruthy();
+
+    // The setup run gets stuck and blocks the task instead of writing a summary.
+    await issueService(db).update(generationIssueId, { status: "blocked" });
+
+    // The card releases its generation claim, so the tile stops spinning and the
+    // board offers "Run now" again (generatingIssueId null → not "setup running").
+    const service = statusCardService(db);
+    expect(await service.getById(cardId)).toMatchObject({
+      generatingIssueId: null,
+      failureReason: expect.stringContaining("blocked"),
+    });
+
+    // Run now must actually re-kick: supersede the blocked task by reviving it
+    // (reopened to todo), not silently no-op, and without spawning a duplicate.
+    const rerun = await request(app).post(`/api/status-cards/${cardId}/recompile`);
+    expect(rerun.status).toBe(202);
+    expect(rerun.body.alreadyGenerating).toBe(false);
+    expect(rerun.body.generatingIssue.status).toBe("todo");
+    expect(await service.getById(cardId)).toMatchObject({
+      generatingIssueId: rerun.body.generatingIssue.id,
+      state: "compiling",
+    });
+    expect(await db.select().from(issues)).toHaveLength(1);
+  });
+
   it("rejects status-card writes from the wrong agent, issue, or run", async () => {
     const company = await seedCompany();
     await enableStatusCards();
