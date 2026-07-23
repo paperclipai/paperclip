@@ -49,6 +49,7 @@ describe("codex managed-home auth fail-fast", () => {
           id: "agent-1",
           companyId: "company-1",
           name: "CodexCoder",
+          role: "engineer",
           adapterType: "codex_local",
           adapterConfig: { engine: "cli" },
         },

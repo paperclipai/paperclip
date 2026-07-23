@@ -224,7 +224,7 @@ agents:
     adapter:
       type: claude_local
       config:
-        model: claude-sonnet-4-6
+        model: claude-sonnet-5
     inputs:
       env:
         GH_TOKEN:

@@ -10,6 +10,7 @@ function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
       id: "agent-1",
       companyId: "company-1",
       name: "Hermes",
+      role: "engineer",
       adapterType: "hermes_gateway",
       adapterConfig: config,
     },

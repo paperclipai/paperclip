@@ -86,6 +86,7 @@ function createContext(
     id: "agent-1",
     companyId: "company-1",
     name: "Cursor Cloud Agent",
+    role: "engineer",
     adapterType: "cursor_cloud",
     adapterConfig: {},
   };

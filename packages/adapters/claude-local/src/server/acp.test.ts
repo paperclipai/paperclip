@@ -191,6 +191,7 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
       id: "agent-1",
       companyId: "company-1",
       name: "Claude ACP",
+      role: null,
       adapterType: "claude_local",
       adapterConfig: {},
     },

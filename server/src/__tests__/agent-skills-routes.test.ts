@@ -64,6 +64,8 @@ const mockAdapter = vi.hoisted(() => ({
   syncSkills: vi.fn(),
 }));
 
+const MANAGER_ONLY_SKILL = "paperclipai/paperclip/autoplan";
+
 function expectResponseId(value: unknown): string {
   expect(value).toEqual(expect.any(String));
   expect(value).not.toBe("");
@@ -711,6 +713,37 @@ describe.sequential("agent skill routes", () => {
     );
   });
 
+  it("prunes manager-only desired skills when syncing an IC agent", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
+    mockCompanySkillService.resolveRequestedSkillEntries.mockImplementationOnce(
+      async (_companyId: string, requested: Array<{ key: string; versionId?: string | null }>) => ({
+        resolved: requested.map((entry) => ({ key: entry.key, versionId: entry.versionId ?? null })),
+        unresolved: [],
+      }),
+    );
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: [MANAGER_ONLY_SKILL] }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: [],
+          }),
+        }),
+      }),
+      expect.any(Object),
+    );
+    expect(mockAdapter.syncSkills).toHaveBeenCalledWith(
+      expect.any(Object),
+      [],
+    );
+  });
+
   it("persists canonical desired skills when creating an agent directly", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
@@ -739,6 +772,37 @@ describe.sequential("agent skill routes", () => {
       expect.objectContaining({
         agentId: createdAgentId,
         agentRole: "engineer",
+      }),
+    );
+  });
+
+  it("prunes manager-only desired skills when creating an IC agent directly", async () => {
+    mockCompanySkillService.resolveRequestedSkillEntries.mockImplementationOnce(
+      async (_companyId: string, requested: Array<{ key: string; versionId?: string | null }>) => ({
+        resolved: requested.map((entry) => ({ key: entry.key, versionId: entry.versionId ?? null })),
+        unresolved: [],
+      }),
+    );
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "QA Agent",
+        role: "engineer",
+        adapterType: "claude_local",
+        desiredSkills: [MANAGER_ONLY_SKILL],
+        adapterConfig: {},
+      }));
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: [],
+          }),
+        }),
       }),
     );
   });
@@ -926,6 +990,49 @@ describe.sequential("agent skill routes", () => {
           desiredSkills: ["paperclipai/paperclip/paperclip"],
           requestedConfigurationSnapshot: expect.objectContaining({
             desiredSkills: ["paperclipai/paperclip/paperclip"],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("prunes manager-only desired skills from IC hire approvals", async () => {
+    const db = createDb(true);
+    mockCompanySkillService.resolveRequestedSkillEntries.mockImplementationOnce(
+      async (_companyId: string, requested: Array<{ key: string; versionId?: string | null }>) => ({
+        resolved: requested.map((entry) => ({ key: entry.key, versionId: entry.versionId ?? null })),
+        unresolved: [],
+      }),
+    );
+
+    const res = await request(await createApp(db))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "QA Agent",
+        role: "engineer",
+        adapterType: "claude_local",
+        desiredSkills: [MANAGER_ONLY_SKILL],
+        adapterConfig: {},
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: [],
+          }),
+        }),
+      }),
+    );
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          desiredSkills: [],
+          requestedConfigurationSnapshot: expect.objectContaining({
+            desiredSkills: [],
           }),
         }),
       }),

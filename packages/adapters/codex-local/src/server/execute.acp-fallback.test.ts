@@ -108,6 +108,7 @@ function buildContext(config: Record<string, unknown> = {}) {
       id: "agent-1",
       companyId: "company-1",
       name: "Codex Coder",
+      role: null,
       adapterType: "codex_local",
       adapterConfig: {},
     },

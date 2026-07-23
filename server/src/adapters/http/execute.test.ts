@@ -22,6 +22,7 @@ describe("http adapter execute", () => {
         id: "agent-1",
         companyId: "company-1",
         name: "Agent",
+        role: "engineer",
         adapterType: "http",
         adapterConfig: {},
       },
