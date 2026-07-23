@@ -60,6 +60,7 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  isAgentInvokable,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -7654,11 +7655,17 @@ export function issueService(db: Db) {
       const explicitAgentMentionIds = extractAgentMentionIds(body);
       if (explicitAgentMentionIds.length === 0) return [];
 
-      const rows = await db.select({ id: agents.id, status: agents.status })
+      const rows = await db.select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
         .from(agents).where(eq(agents.companyId, companyId));
       const wakeableCompanyAgentIds = new Set(
         rows
-          .filter((agent) => agent.status !== "paused" && agent.status !== "terminated" && agent.status !== "pending_approval")
+          .filter((agent) => isAgentInvokable({ agent, agents: rows }))
           .map((agent) => agent.id),
       );
       return explicitAgentMentionIds.filter((agentId) => wakeableCompanyAgentIds.has(agentId));
