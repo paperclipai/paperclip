@@ -60,6 +60,7 @@ import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
+  isClaudeExpiredCredentialError,
   isClaudeMaxTurnsResult,
   isClaudeProviderQuotaError,
   isClaudeRefusalResult,
@@ -81,6 +82,12 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import {
+  runBedrockCredentialPreflight,
+  runBedrockCredentialRefresh,
+  DEFAULT_BEDROCK_PREFLIGHT_TIMEOUT_SEC,
+  DEFAULT_BEDROCK_REFRESH_TIMEOUT_SEC,
+} from "./bedrock-credentials.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   createClaudeAcpExecutor,
@@ -1193,8 +1200,153 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  // Pre-flight Bedrock credential gate (MAS-348). When Bedrock auth is active,
+  // probe credential validity BEFORE spawning the CLI. An expired token would
+  // otherwise yield a zero-work spawn that exits `403 ... security token ...
+  // expired`, burning the heartbeat. On a positive expiry detection we first try
+  // to self-heal (MAS-751) by running the operator-supplied refresh command and
+  // re-probing; only if refresh is unconfigured or does not recover do we skip
+  // the spawn and return a transient_upstream defer so the recovery rails snooze
+  // the run. The probe fails open: any non-expiry outcome proceeds to spawn.
+  const bedrockRefreshCommand = asString(config.bedrockCredentialRefreshCommand, "").trim() || null;
+
+  /**
+   * Self-heal an expired Bedrock token in place (MAS-751): run the operator
+   * refresh command, then re-probe. Returns true when credentials recovered so
+   * the caller can proceed to spawn/retry; false means fall back to the defer.
+   * Fail-open and bounded — never throws, never hangs the heartbeat.
+   */
+  const attemptBedrockCredentialRefresh = async (reason: string): Promise<boolean> => {
+    if (!bedrockRefreshCommand) return false;
+    await onLog(
+      "stderr",
+      `[paperclip] BEDROCK_CREDENTIAL_REFRESH: attempting self-healing credential refresh (${reason}) before deferring.\n`,
+    );
+    const refresh = await runBedrockCredentialRefresh({
+      runId,
+      target: runtimeExecutionTarget,
+      cwd,
+      env,
+      command: bedrockRefreshCommand,
+      timeoutSec: asNumber(config.bedrockCredentialRefreshTimeoutSec, DEFAULT_BEDROCK_REFRESH_TIMEOUT_SEC),
+      onLog,
+    });
+    if (refresh.status !== "refreshed") {
+      await onLog(
+        "stderr",
+        `[paperclip] BEDROCK_CREDENTIAL_REFRESH: refresh ${refresh.status}; deferring. Detail: ${refresh.detail ?? "n/a"}\n`,
+      );
+      return false;
+    }
+    const reprobe = await runBedrockCredentialPreflight({
+      runId,
+      target: runtimeExecutionTarget,
+      cwd,
+      env,
+      timeoutSec: asNumber(config.bedrockPreflightTimeoutSec, DEFAULT_BEDROCK_PREFLIGHT_TIMEOUT_SEC),
+    });
+    // Fail-open: only a *positive* re-detection of expiry blocks the spawn. A
+    // valid or indeterminate re-probe means the refresh plausibly worked, so we
+    // proceed rather than burn the recovery on a probe hiccup.
+    const recovered = reprobe.status !== "expired";
+    await onLog(
+      "stderr",
+      `[paperclip] BEDROCK_CREDENTIAL_REFRESH: refresh succeeded; re-probe=${reprobe.status}; ${recovered ? "proceeding" : "still expired, deferring"}.\n`,
+    );
+    return recovered;
+  };
+
+  const buildBedrockExpiredDeferResult = (detail: string | undefined): AdapterExecutionResult => {
+    const backoffSec = Math.max(1, asNumber(config.bedrockPreflightBackoffSec, 180));
+    const retryNotBeforeIso = new Date(Date.now() + backoffSec * 1000).toISOString();
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Bedrock credential expired - deferring run",
+      errorCode: "claude_transient_upstream",
+      errorFamily: "transient_upstream",
+      retryNotBefore: retryNotBeforeIso,
+      billingType,
+      biller: "aws_bedrock",
+      provider: "anthropic",
+      resultJson: {
+        errorFamily: "transient_upstream",
+        errorCode: "claude_transient_upstream",
+        retryNotBefore: retryNotBeforeIso,
+        transientRetryNotBefore: retryNotBeforeIso,
+        bedrockCredentialExpired: true,
+        detail: detail ?? "expired security token",
+      },
+    };
+  };
+
   try {
-    const initial = await runAttempt(sessionId ?? null);
+    if (isBedrockAuth(effectiveEnv)) {
+      const preflight = await runBedrockCredentialPreflight({
+        runId,
+        target: runtimeExecutionTarget,
+        cwd,
+        env,
+        timeoutSec: asNumber(config.bedrockPreflightTimeoutSec, DEFAULT_BEDROCK_PREFLIGHT_TIMEOUT_SEC),
+      });
+      if (preflight.status === "expired" && !(await attemptBedrockCredentialRefresh("pre-flight probe detected expired token"))) {
+        const deferResult = buildBedrockExpiredDeferResult(preflight.detail);
+        const retryNotBeforeIso = deferResult.retryNotBefore ?? "";
+        // At-most-one-alert-per-lapse: deferred runs no longer spawn, so a single
+        // clear, greppable marker per deferred heartbeat is the whole alert.
+        await onLog(
+          "stderr",
+          `[paperclip] BEDROCK_CREDENTIAL_EXPIRED: pre-flight STS probe detected an expired Bedrock/AWS security token; deferring run until ${retryNotBeforeIso} without spawning the Claude CLI. Detail: ${preflight.detail ?? "expired security token"}\n`,
+        );
+        if (onMeta) {
+          await onMeta({
+            adapterType: "claude_local",
+            command: resolvedCommand,
+            cwd: effectiveExecutionCwd,
+            commandArgs: [],
+            commandNotes: [
+              `Skipped Claude CLI spawn: pre-flight detected expired Bedrock credentials. Deferring until ${retryNotBeforeIso}.`,
+            ],
+            env: loggedEnv,
+            prompt,
+            promptMetrics,
+            context,
+          });
+        }
+        return deferResult;
+      }
+    }
+
+    let initial = await runAttempt(sessionId ?? null);
+
+    // Auto-refresh on mid-run 403 (MAS-751). A token can lapse *between* the
+    // pre-flight probe and the actual inference call (or slip past the fail-open
+    // probe entirely), surfacing as `403 ... security token ... expired`. When
+    // Bedrock auth is active and a refresh command is configured, self-heal and
+    // retry the invoke exactly once before falling through to the transient
+    // defer classification. Bounded to a single retry so a persistently-expired
+    // token can never loop.
+    const initialFailed =
+      !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || asBoolean(initial.parsed?.is_error, false));
+    if (
+      initialFailed &&
+      isBedrockAuth(effectiveEnv) &&
+      isClaudeExpiredCredentialError({
+        parsed: initial.parsed,
+        stdout: initial.proc.stdout,
+        stderr: initial.proc.stderr,
+      })
+    ) {
+      if (await attemptBedrockCredentialRefresh("mid-run 403 expired security token")) {
+        await onLog(
+          "stdout",
+          `[paperclip] Bedrock credentials refreshed after a mid-run expired-token error; retrying the invocation once.\n`,
+        );
+        initial = await runAttempt(sessionId ?? null);
+      }
+    }
+
     const sessionErrorKind =
       sessionId &&
       !initial.proc.timedOut &&

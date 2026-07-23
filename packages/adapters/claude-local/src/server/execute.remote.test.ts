@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   runChildProcess,
@@ -79,8 +79,18 @@ import { execute } from "./execute.js";
 describe("claude remote execution", () => {
   const cleanupDirs: string[] = [];
 
+  beforeEach(() => {
+    // execute() folds process.env into effectiveEnv; on a Bedrock host
+    // (CLAUDE_CODE_USE_BEDROCK=1) the pre-flight STS probe would fire an extra
+    // runChildProcess call and break these call-count assertions. These remote
+    // tests do not exercise Bedrock, so neutralize the ambient signals.
+    vi.stubEnv("CLAUDE_CODE_USE_BEDROCK", "");
+    vi.stubEnv("ANTHROPIC_BEDROCK_BASE_URL", "");
+  });
+
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;

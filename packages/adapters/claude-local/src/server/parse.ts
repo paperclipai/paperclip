@@ -17,6 +17,13 @@ const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+// Expired AWS/Bedrock/STS security-token signals. These are recoverable-by-refresh
+// (the token lapses on a schedule and a new one becomes available), so we treat
+// them as transient rather than burning the heartbeat. Deliberately narrow: it
+// matches only expiry phrasing, NOT a bare `AccessDenied` / permanent authz
+// failure, which must remain a hard error.
+const CLAUDE_EXPIRED_CREDENTIAL_RE =
+  /(?:expired\s?tokenexception|expired\s?token\b|the\s+security\s+token\s+included\s+in\s+the\s+request\s+is\s+expired|security\s+token[\s\S]{0,40}?\bexpired\b|expired\s+security\s+token|(?:sso\s+)?(?:session|credentials?|token)[\s\S]{0,40}?\b(?:has|have)?\s*expired\b)/i;
 
 /**
  * Sum the per-model usage ledger from a Claude CLI result event. The result
@@ -460,6 +467,24 @@ export function extractClaudeRetryNotBefore(
   return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
 }
 
+/**
+ * True when the failure text carries an expired AWS/Bedrock/STS security-token
+ * signal. This is the mid-run counterpart to the pre-flight probe: an
+ * `ExpiredToken` 403 that slips past the pre-flight gate must defer (transient)
+ * rather than burn the heartbeat. Permanent authz failures (bare `AccessDenied`
+ * without any expiry wording) are intentionally NOT matched.
+ */
+export function isClaudeExpiredCredentialError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return false;
+  return CLAUDE_EXPIRED_CREDENTIAL_RE.test(haystack);
+}
+
 export function isClaudeTransientUpstreamError(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;
@@ -477,6 +502,10 @@ export function isClaudeTransientUpstreamError(input: {
     stderr: input.stderr ?? "",
   });
   if (loginMeta.requiresLogin) return false;
+
+  // Expired credentials are recoverable-by-refresh; classify as transient even
+  // though the rate-limit/overload vocabulary below doesn't cover them.
+  if (isClaudeExpiredCredentialError(input)) return true;
 
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;

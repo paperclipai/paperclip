@@ -23,6 +23,10 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+| `bedrockCredentialRefreshCommand` | string | No | Shell command run to self-heal an expired AWS/Bedrock token before deferring (e.g. `ada credentials update --account … --provider … --role … --once`, `aws sso login`). Runs via `sh -c` with the adapter's resolved env/cwd. Only used under Bedrock auth. See [Self-healing AWS/Bedrock credentials](#self-healing-awsbedrock-credentials-mas-751). |
+| `bedrockCredentialRefreshTimeoutSec` | number | No | Timeout for the refresh command (default `60`). Bounded so a wedged refresh can never hang a heartbeat. |
+| `bedrockPreflightTimeoutSec` | number | No | Timeout for the pre-flight `sts get-caller-identity` probe (default `5`). |
+| `bedrockPreflightBackoffSec` | number | No | How long to defer the run when credentials are expired and could not be refreshed (default `180`). |
 
 ## Prompt Templates
 
@@ -65,6 +69,18 @@ On-call checklist if you see this in production:
 - Confirm `errorCode` is `claude_poisoned_previous_message_id` in the run row — that means the guards fired correctly and the issue auto-recovers on the next heartbeat.
 - If the same issue still loops after one heartbeat, check that `agentTaskSessions` for that `(agentId, taskKey)` was cleared. If not, the adapter return value was lost (e.g. a malformed run finalization) — escalate; do **not** manually edit the row, file a child issue with the run id.
 - For remote execution targets (sandbox/SSH), the poisoned JSONL is on the remote and the adapter only logs the cleanup intent. The fresh-session retry still succeeds because it uses a new session id, and the server-side `clearSession: true` is authoritative regardless of remote disk state.
+
+## Self-healing AWS/Bedrock credentials (MAS-751)
+
+Under Bedrock auth (`CLAUDE_CODE_USE_BEDROCK=1` or `ANTHROPIC_BEDROCK_BASE_URL` set), an expired AWS security token makes the Claude CLI spawn do zero work and exit `403 The security token included in the request is expired`. Historically the in-flight process died with no further output, which tripped Paperclip's silent-run watchdog (`stale_active_run_evaluation`) and generated false-positive "Review silent active run" issues — the run wasn't hung, its creds had lapsed.
+
+The adapter handles this in three layers, so a credential lapse never surfaces as a silent hang:
+
+1. **Refresh-before-invoke (pre-flight).** Before spawning the CLI, a bounded `aws sts get-caller-identity` probe checks token validity. On a *positive* expiry detection, if `bedrockCredentialRefreshCommand` is configured the adapter runs it (`sh -c`) and re-probes; if the re-probe clears (or is indeterminate), the run proceeds normally. The probe fails open — a timeout, missing `aws` CLI, `AccessDenied`, or any non-expiry outcome proceeds to spawn and never hangs the heartbeat.
+2. **Auto-refresh on mid-run 403.** A token can lapse *between* the pre-flight probe and the inference call (or slip past the fail-open probe). When the spawn fails with an expired-token `403`, the adapter runs the refresh command and retries the invoke exactly once. Bounded to one retry so a persistently-expired token can never loop.
+3. **Graceful defer fallback.** If no refresh command is configured, or refresh does not recover the token, the run does **not** die silently. The adapter returns a `transient_upstream` result (`errorCode: claude_transient_upstream`) with a `retryNotBefore` set `bedrockPreflightBackoffSec` seconds out, so the recovery rails snooze and re-arm the run instead of the watchdog cutting a false-positive silent-run issue. Deferred pre-flight runs emit exactly one greppable `BEDROCK_CREDENTIAL_EXPIRED` marker per lapse; refresh attempts emit `BEDROCK_CREDENTIAL_REFRESH` markers.
+
+**Operator note:** the refresh command is intentionally operator-supplied (same trust level as `command`/`env`) because credential provisioning is environment-specific — `ada credentials update`, `aws sso login`, `mwinit`, a `credential_process` wrapper, etc. Leave it unset to keep the safe detect-and-defer behavior with no in-place refresh.
 
 ## Skills Injection
 
