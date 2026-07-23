@@ -1297,7 +1297,17 @@ function createSandboxEnvironmentDriver(
       // (e.g. a batch/job backend whose sync hook rejects immediately). The
       // provider flags such leases so they keep the byte-identical base64
       // fallback instead of being routed to a hook that would only error.
-      if (input.lease.metadata?.nativeFileSyncUnsupported === true) return false;
+      //
+      // Also fall back for any lease persisted with `backend: "job"` directly:
+      // job leases created before `nativeFileSyncUnsupported` existed carry the
+      // backend field but not the flag, and the `job` backend has no pod-exec
+      // channel, so routing them to the native hook would only reject.
+      if (
+        input.lease.metadata?.nativeFileSyncUnsupported === true ||
+        input.lease.metadata?.backend === "job"
+      ) {
+        return false;
+      }
       return true;
     },
 
