@@ -1282,6 +1282,20 @@
       "when": 1784822400000,
       "tag": "0184_routable_blocked",
       "breakpoints": true
+    },
+    {
+      "idx": 185,
+      "version": "7",
+      "when": 1784822401000,
+      "tag": "0185_instance_settings_visibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "7",
+      "when": 1784822402000,
+      "tag": "0186_company_standing",
+      "breakpoints": true
     }
   ]
 }

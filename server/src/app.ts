@@ -79,6 +79,7 @@ import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
+import { createPluginEventDeliverabilityChecker } from "./services/plugin-company-enablement.js";
 import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
@@ -294,7 +295,12 @@ export async function createApp(
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
   const pluginRegistry = pluginRegistryService(db);
-  const eventBus = createPluginEventBus();
+  const eventBus = createPluginEventBus({
+    isPluginDeliverableForCompany: createPluginEventDeliverabilityChecker(
+      pluginRegistry,
+      (ctx, msg) => logger.warn(ctx, msg),
+    ),
+  });
   setPluginEventBus(eventBus);
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });

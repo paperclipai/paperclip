@@ -9,6 +9,7 @@ import {
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
 } from "../types/instance.js";
+import { COMPANY_SETTINGS_SURFACES } from "../constants.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 
 function presetSchema<T extends readonly number[]>(presets: T, label: string) {
@@ -96,6 +97,16 @@ export const patchInstanceSettingsSchema = z.object({
   defaultEnvironmentId: z.string().uuid().nullable().optional(),
 }).strict();
 
+export const instanceVisibilitySettingsSchema = z.object({
+  companySurfaces: z
+    .array(z.enum(COMPANY_SETTINGS_SURFACES))
+    .default([...COMPANY_SETTINGS_SURFACES]),
+}).strict();
+
+export const patchInstanceVisibilitySettingsSchema = z.object({
+  companySurfaces: z.array(z.enum(COMPANY_SETTINGS_SURFACES)),
+}).strict();
+
 export const issueGraphLivenessAutoRecoveryRequestSchema = z.object({
   lookbackHours: z
     .number()
@@ -110,6 +121,8 @@ export type PatchInstanceGeneralSettings = z.infer<typeof patchInstanceGeneralSe
 export type InstanceExperimentalSettings = z.infer<typeof instanceExperimentalSettingsSchema>;
 export type PatchInstanceExperimentalSettings = z.infer<typeof patchInstanceExperimentalSettingsSchema>;
 export type PatchInstanceSettings = z.infer<typeof patchInstanceSettingsSchema>;
+export type InstanceVisibilitySettings = z.infer<typeof instanceVisibilitySettingsSchema>;
+export type PatchInstanceVisibilitySettings = z.infer<typeof patchInstanceVisibilitySettingsSchema>;
 export type IssueGraphLivenessAutoRecoveryRequest = z.infer<
   typeof issueGraphLivenessAutoRecoveryRequestSchema
 >;
@@ -119,6 +132,7 @@ export const instanceSettingsSchema = z.object({
   defaultEnvironmentId: z.string().uuid().nullable(),
   general: instanceGeneralSettingsSchema,
   experimental: instanceExperimentalSettingsWithManagedSchema,
+  visibility: instanceVisibilitySettingsSchema,
   createdAt: z.union([z.date(), z.string().datetime()]),
   updatedAt: z.union([z.date(), z.string().datetime()]),
 }).strict();

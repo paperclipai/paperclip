@@ -45,6 +45,8 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   // Data read operations
   "companies.list": ["companies.read"],
   "companies.get": ["companies.read"],
+  "companies.setStanding": ["company.standing.write"],
+  "companies.clearStanding": ["company.standing.write"],
   "projects.list": ["projects.read"],
   "projects.get": ["projects.read"],
   "projects.managed.get": ["projects.managed"],

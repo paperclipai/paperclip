@@ -326,6 +326,7 @@ export const queryKeys = {
     generalSettings: ["instance", "general-settings"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
+    visibilitySettings: ["instance", "visibility-settings"] as const,
   },
   cloudUpstreams: (companyId: string) => ["cloud-upstreams", companyId] as const,
   health: ["health"] as const,
@@ -393,6 +394,8 @@ export const queryKeys = {
     config: (pluginId: string, companyId: string) => ["plugins", pluginId, "companies", companyId, "config"] as const,
     localFolders: (pluginId: string, companyId: string) =>
       ["plugins", pluginId, "companies", companyId, "local-folders"] as const,
+    companyCatalog: (companyId: string) =>
+      ["plugins", "companies", companyId, "catalog"] as const,
     dashboard: (pluginId: string) => ["plugins", pluginId, "dashboard"] as const,
     logs: (pluginId: string) => ["plugins", pluginId, "logs"] as const,
   },

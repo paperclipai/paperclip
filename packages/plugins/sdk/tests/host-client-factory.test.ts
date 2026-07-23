@@ -418,3 +418,100 @@ describe("createHostClientHandlers capability gating for LOOA-641 methods", () =
     expect(list).not.toHaveBeenCalled();
   });
 });
+
+describe("createHostClientHandlers company standing", () => {
+  it("denies companies.setStanding without company.standing.write", async () => {
+    const setStanding = vi.fn(async () => undefined);
+    const services = {
+      companies: { setStanding },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.billing",
+      capabilities: ["companies.read"],
+      services,
+    });
+
+    await expect(
+      handlers["companies.setStanding"](
+        {
+          companyId: "company-a",
+          status: "blocked",
+          reason: "subscription_lapsed",
+          message: "Subscription lapsed.",
+        },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(setStanding).not.toHaveBeenCalled();
+  });
+
+  it("delegates setStanding/clearStanding inside the invocation company scope", async () => {
+    const setStanding = vi.fn(async () => undefined);
+    const clearStanding = vi.fn(async () => undefined);
+    const services = {
+      companies: { setStanding, clearStanding },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.billing",
+      capabilities: ["company.standing.write"],
+      services,
+    });
+    const context = { invocationScope: { companyId: "company-a" } };
+
+    await expect(
+      handlers["companies.setStanding"](
+        {
+          companyId: "company-a",
+          status: "grace",
+          reason: "payment_failed",
+          message: "Payment failed.",
+          actionUrl: "/billing",
+        },
+        context,
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      handlers["companies.clearStanding"]({ companyId: "company-a" }, context),
+    ).resolves.toBeUndefined();
+
+    expect(setStanding).toHaveBeenCalledWith(
+      {
+        companyId: "company-a",
+        status: "grace",
+        reason: "payment_failed",
+        message: "Payment failed.",
+        actionUrl: "/billing",
+      },
+      context,
+    );
+    expect(clearStanding).toHaveBeenCalledWith({ companyId: "company-a" }, context);
+  });
+
+  it("rejects standing writes outside the invocation company scope", async () => {
+    const setStanding = vi.fn(async () => undefined);
+    const services = {
+      companies: { setStanding },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.billing",
+      capabilities: ["company.standing.write"],
+      services,
+    });
+
+    await expect(
+      handlers["companies.setStanding"](
+        {
+          companyId: "company-b",
+          status: "blocked",
+          reason: "subscription_lapsed",
+          message: "Subscription lapsed.",
+        },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(setStanding).not.toHaveBeenCalled();
+  });
+});

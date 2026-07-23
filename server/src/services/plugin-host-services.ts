@@ -30,6 +30,7 @@ import type {
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
+import { companyStandingService } from "./company-standing.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
@@ -46,6 +47,7 @@ import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { pluginRegistryService } from "./plugin-registry.js";
+import { pluginCompanyEnablementService } from "./plugin-company-enablement.js";
 import { pluginStateStore } from "./plugin-state-store.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { pluginManagedAgentService } from "./plugin-managed-agents.js";
@@ -503,6 +505,7 @@ export function buildHostServices(
   const pluginDb = pluginDatabaseService(db);
   const secretsHandler = createPluginSecretsHandler({ db, pluginId });
   const companies = companyService(db);
+  const companyStandings = companyStandingService(db);
   const agents = agentService(db);
   const managedAgents = pluginManagedAgentService(db, {
     pluginId,
@@ -591,11 +594,16 @@ export function buildHostServices(
   };
 
   /**
-   * Plugins are instance-wide in the current runtime. Company IDs are still
-   * required for company-scoped data access, but there is no per-company
-   * availability gate to enforce here.
+   * Per-company availability gate: companies can disable an installed
+   * plugin via plugin_company_settings (manifest `companyEnablement`
+   * default applies when no row exists). Every company-scoped host
+   * operation awaits this before touching company data; a disabled
+   * plugin gets the typed 403 `plugin_not_enabled_for_company`.
    */
-  const ensurePluginAvailableForCompany = async (_companyId: string) => {};
+  const companyEnablement = pluginCompanyEnablementService(registry);
+  const ensurePluginAvailableForCompany = async (companyId: string) => {
+    await companyEnablement.ensurePluginEnabledForCompany(pluginId, companyId);
+  };
 
   const getLocalFolderDeclaration = (folderKey: string) =>
     requireLocalFolderDeclaration(options.manifest?.localFolders, folderKey);
@@ -1492,6 +1500,21 @@ export function buildHostServices(
       async get(params) {
         await ensurePluginAvailableForCompany(params.companyId);
         return (await companies.getById(params.companyId)) as Company;
+      },
+      async setStanding(params) {
+        await ensurePluginAvailableForCompany(params.companyId);
+        // pluginId comes from the host-side closure, never from the worker:
+        // a plugin can only ever write its own standing rows (spec §5.2).
+        await companyStandings.setStanding(pluginId, params.companyId, {
+          status: params.status,
+          reason: params.reason,
+          message: params.message,
+          actionUrl: params.actionUrl,
+        });
+      },
+      async clearStanding(params) {
+        await ensurePluginAvailableForCompany(params.companyId);
+        await companyStandings.clearStanding(pluginId, params.companyId);
       },
     },
 

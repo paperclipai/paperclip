@@ -1,0 +1,37 @@
+{
+  "name": "@paperclipai/plugin-billing",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Self-contained billing plugin: flat monthly fee per company, configurable trial, provider-pluggable checkout with a functional stub provider, enforcement via company standing.",
+  "files": ["dist", "migrations", "README.md", "STRIPE_ADAPTER.md"],
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "node ./esbuild.config.mjs",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "keywords": ["paperclip", "plugin", "billing", "subscriptions"],
+  "author": "Paperclip",
+  "license": "MIT",
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@paperclipai/shared": "workspace:*",
+    "@types/node": "^22.19.21",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.28.1",
+    "react-dom": "^19.2.7",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.8"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}
