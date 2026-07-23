@@ -852,6 +852,7 @@ describe("MarkdownEditor", () => {
       },
     ],
     matchText = "Paperclip App",
+    extraProps: { onSubmit?: () => void; submitOnEnter?: boolean } = {},
   ): Promise<{ option: HTMLButtonElement; root: ReturnType<typeof createRoot>; menu: HTMLElement }> {
     const root = createRoot(container);
 
@@ -861,6 +862,7 @@ describe("MarkdownEditor", () => {
           value="@Pap"
           onChange={handleChange}
           mentions={mentions}
+          {...extraProps}
         />,
       );
     });
@@ -1114,6 +1116,226 @@ describe("MarkdownEditor", () => {
 
     await act(async () => {
       root.unmount();
+    });
+  });
+
+  describe("submitOnEnter", () => {
+    function dispatchEnter(
+      target: Element,
+      init: Partial<KeyboardEventInit> = {},
+    ): KeyboardEvent {
+      const event = new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+        ...init,
+      });
+      act(() => {
+        target.dispatchEvent(event);
+      });
+      return event;
+    }
+
+    async function renderRichEditor(props: {
+      onSubmit: () => void;
+      submitOnEnter?: boolean;
+      value?: string;
+    }) {
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(
+          <MarkdownEditor
+            value={props.value ?? "Some reply text"}
+            onChange={() => {}}
+            onSubmit={props.onSubmit}
+            submitOnEnter={props.submitOnEnter}
+          />,
+        );
+      });
+      await flush();
+      const editorScope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement;
+      expect(editorScope).toBeTruthy();
+      return { root, editorScope: editorScope! };
+    }
+
+    it("submits on plain Enter when submitOnEnter is enabled", async () => {
+      const onSubmit = vi.fn();
+      const { root, editorScope } = await renderRichEditor({ onSubmit, submitOnEnter: true });
+
+      const event = dispatchEnter(editorScope);
+
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(event.defaultPrevented).toBe(true);
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
+
+    it("inserts a newline via Shift+Enter instead of submitting when submitOnEnter is enabled", async () => {
+      const onSubmit = vi.fn();
+      const { root, editorScope } = await renderRichEditor({ onSubmit, submitOnEnter: true });
+
+      const event = dispatchEnter(editorScope, { shiftKey: true });
+
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
+
+    it("leaves plain Enter as a newline when submitOnEnter is disabled (default)", async () => {
+      const onSubmit = vi.fn();
+      const { root, editorScope } = await renderRichEditor({ onSubmit });
+
+      const event = dispatchEnter(editorScope);
+
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
+
+    it("always submits on Cmd/Ctrl+Enter regardless of submitOnEnter", async () => {
+      const onSubmitOff = vi.fn();
+      const { root: rootOff, editorScope: scopeOff } = await renderRichEditor({
+        onSubmit: onSubmitOff,
+        submitOnEnter: false,
+      });
+      dispatchEnter(scopeOff, { ctrlKey: true });
+      expect(onSubmitOff).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        rootOff.unmount();
+      });
+
+      const onSubmitOn = vi.fn();
+      const { root: rootOn, editorScope: scopeOn } = await renderRichEditor({
+        onSubmit: onSubmitOn,
+        submitOnEnter: true,
+      });
+      dispatchEnter(scopeOn, { metaKey: true });
+      expect(onSubmitOn).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        rootOn.unmount();
+      });
+    });
+
+    it("does not submit during IME composition even when submitOnEnter is enabled", async () => {
+      const onSubmit = vi.fn();
+      const { root, editorScope } = await renderRichEditor({ onSubmit, submitOnEnter: true });
+
+      const event = dispatchEnter(editorScope, { isComposing: true });
+
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
+
+    it("keeps mention-menu Enter selection precedence and does not send", async () => {
+      const handleChange = vi.fn();
+      const onSubmit = vi.fn();
+      const { root } = await openMentionMenuFor(
+        handleChange,
+        undefined,
+        undefined,
+        { onSubmit, submitOnEnter: true },
+      );
+
+      const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement;
+      expect(scope).toBeTruthy();
+
+      dispatchEnter(scope!);
+
+      expect(handleChange).toHaveBeenCalledWith(
+        `[@Paperclip App](${buildProjectMentionHref("project-123", "#336699")}) `,
+      );
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
+
+    it("submits on plain Enter in the raw-fallback textarea when submitOnEnter is enabled", async () => {
+      mdxEditorMockState.throwOnRender = true;
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const onSubmit = vi.fn();
+      const root = createRoot(container);
+
+      await act(async () => {
+        root.render(
+          <MarkdownEditor
+            value="Some reply text"
+            onChange={() => {}}
+            onSubmit={onSubmit}
+            submitOnEnter
+          />,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelector("textarea")).not.toBeNull();
+      });
+      const textarea = container.querySelector("textarea")!;
+
+      const submitEvent = dispatchEnter(textarea);
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(submitEvent.defaultPrevented).toBe(true);
+
+      onSubmit.mockClear();
+      const shiftEvent = dispatchEnter(textarea, { shiftKey: true });
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(shiftEvent.defaultPrevented).toBe(false);
+
+      onSubmit.mockClear();
+      const imeEvent = dispatchEnter(textarea, { isComposing: true });
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(imeEvent.defaultPrevented).toBe(false);
+
+      consoleError.mockRestore();
+      await act(async () => {
+        root.unmount();
+      });
+    });
+
+    it("leaves plain Enter as a newline in the raw-fallback textarea when submitOnEnter is disabled", async () => {
+      mdxEditorMockState.throwOnRender = true;
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const onSubmit = vi.fn();
+      const root = createRoot(container);
+
+      await act(async () => {
+        root.render(
+          <MarkdownEditor
+            value="Some reply text"
+            onChange={() => {}}
+            onSubmit={onSubmit}
+          />,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelector("textarea")).not.toBeNull();
+      });
+      const textarea = container.querySelector("textarea")!;
+
+      const plainEvent = dispatchEnter(textarea);
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(plainEvent.defaultPrevented).toBe(false);
+
+      const modEvent = dispatchEnter(textarea, { ctrlKey: true });
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(modEvent.defaultPrevented).toBe(true);
+
+      consoleError.mockRestore();
+      await act(async () => {
+        root.unmount();
+      });
     });
   });
 });

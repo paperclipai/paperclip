@@ -29,15 +29,17 @@ vi.mock("./MarkdownBody", () => ({
 }));
 
 vi.mock("./MarkdownEditor", () => ({
-  MarkdownEditor: ({ value, onChange, placeholder }: {
+  MarkdownEditor: ({ value, onChange, placeholder, submitOnEnter }: {
     value: string;
     onChange: (value: string) => void;
     placeholder?: string;
+    submitOnEnter?: boolean;
   }) => (
     <textarea
       aria-label="Comment editor"
       value={value}
       placeholder={placeholder}
+      data-submit-on-enter={submitOnEnter ? "true" : "false"}
       onChange={(event) => onChange(event.target.value)}
     />
   ),
@@ -162,6 +164,46 @@ describe("CommentThread", () => {
     expect(runLink?.textContent).toContain("run-1234");
     expect(runLink?.className).toContain("rounded-md");
     expect(runLink?.className).toContain("px-2");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("forwards the enter-to-send preference from localStorage to the composer", () => {
+    window.localStorage.setItem("paperclip.composer.enterToSend", "1");
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread comments={[]} onAdd={async () => {}} />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('[aria-label="Comment editor"]');
+    expect(editor?.getAttribute("data-submit-on-enter")).toBe("true");
+
+    act(() => {
+      root.unmount();
+    });
+    window.localStorage.removeItem("paperclip.composer.enterToSend");
+  });
+
+  it("defaults the composer's enter-to-send preference to off", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread comments={[]} onAdd={async () => {}} />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('[aria-label="Comment editor"]');
+    expect(editor?.getAttribute("data-submit-on-enter")).toBe("false");
 
     act(() => {
       root.unmount();

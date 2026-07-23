@@ -17,6 +17,7 @@ import { Card } from "@/components/ui/card";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { useEnterToSendPreference } from "@/hooks/useEnterToSendPreference";
 import { cn } from "../lib/utils";
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
@@ -25,6 +26,7 @@ export function InstanceGeneralSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [enterToSend, setEnterToSend] = useEnterToSendPreference();
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
@@ -170,6 +172,24 @@ export function InstanceGeneralSettings() {
             onCheckedChange={() => updateGeneralMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })}
             disabled={updateGeneralMutation.isPending}
             aria-label="Toggle keyboard shortcuts"
+          />
+        </div>
+      </Card>
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Send message on Enter</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              In task and comment composers, Enter sends the message and Shift+Enter starts a new
+              line. Off by default, when Enter starts a new line and Cmd/Ctrl+Enter sends. This is
+              a personal preference saved on this device only.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enterToSend}
+            onCheckedChange={() => setEnterToSend(!enterToSend)}
+            aria-label="Toggle send message on Enter"
           />
         </div>
       </Card>

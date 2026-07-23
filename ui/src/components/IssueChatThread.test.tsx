@@ -104,6 +104,7 @@ vi.mock("./MarkdownEditor", () => ({
     className,
     contentClassName,
     fileDropTarget,
+    submitOnEnter,
   }: {
     value?: string;
     onChange?: (value: string) => void;
@@ -111,6 +112,7 @@ vi.mock("./MarkdownEditor", () => ({
     className?: string;
     contentClassName?: string;
     fileDropTarget?: "editor" | "parent";
+    submitOnEnter?: boolean;
   }, ref) => {
     useImperativeHandle(ref, () => ({
       focus: markdownEditorFocusMock,
@@ -122,6 +124,7 @@ vi.mock("./MarkdownEditor", () => ({
         data-class-name={className}
         data-content-class-name={contentClassName}
         data-file-drop-target={fileDropTarget}
+        data-submit-on-enter={submitOnEnter ? "true" : "false"}
         placeholder={placeholder}
         value={value}
         onChange={(event) => onChange?.(event.target.value)}
@@ -658,6 +661,62 @@ describe("IssueChatThread", () => {
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("planning");
     expect(composer?.className).toContain("amber");
     expect(chip?.textContent).toContain("Plan mode");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("forwards the enter-to-send preference from localStorage to the composer", () => {
+    window.localStorage.setItem("paperclip.composer.enterToSend", "1");
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueWorkMode="standard"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('[aria-label="Issue chat editor"]');
+    expect(editor?.getAttribute("data-submit-on-enter")).toBe("true");
+
+    act(() => {
+      root.unmount();
+    });
+    window.localStorage.removeItem("paperclip.composer.enterToSend");
+  });
+
+  it("defaults the composer's enter-to-send preference to off", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueWorkMode="standard"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('[aria-label="Issue chat editor"]');
+    expect(editor?.getAttribute("data-submit-on-enter")).toBe("false");
 
     act(() => {
       root.unmount();

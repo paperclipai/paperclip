@@ -85,8 +85,15 @@ interface MarkdownEditorProps {
   bordered?: boolean;
   /** List of mentionable entities. Enables @-mention autocomplete. */
   mentions?: MentionOption[];
-  /** Called on Cmd/Ctrl+Enter */
+  /** Called on Cmd/Ctrl+Enter, and also on plain Enter when `submitOnEnter` is set. */
   onSubmit?: () => void;
+  /**
+   * When true, plain Enter submits (Shift+Enter inserts a newline) in addition
+   * to the always-on Cmd/Ctrl+Enter. Mention/skill autocomplete selection and
+   * IME composition still take precedence over submit. Defaults to false so
+   * existing Cmd/Ctrl+Enter-only behavior is unchanged.
+   */
+  submitOnEnter?: boolean;
   /** Render the rich editor without allowing edits. */
   readOnly?: boolean;
 }
@@ -146,6 +153,16 @@ function prepareMarkdownForEditor(value: string): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * True while an IME composition is in progress (e.g. Japanese/Chinese/Korean
+ * input). The commit keystroke that closes the IME candidate window is often
+ * `Enter`, which must never submit — `isComposing` covers most browsers, and
+ * `keyCode === 229` is the historical fallback for the ones that don't set it.
+ */
+function isComposingKeyEvent(event: { nativeEvent?: { isComposing?: boolean }; keyCode?: number }): boolean {
+  return Boolean(event.nativeEvent?.isComposing) || event.keyCode === 229;
 }
 
 function hasMeaningfulEditorContent(node: Node | null): boolean {
@@ -631,6 +648,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   bordered = true,
   mentions,
   onSubmit,
+  submitOnEnter = false,
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
@@ -1193,7 +1211,17 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }}
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
-            if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            if (!onSubmit || event.key !== "Enter") return;
+            if (event.metaKey || event.ctrlKey) {
+              event.preventDefault();
+              onSubmit();
+              return;
+            }
+            if (
+              submitOnEnter
+              && !event.shiftKey
+              && !isComposingKeyEvent(event)
+            ) {
               event.preventDefault();
               onSubmit();
             }
@@ -1272,6 +1300,24 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               return;
             }
           }
+        }
+
+        // Plain Enter to submit — opt-in via `submitOnEnter`, and only when
+        // unmodified, not composing via IME, and the mention/skill menu isn't
+        // showing (mention selection above always keeps precedence).
+        if (
+          onSubmit
+          && submitOnEnter
+          && e.key === "Enter"
+          && !e.shiftKey
+          && !e.metaKey
+          && !e.ctrlKey
+          && !(mentionActive && filteredMentions.length > 0)
+          && !isComposingKeyEvent(e)
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          onSubmit();
         }
       }}
       onDragEnter={(evt) => {
