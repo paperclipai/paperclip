@@ -4720,9 +4720,65 @@ export function issueService(db: Db) {
     });
   }
 
+  async function addStopRelayCommentIfNeeded(
+    child: typeof issues.$inferSelect,
+    dbOrTx: any = db,
+  ) {
+    if (!child.parentId || (child.status !== "blocked" && child.status !== "cancelled")) return null;
+
+    const relayKey = `issue-stop-relay:${child.id}:${child.status}`;
+    await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${relayKey}, 0))`);
+
+    const childIdentifier = child.identifier?.trim() || child.id;
+    const childPrefix = childIdentifier.split("-")[0] || "PAP";
+    const body = `System relay: [${childIdentifier}](/${childPrefix}/issues/${childIdentifier}) transitioned to \`${child.status}\`.`;
+    const existingRelay = await dbOrTx
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.companyId, child.companyId),
+        eq(issueComments.authorType, "system"),
+        eq(issueComments.body, body),
+      ))
+      .limit(1)
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+    if (existingRelay) return null;
+
+    const parent = await dbOrTx
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, child.parentId), eq(issues.companyId, child.companyId)))
+      .then((rows: Array<{
+        id: string;
+        companyId: string;
+        assigneeAgentId: string | null;
+        status: string;
+      }>) => rows[0] ?? null);
+    if (!parent) return null;
+
+    const [comment] = await dbOrTx
+      .insert(issueComments)
+      .values({
+        companyId: child.companyId,
+        issueId: parent.id,
+        authorType: "system",
+        body,
+      })
+      .returning();
+    await dbOrTx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, parent.id));
+
+    return { comment, parent };
+  }
+
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
+    addStopRelayCommentIfNeeded,
 
     list: async (companyId: string, filters?: IssueFilters) => {
       if (filters?.attention === "blocked") {
