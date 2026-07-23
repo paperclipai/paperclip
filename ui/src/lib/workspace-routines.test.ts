@@ -2,6 +2,7 @@ import type { RoutineListItem } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import {
   getWorkspaceSpecificRoutineVariableNames,
+  groupWorkspaceSpecificRoutines,
   routineHasWorkspaceSpecificVariables,
   sortWorkspaceRoutinesByName,
 } from "./workspace-routines";
@@ -96,5 +97,62 @@ describe("workspace routine helpers", () => {
       "routine-2",
     ]);
     expect(routines.map((routine) => routine.id)).toEqual(["routine-2", "routine-3", "routine-1"]);
+  });
+
+  it("groups current-project workspace routines before other workspace routines and ignores non-workspace routines", () => {
+    const currentRoutine = createRoutine({
+      id: "routine-current",
+      projectId: "project-1",
+      title: "Current review",
+      variables: [
+        { name: "workspaceBranch", label: null, type: "text", defaultValue: null, required: true, options: [] },
+      ],
+    });
+    const otherProjectRoutine = createRoutine({
+      id: "routine-other-project",
+      projectId: "project-2",
+      title: "Beta other review",
+      variables: [
+        { name: "workspaceBranch", label: null, type: "text", defaultValue: null, required: true, options: [] },
+      ],
+    });
+    const noProjectRoutine = createRoutine({
+      id: "routine-no-project",
+      projectId: null,
+      title: "Alpha other review",
+      variables: [
+        { name: "workspaceBranch", label: null, type: "text", defaultValue: null, required: true, options: [] },
+      ],
+    });
+    const generalRoutine = createRoutine({
+      id: "routine-general",
+      projectId: "project-1",
+      variables: [
+        { name: "repo", label: null, type: "text", defaultValue: null, required: true, options: [] },
+      ],
+    });
+
+    expect(groupWorkspaceSpecificRoutines(
+      [otherProjectRoutine, generalRoutine, currentRoutine, noProjectRoutine],
+      "project-1",
+    )).toEqual({
+      thisWorkspace: [currentRoutine],
+      otherWorkspaces: [noProjectRoutine, otherProjectRoutine],
+    });
+  });
+
+  it("does not treat company-wide routines as current-workspace routines when the workspace has no project", () => {
+    const noProjectRoutine = createRoutine({
+      id: "routine-no-project",
+      projectId: null,
+      variables: [
+        { name: "workspaceBranch", label: null, type: "text", defaultValue: null, required: true, options: [] },
+      ],
+    });
+
+    expect(groupWorkspaceSpecificRoutines([noProjectRoutine], null)).toEqual({
+      thisWorkspace: [],
+      otherWorkspaces: [noProjectRoutine],
+    });
   });
 });
