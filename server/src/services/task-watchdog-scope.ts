@@ -23,11 +23,15 @@ export type TaskWatchdogMutationScope =
   | { kind: "invalid"; detail: string }
   | {
       kind: "watchdog";
+      runId: string;
+      agentId: string;
       watchdogId: string;
       companyId: string;
       watchedIssueId: string;
-      watchdogIssueId: string | null;
-      stopFingerprint: string | null;
+      watchdogIssueId: string;
+      initialStopFingerprint: string;
+      cursorFingerprint: string;
+      cursorState: "open" | "sealed";
     };
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -43,8 +47,22 @@ function readTaskWatchdogContext(contextSnapshot: unknown) {
   const taskWatchdog = isPlainRecord(context?.taskWatchdog) ? context.taskWatchdog : null;
   if (!taskWatchdog && context?.taskWatchdog !== true) return null;
   return {
+    version: taskWatchdog?.version === 1 ? 1 : null,
+    watchdogId: readString(taskWatchdog?.watchdogId),
+    watchdogIssueId: readString(taskWatchdog?.watchdogIssueId),
     watchedIssueId: readString(taskWatchdog?.watchedIssueId) ?? readString(context?.watchedIssueId),
-    stopFingerprint: readString(taskWatchdog?.stopFingerprint) ?? readString(context?.stopFingerprint),
+    companyId: readString(taskWatchdog?.companyId),
+    agentId: readString(taskWatchdog?.agentId),
+    initialStopFingerprint: readString(taskWatchdog?.stopFingerprint) ?? readString(context?.stopFingerprint),
+    recoveryCursor: isPlainRecord(taskWatchdog?.recoveryCursor)
+      ? {
+          version: taskWatchdog.recoveryCursor.version === 1 ? 1 : null,
+          state: taskWatchdog.recoveryCursor.state === "open" || taskWatchdog.recoveryCursor.state === "sealed"
+            ? taskWatchdog.recoveryCursor.state
+            : null,
+          fingerprint: readString(taskWatchdog.recoveryCursor.fingerprint),
+        }
+      : null,
   };
 }
 
@@ -63,6 +81,7 @@ export async function resolveTaskWatchdogMutationScope(
       id: heartbeatRuns.id,
       companyId: heartbeatRuns.companyId,
       agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
       contextSnapshot: heartbeatRuns.contextSnapshot,
     })
     .from(heartbeatRuns)
@@ -79,10 +98,34 @@ export async function resolveTaskWatchdogMutationScope(
     };
   }
 
-  if (!taskWatchdog.watchedIssueId) {
+  if (run.status !== "running") {
     return {
       kind: "invalid",
-      detail: "Task-watchdog run context is missing a persisted watched issue id.",
+      detail: "Task-watchdog source mutation requires its exact heartbeat run to still be running.",
+    };
+  }
+
+  if (
+    taskWatchdog.version !== 1 ||
+    !taskWatchdog.watchdogId ||
+    !taskWatchdog.watchdogIssueId ||
+    !taskWatchdog.watchedIssueId ||
+    !taskWatchdog.companyId ||
+    !taskWatchdog.agentId ||
+    !taskWatchdog.initialStopFingerprint ||
+    taskWatchdog.recoveryCursor?.version !== 1 ||
+    !taskWatchdog.recoveryCursor.state ||
+    !taskWatchdog.recoveryCursor.fingerprint
+  ) {
+    return {
+      kind: "invalid",
+      detail: "Task-watchdog run context is missing its immutable identity or recovery cursor.",
+    };
+  }
+  if (taskWatchdog.companyId !== run.companyId || taskWatchdog.agentId !== run.agentId) {
+    return {
+      kind: "invalid",
+      detail: "Task-watchdog run snapshot identity does not match the heartbeat run.",
     };
   }
 
@@ -97,14 +140,18 @@ export async function resolveTaskWatchdogMutationScope(
     })
     .from(issueWatchdogs)
     .where(and(
-      eq(issueWatchdogs.companyId, run.companyId),
-      eq(issueWatchdogs.issueId, taskWatchdog.watchedIssueId),
-      eq(issueWatchdogs.watchdogAgentId, agentId),
-      eq(issueWatchdogs.status, "active"),
+      eq(issueWatchdogs.id, taskWatchdog.watchdogId),
+      eq(issueWatchdogs.companyId, taskWatchdog.companyId),
     ))
     .then((rows) => rows[0] ?? null);
 
-  if (!watchdog) {
+  if (
+    !watchdog ||
+    watchdog.issueId !== taskWatchdog.watchedIssueId ||
+    watchdog.watchdogAgentId !== taskWatchdog.agentId ||
+    watchdog.watchdogIssueId !== taskWatchdog.watchdogIssueId ||
+    watchdog.status !== "active"
+  ) {
     return {
       kind: "invalid",
       detail: "Task-watchdog run context is not backed by an active persisted watchdog.",
@@ -113,11 +160,15 @@ export async function resolveTaskWatchdogMutationScope(
 
   return {
     kind: "watchdog",
-    watchdogId: watchdog.id,
-    companyId: watchdog.companyId,
-    watchedIssueId: watchdog.issueId,
-    watchdogIssueId: watchdog.watchdogIssueId ?? null,
-    stopFingerprint: taskWatchdog.stopFingerprint,
+    runId: run.id,
+    agentId,
+    watchdogId: taskWatchdog.watchdogId,
+    companyId: taskWatchdog.companyId,
+    watchedIssueId: taskWatchdog.watchedIssueId,
+    watchdogIssueId: taskWatchdog.watchdogIssueId,
+    initialStopFingerprint: taskWatchdog.initialStopFingerprint,
+    cursorFingerprint: taskWatchdog.recoveryCursor.fingerprint,
+    cursorState: taskWatchdog.recoveryCursor.state as "open" | "sealed",
   };
 }
 

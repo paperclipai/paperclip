@@ -20,6 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { taskWatchdogService } from "../services/task-watchdogs.ts";
+import { resolveTaskWatchdogMutationScope } from "../services/task-watchdog-scope.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -164,7 +165,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-1", status: "done" });
     const agentId = await seedAgent(companyId);
-    await seedWatchdog(companyId, sourceId, agentId);
+    const seededWatchdog = await seedWatchdog(companyId, sourceId, agentId);
     const { service, wakes } = createService();
 
     const result = await service.reconcileTaskWatchdogs({ companyId });
@@ -175,8 +176,18 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes[0]?.opts?.reason).toBe("task_watchdog_stopped_subtree");
     expect(wakes[0]?.opts?.contextSnapshot).toMatchObject({
       taskWatchdog: {
+        version: 1,
+        watchdogId: seededWatchdog?.id,
         watchedIssueId: sourceId,
+        companyId,
+        agentId,
         watchedIssueIdentifier: "WDOG-1",
+        recoveryCursor: {
+          version: 1,
+          state: "open",
+          fingerprint: expect.stringMatching(/^task_watchdog_stop:/),
+          lastMutationReceipt: null,
+        },
         capabilities: {
           targetScope: {
             watchedIssueId: sourceId,
@@ -212,6 +223,9 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(watchdog?.watchdogIssueId).toBe(watchdogIssues[0]?.id);
+    expect(wakes[0]?.opts?.contextSnapshot).toMatchObject({
+      taskWatchdog: { watchdogIssueId: watchdogIssues[0]?.id },
+    });
     expect(watchdog?.lastObservedFingerprint).toMatch(/^task_watchdog_stop:/);
     expect(watchdog?.triggerCount).toBe(1);
   });
@@ -490,79 +504,460 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes.length).toBe(2);
   });
 
-  it("revalidates stale watchdog reviews against current source evidence before allowing mutations", async () => {
+  it("atomically advances the run cursor, then seals a compound recovery status and comment", async () => {
     const companyId = await seedCompany();
-    const sourceId = await seedIssue(companyId, { identifier: "WDOG-REVALIDATE", status: "blocked" });
     const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-CURSOR",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
     await seedWatchdog(companyId, sourceId, agentId);
-    const { service } = createService();
+    const { service, wakes } = createService();
 
     await service.reconcileTaskWatchdogs({ companyId });
-    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
-    const originalFingerprint = watchdog!.lastObservedFingerprint!;
-    expect(originalFingerprint).toMatch(/^task_watchdog_stop:/);
-
-    const later = new Date(Date.now() + 60_000);
-    await db.insert(issueComments).values({
-      companyId,
-      issueId: sourceId,
-      authorType: "agent",
-      body: "Fresh source evidence.",
-      updatedAt: later,
-      createdAt: later,
-    });
-    await seedIssueDocument(companyId, sourceId, new Date(later.getTime() + 1_000));
-    await seedIssueWorkProduct(companyId, sourceId, new Date(later.getTime() + 2_000));
-
-    const revalidated = await service.revalidateMutationScope({
-      kind: "watchdog",
-      watchdogId: watchdog!.id,
-      companyId,
-      watchedIssueId: sourceId,
-      stopFingerprint: originalFingerprint,
-    });
-
-    expect(revalidated.allowed).toBe(false);
-    expect(revalidated.reason).toContain("stop fingerprint changed");
-    expect(revalidated.classification?.state).toBe("stopped");
-    if (revalidated.classification?.state !== "stopped") throw new Error("Expected stopped classification");
-    expect(revalidated.classification.stopFingerprint).not.toBe(originalFingerprint);
-    expect(revalidated.classification.stoppedLeaves[0]).toMatchObject({
-      latestCommentAt: later.toISOString(),
-      latestDocumentAt: new Date(later.getTime() + 1_000).toISOString(),
-      latestWorkProductAt: new Date(later.getTime() + 2_000).toISOString(),
-    });
-  });
-
-  it("revalidates a stale watchdog review as live when the source gets a fresh run path", async () => {
-    const companyId = await seedCompany();
-    const sourceId = await seedIssue(companyId, { identifier: "WDOG-LIVE-REVALIDATE", status: "blocked" });
-    const agentId = await seedAgent(companyId);
-    await seedWatchdog(companyId, sourceId, agentId);
-    const { service } = createService();
-
-    await service.reconcileTaskWatchdogs({ companyId });
-    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
-    const originalFingerprint = watchdog!.lastObservedFingerprint!;
+    const contextSnapshot = wakes[0]?.opts?.contextSnapshot as Record<string, unknown>;
+    const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
+      id: runId,
       companyId,
       agentId,
       status: "running",
-      invocationSource: "assignment",
-      contextSnapshot: { issueId: sourceId },
+      invocationSource: "automation",
+      contextSnapshot,
     });
+    const actor = { type: "agent", agentId, companyId, runId };
+    const initialScope = await resolveTaskWatchdogMutationScope(db, actor);
+    expect(initialScope.kind).toBe("watchdog");
+    if (initialScope.kind !== "watchdog") throw new Error("Expected watchdog scope");
 
-    const revalidated = await service.revalidateMutationScope({
-      kind: "watchdog",
-      watchdogId: watchdog!.id,
+    const first = await service.executeSourceMutation(initialScope, {
+      operationKind: "issue_comment",
+      method: "POST",
+      path: `/api/issues/${sourceId}/comments`,
+      targetIssueId: sourceId,
+      body: { body: "Cleared stale recovery evidence." },
+    }, async (tx) => {
+      const [comment] = await tx.insert(issueComments).values({
+        companyId,
+        issueId: sourceId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        body: "Cleared stale recovery evidence.",
+        createdByRunId: runId,
+      }).returning();
+      await tx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, sourceId));
+      return { value: comment, receiptResult: { commentId: comment!.id } };
+    });
+    expect(first.replayed).toBe(false);
+    expect(first.receipt.cursorState).toBe("open");
+    expect(first.receipt.newFingerprint).not.toBe(initialScope.cursorFingerprint);
+
+    const advancedScope = await resolveTaskWatchdogMutationScope(db, actor);
+    expect(advancedScope.kind).toBe("watchdog");
+    if (advancedScope.kind !== "watchdog") throw new Error("Expected advanced watchdog scope");
+    const compoundRequest = {
+      operationKind: "issue_update",
+      method: "PATCH",
+      path: `/api/issues/${sourceId}`,
+      targetIssueId: sourceId,
+      body: { status: "todo", comment: "Recovery path restored." },
+      establishesContinuationPath: true,
+    };
+    const second = await service.executeSourceMutation(advancedScope, compoundRequest, async (tx) => {
+      const [updated] = await tx.update(issues).set({ status: "todo", updatedAt: new Date() })
+        .where(eq(issues.id, sourceId)).returning();
+      const [comment] = await tx.insert(issueComments).values({
+        companyId,
+        issueId: sourceId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        body: "Recovery path restored.",
+        createdByRunId: runId,
+      }).returning();
+      return {
+        value: { issue: updated, comment },
+        receiptResult: { issueId: sourceId, commentId: comment!.id },
+      };
+    });
+    expect(second.replayed).toBe(false);
+    expect(second.receipt.cursorState).toBe("sealed");
+    const [updatedSource] = await db.select().from(issues).where(eq(issues.id, sourceId));
+    expect(updatedSource?.status).toBe("todo");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId));
+    expect(comments.map((comment) => comment.body)).toEqual([
+      "Cleared stale recovery evidence.",
+      "Recovery path restored.",
+    ]);
+
+    const sealedScope = await resolveTaskWatchdogMutationScope(db, actor);
+    expect(sealedScope.kind).toBe("watchdog");
+    if (sealedScope.kind !== "watchdog") throw new Error("Expected sealed watchdog scope");
+    let replayApplied = false;
+    const replay = await service.executeSourceMutation(sealedScope, compoundRequest, async () => {
+      replayApplied = true;
+      throw new Error("exact replay must not execute");
+    });
+    expect(replay.replayed).toBe(true);
+    expect(replayApplied).toBe(false);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(2);
+    const mutationActivities = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.runId, runId),
+        eq(activityLog.action, "issue.task_watchdog_source_mutation_committed"),
+      ));
+    expect(mutationActivities).toHaveLength(2);
+
+    await expect(service.executeSourceMutation(sealedScope, {
+      ...compoundRequest,
+      body: { status: "blocked", comment: "A different request after sealing." },
+    }, async () => {
+      throw new Error("sealed cursor must reject a different request before applying");
+    })).rejects.toMatchObject({ status: 409 });
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(2);
+    expect(await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.runId, runId),
+        eq(activityLog.action, "issue.task_watchdog_source_mutation_committed"),
+      ))).toHaveLength(2);
+
+    let changedOperationApplied = false;
+    await expect(service.executeSourceMutation(sealedScope, {
+      ...compoundRequest,
+      operationKind: "issue_comment",
+    }, async () => {
+      changedOperationApplied = true;
+      throw new Error("changed operation kind must not replay");
+    })).rejects.toMatchObject({ status: 409 });
+    expect(changedOperationApplied).toBe(false);
+  });
+
+  it("fails closed when a persisted replay receipt result is malformed", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-RECEIPT", status: "blocked" });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
       companyId,
-      watchedIssueId: sourceId,
-      stopFingerprint: originalFingerprint,
+      agentId,
+      status: "running",
+      invocationSource: "automation",
+      contextSnapshot: wakes[0]?.opts?.contextSnapshot as Record<string, unknown>,
+    });
+    const actor = { type: "agent", agentId, companyId, runId };
+    const scope = await resolveTaskWatchdogMutationScope(db, actor);
+    expect(scope.kind).toBe("watchdog");
+    if (scope.kind !== "watchdog") throw new Error("Expected watchdog scope");
+    const request = {
+      operationKind: "issue_comment",
+      method: "POST",
+      path: `/api/issues/${sourceId}/comments`,
+      targetIssueId: sourceId,
+      body: { body: "receipt validation" },
+    };
+
+    await service.executeSourceMutation(scope, request, async (tx) => {
+      const [comment] = await tx.insert(issueComments).values({
+        companyId,
+        issueId: sourceId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        body: "receipt validation",
+        createdByRunId: runId,
+      }).returning();
+      return { value: comment, receiptResult: { commentId: comment!.id } };
     });
 
-    expect(revalidated.allowed).toBe(false);
-    expect(revalidated.reason).toContain("now has a live");
-    expect(revalidated.classification?.state).toBe("live");
+    const [persistedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const corruptedContext = structuredClone(persistedRun!.contextSnapshot) as {
+      taskWatchdog: { recoveryCursor: { lastMutationReceipt: Record<string, unknown> } };
+    };
+    corruptedContext.taskWatchdog.recoveryCursor.lastMutationReceipt.result = null;
+    await db.update(heartbeatRuns).set({ contextSnapshot: corruptedContext }).where(eq(heartbeatRuns.id, runId));
+
+    const corruptedScope = await resolveTaskWatchdogMutationScope(db, actor);
+    expect(corruptedScope.kind).toBe("watchdog");
+    if (corruptedScope.kind !== "watchdog") throw new Error("Expected watchdog scope");
+    let replayApplied = false;
+    await expect(service.executeSourceMutation(corruptedScope, request, async () => {
+      replayApplied = true;
+      throw new Error("malformed receipt must fail before applying");
+    })).rejects.toMatchObject({ status: 403 });
+    expect(replayApplied).toBe(false);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(1);
+  });
+
+  it("serializes concurrent same-run mutations so exactly one cursor claimant commits", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-CURSOR-CAS", status: "blocked" });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "automation",
+      contextSnapshot: wakes[0]?.opts?.contextSnapshot as Record<string, unknown>,
+    });
+    const scope = await resolveTaskWatchdogMutationScope(db, {
+      type: "agent",
+      agentId,
+      companyId,
+      runId,
+    });
+    expect(scope.kind).toBe("watchdog");
+    if (scope.kind !== "watchdog") throw new Error("Expected watchdog scope");
+
+    const mutate = (label: string) => service.executeSourceMutation(scope, {
+      operationKind: "issue_comment",
+      method: "POST",
+      path: `/api/issues/${sourceId}/comments`,
+      targetIssueId: sourceId,
+      body: { body: label },
+    }, async (tx) => {
+      const [comment] = await tx.insert(issueComments).values({
+        companyId,
+        issueId: sourceId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        body: label,
+        createdByRunId: runId,
+      }).returning();
+      return { value: comment, receiptResult: { commentId: comment!.id } };
+    });
+
+    const results = await Promise.allSettled([mutate("claim-a"), mutate("claim-b")]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({ status: "rejected", reason: { status: 409 } });
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(1);
+    expect(await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.runId, runId),
+        eq(activityLog.action, "issue.task_watchdog_source_mutation_committed"),
+      ))).toHaveLength(1);
+  });
+
+  it("fails closed on external fingerprint changes and reusable watchdog identity rotation", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-STALE-CURSOR", status: "blocked" });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "automation",
+      contextSnapshot: wakes[0]?.opts?.contextSnapshot as Record<string, unknown>,
+    });
+    const actor = { type: "agent", agentId, companyId, runId };
+    const scope = await resolveTaskWatchdogMutationScope(db, actor);
+    expect(scope.kind).toBe("watchdog");
+    if (scope.kind !== "watchdog") throw new Error("Expected watchdog scope");
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: sourceId,
+      authorType: "system",
+      body: "Concurrent external evidence.",
+    });
+    let applied = false;
+    await expect(service.executeSourceMutation(scope, {
+      operationKind: "issue_update",
+      method: "PATCH",
+      path: `/api/issues/${sourceId}`,
+      targetIssueId: sourceId,
+      body: { status: "todo" },
+    }, async () => {
+      applied = true;
+      return { value: null, receiptResult: null };
+    })).rejects.toMatchObject({ status: 409 });
+    expect(applied).toBe(false);
+
+    const replacementIssueId = await seedIssue(companyId, {
+      identifier: "WDOG-ROTATED",
+      status: "todo",
+      parentId: sourceId,
+      assigneeAgentId: agentId,
+      originKind: "task_watchdog",
+    });
+    await db.update(issueWatchdogs).set({ watchdogIssueId: replacementIssueId }).where(eq(issueWatchdogs.id, watchdog!.id));
+    const rotated = await resolveTaskWatchdogMutationScope(db, actor);
+    expect(rotated).toMatchObject({
+      kind: "invalid",
+      detail: "Task-watchdog run context is not backed by an active persisted watchdog.",
+    });
+
+    const rotatedContext = structuredClone(
+      wakes[0]?.opts?.contextSnapshot as Record<string, unknown>,
+    ) as { taskWatchdog: Record<string, unknown> };
+    rotatedContext.taskWatchdog.watchdogIssueId = replacementIssueId;
+    const rotatedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: rotatedRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "automation",
+      contextSnapshot: rotatedContext,
+    });
+    await expect(resolveTaskWatchdogMutationScope(db, {
+      type: "agent",
+      agentId,
+      companyId,
+      runId: rotatedRunId,
+    })).resolves.toMatchObject({
+      kind: "watchdog",
+      watchdogIssueId: replacementIssueId,
+      runId: rotatedRunId,
+    });
+  });
+
+  it("rejects missing cursor identity, inactive watchdogs, and wrong actor identity", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-IDENTITY", status: "blocked" });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const completeContext = structuredClone(
+      wakes[0]?.opts?.contextSnapshot as Record<string, unknown>,
+    ) as { taskWatchdog: Record<string, unknown> };
+    const missingCursorContext = structuredClone(completeContext);
+    delete missingCursorContext.taskWatchdog.recoveryCursor;
+    const missingCursorRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: missingCursorRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "automation",
+      contextSnapshot: missingCursorContext,
+    });
+    await expect(resolveTaskWatchdogMutationScope(db, {
+      type: "agent",
+      agentId,
+      companyId,
+      runId: missingCursorRunId,
+    })).resolves.toMatchObject({
+      kind: "invalid",
+      detail: "Task-watchdog run context is missing its immutable identity or recovery cursor.",
+    });
+
+    const validRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: validRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "automation",
+      contextSnapshot: completeContext,
+    });
+    await expect(resolveTaskWatchdogMutationScope(db, {
+      type: "agent",
+      agentId: randomUUID(),
+      companyId,
+      runId: validRunId,
+    })).resolves.toMatchObject({
+      kind: "invalid",
+      detail: "Task-watchdog run context does not belong to this agent.",
+    });
+    await expect(resolveTaskWatchdogMutationScope(db, {
+      type: "agent",
+      agentId,
+      companyId: randomUUID(),
+      runId: validRunId,
+    })).resolves.toMatchObject({
+      kind: "invalid",
+      detail: "Task-watchdog run context does not belong to this agent.",
+    });
+
+    await db.update(issueWatchdogs).set({ status: "disabled" }).where(eq(issueWatchdogs.issueId, sourceId));
+    await expect(resolveTaskWatchdogMutationScope(db, {
+      type: "agent",
+      agentId,
+      companyId,
+      runId: validRunId,
+    })).resolves.toMatchObject({
+      kind: "invalid",
+      detail: "Task-watchdog run context is not backed by an active persisted watchdog.",
+    });
+  });
+
+  it("rolls back source writes on failure and rejects an expired run without applying", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-ROLLBACK", status: "blocked" });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "automation",
+      contextSnapshot: wakes[0]?.opts?.contextSnapshot as Record<string, unknown>,
+    });
+    const actor = { type: "agent", agentId, companyId, runId };
+    const scope = await resolveTaskWatchdogMutationScope(db, actor);
+    expect(scope.kind).toBe("watchdog");
+    if (scope.kind !== "watchdog") throw new Error("Expected watchdog scope");
+    const request = {
+      operationKind: "issue_comment",
+      method: "POST",
+      path: `/api/issues/${sourceId}/comments`,
+      targetIssueId: sourceId,
+      body: { body: "must roll back" },
+    };
+
+    await expect(service.executeSourceMutation(scope, request, async (tx) => {
+      await tx.insert(issueComments).values({
+        companyId,
+        issueId: sourceId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        body: "must roll back",
+        createdByRunId: runId,
+      });
+      throw new Error("simulated route failure");
+    })).rejects.toThrow("simulated route failure");
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(0);
+
+    const unchangedScope = await resolveTaskWatchdogMutationScope(db, actor);
+    expect(unchangedScope).toMatchObject({ kind: "watchdog", cursorFingerprint: scope.cursorFingerprint });
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, runId));
+    let expiredApplyCalled = false;
+    await expect(service.executeSourceMutation(scope, request, async () => {
+      expiredApplyCalled = true;
+      return { value: null, receiptResult: null };
+    })).rejects.toMatchObject({ status: 409 });
+    expect(expiredApplyCalled).toBe(false);
   });
 
   it("does not raise a stopped-subtree review while a freshly-created assigned issue's first run is starting", async () => {

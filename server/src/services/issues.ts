@@ -5788,15 +5788,16 @@ export function issueService(db: Db) {
     createChild: async (
       parentIssueId: string,
       data: IssueChildCreateInput,
+      dbOrTx: Db = db,
     ) => {
-      const parent = await db
+      const parent = await dbOrTx
         .select()
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
 
-      const [{ childCount }] = await db
+      const [{ childCount }] = await dbOrTx
         .select({ childCount: sql<number>`count(*)::int` })
         .from(issues)
         .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parent.id)));
@@ -5839,10 +5840,10 @@ export function issueService(db: Db) {
         ...(inheritStrategyOnly
           ? { skipExecutionWorkspaceInheritance: true }
           : { inheritExecutionWorkspaceFromIssueId: parent.id }),
-      });
+      }, dbOrTx);
 
       if (blockParentUntilDone) {
-        const existingBlockers = await db
+        const existingBlockers = await dbOrTx
           .select({ blockerIssueId: issueRelations.issueId })
           .from(issueRelations)
           .where(and(eq(issueRelations.companyId, parent.companyId), eq(issueRelations.relatedIssueId, parent.id), eq(issueRelations.type, "blocks")));
@@ -5851,8 +5852,9 @@ export function issueService(db: Db) {
           parent.companyId,
           [...new Set([...existingBlockers.map((row) => row.blockerIssueId), child.id])],
           { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+          dbOrTx,
         );
-        [child] = await withIssueRelationSummaries(parent.companyId, [child], db);
+        [child] = await withIssueRelationSummaries(parent.companyId, [child], dbOrTx);
       }
 
       return {
@@ -5864,8 +5866,9 @@ export function issueService(db: Db) {
     decomposeAcceptedPlan: async (
       sourceIssueId: string,
       data: AcceptedPlanDecompositionInput,
+      dbOrTx: Db = db,
     ) => {
-      const sourceIssue = await db
+      const sourceIssue = await dbOrTx
         .select({
           id: issues.id,
           companyId: issues.companyId,
@@ -5882,7 +5885,10 @@ export function issueService(db: Db) {
         children: data.children,
       });
 
-      const initialClaim = await db.transaction(async (tx) => {
+      const runTransaction = <T>(callback: (tx: Db) => Promise<T>) => dbOrTx === db
+        ? db.transaction((tx) => callback(tx as unknown as Db))
+        : callback(dbOrTx);
+      const initialClaim = await runTransaction(async (tx) => {
         await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssue.id} for update`);
 
         const belongsToPlanDocument = await tx
@@ -5954,7 +5960,7 @@ export function issueService(db: Db) {
       const newlyCreatedIssues: Array<typeof issues.$inferSelect> = [];
 
       while (true) {
-        const step = await db.transaction(async (tx) => {
+        const step = await runTransaction(async (tx) => {
           await tx.execute(
             sql`select ${issuePlanDecompositions.id}
                 from ${issuePlanDecompositions}
@@ -6054,7 +6060,7 @@ export function issueService(db: Db) {
 
       const childIssueIds = normalizeIssuePlanDecompositionChildIds(currentClaim.childIssueIds);
       const childIssueRows = childIssueIds.length > 0
-        ? await db
+        ? await dbOrTx
             .select()
             .from(issues)
             .where(and(eq(issues.companyId, sourceIssue.companyId), inArray(issues.id, childIssueIds)))
@@ -6136,7 +6142,7 @@ export function issueService(db: Db) {
       });
     },
 
-    create: async (companyId: string, data: IssueCreateInput) => {
+    create: async (companyId: string, data: IssueCreateInput, dbOrTx: Db = db) => {
       const {
         labelIds: inputLabelIds,
         blockedByIssueIds,
@@ -6162,7 +6168,7 @@ export function issueService(db: Db) {
         throw unprocessable("Issue can only have one assignee");
       }
       if (data.assigneeAgentId) {
-        await assertAssignableAgent(db, companyId, data.assigneeAgentId, { kind: "work" });
+        await assertAssignableAgent(dbOrTx, companyId, data.assigneeAgentId, { kind: "work" });
       }
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
@@ -6170,7 +6176,7 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      const createInTransaction = async (tx: Db) => {
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
         if (allowDuplicate === false) {
@@ -6461,7 +6467,10 @@ export function issueService(db: Db) {
         const [enriched] = await withIssueLabels(tx, [issue]);
         const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
         return withRelations;
-      });
+      };
+      return dbOrTx === db
+        ? db.transaction((tx) => createInTransaction(tx as unknown as Db))
+        : createInTransaction(dbOrTx);
     },
 
     update: async (
