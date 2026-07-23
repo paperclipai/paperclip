@@ -1769,6 +1769,12 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       PAPERCLIP_API_KEY: bridgeToken,
       PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
       PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
+      ...(server.curlPath
+        ? {
+          PAPERCLIP_BRIDGE_CURL_PATH: server.curlPath,
+          PATH: [path.posix.dirname(server.curlPath), process.env.PATH].filter(Boolean).join(":"),
+        }
+        : {}),
     },
     runLogTail,
     stop: async () => {

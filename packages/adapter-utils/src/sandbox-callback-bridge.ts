@@ -15,6 +15,7 @@ const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
+const SANDBOX_CALLBACK_BRIDGE_CURL_ENTRYPOINT = "curl";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
 
@@ -134,6 +135,7 @@ export interface SandboxCallbackBridgeResponse {
 export interface SandboxCallbackBridgeAsset {
   localDir: string;
   entrypoint: string;
+  curlEntrypoint: string;
   cleanup(): Promise<void>;
 }
 
@@ -172,6 +174,7 @@ export interface StartedSandboxCallbackBridgeServer {
   host: string;
   port: number;
   pid: number;
+  curlPath: string | null;
   directories: SandboxCallbackBridgeDirectories;
   stop(): Promise<void>;
 }
@@ -344,14 +347,50 @@ export function buildSandboxCallbackBridgeEnv(input: {
 export async function createSandboxCallbackBridgeAsset(): Promise<SandboxCallbackBridgeAsset> {
   const localDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-asset-"));
   const entrypoint = path.join(localDir, SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT);
+  const curlEntrypoint = path.join(localDir, SANDBOX_CALLBACK_BRIDGE_CURL_ENTRYPOINT);
   await fs.writeFile(entrypoint, getSandboxCallbackBridgeServerSource(), "utf8");
+  await fs.writeFile(curlEntrypoint, getSandboxCallbackBridgeCurlSource(), "utf8");
   return {
     localDir,
     entrypoint,
+    curlEntrypoint,
     cleanup: async () => {
       await fs.rm(localDir, { recursive: true, force: true }).catch(() => undefined);
     },
   };
+}
+
+async function syncSandboxCallbackBridgeCurlClient(input: {
+  runner: CommandManagedRuntimeRunner;
+  remoteCwd: string;
+  assetRemoteDir: string;
+  bridgeAsset: SandboxCallbackBridgeAsset;
+  timeoutMs?: number | null;
+  shellCommand?: "bash" | "sh" | null;
+}): Promise<string> {
+  const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
+  const shellCommand = preferredShellForSandbox(input.shellCommand);
+  const remoteEntrypoint = path.posix.join(input.assetRemoteDir, SANDBOX_CALLBACK_BRIDGE_CURL_ENTRYPOINT);
+  const tempPath = `${remoteEntrypoint}.${randomUUID()}.partial`;
+  const sourceBase64 = (await fs.readFile(input.bridgeAsset.curlEntrypoint)).toString("base64");
+  const result = await runShell(
+    input.runner,
+    input.remoteCwd,
+    [
+      "set -eu",
+      `mkdir -p ${shellQuote(input.assetRemoteDir)}`,
+      `cat > ${shellQuote(tempPath)}`,
+      `base64 -d < ${shellQuote(tempPath)} > ${shellQuote(`${tempPath}.decoded`)}`,
+      `chmod 755 ${shellQuote(`${tempPath}.decoded`)}`,
+      `mv ${shellQuote(`${tempPath}.decoded`)} ${shellQuote(remoteEntrypoint)}`,
+      `rm -f ${shellQuote(tempPath)}`,
+    ].join("\n"),
+    timeoutMs,
+    shellCommand,
+    sourceBase64,
+  );
+  requireSuccessfulResult("sync sandbox callback bridge curl client", result);
+  return remoteEntrypoint;
 }
 
 export function createFileSystemSandboxCallbackBridgeQueueClient(): SandboxCallbackBridgeQueueClient {
@@ -891,6 +930,7 @@ export async function startSandboxCallbackBridgeServer(input: {
   const shellCommand = preferredShellForSandbox(input.shellCommand);
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
   let remoteEntrypoint = path.posix.join(input.assetRemoteDir, SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT);
+  let curlPath: string | null = null;
   if (input.bridgeAsset) {
     const assetSync = await syncSandboxCallbackBridgeEntrypoint({
       runner: input.runner,
@@ -901,6 +941,14 @@ export async function startSandboxCallbackBridgeServer(input: {
       shellCommand,
     });
     remoteEntrypoint = assetSync.remoteEntrypoint;
+    curlPath = await syncSandboxCallbackBridgeCurlClient({
+      runner: input.runner,
+      remoteCwd: input.remoteCwd,
+      assetRemoteDir: input.assetRemoteDir,
+      bridgeAsset: input.bridgeAsset,
+      timeoutMs,
+      shellCommand,
+    });
   }
   const env = buildSandboxCallbackBridgeEnv({
     queueDir: input.queueDir,
@@ -987,6 +1035,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     host,
     port,
     pid: typeof readyData.pid === "number" && Number.isFinite(readyData.pid) ? readyData.pid : 0,
+    curlPath,
     directories,
     stop: async () => {
       const stopResult = await input.runner.execute({
@@ -1016,6 +1065,111 @@ export async function startSandboxCallbackBridgeServer(input: {
       }
     },
   };
+}
+
+function getSandboxCallbackBridgeCurlSource(): string {
+  return `#!/usr/bin/env node
+import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+
+const queueDir = process.env.PAPERCLIP_BRIDGE_QUEUE_DIR;
+const apiUrl = process.env.PAPERCLIP_API_URL;
+const timeoutMs = Number(process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS || "30000");
+const maxBodyBytes = Number(process.env.PAPERCLIP_BRIDGE_MAX_BODY_BYTES || "262144");
+
+function fail(message) {
+  process.stderr.write(message + "\\n");
+  process.exit(2);
+}
+
+if (process.env.PAPERCLIP_API_BRIDGE_MODE !== "queue_v1" || !queueDir || !apiUrl) {
+  fail("Queue bridge curl requires PAPERCLIP_API_BRIDGE_MODE=queue_v1, PAPERCLIP_BRIDGE_QUEUE_DIR, and PAPERCLIP_API_URL.");
+}
+
+const headers = {};
+let method = "GET";
+let body = "";
+let url = null;
+let failOnHttpError = false;
+const args = process.argv.slice(2);
+for (let index = 0; index < args.length; index += 1) {
+  const arg = args[index];
+  if (arg === "-X" || arg === "--request") {
+    method = args[++index] || "GET";
+    continue;
+  }
+  if (arg === "-H" || arg === "--header") {
+    const rawHeader = args[++index] || "";
+    const separator = rawHeader.indexOf(":");
+    if (separator > 0) headers[rawHeader.slice(0, separator).trim()] = rawHeader.slice(separator + 1).trim();
+    continue;
+  }
+  if (arg === "-d" || arg === "--data" || arg === "--data-binary") {
+    body = args[++index] || "";
+    continue;
+  }
+  if (arg === "-f" || arg === "--fail") {
+    failOnHttpError = true;
+    continue;
+  }
+  if (arg === "--url") {
+    url = args[++index] || null;
+    continue;
+  }
+  if (!arg.startsWith("-")) url = arg;
+}
+
+if (!url) fail("Queue bridge curl requires a Paperclip API URL.");
+
+let target;
+let bridgeOrigin;
+try {
+  target = new URL(url);
+  bridgeOrigin = new URL(apiUrl).origin;
+} catch {
+  fail("Queue bridge curl received an invalid Paperclip API URL.");
+}
+if (target.origin !== bridgeOrigin) {
+  fail("Queue bridge curl only supports the configured Paperclip API origin.");
+}
+if (Buffer.byteLength(body, "utf8") > maxBodyBytes) {
+  fail("Queue bridge curl request body exceeds the configured size limit.");
+}
+
+const requestId = randomUUID();
+const requestsDir = path.posix.join(queueDir, "requests");
+const responsesDir = path.posix.join(queueDir, "responses");
+const requestPath = path.posix.join(requestsDir, requestId + ".json");
+const responsePath = path.posix.join(responsesDir, requestId + ".json");
+await fs.mkdir(requestsDir, { recursive: true });
+await fs.mkdir(responsesDir, { recursive: true });
+await fs.writeFile(requestPath + ".partial", JSON.stringify({
+  id: requestId,
+  method: method.trim().toUpperCase() || "GET",
+  path: target.pathname,
+  query: target.search.slice(1),
+  headers,
+  body,
+  createdAt: new Date().toISOString(),
+}) + "\\n", "utf8");
+await fs.rename(requestPath + ".partial", requestPath);
+
+const deadline = Date.now() + (Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30000);
+while (Date.now() < deadline) {
+  const raw = await fs.readFile(responsePath, "utf8").catch(() => null);
+  if (raw) {
+    await fs.rm(responsePath, { force: true }).catch(() => undefined);
+    const response = JSON.parse(raw);
+    process.stdout.write(typeof response.body === "string" ? response.body : "");
+    process.exit(failOnHttpError && Number(response.status) >= 400 ? 22 : 0);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
+
+await fs.rm(requestPath, { force: true }).catch(() => undefined);
+fail("Timed out waiting for queue bridge response.");
+`;
 }
 
 function getSandboxCallbackBridgeServerSource(): string {
