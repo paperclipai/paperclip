@@ -1,7 +1,7 @@
 # Execution Semantics
 
 Status: Current implementation guide
-Date: 2026-06-10
+Date: 2026-07-23
 Audience: Product and engineering
 
 This document explains how Paperclip interprets issue assignment, issue status, execution runs, wakeups, parent/sub-issue structure, and blocker relationships.
@@ -69,6 +69,18 @@ This is the right state for:
 - waiting on a human decision
 - waiting on an external dependency or system when Paperclip does not own a scheduled re-check
 - work that automatic recovery could not safely continue
+
+Entering `blocked` requires a routable waiting path. An issue may transition into `blocked` only with at least one of:
+
+- first-class blockers (`blockedByIssueIds`)
+- a pending issue-thread interaction or linked approval that names the responder
+- a structured unblock descriptor naming `{owner, action}`, where `owner` is an agent id, user id, or the board, and `action` is the concrete step that unblocks the issue
+
+When a structured unblock descriptor is the waiting path, Paperclip immediately notifies the named owner: an agent owner gets a wake, a user or board owner gets an inbox notification. Prose-only blocked — free-text that names an owner or action in a comment without any of the paths above — routes to nobody. It is rejected at the API or auto-classified as `needs_attention` with a board notification, never silently accepted as a healthy waiting state.
+
+A permission denial is not, by itself, a blocker. If an instructed step is denied at an authorization boundary but the issue's own deliverable is complete, the right disposition is `done`, not `blocked` (see the review-delegation rules in §6).
+
+This requirement is prospective-only on rollout: it applies to transitions into `blocked` made after the feature ships, gated on the blocked-transition timestamp against the rollout marker, not on issue `createdAt`. Issues already blocked at upgrade time are untouched — no backfilled notifications, no retroactive validation, no `needs_attention` storm on deploy. Triage of pre-existing prose-blocked issues is a one-time opt-in digest, not a default.
 
 ### `in_review`
 
@@ -172,6 +184,24 @@ Blocked issues should stay idle while blockers remain unresolved. Paperclip shou
 `cancelled` is terminal for the blocker issue itself, but it does not satisfy the dependency. A cancelled blocker edge remains unresolved until the edge is removed or replaced, and Paperclip must surface blocker attention on the dependent regardless of whether that dependent is currently displayed as `blocked`, `todo`, `backlog`, or another non-terminal agent-owned status.
 
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
+
+### Child→Parent Reporting
+
+Run-scoped write authorization is subtree-scoped: a run may mutate its checked-out issue and that issue's descendants. Delegated child work still has to report upward, so the platform provides exactly three canonical report channels. Nothing else crosses the boundary.
+
+1. **Completion signal (always on).** When a child that blocks its parent reaches `done`, the `issue_blockers_resolved` wake engages the parent's assignee, who can read the child thread. Completion needs no report comment: the child's own thread is the deliverable record, and relaying `done` as prose would duplicate the first-class wake.
+2. **Direct-parent report comment (trust-gated).** The write boundary widens exactly one hop upward: a run checked out on a child issue may POST comments on the child's **direct parent** — comments only (no status, field, assignment, or document writes), the direct parent only (never grandparents or siblings, never lateral). This is gated per trust preset: **on** for `standard`, **off by default** for `low_trust_review` and other review-contained presets, whose input is untrusted content (diffs, external tickets) and whose report comment would be a prompt-injection carrier into higher-trust context.
+3. **Stop-only relay (fallback where the report comment is off).** For presets with direct-parent commenting disabled, the platform delivers a system-attributed relay comment to the direct parent when the child transitions into `blocked` or `cancelled` — never on `done` or `in_review`. Stopping is the event the parent must hear about; completion already has the first-class signal above. A relay is a comment, not a disposition transition, so it can never trigger another relay (depth-1 by construction), and relays dedupe per (child, target status) so status flapping cannot spam the parent.
+
+### Review Delegation
+
+Review tasks — security reviews, code reviews, QA verdicts — must instruct the delegate to post findings on **their own review issue** and mark it `done`. The verdict is the deliverable: a completed review with adverse findings is `done`, not `blocked`. The parent's owner is engaged by `issue_blockers_resolved` (plus the direct-parent report comment where the reviewer's preset allows it) and owns any follow-up fixes.
+
+Never instruct a low-trust delegate to comment on the parent issue. That instruction is guaranteed to be denied at the authorization boundary, and a reviewer that converts the denial into a `blocked` disposition with a prose-only owner strands the whole tree — the exact failure mode behind the PAP-15099 incident.
+
+### The Courier Pattern (Lateral Coordination)
+
+The direct-parent report comment intentionally does not open lateral comment access: no writes into sibling subtrees or other agents' boundaries. The sanctioned lateral channel is the **courier pattern**: create a new issue assigned to the target agent that carries the complete instructions and context in its description (company-scoped issue-CREATE is permitted from any run). The courier issue wakes the target agent through normal assignment, keeps the coordination auditable, and avoids widening comment access into another agent's boundary. Because the target agent's run may not be able to read your issues, the courier description must be self-contained — do not rely on links back into your own subtree for essential instructions.
 
 ## 7. Accepted-Plan Decomposition
 
@@ -596,6 +626,12 @@ The watchdog should verify stopped leaves against comments, documents, work prod
 
 When work should continue, the watchdog restores a live path inside the watched subtree: reopen or reassign stuck work, create follow-up issues, repair blockers, set a monitor, or resolve an eligible plan confirmation. When the stopped state is legitimate, the watchdog records why and leaves the subtree with a valid terminal, waiting, blocked, review, or explicit recovery path.
 
+### Atomic recovery batch
+
+Restoration is often more than one write — reopen the dead-end leaf **and** explain it on the parent. A watchdog run may submit a small atomic recovery batch: at most 3 mutations from the allowed-mutation list, validated against the stop fingerprint the run observed. The server applies the batch all-or-nothing and aborts the remainder if the subtree fingerprint changed mid-batch because work went live concurrently.
+
+This preserves the stale-guard's purpose — never keep mutating a subtree that just went live under the watchdog's feet — while removing the failure mode where spending the only permitted write on an informational comment forfeits the state-restoring mutation the recovery actually needed.
+
 ### Eligible interaction decisions
 
 A task watchdog may resolve only eligible `request_confirmation` plan confirmations. Eligibility is defined in `doc/SPEC-implementation.md` and must be checked by the server at decision time. The critical constraints are:
@@ -617,6 +653,20 @@ The watchdog's reviewed fingerprint should update only after the watchdog issue 
 - a watchdog mutation that restores live work, where the subsequent source-subtree mutation naturally changes the stop fingerprint
 
 If the watchdog moved work forward, Paperclip should not mark the old fingerprint as permanently acceptable just because the watchdog issue completed. The next scan should observe the changed subtree state and either suppress because work is live or compute a new stopped fingerprint later.
+
+### Restoration verification and escalation
+
+A reviewed fingerprint suppresses re-fire only when the watchdog's recorded disposition was "this stopped state is legitimate." A **"live path restored"** disposition does not earn permanent suppression; it arms a bounded verification instead.
+
+The stop fingerprint must be computed from durable subtree state such that a restoration which changes nothing observable is detectable as a failed restoration. In particular, activity on intermediate (non-leaf) nodes — comments, wakes delivered to an intermediate issue's assignee, runs that end without mutating any stopped leaf — must feed the fingerprint or the attempt lineage; a fingerprint derived from stopped leaves alone makes a failed intermediate-node restoration byte-identical to a reviewed-and-acceptable stop, which silences the watchdog forever.
+
+Verification and escalation semantics:
+
+- if, after a "live path restored" disposition, the subtree is observed stopped again with a fingerprint equal to the one the watchdog claimed to have fixed, the restoration failed and the watchdog re-fires with an incremented attempt count
+- attempt lineage is durable watchdog state: attempt number, the fingerprint each attempt claimed to fix, and the restoration actions taken
+- after N attempts (N = 2–3) on the same fingerprint lineage, the platform stops re-firing and escalates to a human — the watchdog owner or a board notification — carrying the attempt history
+
+This bounds both failure modes: a failed restoration retries instead of going silent (liveness), and the attempt bound plus human escalation prevents an infinite fire loop (no runaway watchdog). Legitimate stops still suppress exactly as before.
 
 Task watchdogs must not silently mark source work done from prose comments, must not duplicate child trees for the same accepted plan revision, and must not create another task-watchdog issue for the same source issue.
 
