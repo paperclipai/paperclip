@@ -182,6 +182,49 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     }
   });
 
+  it("removes mixed-case configured collisions with managed Paperclip identity on Windows", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+
+    try {
+      const { ctx } = makeCtx({
+        env: {
+          paperclip_api_key: "configured-key",
+          paperclip_agent_id: "configured-agent",
+          paperclip_company_id: "configured-company",
+          paperclip_run_id: "configured-run",
+          paperclip_task_id: "configured-task",
+          paperclip_wake_reason: "configured-reason",
+        },
+      });
+      (ctx as any).authToken = "run-scoped-token";
+
+      await execute(ctx as any);
+
+      const mocked = vi.mocked(serverUtils.runChildProcess);
+      const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+      const env = (lastCall[3] as { env: Record<string, string> }).env;
+      for (const key of [
+        "PAPERCLIP_API_KEY",
+        "PAPERCLIP_AGENT_ID",
+        "PAPERCLIP_COMPANY_ID",
+        "PAPERCLIP_RUN_ID",
+        "PAPERCLIP_TASK_ID",
+        "PAPERCLIP_WAKE_REASON",
+      ]) {
+        expect(Object.keys(env).filter((candidate) => candidate.toLowerCase() === key.toLowerCase())).toEqual([key]);
+      }
+      expect(env.PAPERCLIP_API_KEY).toBe("run-scoped-token");
+      expect(env.PAPERCLIP_AGENT_ID).toBe("agent-1");
+      expect(env.PAPERCLIP_COMPANY_ID).toBe("company-1");
+      expect(env.PAPERCLIP_RUN_ID).toBe("test-run-1");
+      expect(env.PAPERCLIP_TASK_ID).toBe("issue-1");
+      expect(env.PAPERCLIP_WAKE_REASON).toBe("manual");
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
+  });
+
   it("rejects unsupported remote targets before spawning a local process", async () => {
     const { ctx } = makeCtx();
     (ctx as any).executionTarget = {

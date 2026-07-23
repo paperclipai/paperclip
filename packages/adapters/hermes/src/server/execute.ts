@@ -52,6 +52,7 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { deleteEnvironmentValue, resolveHermesConfigPath } from "./environment.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -125,6 +126,18 @@ const HERMES_PROXY_ENV_KEYS = new Set([
   "https_proxy",
   "all_proxy",
 ]);
+
+const MANAGED_PAPERCLIP_ENV_KEYS = [
+  "PAPERCLIP_AGENT_ID",
+  "PAPERCLIP_COMPANY_ID",
+  "PAPERCLIP_API_URL",
+  "PAPERCLIP_RUN_ID",
+  "PAPERCLIP_API_KEY",
+  "PAPERCLIP_TASK_ID",
+  "PAPERCLIP_WAKE_REASON",
+  "PAPERCLIP_WAKE_COMMENT_ID",
+  "PAPERCLIP_WAKE_PAYLOAD_JSON",
+] as const;
 
 function inheritedProxyContainsCredentials(value: string): boolean {
   if (value.includes("@")) return true;
@@ -434,6 +447,7 @@ export async function execute(
     throw new Error("Hermes local adapter does not support remote execution targets");
   }
   const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
+  const childEnv = buildHermesChildEnv(config);
 
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = resolveHermesCommand(config);
@@ -465,7 +479,7 @@ export async function execute(
 
   if (!explicitProvider) {
     try {
-      detectedConfig = await detectModel();
+      detectedConfig = await detectModel(resolveHermesConfigPath(childEnv));
     } catch {
       // Non-fatal — detection failure shouldn't block execution
     }
@@ -562,16 +576,16 @@ export async function execute(
   }
 
   // ── Build environment ──────────────────────────────────────────────────
-  const env: Record<string, string> = {
-    ...buildHermesChildEnv(config),
-    ...buildPaperclipEnv(ctx.agent),
-  };
+  const env: Record<string, string> = childEnv;
+  for (const key of MANAGED_PAPERCLIP_ENV_KEYS) {
+    deleteEnvironmentValue(env, key);
+  }
+  Object.assign(env, buildPaperclipEnv(ctx.agent));
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
 
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
   // token is the only source of Paperclip API identity.
-  delete env.PAPERCLIP_API_KEY;
   if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;
 
   // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)

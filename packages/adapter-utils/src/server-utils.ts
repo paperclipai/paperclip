@@ -2232,8 +2232,12 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
+  const pathKey = process.platform === "win32"
+    ? Object.keys(env).find((key) => key.toLowerCase() === "path")
+    : "PATH";
+  if (pathKey !== undefined && typeof env[pathKey] === "string" && env[pathKey].length > 0) {
+    return env;
+  }
   return { ...env, PATH: defaultPathForPlatform() };
 }
 

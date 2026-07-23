@@ -18,20 +18,12 @@ import { promisify } from "node:util";
 import { HERMES_CLI, DEFAULT_MODEL, ADAPTER_TYPE, VALID_PROVIDERS } from "../shared/constants.js";
 import { detectModel, resolveProvider, inferProviderFromModel } from "./detect-model.js";
 import { buildHermesChildEnv, resolveHermesCommand } from "./execute.js";
+import { readEnvironmentValue, resolveHermesConfigPath } from "./environment.js";
 
 const execFileAsync = promisify(execFile);
 
 function asString(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
-}
-
-function readEnvironmentValue(env: Record<string, string>, key: string): string | undefined {
-  if (env[key] !== undefined) return env[key];
-  if (process.platform !== "win32") return undefined;
-
-  const normalizedKey = key.toLowerCase();
-  const matchingKey = Object.keys(env).find((candidate) => candidate.toLowerCase() === normalizedKey);
-  return matchingKey === undefined ? undefined : env[matchingKey];
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +389,7 @@ export async function testEnvironment(
   // 5. Detect Hermes config once for the remaining checks.
   let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
   try {
-    detectedConfig = await detectModel();
+    detectedConfig = await detectModel(resolveHermesConfigPath(childEnv));
   } catch {
     // Non-fatal
   }
