@@ -706,6 +706,39 @@ PAPERCLIP_SECRETS_STRICT_MODE=true
 When strict mode is enabled, sensitive env keys (for example `*_API_KEY`, `*_TOKEN`, `*_SECRET`) must use secret references instead of inline plain values.
 Authenticated deployments default strict mode on unless explicitly overridden.
 
+### Transcript credential quarantine
+
+Paperclip scans heartbeat run logs, structured run events, and persisted run
+summaries for credential-shaped content before storage. Matches are replaced
+with explicit redaction markers, marked as quarantined in the safe persisted
+representation, and recorded as metadata-only
+`heartbeat_run.transcript_credential_quarantined` activity events. The event
+contains the boundary, detector version, disposition, match count, record type,
+and stream; it never contains the matched value. Run-detail, event, and log
+responses apply the same redaction again when rendering diagnostics so legacy
+records are covered. When one persisted event has findings in both its message
+and payload, Paperclip sums the match counts and records the strictest
+disposition: `quarantined` if either finding is quarantined. High-frequency run
+log findings are capped at one activity event per stream and disposition for
+each run; every matching chunk is still redacted before storage.
+
+Treat a suspected false positive as a detector issue, not as permission to put
+the original value back into a transcript. Reproduce with a synthetic value,
+inspect the metadata-only activity event, and narrow the detector with a
+regression test. Quarantined source text is intentionally not retained, so it
+cannot be restored from Paperclip.
+
+Emergency rollback can disable quarantine markers while preserving mandatory
+capture-time redaction:
+
+```sh
+PAPERCLIP_TRANSCRIPT_CREDENTIAL_QUARANTINE=false
+```
+
+Restart the server after changing the setting. Remove the override after the
+false-positive detector fix is deployed. There is no supported switch that
+persists unredacted credential-shaped transcript content.
+
 CLI configuration support:
 
 - `pnpm paperclipai onboard` writes a default `secrets` config section (`local_encrypted`, strict mode off, key file path set) and creates a local key file when needed.

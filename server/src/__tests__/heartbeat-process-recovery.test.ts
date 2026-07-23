@@ -2695,12 +2695,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             consumerId: agentId,
             configPath: "env.UNBOUND_API_KEY",
             envKey: "UNBOUND_API_KEY",
-            secretId: secret.id,
-            secretName,
+            secretId: "***REDACTED***",
+            secretName: "***REDACTED***",
           },
         ],
       },
     });
+    expect(JSON.stringify(failedRun?.resultJson)).not.toContain(secret.id);
+    expect(JSON.stringify(failedRun?.resultJson)).not.toContain(secretName);
     // Value-free gate: no secret access events were recorded.
     expect(await svc.listAccessEvents(companyId, secret.id)).toHaveLength(0);
 

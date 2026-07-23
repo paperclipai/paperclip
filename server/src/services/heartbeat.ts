@@ -228,7 +228,15 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
-import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { redactSensitiveText } from "../redaction.js";
+import {
+  createTranscriptSecurityEventLimiter,
+  mergeTranscriptSecurityMetadata,
+  redactTranscriptDiagnosticValue,
+  secureTranscriptPayload,
+  secureTranscriptText,
+  type TranscriptSecurityMetadata,
+} from "../transcript-security.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -304,6 +312,8 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
+  "heartbeat_run.transcript_credential_quarantined",
+  "heartbeat_run.transcript_credential_redacted",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
@@ -7551,19 +7561,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return ensured;
   }
 
+  function secureRunStatusPatch(
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ): {
+    patch: Partial<typeof heartbeatRuns.$inferInsert> | undefined;
+    metadata: TranscriptSecurityMetadata | null;
+  } {
+    if (!patch) return { patch, metadata: null };
+    const secured = { ...patch };
+    const findings: TranscriptSecurityMetadata[] = [];
+    for (const key of ["error", "stdoutExcerpt", "stderrExcerpt"] as const) {
+      const value = secured[key];
+      if (typeof value !== "string") continue;
+      const result = secureTranscriptText(value, "run_summary");
+      secured[key] = result.value;
+      if (result.metadata) findings.push(result.metadata);
+    }
+    if (secured.resultJson && typeof secured.resultJson === "object" && !Array.isArray(secured.resultJson)) {
+      const result = secureTranscriptPayload(
+        secured.resultJson as Record<string, unknown>,
+        "run_summary",
+      );
+      secured.resultJson = result.value;
+      if (result.metadata) findings.push(result.metadata);
+    }
+    if (findings.length === 0) return { patch: secured, metadata: null };
+    return {
+      patch: secured,
+      metadata: {
+        ...findings[0]!,
+        matchCount: findings.reduce((total, finding) => total + finding.matchCount, 0),
+        disposition: findings.some((finding) => finding.disposition === "quarantined")
+          ? "quarantined"
+          : "redacted",
+      },
+    };
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    const secured = secureRunStatusPatch(patch);
     const updated = await db
       .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
+      .set({ status, ...secured.patch, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      if (secured.metadata) {
+        await recordTranscriptSecurityEvent(updated, secured.metadata, "run_status", null);
+      }
       if (isHeartbeatRunTerminalStatus(updated.status)) {
         clearHeartbeatRunRuntimeStatus(updated.id);
       }
@@ -7593,14 +7644,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    const secured = secureRunStatusPatch(patch);
     const updated = await db
       .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
+      .set({ status, ...secured.patch, updatedAt: new Date() })
       .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
       .returning()
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      if (secured.metadata) {
+        await recordTranscriptSecurityEvent(updated, secured.metadata, "run_status", null);
+      }
       if (isHeartbeatRunTerminalStatus(updated.status)) {
         clearHeartbeatRunRuntimeStatus(updated.id);
       }
@@ -8171,6 +8226,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
+  async function recordTranscriptSecurityEvent(
+    run: typeof heartbeatRuns.$inferSelect,
+    metadata: TranscriptSecurityMetadata,
+    recordType: string,
+    stream: string | null,
+  ) {
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "transcript-security",
+      agentId: run.agentId,
+      runId: run.id,
+      action: `heartbeat_run.transcript_credential_${metadata.disposition}`,
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: {
+        boundary: metadata.boundary,
+        detectorVersion: metadata.detectorVersion,
+        disposition: metadata.disposition,
+        matchCount: metadata.matchCount,
+        recordType,
+        stream,
+      },
+    });
+  }
+
   async function appendRunEvent(
     run: typeof heartbeatRuns.$inferSelect,
     seq: number,
@@ -8185,16 +8266,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   ) {
     const eventAt = new Date();
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-    const sanitizedMessage = event.message
-      ? redactCurrentUserText(event.message, currentUserRedactionOptions)
-      : event.message;
+    const messageSecurity = event.message
+      ? secureTranscriptText(
+        redactCurrentUserText(event.message, currentUserRedactionOptions),
+        "run_event",
+      )
+      : { value: event.message, metadata: null };
+    const sanitizedMessage = messageSecurity.value;
     const boundedPayload = event.payload
       ? boundHeartbeatRunEventPayloadForStorage(event.payload)
       : event.payload;
-    const secretSanitizedPayload = boundedPayload ? redactEventPayload(boundedPayload) : boundedPayload;
-    const sanitizedPayload = secretSanitizedPayload
-      ? redactCurrentUserValue(secretSanitizedPayload, currentUserRedactionOptions)
-      : secretSanitizedPayload;
+    const payloadSecurity = secureTranscriptPayload(boundedPayload ?? null, "run_event");
+    const sanitizedPayload = payloadSecurity.value
+      ? redactCurrentUserValue(payloadSecurity.value, currentUserRedactionOptions)
+      : payloadSecurity.value;
+    const securityMetadata = mergeTranscriptSecurityMetadata(
+      messageSecurity.metadata,
+      payloadSecurity.metadata,
+    );
     const issueId = readRuntimeStatusIssueIdCandidate(run) ?? null;
     const progress = buildRunEventRuntimeProgress({
       eventType: event.eventType,
@@ -8215,6 +8304,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       message: sanitizedMessage,
       payload: sanitizedPayload,
     });
+    if (securityMetadata) {
+      await recordTranscriptSecurityEvent(
+        run,
+        securityMetadata,
+        event.eventType.slice(0, 120),
+        event.stream ?? null,
+      );
+    }
 
     publishLiveEvent({
       companyId: run.companyId,
@@ -13156,6 +13253,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       const currentRun = run;
+      const shouldRecordRunLogSecurityEvent = createTranscriptSecurityEventLimiter();
       await appendRunEvent(currentRun, seq++, {
         eventType: "lifecycle",
         stream: "system",
@@ -13180,9 +13278,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
-        const sanitizedChunk = compactRunLogChunk(
+        const securedChunk = secureTranscriptText(
           redactCurrentUserText(chunk, currentUserRedactionOptions),
+          "run_log",
         );
+        const sanitizedChunk = compactRunLogChunk(securedChunk.value);
+        if (
+          securedChunk.metadata &&
+          shouldRecordRunLogSecurityEvent(securedChunk.metadata, stream)
+        ) {
+          await recordTranscriptSecurityEvent(
+            currentRun,
+            securedChunk.metadata,
+            "stream_chunk",
+            stream,
+          );
+        }
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
         const ts = new Date().toISOString();
@@ -16905,9 +17016,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         store: run.logStore,
         logRef: run.logRef,
         ...result,
-        // Run-log chunks are already redacted before they are appended to the store.
-        // Rewriting the full chunk again on every poll creates avoidable string copies.
-        content: result.content,
+        // Defense in depth for legacy/imported logs that predate capture-time scanning.
+        content: redactTranscriptDiagnosticValue(result.content),
       };
     },
 
