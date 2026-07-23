@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -2847,6 +2848,21 @@ export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect):
   return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
 }
 
+// Canonicalize a cwd for equality comparison across symlinked paths. The CLI
+// encodes session files under the physical directory it saw, so a persisted
+// cwd captured through a symlink must compare equal to the same physical
+// directory expressed as its real path. Falls back to `path.resolve` when the
+// path does not exist on disk (which is legitimate in unit tests and for
+// prospective/planned cwds).
+function canonicalizeCwdForComparison(target: string): string {
+  const normalized = path.resolve(target);
+  try {
+    return realpathSync(normalized);
+  } catch {
+    return normalized;
+  }
+}
+
 export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
@@ -2861,7 +2877,40 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
       warning: null as string | null,
     };
   }
+  const canonicalPreviousCwd = canonicalizeCwdForComparison(previousCwd);
+  const canonicalResolvedCwd = canonicalizeCwdForComparison(resolvedWorkspace.cwd);
+  // Inverse-of-migration case: the persisted session was captured in a
+  // project workspace but the current run resolves to the agent's home
+  // workspace (e.g. a timer/heartbeat wake with no active issue while the
+  // agent's last useful run happened inside a project). The CLI encodes the
+  // session file under the cwd it was created in, so a `--resume <uuid>` in
+  // agent_home cannot find the jsonl and silently starts a fresh session.
+  // Drop the persisted session id here so the run starts fresh explicitly
+  // and the state stays coherent (rather than accumulating stderr warnings
+  // while the CLI silently self-heals).
   if (resolvedWorkspace.source !== "project_primary") {
+    // Safe to resume when the resolved cwd matches the persisted cwd — the
+    // session jsonl exists under the same directory. Covers the `task_session`
+    // source where `resolveWorkspaceForRun` deliberately reuses the persisted
+    // session's cwd, and any `agent_home` resolution that lands on the exact
+    // same directory that hosted the session.
+    if (canonicalPreviousCwd === canonicalResolvedCwd) {
+      return {
+        sessionParams: previousSessionParams,
+        warning: null as string | null,
+      };
+    }
+    const fallbackAgentHomeCwd = resolveDefaultAgentWorkspaceDir(agentId);
+    const canonicalFallbackCwd = canonicalizeCwdForComparison(fallbackAgentHomeCwd);
+    if (canonicalPreviousCwd !== canonicalFallbackCwd) {
+      return {
+        sessionParams: null,
+        warning:
+          `Persisted session "${previousSessionId}" was captured in workspace "${previousCwd}" ` +
+          `but the current run resolves to "${resolvedWorkspace.cwd}" (source=${resolvedWorkspace.source}). ` +
+          `Starting a fresh session to avoid a stale --resume against a project-encoded cwd.`,
+      };
+    }
     return {
       sessionParams: previousSessionParams,
       warning: null as string | null,
@@ -2875,13 +2924,14 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
     };
   }
   const fallbackAgentHomeCwd = resolveDefaultAgentWorkspaceDir(agentId);
-  if (path.resolve(previousCwd) !== path.resolve(fallbackAgentHomeCwd)) {
+  const canonicalFallbackCwd = canonicalizeCwdForComparison(fallbackAgentHomeCwd);
+  if (canonicalPreviousCwd !== canonicalFallbackCwd) {
     return {
       sessionParams: previousSessionParams,
       warning: null as string | null,
     };
   }
-  if (path.resolve(projectCwd) === path.resolve(previousCwd)) {
+  if (canonicalizeCwdForComparison(projectCwd) === canonicalPreviousCwd) {
     return {
       sessionParams: previousSessionParams,
       warning: null as string | null,

@@ -267,6 +267,26 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
   );
 }
 
+/**
+ * Extended detector that also inspects stderr for the CLI's silent-recovery
+ * variant: when Claude Code CLI cannot resolve `--resume <uuid>` in the current
+ * cwd (e.g. the session file lives under a different project-encoded directory
+ * because cwd changed between runs), it prints `No conversation found with
+ * session ID: <uuid>` on stderr, silently starts a fresh conversation, and
+ * still exits with code 0 and `is_error:false`. The plain
+ * `isClaudeUnknownSessionError` only inspects parsed result/errors, which are
+ * empty in that silent-recovery path.
+ */
+export function isClaudeUnknownSessionErrorFromStreams(input: {
+  parsed?: Record<string, unknown> | null;
+  stderr?: string | null;
+}): boolean {
+  if (input.parsed && isClaudeUnknownSessionError(input.parsed)) return true;
+  const stderr = (input.stderr ?? "").trim();
+  if (!stderr) return false;
+  return /no conversation found with session id/i.test(stderr);
+}
+
 export function isClaudePoisonedPreviousMessageIdError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]

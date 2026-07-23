@@ -65,6 +65,7 @@ import {
   isClaudeRefusalResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
+  isClaudeUnknownSessionErrorFromStreams,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
@@ -1195,6 +1196,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const initial = await runAttempt(sessionId ?? null);
+    // Silent-recovery variant: CLI could not resume the requested session for
+    // this cwd (e.g. the session file lives under a different project-encoded
+    // directory because the run's resolved workspace flipped since the session
+    // was persisted), emitted `No conversation found with session ID: <uuid>`
+    // on stderr, and silently started a fresh conversation. Exit code is 0
+    // and parsed result looks successful, so the classic parsed-only detector
+    // (below) does not fire. Log an observability line so operators can
+    // quantify the churn without waiting for the retry-fresh path to trigger.
+    if (
+      sessionId &&
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) === 0 &&
+      !(initial.parsed && initial.parsed["is_error"] === true) &&
+      isClaudeUnknownSessionErrorFromStreams({ parsed: null, stderr: initial.proc.stderr ?? "" })
+    ) {
+      await onLog(
+        "stdout",
+        `[paperclip] Claude CLI could not resume session "${sessionId}" for the current cwd; ` +
+          `initial call silently fell back to a fresh conversation. Persisted session state will ` +
+          `refresh to the new session id.\n`,
+      );
+    }
     const sessionErrorKind =
       sessionId &&
       !initial.proc.timedOut &&
