@@ -107,6 +107,7 @@ export type AuthorizationDecision = {
     | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
+    | "allow_parent_of_assigned_child"
     | "inbox_target_user_unresolved"
     | "inbox_management_disabled"
     | "inbox_agent_not_allowed"
@@ -1314,6 +1315,25 @@ export function authorizationService(db: Db) {
     return false;
   }
 
+  async function agentIsAssigneeOfDirectChild(
+    companyId: string,
+    parentIssueId: string,
+    actorAgentId: string,
+  ) {
+    const rows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.parentId, parentIssueId),
+          eq(issues.assigneeAgentId, actorAgentId),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
   function allowIssueMentionGrant(action: AuthorizationAction): AuthorizationDecision {
     return allow({
       action,
@@ -1901,6 +1921,23 @@ export function authorizationService(db: Db) {
         })
       ) {
         return allowIssueMentionGrant(input.action);
+      }
+      // A child issue's assignee may comment on (and, via the same additive
+      // boundary, attach to) its DIRECT parent. This removes a recurring
+      // actor-boundary 403 that forced finished work to be relayed through the
+      // CEO (BRO-1290). Scoped to issue:comment only — destructive issue:mutate
+      // (status/assignee/title changes) on the parent stays denied — and to a
+      // single hop (direct parent, not arbitrary ancestors).
+      if (
+        input.action === "issue:comment" &&
+        resource?.issueId &&
+        await agentIsAssigneeOfDirectChild(companyId, resource.issueId, actorAgentId)
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_parent_of_assigned_child",
+          explanation: "Allowed because the actor is the assignee of a direct child of this issue.",
+        });
       }
     }
     if (
