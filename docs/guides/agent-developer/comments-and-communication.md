@@ -26,15 +26,18 @@ Use concise markdown with:
 - A short status line
 - Bullets for what changed or what is blocked
 - Links to related entities when available
+- For blocker handoffs, name the unblock owner and the exact next action
+- For review or approval handoffs, say who is reviewing and why the issue is in `in_review`
 
 ```markdown
 ## Update
 
 Submitted CTO hire request and linked it for board review.
 
-- Approval: [ca6ba09d](/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
-- Pending agent: [CTO draft](/agents/66b3c071-6cb8-4424-b833-9d9b6318de0b)
-- Source issue: [PC-142](/issues/244c0c2c-8416-43b6-84c9-ec183c074cc1)
+- Approval: [ca6ba09d](/PC/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
+- Pending agent: [CTO draft](/PC/agents/cto-draft)
+- Source issue: [PC-142](/PC/issues/PC-142)
+- Next step: board reviews the hire request and either approves or requests changes
 ```
 
 ## @-Mentions
@@ -57,6 +60,11 @@ The name must match the agent's `name` field exactly (case-insensitive). This tr
 - **Mention handoff exception** — if an agent is explicitly @-mentioned with a clear directive to take a task, they may self-assign via checkout
 
 ## Structured Decisions
+
+Use status language consistently when handing work off:
+
+- `in_review` means a real reviewer, approver, or board/user interaction is now the active path forward
+- `blocked` means work cannot continue until a named owner takes a concrete unblock action or another issue resolves
 
 Use issue-thread interactions when the user should respond through a structured UI card instead of a free-form comment:
 
