@@ -2143,6 +2143,35 @@ export function pluginLoader(
       const config: Record<string, unknown> = {};
 
       // ------------------------------------------------------------------
+      // 4b. Load stored company configs BEFORE starting the worker
+      // ------------------------------------------------------------------
+      // The worker authorizes its proactive (no-invocation) company scopes from
+      // its configured companies. A proactive plugin — e.g. the chat gateway —
+      // issues its one-shot events.subscribe calls from setup(), which runs
+      // while startWorker is still awaiting the worker's initialize response, so
+      // the authorized company set must be seeded onto the worker handle BEFORE
+      // startWorker spawns the process — not after startWorker resolves.
+      // Setting it afterwards (the previous ordering) was too late for those
+      // setup()-time subscribes: the governed-access gate rejected every one
+      // with "company context is required" and outbound push stayed dead
+      // (eventSubscriptions: 0) for the worker's life (LOOA-695). The same rows
+      // drive startup config delivery in step 5b below. Listing is best-effort:
+      // if it fails the worker still starts, just with no proactive access.
+      let configRows: Awaited<ReturnType<typeof registry.listConfigs>> = [];
+      try {
+        configRows = await registry.listConfigs(pluginId);
+      } catch (listErr) {
+        log.debug(
+          {
+            pluginId,
+            pluginKey,
+            err: listErr instanceof Error ? listErr.message : String(listErr),
+          },
+          "plugin-loader: could not list stored configs before worker start",
+        );
+      }
+
+      // ------------------------------------------------------------------
       // 5. Spawn worker process
       // ------------------------------------------------------------------
       const workerOptions: WorkerStartOptions = {
@@ -2155,6 +2184,12 @@ export function pluginLoader(
         hostHandlers,
         autoRestart: true,
         env: buildPluginWorkerEnv({ manifest, instanceInfo }),
+        // Authorize the worker to act on each configured company from its
+        // proactive loops/timers (LOOA-629). Seeded here so it is in place
+        // before any setup()-time worker→host call (LOOA-695). The authorized
+        // set is exactly the plugin's configured companies — proactive access
+        // never reaches an unconfigured company.
+        proactiveCompanyScopes: configRows.map((row) => row.companyId),
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
@@ -2187,60 +2222,39 @@ export function pluginLoader(
       // (METHOD_NOT_IMPLEMENTED) or is momentarily unavailable simply keeps the
       // runtime ctx.config.get(companyId) model. onConfigChanged is idempotent
       // for well-behaved plugins, so replaying an unchanged config is safe.
-      try {
-        const configRows = await registry.listConfigs(pluginId);
-
-        // Authorize the worker to act on each configured company from its
-        // proactive loops (LOOA-629). A proactive plugin (e.g. the chat
-        // gateway's notifier drain) makes company-scoped worker→host calls
-        // outside any host-issued invocation; without this the governed-access
-        // gate rejects them with "company context is required". The authorized
-        // set is exactly the plugin's configured companies — proactive access
-        // never reaches an unconfigured company.
-        workerManager.setProactiveCompanyScopes(
-          pluginId,
-          configRows.map((row) => row.companyId),
-        );
-
-        for (const row of configRows) {
-          try {
-            await workerManager.call(pluginId, "configChanged", {
-              config: (row.configJson ?? {}) as Record<string, unknown>,
-              companyId: row.companyId,
-            });
-          } catch (configErr) {
-            // A single-tenant worker fails closed (CROSS_TENANT_CONFIG) rather
-            // than collapse onto a second company's config — surface that at
-            // warn so the misconfiguration (multiple distinct companies
-            // configured for a single-tenant plugin) is visible, instead of
-            // being lost in the best-effort debug stream.
-            const code = (configErr as { code?: number } | null)?.code;
-            const details = {
-              pluginId,
-              pluginKey,
-              companyId: row.companyId,
-              code,
-              err: configErr instanceof Error ? configErr.message : String(configErr),
-            };
-            if (code === PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG) {
-              log.warn(
-                details,
-                "plugin-loader: startup config delivery rejected — single-tenant plugin configured for multiple companies",
-              );
-            } else {
-              log.debug(details, "plugin-loader: startup config delivery skipped for company");
-            }
-          }
-        }
-      } catch (listErr) {
-        log.debug(
-          {
+      //
+      // Reuses the `configRows` loaded in step 4b (which also seeded the
+      // worker's proactive company scopes before startup); no second listConfigs
+      // round-trip is needed here.
+      for (const row of configRows) {
+        try {
+          await workerManager.call(pluginId, "configChanged", {
+            config: (row.configJson ?? {}) as Record<string, unknown>,
+            companyId: row.companyId,
+          });
+        } catch (configErr) {
+          // A single-tenant worker fails closed (CROSS_TENANT_CONFIG) rather
+          // than collapse onto a second company's config — surface that at
+          // warn so the misconfiguration (multiple distinct companies
+          // configured for a single-tenant plugin) is visible, instead of
+          // being lost in the best-effort debug stream.
+          const code = (configErr as { code?: number } | null)?.code;
+          const details = {
             pluginId,
             pluginKey,
-            err: listErr instanceof Error ? listErr.message : String(listErr),
-          },
-          "plugin-loader: could not list stored configs for startup delivery",
-        );
+            companyId: row.companyId,
+            code,
+            err: configErr instanceof Error ? configErr.message : String(configErr),
+          };
+          if (code === PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG) {
+            log.warn(
+              details,
+              "plugin-loader: startup config delivery rejected — single-tenant plugin configured for multiple companies",
+            );
+          } else {
+            log.debug(details, "plugin-loader: startup config delivery skipped for company");
+          }
+        }
       }
 
       // ------------------------------------------------------------------

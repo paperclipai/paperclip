@@ -184,6 +184,17 @@ export interface WorkerStartOptions {
   /** Environment variables passed to the child process. */
   env?: Record<string, string>;
   /**
+   * Companies this worker may act on from proactive (no-invocation) worker→host
+   * calls — the plugin's configured companies. Seeded onto the handle at
+   * creation, BEFORE the child process spawns, so a proactive plugin that
+   * issues host calls during setup() (e.g. the chat gateway's one-shot
+   * `events.subscribe`, which runs while `startWorker` is still awaiting the
+   * initialize response) is already authorized when those calls arrive. The set
+   * can still be replaced at runtime via `setProactiveCompanyScopes` (e.g. on a
+   * config change). Never widens access beyond the listed companies (LOOA-695).
+   */
+  proactiveCompanyScopes?: readonly string[];
+  /**
    * Callback for stream notifications from the worker (streams.open/emit/close).
    * The host wires this to the PluginStreamBus to fan out events to SSE clients.
    */
@@ -420,7 +431,18 @@ export function createPluginWorkerHandle(
   // A no-invocation call that references one of these companies resolves to
   // that company's scope; a call referencing any other company stays denied,
   // and in-invocation calls keep their strict single-company match.
+  //
+  // Seeded from options at handle creation — before the child process is
+  // spawned — so a proactive plugin's setup()-time host calls (which land while
+  // `startWorker` is still awaiting initialize) are authorized in time. The
+  // loader used to call setProactiveCompanyScopes only AFTER startWorker
+  // resolved, which was too late for the gateway's one-shot events.subscribe
+  // and left outbound push permanently dead (LOOA-695).
   const proactiveCompanyScopes = new Set<string>();
+  for (const id of options.proactiveCompanyScopes ?? []) {
+    const trimmed = readNonEmptyString(id);
+    if (trimmed) proactiveCompanyScopes.add(trimmed);
+  }
 
   // Optional methods reported by the worker during initialization
   let supportedMethods: string[] = [];
@@ -584,20 +606,36 @@ export function createPluginWorkerHandle(
   }
 
   /**
-   * Extract the company a worker→host call references, mirroring the SDK
+   * Extract the single company a worker→host call references, mirroring the SDK
    * governed-access gate's own derivation (host-client-factory.ts
-   * `requestedCompanyScope`): an explicit `companyId`, or a company-scoped
-   * state key (`scopeKind: "company"` + `scopeId`). Returns null when the call
-   * references no specific company (e.g. `companies.list`, instance-scoped
-   * state), so proactive resolution only ever grants a single, explicit
-   * company — never a wildcard.
+   * `requestedCompanyScope`) so a proactive call resolves to exactly the company
+   * the gate would require:
+   *   - explicit `params.companyId`;
+   *   - a company-scoped state key (`scopeKind: "company"` + `scopeId`);
+   *   - `events.subscribe`'s `params.filter.companyId` (how the SDK's
+   *     `ctx.events.on(name, { companyId }, fn)` issues its subscribe).
+   *
+   * Returns null whenever the gate treats the call as a wildcard (`companies.list`,
+   * a `scopeKind: "company"` key with no `scopeId`) or as referencing no company
+   * (instance-scoped state, an unfiltered subscribe). A wildcard is deliberately
+   * NOT granted proactively: proactive resolution only ever admits a single,
+   * explicit company, never "all". This keeps the resolver and the gate in
+   * lockstep in the functional direction (LOOA-693 AC#4 / LOOA-695).
    */
-  function referencedCompanyId(params: unknown): string | null {
+  function referencedCompanyId(method: string, params: unknown): string | null {
+    // Gate returns { kind: "all" } for companies.list regardless of params —
+    // never a single company — so proactive access declines it here.
+    if (method === "companies.list") return null;
     if (!isRecord(params)) return null;
     const direct = readNonEmptyString(params.companyId);
     if (direct) return direct;
     if (params.scopeKind === "company") {
+      // scopeId present → that company; absent → wildcard ("all") in the gate,
+      // which we never grant proactively → null.
       return readNonEmptyString(params.scopeId);
+    }
+    if (method === "events.subscribe" && isRecord(params.filter)) {
+      return readNonEmptyString(params.filter.companyId);
     }
     return null;
   }
@@ -615,6 +653,7 @@ export function createPluginWorkerHandle(
       // applies when the worker is NOT inside a host-issued invocation (which
       // would carry an id and keep its strict single-company match below).
       const proactiveCompanyId = referencedCompanyId(
+        message.method,
         (message as { params?: unknown }).params,
       );
       if (proactiveCompanyId && proactiveCompanyScopes.has(proactiveCompanyId)) {

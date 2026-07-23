@@ -639,3 +639,92 @@ describe("plugin proactive company scope (LOOA-629)", () => {
     }
   });
 });
+
+describe("plugin proactive events.subscribe: options-seeded scope + filter parity (LOOA-695)", () => {
+  // The chat gateway subscribes to issue.*/approval.* from setup() via
+  // ctx.events.on(name, { companyId }, fn), which the SDK turns into a proactive
+  // (no-invocation) events.subscribe whose company lives in params.filter.companyId.
+  // Two things had to hold for outbound push to work and neither did before this
+  // fix:
+  //   (1) the authorized company set must be present BEFORE the worker's setup()
+  //       calls land — the loader used to set it only after startWorker resolved,
+  //       so it was seeded via WorkerStartOptions at handle creation instead;
+  //   (2) the host's proactive-scope resolver (referencedCompanyId) must derive
+  //       events.subscribe's company from filter.companyId, mirroring the SDK
+  //       gate (requestedCompanyScope).
+  // Each case drives a real worker so the subscribe flows through the manager's
+  // context resolution exactly as it does in production.
+  function makeEventsHandle(seededCompanies: readonly string[]) {
+    const eventsSubscribe = vi.fn(async () => undefined);
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["events.subscribe"],
+      services: {
+        events: { subscribe: eventsSubscribe },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers,
+      // Seeded at handle creation — the loader now threads the plugin's
+      // configured companies here BEFORE startWorker, never via a post-start
+      // setProactiveCompanyScopes call.
+      proactiveCompanyScopes: seededCompanies,
+    });
+    return { handle, eventsSubscribe };
+  }
+
+  it("admits a setup()-time events.subscribe for a company seeded via WorkerStartOptions", async () => {
+    const { handle, eventsSubscribe } = makeEventsHandle(["company-1"]);
+    try {
+      await handle.start();
+      // No post-start setProactiveCompanyScopes call: the seed from options is
+      // the only authorization, exactly as it is when the worker subscribes
+      // during setup() before startWorker resolves.
+      await handle.call("getData", {
+        params: { mode: "omit", hostMethod: "events.subscribe", requestedCompanyId: "company-1" },
+      } as unknown as HostToWorkerMethods["getData"][0]);
+      expect(eventsSubscribe).toHaveBeenCalledTimes(1);
+      expect(eventsSubscribe.mock.calls[0]?.[0]).toMatchObject({
+        filter: { companyId: "company-1" },
+      });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("still denies a proactive events.subscribe for a company outside the seeded set", async () => {
+    const { handle, eventsSubscribe } = makeEventsHandle(["company-1"]);
+    try {
+      await handle.start();
+      await expect(handle.call("getData", {
+        params: { mode: "omit", hostMethod: "events.subscribe", requestedCompanyId: "company-2" },
+      } as unknown as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        message: expect.stringContaining("company context is required"),
+      });
+      expect(eventsSubscribe).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("denies a proactive events.subscribe when no company is seeded", async () => {
+    const { handle, eventsSubscribe } = makeEventsHandle([]);
+    try {
+      await handle.start();
+      await expect(handle.call("getData", {
+        params: { mode: "omit", hostMethod: "events.subscribe", requestedCompanyId: "company-1" },
+      } as unknown as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+      expect(eventsSubscribe).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
