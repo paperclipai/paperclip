@@ -27,6 +27,7 @@ import approval_queue as approval_queue  # noqa: E402
 import approval_parse as approval_parse  # noqa: E402
 import approval_send as approval_send  # noqa: E402
 import blocklist as blocklist  # noqa: E402
+import triage_reconcile as triage_reconcile  # noqa: E402
 import ews_sent as ews_sent  # noqa: E402
 import office_inbox as office_inbox  # noqa: E402
 
@@ -330,6 +331,64 @@ def process_unblock_commands(*, dry_run):
     return results
 
 
+# Walter als menschlicher Reviewer (in_review braucht laut Server einen echten
+# Review-Pfad — assigneeUserId erfüllt das).
+WALTER_USER_ID = "18r34Ghx5N0LHRptMCT6Fp1WaoGqhvc9"
+
+
+def _api(method: str, path: str, payload: dict | None = None):
+    import urllib.request
+    import json as _json
+    data = _json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(
+        f"{BASE}{path}", data=data, method=method,
+        headers={"Authorization": "Bearer " + pc.load_token(),
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read().decode("utf-8") or "{}"
+    return _json.loads(raw)
+
+
+def _unwrap(d, *keys):
+    if isinstance(d, list):
+        return d
+    for k in keys:
+        if isinstance(d.get(k), list):
+            return d[k]
+    return []
+
+
+def _list_blocked_issues():
+    return _unwrap(_api("GET", f"/api/companies/{COMPANY}/issues"
+                               f"?assigneeAgentId={AGENT}&status=blocked&limit=100"),
+                   "issues", "data")
+
+
+def _issue_comments(issue_id: str):
+    return _unwrap(_api("GET", f"/api/issues/{issue_id}/comments"), "comments", "data")
+
+
+def _close_triage_issue(issue_id: str) -> None:
+    """Endzustand setzen, den Luna beabsichtigt hatte: in_review + Walter."""
+    _api("PATCH", f"/api/issues/{issue_id}",
+         {"status": "in_review", "assigneeUserId": WALTER_USER_ID, "assigneeAgentId": None})
+    pc.add_comment(BASE, pc.load_token(), issue_id,
+                   "Deterministisch auf `in_review` gesetzt: Der Adapter-Guard hatte das Issue "
+                   "blockiert, weil das Modell den abschließenden `paperclip_update_issue`-Call "
+                   "nicht ausgeführt hat — die Triage-Arbeit selbst war erledigt.")
+
+
+def reconcile_blocked_triage(*, dry_run):
+    """Erledigte-aber-blockierte Triage-Issues abschließen (Details: triage_reconcile)."""
+    try:
+        return triage_reconcile.reconcile(
+            list_blocked=_list_blocked_issues, get_comments=_issue_comments,
+            close_issue=_close_triage_issue, dry_run=dry_run)
+    except Exception as e:  # noqa: BLE001 — darf den Tick nicht killen
+        print(f"WARN Triage-Abgleich fehlgeschlagen: {e}", file=sys.stderr)
+        return []
+
+
 def _create_correction_issue(token: str, note: str, entry: dict) -> None:
     """Weckt Luna zur Überarbeitung eines Entwurfs nach Walters Korrektur."""
     token_pc = pc.load_token()
@@ -477,6 +536,11 @@ def main() -> None:
     unblock_results = process_unblock_commands(dry_run=a.dry_run)
     if unblock_results:
         print(f"Entsperr-Kommandos: {unblock_results}")
+    # Triage-Issues abschließen, die Luna erledigt hat, die aber der Adapter-Guard
+    # blockiert hat (Modell rief den terminalen Status-Call nicht auf).
+    reconciled = reconcile_blocked_triage(dry_run=a.dry_run)
+    if reconciled:
+        print(f"Triage-Abgleich: {reconciled}")
     # FALLBACK: ws@-Sent-Spiegelung im Vault (falls office@ mal nicht erreichbar war).
     approval_new = scan_approval_replies(a.window_days, seen)
     if approval_new:
