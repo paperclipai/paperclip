@@ -245,4 +245,30 @@ describe("plugin UI slot validators", () => {
     if (parsed.success) return;
     expect(parsed.error.issues.some((issue) => issue.message.includes("reserved by the host"))).toBe(true);
   });
+
+  it("accepts dashboard widget slots with a top placement", () => {
+    const parsed = pluginUiSlotDeclarationSchema.parse({
+      type: "dashboardWidget",
+      id: "overview-widget",
+      displayName: "Overview",
+      exportName: "OverviewWidget",
+      placement: "top",
+    });
+
+    expect(parsed.placement).toBe("top");
+  });
+
+  it("rejects placement on non-dashboard slot types", () => {
+    const parsed = pluginUiSlotDeclarationSchema.safeParse({
+      type: "sidebar",
+      id: "overview-sidebar",
+      displayName: "Overview",
+      exportName: "OverviewSidebarLink",
+      placement: "top",
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues[0]?.message).toBe("placement is only supported for dashboardWidget slots");
+  });
 });

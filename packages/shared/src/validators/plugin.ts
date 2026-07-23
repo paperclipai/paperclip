@@ -5,6 +5,7 @@ import {
   PLUGIN_CAPABILITIES,
   PLUGIN_UI_SLOT_TYPES,
   PLUGIN_UI_SLOT_ENTITY_TYPES,
+  PLUGIN_UI_SLOT_PLACEMENTS,
   PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS,
   PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS,
   PLUGIN_LAUNCHER_PLACEMENT_ZONES,
@@ -331,6 +332,7 @@ export const pluginUiSlotDeclarationSchema = z.object({
     message: "routePath must be a lowercase single-segment slug (letters, numbers, hyphens)",
   }).optional(),
   order: z.number().int().optional(),
+  placement: z.enum(PLUGIN_UI_SLOT_PLACEMENTS).optional(),
 }).superRefine((value, ctx) => {
   // context-sensitive slots require explicit entity targeting.
   const entityScopedTypes = ["detailTab", "taskDetailView", "contextMenuItem", "commentAnnotation", "commentContextMenuItem", "projectSidebarItem"];
@@ -366,6 +368,13 @@ export const pluginUiSlotDeclarationSchema = z.object({
       code: z.ZodIssueCode.custom,
       message: "commentContextMenuItem slots require entityTypes to include \"comment\"",
       path: ["entityTypes"],
+    });
+  }
+  if (value.placement && value.type !== "dashboardWidget") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "placement is only supported for dashboardWidget slots",
+      path: ["placement"],
     });
   }
   if (value.routePath && value.type !== "page" && value.type !== "routeSidebar" && value.type !== "companySettingsPage") {

@@ -4,6 +4,7 @@ import type {
   PluginCapability,
   PluginUiSlotType,
   PluginUiSlotEntityType,
+  PluginUiSlotPlacement,
   PluginStateScopeKind,
   PluginLauncherPlacementZone,
   PluginLauncherAction,
@@ -409,6 +410,13 @@ export interface PluginUiSlotDeclaration {
    * Defaults to host-defined ordering if omitted.
    */
   order?: number;
+  /**
+   * Optional host surface region for slot types that support multiple
+   * placements. Only supported for `dashboardWidget` slots: `"top"` renders
+   * the widget above the host dashboard content, `"default"` (or omitted)
+   * renders it below the host chart grid.
+   */
+  placement?: PluginUiSlotPlacement;
 }
 
 /**

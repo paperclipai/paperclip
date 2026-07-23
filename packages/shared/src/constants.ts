@@ -1397,6 +1397,20 @@ export const PLUGIN_UI_SLOT_TYPES = [
 ] as const;
 export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
 
+/**
+ * Host surface regions for slot types that support multiple placements.
+ * Currently only `dashboardWidget` slots support a placement: `"top"` renders
+ * the widget above the host dashboard content, `"default"` renders it below
+ * the host chart grid.
+ *
+ * @see PLUGIN_SPEC.md §19 — UI Extension Model
+ */
+export const PLUGIN_UI_SLOT_PLACEMENTS = [
+  "default",
+  "top",
+] as const;
+export type PluginUiSlotPlacement = (typeof PLUGIN_UI_SLOT_PLACEMENTS)[number];
+
 export const WORKSPACE_OVERVIEW_DEFAULT_LIMIT = 50;
 export const WORKSPACE_OVERVIEW_MAX_LIMIT = 100;
 export const WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT = 4;
