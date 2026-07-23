@@ -2283,6 +2283,128 @@ export async function inspectManagedGitWorktreeBranch(input: {
   };
 }
 
+export type MechanicalWorkspaceValidationRepairResult = {
+  repaired: boolean;
+  executionWorkspaceId: string | null;
+  reason: string;
+};
+
+export async function attemptMechanicalWorkspaceValidationRepair(input: {
+  db: Db;
+  issue: ExecutionWorkspaceIssueRef & { companyId: string };
+  workspaceValidation: Record<string, unknown>;
+}): Promise<MechanicalWorkspaceValidationRepairResult> {
+  const reason = asString(input.workspaceValidation.reason, "").trim();
+  if (reason !== GIT_WORKTREE_BRANCH_INCOHERENCE_REASON) {
+    return { repaired: false, executionWorkspaceId: null, reason: "workspace validation failure is not mechanically repairable" };
+  }
+
+  const managedBranch = parseObject(input.workspaceValidation.managedGitWorktreeBranch);
+  const executionWorkspaceId =
+    asString(input.workspaceValidation.executionWorkspaceId, "").trim() ||
+    asString(input.workspaceValidation.persistedExecutionWorkspaceId, "").trim() ||
+    asString(managedBranch.executionWorkspaceId, "").trim() ||
+    null;
+  if (!executionWorkspaceId) {
+    return { repaired: false, executionWorkspaceId: null, reason: "workspace validation evidence has no execution workspace id" };
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(executionWorkspaceId)) {
+    return { repaired: false, executionWorkspaceId, reason: "workspace validation evidence has an invalid execution workspace id" };
+  }
+
+  const [workspace] = await input.db
+    .select()
+    .from(executionWorkspaces)
+    .where(and(
+      eq(executionWorkspaces.id, executionWorkspaceId),
+      eq(executionWorkspaces.companyId, input.issue.companyId),
+    ))
+    .limit(1);
+  if (!workspace) {
+    return { repaired: false, executionWorkspaceId, reason: "execution workspace no longer exists" };
+  }
+  if (!workspace.sourceIssueId || workspace.sourceIssueId !== input.issue.id) {
+    return { repaired: false, executionWorkspaceId, reason: "execution workspace belongs to another issue" };
+  }
+
+  const worktreePath = asString(workspace.providerRef ?? workspace.cwd, "").trim();
+  const expectedBranchName = asString(workspace.branchName, "").trim();
+  if (!worktreePath || !expectedBranchName) {
+    return { repaired: false, executionWorkspaceId, reason: "execution workspace is missing its worktree path or recorded branch" };
+  }
+
+  const [projectWorkspace] = workspace.projectWorkspaceId
+    ? await input.db
+      .select({ cwd: projectWorkspaces.cwd })
+      .from(projectWorkspaces)
+      .where(and(
+        eq(projectWorkspaces.id, workspace.projectWorkspaceId),
+        eq(projectWorkspaces.companyId, input.issue.companyId),
+      ))
+      .limit(1)
+    : [];
+  const repoRoot = asString(projectWorkspace?.cwd, "").trim();
+  if (!repoRoot || !await directoryExists(repoRoot)) {
+    return { repaired: false, executionWorkspaceId, reason: "registered source repository is missing" };
+  }
+
+  let inspection = await inspectManagedGitWorktreeBranch({
+    repoRoot,
+    worktreePath,
+    expectedBranchName,
+  });
+
+  if (!inspection.valid && inspection.reasonCode === "not_registered") {
+    await runGit(["worktree", "repair", worktreePath], repoRoot).catch(() => null);
+    inspection = await inspectManagedGitWorktreeBranch({
+      repoRoot,
+      worktreePath,
+      expectedBranchName,
+    });
+  }
+
+  if (!inspection.valid && inspection.reasonCode === "branch_mismatch") {
+    try {
+      await ensureGitWorktreeBranchCoherent({
+        db: input.db,
+        repoRoot,
+        worktreePath,
+        expectedBranchName,
+        actualBranchName: inspection.actualBranchName,
+        sourceIssue: input.issue,
+        executionWorkspaceId,
+        enableWorkspaceBranchReconcileForward: true,
+        enableWorkspaceDirtyQuarantineRepair: false,
+        persistForwardReconcile: true,
+      });
+    } catch (error) {
+      return {
+        repaired: false,
+        executionWorkspaceId,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const [updatedWorkspace] = await input.db
+      .select({ branchName: executionWorkspaces.branchName })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId))
+      .limit(1);
+    inspection = await inspectManagedGitWorktreeBranch({
+      repoRoot,
+      worktreePath,
+      expectedBranchName: updatedWorkspace?.branchName ?? expectedBranchName,
+    });
+  }
+
+  return inspection.valid
+    ? { repaired: true, executionWorkspaceId, reason: "workspace git metadata and branch now validate" }
+    : {
+        repaired: false,
+        executionWorkspaceId,
+        reason: inspection.reason ?? "workspace still fails validation after mechanical repair",
+      };
+}
+
 async function validateLinkedGitWorktree(input: {
   repoRoot: string;
   worktreePath: string;
