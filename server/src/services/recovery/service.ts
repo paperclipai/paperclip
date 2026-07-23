@@ -74,6 +74,12 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import {
+  breakerRunFromRow,
+  decideContinuationBreaker,
+  resolveContinuationBreakerConfig,
+  zcplStreakFromRuns,
+} from "./continuation-breaker.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -803,6 +809,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (latestFinishedAt === null) latestFinishedAt = row.finishedAt ?? null;
     }
     return { consecutive, latestFinishedAt };
+  }
+
+  // Derive the per-issue zero-cost `process_lost` streak from recent run history.
+  // Shadow-first Stage 1 needs no persisted streak column — it recomputes the streak the same
+  // way `summarizeRecentContinuationRetries` derives its consecutive count. Returns the streak
+  // and whether the most recent run itself was a paid (usage-bearing) run, which the shadow log
+  // cross-checks so the gate can prove the matcher never counts paid retries.
+  async function summarizeZeroCostProcessLostStreak(companyId: string, issueId: string) {
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        usageJson: heartbeatRuns.usageJson,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(10);
+
+    const breakerRuns = rows.map((row) => breakerRunFromRow(row));
+    const streak = zcplStreakFromRuns(breakerRuns);
+    // Derive the latest-run id AND its usage flag from this same query snapshot so the shadow log
+    // pairs a consistent (run id, had-usage). Reading the id from a separate earlier query could
+    // mismatch it against usage/streak data if a run is inserted between the two queries — the
+    // paid-run cross-check must reference the run it actually measured.
+    const latestRow = rows[0] ?? null;
+    const latestRunId = latestRow?.id ?? null;
+    const latestRunHadUsage = latestRow ? latestRow.usageJson != null : false;
+    return { streak, latestRunId, latestRunHadUsage };
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string, agentId?: string | null) {
@@ -3491,9 +3533,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
+      // Shadow-mode observability counters for the continuation-retry circuit-breaker.
+      // Stage 1 is observe-only (no behavior change); these count what enforce mode *would* do.
+      continuationBreakerWouldBackoff: 0,
+      continuationBreakerWouldTrip: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
+
+    const continuationBreakerCfg = resolveContinuationBreakerConfig();
 
     for (const issue of candidates) {
       const executionState = issue.status === "in_review"
@@ -4012,6 +4060,45 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       if (isUnsuccessfulTerminalIssueRun(latestRun)) {
         const classification = classifyContinuationFailure(latestRun);
+
+        // Continuation-retry circuit-breaker — SHADOW MODE (observe-only).
+        // Compute the zero-cost `process_lost` streak and log what the breaker WOULD do. No
+        // scheduling decision changes here in Stage 1; the enforce action (backoff/suspend/trip
+        // + manager notify + persisted trip state) lands in the tracked Stage-2 follow-up once
+        // the zero-false-trip gate passes. See recovery/continuation-breaker.ts.
+        if (continuationBreakerCfg.enabled) {
+          const { streak, latestRunId, latestRunHadUsage } = await summarizeZeroCostProcessLostStreak(
+            issue.companyId,
+            issue.id,
+          );
+          if (streak > 0) {
+            const decision = decideContinuationBreaker(streak, continuationBreakerCfg);
+            if (decision.verdict === "would-trip") result.continuationBreakerWouldTrip += 1;
+            else result.continuationBreakerWouldBackoff += 1;
+            logger.info(
+              {
+                source: "recovery.continuation_breaker.shadow",
+                mode: continuationBreakerCfg.mode,
+                issueId: issue.id,
+                issueIdentifier: issue.identifier,
+                // latestRunId + latestRunHadUsage come from the SAME query snapshot as `streak`, so
+                // the paid-run cross-check always references the run it actually measured. The scan's
+                // own latest-run id is logged separately for correlation.
+                latestRunId,
+                scanLatestRunId: latestRun?.id ?? null,
+                streak,
+                threshold: continuationBreakerCfg.N,
+                verdict: decision.verdict,
+                wouldDelayMs: decision.wouldDelayMs,
+                // Gate cross-check: a trip verdict must NEVER coincide with a paid latest run.
+                latestRunHadUsage,
+                classificationKind: classification.kind,
+                classificationErrorCode: classification.errorCode,
+              },
+              "continuationBreaker shadow verdict",
+            );
+          }
+        }
 
         if (classification.errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
           const resolved = await resolveContinuationWaitingOnReview(issue);
