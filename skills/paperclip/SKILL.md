@@ -120,8 +120,8 @@ Before ending any heartbeat, apply this final-disposition checklist:
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
 ```json
-PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+PATCH $PAPERCLIP_API_URL/api/issues/{issueId}
+Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 

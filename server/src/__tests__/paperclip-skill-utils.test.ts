@@ -70,6 +70,9 @@ describe("paperclip skill utils", () => {
     expect(skillBody).toContain(
       "If the helper is unavailable from your current working directory, do not search the filesystem for it. Use the raw `PATCH /api/issues/{issueId}` request above instead.",
     );
+    expect(skillBody).toContain(
+      "PATCH $PAPERCLIP_API_URL/api/issues/{issueId}\nHeaders: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID",
+    );
   });
 
   it("keeps the create-issue-interaction-ui guide as a maintainer-only skill", async () => {
