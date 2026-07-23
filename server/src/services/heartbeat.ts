@@ -11383,9 +11383,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
 
     const reaped: string[] = [];
+    const leakedHandleReaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      const inMemoryHandle = runningProcesses.has(run.id) || activeRunExecutions.has(run.id);
+      let leakedHandle = false;
+
+      if (inMemoryHandle) {
+        // Skip only when we have OS-level evidence the child is genuinely alive.
+        // The handle can leak if the child exits without firing the close event
+        // (orphaned grandchildren keeping stdio open, lost SIGCHLD on Linux,
+        // Windows kill semantics that bypass Node's close listener).
+        if (!tracksLocalChild) continue;
+        const handlePidAlive = !!run.processPid && isProcessAlive(run.processPid);
+        const handlePgroupAlive = !!run.processGroupId && isProcessGroupAlive(run.processGroupId);
+        if (handlePidAlive || handlePgroupAlive) continue;
+        if (!run.processPid && !run.processGroupId) continue; // no recorded pid to probe
+        leakedHandle = true;
+        runningProcesses.delete(run.id);
+      }
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
@@ -11393,7 +11410,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
-      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (
@@ -11523,6 +11539,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          ...(leakedHandle ? { leakedHandle: true } : {}),
         },
       });
 
@@ -11530,10 +11547,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
+      if (leakedHandle) leakedHandleReaped.push(run.id);
     }
 
     if (reaped.length > 0) {
-      logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
+      logger.warn(
+        {
+          reapedCount: reaped.length,
+          runIds: reaped,
+          ...(leakedHandleReaped.length > 0
+            ? { leakedHandleReapedCount: leakedHandleReaped.length, leakedHandleRunIds: leakedHandleReaped }
+            : {}),
+        },
+        "reaped orphaned heartbeat runs",
+      );
     }
     return { reaped: reaped.length, runIds: reaped };
   }
