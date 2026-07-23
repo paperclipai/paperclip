@@ -3141,11 +3141,22 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/clear-error", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) {
       return;
+    }
+    if (req.actor.type === "agent") {
+      const decision = await access.decide({
+        actor: req.actor,
+        action: "agents:clear_error",
+        resource: { type: "agent", companyId: existing.companyId, agentId: existing.id },
+      });
+      if (!decision.allowed) {
+        throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      }
+    } else {
+      assertBoard(req);
     }
     if (existing.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
@@ -3160,13 +3171,25 @@ export function agentRoutes(
       return;
     }
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "agent.error_cleared",
       entityType: "agent",
       entityId: agent.id,
+      ...(actor.actorType === "agent"
+        ? {
+            details: {
+              agentId: actor.agentId,
+              runId: actor.runId,
+            },
+          }
+        : {}),
     });
 
     res.json(agent);

@@ -451,6 +451,43 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows responsible-user JWT agents with only the clear-error grant to remediate a peer", async () => {
+    const company = await createCompany(db, "ResponsibleUserClearErrorGrant");
+    const actorAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    const responsibleUserId = await createUser(db);
+    await grantAgentPermission(db, company.id, actorAgent.id, "agents:clear_error");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "agents:clear_error",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      grant: {
+        principalType: "agent",
+        principalId: actorAgent.id,
+        permissionKey: "agents:clear_error",
+      },
+    });
+  });
+
   it("keeps responsible-user skill mutations denied for viewer memberships", async () => {
     const company = await createCompany(db, "ResponsibleUserSkillViewerDenied");
     const actorAgent = await createAgent(db, company.id);
