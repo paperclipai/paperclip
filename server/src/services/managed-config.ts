@@ -14,7 +14,8 @@
  *
  * Parsing follows the `execution-policy-bootstrap.ts` doctrine: a pure
  * function over `Record<string, string | undefined>`, strict, and fail
- * closed — bad JSON, an unsupported `v`, an unknown feature key, or any
+ * closed — bad JSON, an unsupported `v`, an unknown feature key, a feature
+ * key this build's feature catalog does not mark tier "managed", or any
  * malformed section throws with a precise error so a managed instance
  * refuses to start instead of silently dropping a security control. Only an
  * ABSENT env var means self-hosted (no overlay, zero behavior change); a
@@ -29,6 +30,7 @@
  */
 
 import {
+  INSTANCE_FEATURE_CATALOG,
   instanceExperimentalSettingsSchema,
   type ManagedExperimentalFeatureKey,
 } from "@paperclipai/shared";
@@ -127,6 +129,9 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
   // `plugins.autoInstall` are required (empty {} / [] are fine). A missing
   // section means a truncated or mis-built document, and defaulting it to
   // empty would silently drop the managed overlay or auto-install list.
+  // `plugins.autoInstall` is validated here as part of the atomic v1
+  // document; the bundled-plugin provisioning path that consumes it lands in
+  // the follow-up PR that generalizes `ensureBundledKubernetesPlugin`.
   const features: Partial<Record<ManagedExperimentalFeatureKey, boolean>> = {};
   if (doc.features === undefined) {
     fail(`requires a "features" object mapping feature key → boolean (use {} for none)`);
@@ -139,6 +144,18 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
     if (!knownKeys.has(key)) {
       fail(
         `"features" has unknown feature key "${key}"; known keys are the boolean flags of instanceExperimentalSettingsSchema`,
+      );
+    }
+    // Catalog-compatibility enforcement: the key exists in this build, but the
+    // control plane may only manage keys this build's feature catalog marks
+    // tier "managed". A key whose tier differs (a tenant `preference`, a
+    // code-pinned `floor`, or a tier demoted since the document's
+    // `catalogVersion` was published) is version skew — refuse startup rather
+    // than apply a control with mismatched catalog semantics.
+    const tier = INSTANCE_FEATURE_CATALOG[key as ManagedExperimentalFeatureKey].tier;
+    if (tier !== "managed") {
+      fail(
+        `"features" key "${key}" has tier "${tier}" in this build's feature catalog; only tier "managed" keys may be set by a managed-config document (catalogVersion ${JSON.stringify(doc.catalogVersion)} is incompatible with this build)`,
       );
     }
     if (typeof value !== "boolean") {
