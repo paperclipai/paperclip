@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -24,6 +26,9 @@ import {
   isRemotePlainHttp,
   remotePlainHttpDeniedMessage,
 } from "./transport-security.js";
+import { resolveDesiredGatewaySkillSections } from "./managed-skills.js";
+
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -262,12 +267,14 @@ function buildHeaders(input: {
   };
 }
 
-function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): string {
+async function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): Promise<string> {
   const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const taskMarkdown = nonEmpty(ctx.context.paperclipTaskMarkdown);
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
+  const resolvedSkills = await resolveDesiredGatewaySkillSections(ctx.config, __moduleDir);
+  const skillSections = resolvedSkills.flatMap((skill) => [`### Skill: ${skill.key}`, "", skill.content, ""]);
   const lines = [
     `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
     "",
@@ -291,6 +298,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     wakePrompt,
     ...(sessionHandoff ? ["", sessionHandoff] : []),
     ...(taskMarkdown ? ["", taskMarkdown] : []),
+    ...(skillSections.length > 0
+      ? ["", "Assigned company skills (Paperclip skill library):", "", ...skillSections]
+      : []),
     ...(wakePayloadJson
       ? [
           "",
@@ -304,10 +314,10 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   return lines.filter((line) => line !== null && line !== undefined).join("\n").trim();
 }
 
-function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
+async function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Promise<Record<string, unknown>> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
-  const input = nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
+  const input = nonEmpty(payloadTemplate.input) ?? (await buildInput(ctx, paperclipApiUrl));
   const instructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
@@ -837,7 +847,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runHeaders.Authorization,
     runHeaders["X-Hermes-Session-Key"],
   ]);
-  const body = buildRunBody(ctx, sessionKey);
+  let body: Record<string, unknown>;
+  try {
+    body = await buildRunBody(ctx, sessionKey);
+  } catch (err) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_gateway_skill_unavailable",
+      errorMessage: redactText(err instanceof Error ? err.message : String(err)),
+    };
+  }
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
