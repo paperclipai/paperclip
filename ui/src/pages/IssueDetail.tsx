@@ -23,7 +23,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
-import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useBreadcrumbs, type Breadcrumb } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, formatAssigneeUserLabel, formatUserLabel, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
@@ -33,6 +33,7 @@ import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import {
   hasLegacyIssueDetailQuery,
   createIssueDetailPath,
+  issueProjectBreadcrumb,
   readIssueDetailLocationState,
   readIssueDetailBreadcrumb,
   readIssueDetailHeaderSeed,
@@ -3110,19 +3111,23 @@ export function IssueDetail() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([
-      sourceBreadcrumb,
-      {
-        // The status glyph (leading) already conveys in-progress/live state;
-        // no redundant 🔵 emoji prefix on the title.
-        label: breadcrumbTitle,
-        leading: breadcrumbStatusLeading,
-        leadingKey: breadcrumbStatusKey,
-      },
-    ]);
+    const crumbs: Breadcrumb[] = [sourceBreadcrumb];
+    const projectCrumb = issueProjectBreadcrumb(resolvedProject);
+    if (projectCrumb) {
+      crumbs.push(projectCrumb);
+    }
+    crumbs.push({
+      // The status glyph (leading) already conveys in-progress/live state;
+      // no redundant 🔵 emoji prefix on the title.
+      label: breadcrumbTitle,
+      leading: breadcrumbStatusLeading,
+      leadingKey: breadcrumbStatusKey,
+    });
+    setBreadcrumbs(crumbs);
   }, [
     breadcrumbTitle,
     hasLiveRuns,
+    resolvedProject,
     setBreadcrumbs,
     sourceBreadcrumb.href,
     sourceBreadcrumb.label,
