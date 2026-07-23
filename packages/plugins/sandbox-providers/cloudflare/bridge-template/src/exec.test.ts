@@ -81,6 +81,53 @@ describe("bridge exec", () => {
     expect(onOutput).toHaveBeenCalledWith("stdout", "hello\n");
   });
 
+  it("fails closed when sandbox exec omits both exitCode and explicit success", async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: "partial\n", stderr: "" });
+    const sandbox = {
+      getSession: vi.fn().mockResolvedValue({ exec }),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+    } as const;
+
+    const result = await executeInSandbox({
+      sandbox: sandbox as never,
+      command: "pwd",
+      sessionStrategy: "named",
+      sessionId: "paperclip",
+      timeoutMs: 5_000,
+    });
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      timedOut: false,
+      stdout: "partial\n",
+    });
+    expect(result.stderr).toContain("returned no exit code");
+  });
+
+  it("accepts legacy explicit success without an exitCode", async () => {
+    const exec = vi.fn().mockResolvedValue({ success: true, stdout: "ok\n", stderr: "" });
+    const sandbox = {
+      getSession: vi.fn().mockResolvedValue({ exec }),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+    } as const;
+
+    const result = await executeInSandbox({
+      sandbox: sandbox as never,
+      command: "pwd",
+      sessionStrategy: "named",
+      sessionId: "paperclip",
+      timeoutMs: 5_000,
+    });
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stdout: "ok\n",
+      stderr: "",
+    });
+  });
+
   it("stages stdin through a sandbox temp file and redirects from it", async () => {
     const exec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
     const writeFile = vi.fn().mockResolvedValue(undefined);
