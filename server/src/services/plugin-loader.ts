@@ -2137,6 +2137,8 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // Plugin configuration is company-scoped. Workers receive an empty
       // bootstrap config and must use ctx.config.get(companyId) at runtime.
+      // Stored config is delivered right after the worker starts (step 5b) via
+      // the same configChanged path an operator config-save uses.
       const config: Record<string, unknown> = {};
 
       // ------------------------------------------------------------------
@@ -2168,6 +2170,52 @@ export function pluginLoader(
         { pluginId, pluginKey },
         "plugin-loader: worker started",
       );
+
+      // ------------------------------------------------------------------
+      // 5b. Deliver stored configuration to the freshly-started worker
+      // ------------------------------------------------------------------
+      // The worker is spawned with an empty bootstrap config and is expected to
+      // read company-scoped config via ctx.config.get(companyId). That call
+      // only resolves inside a company-scoped invocation (event/action/tool),
+      // so a proactive plugin that does company work from setup() — e.g. the
+      // chat gateway opening a Slack Socket Mode connection — can never read
+      // its own config and comes up inert. Replay each configured company's
+      // config through the same configChanged path an operator config-save
+      // uses (routes/plugins.ts), so the worker receives it at startup.
+      // Best-effort: a worker that doesn't implement onConfigChanged
+      // (METHOD_NOT_IMPLEMENTED) or is momentarily unavailable simply keeps the
+      // runtime ctx.config.get(companyId) model. onConfigChanged is idempotent
+      // for well-behaved plugins, so replaying an unchanged config is safe.
+      try {
+        const configRows = await registry.listConfigs(pluginId);
+        for (const row of configRows) {
+          try {
+            await workerManager.call(pluginId, "configChanged", {
+              config: (row.configJson ?? {}) as Record<string, unknown>,
+              companyId: row.companyId,
+            });
+          } catch (configErr) {
+            log.debug(
+              {
+                pluginId,
+                pluginKey,
+                companyId: row.companyId,
+                err: configErr instanceof Error ? configErr.message : String(configErr),
+              },
+              "plugin-loader: startup config delivery skipped for company",
+            );
+          }
+        }
+      } catch (listErr) {
+        log.debug(
+          {
+            pluginId,
+            pluginKey,
+            err: listErr instanceof Error ? listErr.message : String(listErr),
+          },
+          "plugin-loader: could not list stored configs for startup delivery",
+        );
+      }
 
       // ------------------------------------------------------------------
       // 6. Sync job declarations and register with scheduler
