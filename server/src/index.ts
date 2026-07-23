@@ -412,7 +412,19 @@ export async function startServer(): Promise<StartedServer> {
   
     const runningPid = getRunningPid();
     if (runningPid) {
-      logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
+      // A live postmaster owns the data dir and this process did not spawn it,
+      // so the standalone supervisor (or another paperclip server) is in charge.
+      // Racing it would lead to the rmSync below clobbering the supervisor's
+      // postmaster.pid and two postmasters fighting over the same cluster.
+      // See TSMC-10421 / TSMC-10411 for the corruption hazard this guards against.
+      const supervisorLabel = process.env.PAPERCLIP_POSTGRES_LAUNCHD_LABEL ?? "ie.thinkstack.paperclip-postgres";
+      throw new Error(
+        [
+          `Refusing to start in-process embedded PostgreSQL: data dir ${dataDir} is already owned by a live postmaster (pid=${runningPid}).`,
+          `This is the standalone supervisor (launchd label \`${supervisorLabel}\`) or another paperclip server.`,
+          `Point this server at the supervised cluster by setting DATABASE_URL=postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/paperclip (and database.mode=postgres), or stop the supervisor with \`launchctl bootout gui/$(id -u)/${supervisorLabel}\` before falling back to in-process mode.`,
+        ].join(" "),
+      );
     } else {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
       try {
