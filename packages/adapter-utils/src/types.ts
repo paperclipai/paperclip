@@ -541,7 +541,6 @@ export interface CreateConfigValues {
   codexAcpNonInteractivePermissions?: "deny" | "fail";
   codexAcpStateDir?: string;
   codexAcpWarmHandleIdleMs?: number;
-  copilotAcpAgentCommand?: string;
   copilotAcpMode?: "persistent" | "oneshot";
   copilotAcpPermissionMode?: "approve-all" | "approve-reads" | "deny-all";
   copilotAcpNonInteractivePermissions?: "deny" | "fail";

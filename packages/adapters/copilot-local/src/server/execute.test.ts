@@ -33,12 +33,6 @@ describe("copilot_local ACP configuration", () => {
     expect(command).toContain("'--no-ask-user'");
   });
 
-  it("honors an explicit ACP command override", () => {
-    expect(buildCopilotAcpCommand({ agentCommand: "custom-copilot-acp" })).toBe(
-      "custom-copilot-acp",
-    );
-  });
-
   it("places managed safety flags after allowed extra arguments", () => {
     const command = buildCopilotAcpCommand({
       extraArgs: ["--allow-all-tools"],

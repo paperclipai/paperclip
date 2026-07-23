@@ -69,9 +69,6 @@ export function resolveCopilotHome(config: Record<string, unknown>): string {
 }
 
 export function buildCopilotAcpCommand(config: Record<string, unknown>): string {
-  const override = asString(config.agentCommand, "").trim();
-  if (override) return override;
-
   const command = asString(config.command, "copilot").trim() || "copilot";
   const model = asString(config.model, "").trim();
   const reasoningEffort = firstNonEmptyString(config.reasoningEffort, config.modelReasoningEffort);

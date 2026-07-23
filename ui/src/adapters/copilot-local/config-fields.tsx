@@ -25,27 +25,6 @@ export function CopilotLocalConfigFields({
   return (
     <>
       <Field
-        label="ACP server command"
-        hint="Optional full command override. Paperclip otherwise starts copilot --acp --stdio with managed automation flags."
-      >
-        <DraftInput
-          value={
-            isCreate
-              ? values!.copilotAcpAgentCommand ?? ""
-              : eff("adapterConfig", "agentCommand", String(config.agentCommand ?? ""))
-          }
-          onCommit={(value) =>
-            isCreate
-              ? set!({ copilotAcpAgentCommand: value })
-              : mark("adapterConfig", "agentCommand", value || undefined)
-          }
-          immediate
-          className={inputClass}
-          placeholder="copilot --acp --stdio"
-        />
-      </Field>
-
-      <Field
         label="ACP session mode"
         hint="Persistent retains the Copilot session between heartbeats. One-shot starts fresh."
       >

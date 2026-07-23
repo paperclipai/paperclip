@@ -1,8 +1,5 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { detectCopilotToken, shouldRetryCopilotProbe, testEnvironment } from "./test.js";
+import { detectCopilotToken, shouldRetryCopilotProbe } from "./test.js";
 
 describe("Copilot token detection", () => {
   it("uses the documented environment precedence", () => {
@@ -57,29 +54,5 @@ describe("Copilot token detection", () => {
       supported: true,
       classicPat: false,
     });
-  });
-
-  it("skips the default CLI probe when a custom ACP command is configured", async () => {
-    const copilotHome = await fs.mkdtemp(path.join(os.tmpdir(), "copilot-custom-acp-test-"));
-    try {
-      const result = await testEnvironment({
-        adapterType: "copilot_local",
-        companyId: "company-1",
-        config: {
-          cwd: process.cwd(),
-          agentCommand: "custom-copilot-acp --stdio",
-          command: "definitely-missing-copilot-command",
-          env: { COPILOT_HOME: copilotHome },
-        },
-      } as never);
-
-      expect(result.checks.map((check) => check.code)).toContain(
-        "copilot_custom_acp_command_configured",
-      );
-      expect(result.checks.map((check) => check.code)).not.toContain("copilot_command_missing");
-      expect(result.checks.some((check) => check.code.startsWith("copilot_live_probe_"))).toBe(false);
-    } finally {
-      await fs.rm(copilotHome, { recursive: true, force: true });
-    }
   });
 });

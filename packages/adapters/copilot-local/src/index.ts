@@ -32,7 +32,6 @@ Core fields:
 - reasoningEffort (string, optional): none|minimal|low|medium|high|xhigh|max.
 - promptTemplate (string, optional): run prompt template.
 - command (string, optional): Copilot CLI executable, defaults to "copilot".
-- agentCommand (string, optional): full ACP server command override. When unset, Paperclip builds "copilot --acp --stdio" with safe automation flags.
 - extraArgs (string[], optional): additional Copilot ACP server arguments.
 - env (object, optional): environment variables. Authentication precedence is COPILOT_GITHUB_TOKEN, GH_TOKEN, then GITHUB_TOKEN.
 

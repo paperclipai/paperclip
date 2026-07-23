@@ -172,33 +172,22 @@ export async function testEnvironment(
     COPILOT_HOME: probeHome,
   });
   const command = asString(config.command, "copilot").trim() || "copilot";
-  const agentCommand = asString(config.agentCommand, "").trim();
   let commandResolvable = false;
-  if (agentCommand) {
+  try {
+    await ensureCommandResolvable(command, cwd, env);
+    commandResolvable = true;
     checks.push({
-      code: "copilot_custom_acp_command_configured",
+      code: "copilot_command_resolvable",
       level: "info",
-      message: "A custom Copilot ACP server command is configured.",
-      detail: agentCommand,
-      hint: "The custom ACP command is validated when the agent starts.",
+      message: `Copilot CLI command is executable: ${command}`,
     });
-  } else {
-    try {
-      await ensureCommandResolvable(command, cwd, env);
-      commandResolvable = true;
-      checks.push({
-        code: "copilot_command_resolvable",
-        level: "info",
-        message: `Copilot CLI command is executable: ${command}`,
-      });
-    } catch (err) {
-      checks.push({
-        code: "copilot_command_missing",
-        level: "error",
-        message: err instanceof Error ? err.message : "Copilot CLI is not executable.",
-        hint: "Install it with `npm install -g @github/copilot` or set command to the executable path.",
-      });
-    }
+  } catch (err) {
+    checks.push({
+      code: "copilot_command_missing",
+      level: "error",
+      message: err instanceof Error ? err.message : "Copilot CLI is not executable.",
+      hint: "Install it with `npm install -g @github/copilot` or set command to the executable path.",
+    });
   }
 
   const token = detectCopilotToken(env);
@@ -229,9 +218,7 @@ export async function testEnvironment(
       code: hasStoredConfig ? "copilot_stored_auth_possible" : "copilot_credentials_missing",
       level: hasStoredConfig ? "info" : "warn",
       message: hasStoredConfig
-        ? agentCommand
-          ? "Copilot configuration is present for the custom ACP command."
-          : "Copilot configuration is present; the live probe will verify authentication."
+        ? "Copilot configuration is present; the live probe will verify authentication."
         : "No Copilot token or stored configuration was detected.",
       hint: hasStoredConfig
         ? undefined

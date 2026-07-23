@@ -10,12 +10,6 @@ export function getConfigSchema(): AdapterConfigSchema {
   return {
     fields: [
       {
-        key: "agentCommand",
-        label: "ACP server command",
-        type: "text",
-        hint: "Optional full command override. Defaults to a managed `copilot --acp --stdio` invocation.",
-      },
-      {
         key: "mode",
         label: "ACP session mode",
         type: "select",

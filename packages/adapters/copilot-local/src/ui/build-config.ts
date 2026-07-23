@@ -74,7 +74,6 @@ export function buildCopilotLocalConfig(v: CreateConfigValues): Record<string, u
   if (v.cwd) config.cwd = v.cwd;
   if (v.instructionsFilePath) config.instructionsFilePath = v.instructionsFilePath;
   if (v.thinkingEffort) config.reasoningEffort = v.thinkingEffort;
-  if (v.copilotAcpAgentCommand) config.agentCommand = v.copilotAcpAgentCommand;
   if (v.copilotAcpStateDir) config.stateDir = v.copilotAcpStateDir;
   if (v.command) config.command = v.command;
   if (v.extraArgs) config.extraArgs = parseCommaArgs(v.extraArgs);
