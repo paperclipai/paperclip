@@ -6,6 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const xtermMocks = vi.hoisted(() => {
   class MockTerminal {
@@ -139,9 +140,8 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   rollbackCustomImageTemplate: vi.fn(),
   disableCustomImageTemplate: vi.fn(),
 }));
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  get: vi.fn(),
-  getExperimental: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -168,8 +168,8 @@ vi.mock("@/api/environments", () => ({
   environmentsApi: mockEnvironmentsApi,
 }));
 
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("@/api/secrets", () => ({
@@ -391,8 +391,9 @@ describe("CompanyEnvironments — test provider button", () => {
     FakeWebSocket.instances = [];
     xtermMocks.reset();
     globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { defaultEnvironmentId: null, enableEnvironments: true } }),
+    );
     mockEnvironmentsApi.capabilities.mockResolvedValue({ adapters: [], sandboxProviders: {} });
     mockSecretsApi.list.mockResolvedValue([]);
     mockEnvironmentsApi.customImageTemplate.mockResolvedValue({

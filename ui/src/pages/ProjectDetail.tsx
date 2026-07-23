@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -410,10 +410,7 @@ export function ProjectDetail() {
   const projectMembershipState = project?.id
     ? resourceMembershipState(membershipsQuery.data, "project", project.id)
     : "joined";
-  const experimentalSettingsQuery = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
+  const experimentalSettingsQuery = useFeatures();
   const {
     slots: pluginDetailSlots,
     isLoading: pluginDetailSlotsLoading,

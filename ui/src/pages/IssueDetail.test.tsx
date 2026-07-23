@@ -16,6 +16,7 @@ import {
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -67,11 +68,6 @@ const mockAuthApi = vi.hoisted(() => ({
 
 const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
-}));
-
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getGeneral: vi.fn(),
-  getExperimental: vi.fn(),
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -134,9 +130,6 @@ vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
 }));
 
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
-}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -969,26 +962,22 @@ describe("IssueDetail", () => {
     mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([]);
     mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
-      companyIds: ["company-1"],
-      isInstanceAdmin: true,
-      source: "session",
-      keyId: null,
-      user: null,
-      userId: null,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        companyIds: ["company-1"],
+        isInstanceAdmin: true,
+        features: {
+          keyboardShortcuts: false,
+          feedbackDataSharingPreference: "prompt",
+          enableIssuePlanDecompositions: false,
+          enableExperimentalFileViewer: false,
+          enableExternalObjects: false,
+        },
+      }),
+    );
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
     mockProjectsApi.list.mockResolvedValue([]);
-    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: false,
-      feedbackDataSharingPreference: "prompt",
-    });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
@@ -1460,10 +1449,13 @@ describe("IssueDetail", () => {
 
   it("shows file viewer entry points when the experimental flag is enabled", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        companyIds: ["company-1"],
+        isInstanceAdmin: true,
+        features: { enableIssuePlanDecompositions: false, enableExperimentalFileViewer: true },
+      }),
+    );
 
     await act(async () => {
       root.render(
@@ -1484,10 +1476,13 @@ describe("IssueDetail", () => {
 
   it("shows the plan decomposition panel when the experimental flag is enabled", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: true,
-      enableExperimentalFileViewer: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        companyIds: ["company-1"],
+        isInstanceAdmin: true,
+        features: { enableIssuePlanDecompositions: true, enableExperimentalFileViewer: false },
+      }),
+    );
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([
       {
         id: "decomp-1",
@@ -2577,6 +2572,7 @@ describe("canBoardResolveRecoveryAction", () => {
   it("falls back to companyIds when memberships are not populated", () => {
     expect(
       canBoardResolveRecoveryAction("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [],
         isInstanceAdmin: false,
@@ -2591,6 +2587,7 @@ describe("canBoardResolveRecoveryAction", () => {
   it("uses populated memberships as the authoritative board access source", () => {
     expect(
       canBoardResolveRecoveryAction("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [
           {
@@ -2613,6 +2610,7 @@ describe("canBoardManageRuntime", () => {
   it("falls back to companyIds when memberships are not populated", () => {
     expect(
       canBoardManageRuntime("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [],
         isInstanceAdmin: false,
@@ -2627,6 +2625,7 @@ describe("canBoardManageRuntime", () => {
   it("denies viewers the runtime-manage-gated break-glass affordance", () => {
     expect(
       canBoardManageRuntime("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [
           {
@@ -2647,6 +2646,7 @@ describe("canBoardManageRuntime", () => {
   it("allows non-viewer active members (mirrors the backend runtime:manage member gate)", () => {
     expect(
       canBoardManageRuntime("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [
           {

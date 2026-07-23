@@ -6,13 +6,14 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SmokeLabDashboardCard } from "./SmokeLabDashboardCard";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const getExperimentalMock = vi.hoisted(() => vi.fn());
 const listRunsMock = vi.hoisted(() => vi.fn());
 const getRunMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: { getExperimental: () => getExperimentalMock() },
+vi.mock("@/api/access", () => ({
+  accessApi: { getCurrentBoardAccess: () => getExperimentalMock() },
 }));
 
 vi.mock("@/api/smokeLab", () => ({
@@ -69,7 +70,7 @@ describe("SmokeLabDashboardCard", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    getExperimentalMock.mockResolvedValue({ enableSmokeLab: true });
+    getExperimentalMock.mockResolvedValue(buildCurrentBoardAccess({ features: { enableSmokeLab: true } }));
     listRunsMock.mockResolvedValue({ runs: [RUN] });
     getRunMock.mockResolvedValue({
       run: RUN,
@@ -111,7 +112,7 @@ describe("SmokeLabDashboardCard", () => {
   }
 
   it("renders nothing when the flag is off", async () => {
-    getExperimentalMock.mockResolvedValue({ enableSmokeLab: false });
+    getExperimentalMock.mockResolvedValue(buildCurrentBoardAccess({ features: { enableSmokeLab: false } }));
     await render();
 
     expect(container.querySelector('[data-testid="smoke-lab-dashboard-card"]')).toBeNull();

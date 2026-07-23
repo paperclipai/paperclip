@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import type { SecretBindingTargetType } from "@paperclipai/shared";
+import type { CompanySettingsSurface, SecretBindingTargetType } from "@paperclipai/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
@@ -70,6 +70,37 @@ export function assertInstanceAdmin(req: Request) {
     return;
   }
   throw forbidden("Instance admin access required");
+}
+
+/**
+ * Settings-surface policy gate (PR-1). Company-scoped settings surfaces can
+ * be hidden instance-wide from non-admin board members. Instance admins and
+ * the local_trusted implicit actor always bypass (the resolver is not even
+ * called for them). Agent actors bypass: the policy governs human settings
+ * surfaces; agent access to shared route groups is governed by agent scopes.
+ *
+ * `getExposedSurfaces` is injected (typically
+ * `instanceSettingsService(db).getVisibility().companySurfaces`) because
+ * this module is deliberately DB-free.
+ */
+export async function assertSurfaceExposed(
+  req: Request,
+  surface: CompanySettingsSurface,
+  getExposedSurfaces: () => Promise<readonly CompanySettingsSurface[]>,
+): Promise<void> {
+  if (req.actor.type === "agent") return;
+  if (
+    req.actor.type === "board" &&
+    (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)
+  ) {
+    return;
+  }
+  const exposed = await getExposedSurfaces();
+  if (exposed.includes(surface)) return;
+  throw forbidden("This settings surface is not exposed on this instance", {
+    code: "surface_not_exposed",
+    surface,
+  });
 }
 
 export function assertCompanyAccess(req: Request, companyId: string) {

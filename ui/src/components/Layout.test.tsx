@@ -5,14 +5,14 @@ import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Layout } from "./Layout";
+import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 const mockHealthApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
 
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getGeneral: vi.fn(),
-  getExperimental: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -211,8 +211,8 @@ vi.mock("../api/health", () => ({
   healthApi: mockHealthApi,
 }));
 
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("../lib/company-selection", () => ({
@@ -257,10 +257,9 @@ describe("Layout", () => {
       deploymentExposure: "private",
       version: "1.2.3",
     });
-    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: false,
-    });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { keyboardShortcuts: false, enableApps: true } }),
+    );
     mockPluginSlots.slots = [];
     mockPluginSlotContexts.length = 0;
     mockSidebarState.sidebarOpen = true;
@@ -438,6 +437,9 @@ describe("Layout", () => {
 
   it("renders a mobile company settings selector on company settings routes", async () => {
     currentPathname = "/PAP/company/settings/secrets";
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true, features: { enableCloudSync: true } }),
+    );
     mockSidebarState.isMobile = true;
     mockSidebarState.sidebarOpen = false;
     const root = createRoot(container);
@@ -530,7 +532,9 @@ describe("Layout", () => {
 
   it("does not mount the Apps secondary sidebar while experimental apps are disabled", async () => {
     currentPathname = "/PAP/apps/browse";
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { keyboardShortcuts: false, enableApps: false } }),
+    );
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

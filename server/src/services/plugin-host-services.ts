@@ -30,6 +30,7 @@ import type {
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
+import { companyStandingService } from "./company-standing.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
@@ -503,6 +504,7 @@ export function buildHostServices(
   const pluginDb = pluginDatabaseService(db);
   const secretsHandler = createPluginSecretsHandler({ db, pluginId });
   const companies = companyService(db);
+  const companyStandings = companyStandingService(db);
   const agents = agentService(db);
   const managedAgents = pluginManagedAgentService(db, {
     pluginId,
@@ -1492,6 +1494,21 @@ export function buildHostServices(
       async get(params) {
         await ensurePluginAvailableForCompany(params.companyId);
         return (await companies.getById(params.companyId)) as Company;
+      },
+      async setStanding(params) {
+        await ensurePluginAvailableForCompany(params.companyId);
+        // pluginId comes from the host-side closure, never from the worker:
+        // a plugin can only ever write its own standing rows (spec §5.2).
+        await companyStandings.setStanding(pluginId, params.companyId, {
+          status: params.status,
+          reason: params.reason,
+          message: params.message,
+          actionUrl: params.actionUrl,
+        });
+      },
+      async clearStanding(params) {
+        await ensurePluginAvailableForCompany(params.companyId);
+        await companyStandings.clearStanding(pluginId, params.companyId);
       },
     },
 

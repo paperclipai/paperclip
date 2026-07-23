@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { FolderListResult, Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Routines, buildRoutineGroups, buildRoutineSections, sortRoutines } from "./Routines";
+import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 let currentSearch = "";
 
@@ -199,12 +200,9 @@ vi.mock("../api/access", () => ({
         },
       ],
     })),
-  },
-}));
-
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: {
-    getExperimental: vi.fn(async () => ({ enableIsolatedWorkspaces: false })),
+    getCurrentBoardAccess: vi.fn(async () =>
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }),
+    ),
   },
 }));
 
