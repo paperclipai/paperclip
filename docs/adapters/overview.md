@@ -26,6 +26,8 @@ When a heartbeat fires, Paperclip:
 | Pi | `pi_local` | Runs an embedded Pi agent locally |
 | Hermes | `hermes_local` | Runs the local Hermes CLI through `@paperclipai/hermes-paperclip-adapter` |
 | Hermes Gateway | `hermes_gateway` | Calls an already-running Hermes API server through `@paperclipai/hermes-paperclip-adapter/gateway` |
+| [Eve](/adapters/eve) | `eve_local` | Boots a local [Eve](https://eve.dev) project (`eve dev --no-ui`) per run and drives it over localhost HTTP |
+| [Eve Gateway](/adapters/eve) | `eve_gateway` | Calls an already-running Eve agent (local `eve dev` or a Vercel deployment) over its `/eve/v1` HTTP contract |
 | OpenClaw Gateway | `openclaw_gateway` | Connects to an OpenClaw gateway endpoint |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
@@ -117,6 +119,7 @@ my-adapter/
 - **Need a coding agent?** Use `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, or install `droid_local` as an external plugin
 - **Need the richest live run feedback?** Use `claude_local`, `codex_local`, or `gemini_local` with `adapterConfig.engine` set to `acp` when the execution environment satisfies the ACP prerequisites — see [Feedback granularity](#feedback-granularity)
 - **Need Hermes on another host or already running as a service?** Use `hermes_gateway`
+- **Agent built with Vercel's Eve framework?** Use `eve_gateway` for a running/deployed agent, or `eve_local` to boot a local Eve project per run — see [Eve](/adapters/eve)
 - **Need to run a script or command?** Use `process`
 - **Need to call a custom external service?** Use `http`
 - **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter) or [build an external adapter plugin](/adapters/external-adapters)
