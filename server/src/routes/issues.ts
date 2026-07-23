@@ -3487,6 +3487,40 @@ export function issueRoutes(
     return null;
   }
 
+  // LOOA-135: the run id is supplied by a request header, so prove it is a real
+  // run for this exact agent and company before persisting it as a checkout
+  // lock. Otherwise an unknown UUID reaches the issues.checkoutRunId FK and
+  // surfaces as a 500 instead of a fail-closed 401/403.
+  async function requireLinkedAgentRunId(
+    req: Request,
+    res: Response,
+    companyId: string,
+  ): Promise<string | null> {
+    const runId = requireAgentRunId(req, res);
+    if (!runId || req.actor.type !== "agent") return runId;
+
+    if (!isUuidLike(runId)) {
+      res.status(401).json({ error: "Agent run id is not valid" });
+      return null;
+    }
+
+    const run = await db
+      .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run) {
+      res.status(401).json({ error: "Agent run id is not valid" });
+      return null;
+    }
+    if (run.companyId !== companyId || run.agentId !== req.actor.agentId) {
+      res.status(403).json({ error: "Agent run id does not belong to this agent" });
+      return null;
+    }
+
+    return runId;
+  }
+
   async function hasActiveCheckoutManagementOverride(
     actorAgentId: string,
     companyId: string,
@@ -8847,7 +8881,7 @@ export function issueRoutes(
       return;
     }
 
-    const checkoutRunId = requireAgentRunId(req, res);
+    const checkoutRunId = await requireLinkedAgentRunId(req, res, issue.companyId);
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);

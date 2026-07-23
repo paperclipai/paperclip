@@ -17,6 +17,16 @@ const PLAYWRIGHT_CHANNEL = process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL;
 
 process.env.PAPERCLIP_HOME = PAPERCLIP_HOME;
 process.env.PAPERCLIP_CONFIG = PAPERCLIP_CONFIG;
+// The test process mints agent JWTs (createLocalAgentJwt) that the webServer
+// must verify. Agent JWT signing keys are derived per control-plane instance
+// (deriveCompanySigningKey folds in the instanceId) and the token carries an
+// `instance_id` claim, so both processes must resolve the SAME instanceId or
+// verification fails. The webServer runs as PAPERCLIP_INSTANCE_ID below; unless
+// we mirror it here, this process falls back to the "default" instance and its
+// tokens are rejected. That rejection used to be masked by the local_trusted
+// board-admin fallthrough, but LOOA-165 now fails closed (401) on any bearer
+// that resolves to no principal — so the mismatch surfaces as a real failure.
+process.env.PAPERCLIP_INSTANCE_ID = PAPERCLIP_INSTANCE_ID;
 process.env.PAPERCLIP_AGENT_JWT_SECRET = PAPERCLIP_AGENT_JWT_SECRET;
 process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
 

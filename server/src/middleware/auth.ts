@@ -139,7 +139,7 @@ interface ActorMiddlewareOptions {
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
-  return async (req, _res, next) => {
+  return async (req, res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
         ? {
@@ -153,6 +153,69 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         : { type: "none", source: "none" };
 
     const runIdHeader = req.header("x-paperclip-run-id");
+
+    // LOOA-165: a presented bearer credential that fails to resolve must never
+    // fall through to the ambient actor seeded above. Under local_trusted that
+    // actor is the implicit board admin, so falling through would *elevate* a
+    // revoked key, expired run JWT, terminated agent, or company-mismatched JWT
+    // to board + instance admin instead of denying it — silently voiding key
+    // revocation and agent termination. Presenting a credential is a claim of
+    // identity: if the claim cannot be resolved, reject with 401 in every mode.
+    // (The zero-config no-header loopback path below is untouched.)
+    const rejectUnresolvedBearer = (reason: string) => {
+      req.actor = { type: "none", source: "none" };
+      logger.warn(
+        { reason, method: req.method, url: req.originalUrl },
+        "Rejected bearer token that resolved to no principal",
+      );
+      res.set("WWW-Authenticate", 'Bearer error="invalid_token"');
+      res.status(401).json({ error: "Invalid or expired credential" });
+    };
+
+    // LOOA-303: X-Paperclip-Run-Id is a claim that "this request is issued by
+    // the run's agent". For a static agent key that claim was trusted
+    // unvalidated — an agent process whose shell picked up a stale or foreign
+    // PAPERCLIP_API_KEY (another company's agent) would authenticate as that
+    // other agent while stamping the writes with the current run's id. The JWT
+    // path is already bound (the signed run_id must equal the header, checked
+    // below), so bind the static-key path too. Fail closed on any mismatch,
+    // including a run id that does not resolve at all.
+    //
+    // LOOA-621: validate the run-id header shape *before* the lookup and let a
+    // genuine DB error propagate, mirroring requireLinkedAgentRunId in
+    // routes/issues.ts. A malformed (non-UUID) run id is a failed identity
+    // claim, so fail closed (→ 403) without a DB round-trip. Do NOT wrap the
+    // lookup in a catch-all: swallowing every throw turns a transient DB
+    // outage/timeout into a spurious credential-mismatch 403 that would deny
+    // otherwise-valid agents on the primary/live server. Letting it throw
+    // surfaces as a retryable 500 instead (Express 5 forwards the rejection to
+    // the error handler).
+    const agentRunBindingOk = async (agentId: string, companyId: string): Promise<boolean> => {
+      if (!runIdHeader) return true;
+      if (!isUuidLike(runIdHeader)) return false;
+      const run = await db
+        .select({ agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runIdHeader))
+        .then((rows) => rows[0] ?? null);
+      return run !== null && run.agentId === agentId && run.companyId === companyId;
+    };
+
+    const rejectRunIdentityMismatch = (agentId: string, companyId: string) => {
+      req.actor = { type: "none", source: "none" };
+      logger.warn(
+        {
+          reason: "run_credential_identity_mismatch",
+          credentialAgentId: agentId,
+          credentialCompanyId: companyId,
+          runId: runIdHeader,
+          method: req.method,
+          url: req.originalUrl,
+        },
+        "Rejected agent credential whose identity does not match the X-Paperclip-Run-Id run",
+      );
+      res.status(403).json({ error: "Credential identity does not match the run in X-Paperclip-Run-Id" });
+    };
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
@@ -222,7 +285,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const token = authHeader.slice("bearer ".length).trim();
     if (!token) {
-      next();
+      rejectUnresolvedBearer("empty_bearer_token");
       return;
     }
 
@@ -258,7 +321,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
-        next();
+        // Covers garbage tokens, expired/invalid run JWTs, and revoked agent
+        // keys — the key lookup above filters on revokedAt, so a revoked key
+        // resolves to no rows and lands here as "no principal".
+        rejectUnresolvedBearer("unresolvable_token");
         return;
       }
 
@@ -269,12 +335,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
-        next();
+        rejectUnresolvedBearer("agent_jwt_company_mismatch");
         return;
       }
 
       if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-        next();
+        rejectUnresolvedBearer("agent_jwt_inactive_agent");
         return;
       }
 
@@ -337,7 +403,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-      next();
+      rejectUnresolvedBearer("agent_key_inactive_agent");
+      return;
+    }
+
+    // LOOA-303: bind the static key to the run it claims to act for. A
+    // cross-identity credential (foreign key + this run's id) dies on first
+    // use instead of silently impersonating the run's agent.
+    if (!(await agentRunBindingOk(key.agentId, key.companyId))) {
+      rejectRunIdentityMismatch(key.agentId, key.companyId);
       return;
     }
 
