@@ -428,6 +428,13 @@ export function Routines() {
       });
       navigate(`/routines/${routine.id}?tab=triggers`);
     },
+    onError: (err) => {
+      pushToast({
+        title: "Creation failed",
+        body: err instanceof Error ? err.message : "Could not create routine.",
+        tone: "error",
+      });
+    },
   });
   const createFolder = useMutation({
     mutationFn: (payload: { name: string; color: string | null }) =>
