@@ -183,10 +183,11 @@ export function resolveClaudeAcpBillingIdentity(
  * in-sandbox config dir. Claude has no credential copy-back (its CLI lane has
  * none — mirroring the CLI is the contract), so no teardown hook.
  *
- * Skipped when the run sets an explicit `CLAUDE_CONFIG_DIR` (user-managed) — the
- * seam stages the workspace with no config asset, identical to the no-seam
- * fallback. The engine's `useRemoteProcessSession` gate already guarantees the
- * remote sandbox (managed-home) target.
+ * An explicit `CLAUDE_CONFIG_DIR` (user-managed) is honored only if it can reach
+ * the remote sandbox; a host-only path cannot, so we do NOT forward it verbatim
+ * (that would start remote Claude with no config/credentials). See the branch
+ * below for the two portable dispositions. The engine's `useRemoteProcessSession`
+ * gate already guarantees the remote sandbox (managed-home) target.
  */
 async function prepareClaudeRemoteManagedHome(
   input: AcpxRemoteManagedHomeContext,
@@ -198,19 +199,41 @@ async function prepareClaudeRemoteManagedHome(
       ? envConfig.CLAUDE_CONFIG_DIR.trim()
       : "";
   if (explicitClaudeConfigDir) {
-    // User-managed escape hatch — mirrors the Claude CLI lane's
-    // `!hasExplicitClaudeConfigDir` gate (`claude-local/execute.ts`): when the run
-    // explicitly pins CLAUDE_CONFIG_DIR the operator owns that directory, so we
-    // stage no managed config and do not remap the var. The engine already
-    // rewrites workspace-relative values onto the in-sandbox workspace, but an
-    // absolute value is forwarded verbatim and MUST resolve inside the sandbox —
-    // a host-only path would leave remote Claude without config/credentials.
-    // Log it so that misconfiguration is diagnosable instead of silent.
+    // User-managed escape hatch. Unlike the Claude CLI lane
+    // (`claude-local/execute.ts`), which runs the process on the same host and can
+    // forward the operator's path verbatim, the remote ACP lane spawns Claude
+    // inside a sandbox that CANNOT see host paths. Forwarding an absolute host
+    // path unchanged would leave remote Claude without the requested config or
+    // credentials, so we choose one of two portable dispositions:
+    //   1. The path lives INSIDE the staged workspace → remap its prefix onto the
+    //      in-sandbox workspace dir so it resolves against the copied files.
+    //   2. The path is host-only (outside the workspace) → it cannot cross into
+    //      the sandbox, so ignore the un-portable override and seed the managed
+    //      config instead (falling through below), which guarantees working
+    //      config/credentials. Logged loudly so the substitution is diagnosable.
+    const relativeToWorkspace = path.relative(input.workspaceLocalDir, explicitClaudeConfigDir);
+    const isUnderWorkspace =
+      relativeToWorkspace.length > 0 &&
+      !relativeToWorkspace.startsWith("..") &&
+      !path.isAbsolute(relativeToWorkspace);
+    if (isUnderWorkspace) {
+      const stagedRuntime = await input.stage([]);
+      const remoteWorkspaceDir = stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir;
+      const remappedConfigDir = path.posix.join(
+        remoteWorkspaceDir,
+        relativeToWorkspace.split(path.sep).join(path.posix.sep),
+      );
+      env.CLAUDE_CONFIG_DIR = remappedConfigDir;
+      await onLog(
+        "stdout",
+        `[paperclip] Remapped operator CLAUDE_CONFIG_DIR from host path ${explicitClaudeConfigDir} onto the in-sandbox workspace path ${remappedConfigDir} for the remote ACP run.\n`,
+      );
+      return { stagedRuntime };
+    }
     await onLog(
-      "stdout",
-      `[paperclip] Honoring operator-provided CLAUDE_CONFIG_DIR=${explicitClaudeConfigDir} for the remote ACP run; it must resolve inside the sandbox (no managed config is staged).\n`,
+      "stderr",
+      `[paperclip] operator-provided CLAUDE_CONFIG_DIR=${explicitClaudeConfigDir} is outside the staged workspace and cannot reach the remote sandbox; ignoring the host-only path and seeding the managed Claude config instead.\n`,
     );
-    return { stagedRuntime: await input.stage([]) };
   }
 
   // Content-addressed sanitized seed (managed cache under the instance root, not

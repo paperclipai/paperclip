@@ -611,16 +611,22 @@ describe("claude_local ACP lane", () => {
     expect(Object.keys(meta[0]?.env ?? {}).filter((key) => key.startsWith("XDG_"))).toEqual([]);
   });
 
-  it("honors an explicit CLAUDE_CONFIG_DIR as a user-managed override without staging or remapping managed config", async () => {
-    const root = await makeTempRoot("paperclip-claude-acp-explicit-config-");
+  it("remaps a workspace-relative explicit CLAUDE_CONFIG_DIR onto the in-sandbox workspace path", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-explicit-inworkspace-");
     const localCwd = path.join(root, "worktree");
     const remoteCwd = path.join(root, "remote-workspace");
-    // An operator-pinned config dir outside the workspace cwd, so the engine's
-    // workspace-relative rewrite leaves it untouched and the seam's escape hatch
-    // is what forwards it verbatim.
-    const operatorConfigDir = path.join(root, "operator-claude-config");
     await fs.mkdir(localCwd, { recursive: true });
     await fs.mkdir(remoteCwd, { recursive: true });
+    // Operator pins a config dir that lives INSIDE the workspace cwd, so it is
+    // staged into the sandbox and its host prefix must be remapped onto the
+    // in-sandbox workspace dir (never forwarded as the host path).
+    const operatorConfigDir = path.join(localCwd, ".claude-config");
+    await fs.mkdir(operatorConfigDir, { recursive: true });
+    await fs.writeFile(
+      path.join(operatorConfigDir, "settings.json"),
+      JSON.stringify({ permissions: { defaultMode: "acceptEdits" } }),
+      "utf8",
+    );
     process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
     process.env.PAPERCLIP_INSTANCE_ID = "test";
 
@@ -637,8 +643,6 @@ describe("claude_local ACP lane", () => {
           agentCommand: "node ./fake-acp.js",
           stateDir: path.join(root, "state"),
           promptTemplate: "Do the assigned work.",
-          // Explicit user-managed CLAUDE_CONFIG_DIR (adapter config env, not a host
-          // env leak) — the managed seed must be skipped.
           env: { CLAUDE_CONFIG_DIR: operatorConfigDir },
         },
         context: {
@@ -663,14 +667,89 @@ describe("claude_local ACP lane", () => {
     );
 
     expect(result.exitCode).toBe(0);
-    // The explicit value is honored verbatim — never remapped onto the managed
-    // in-sandbox config dir.
-    expect(meta[0]?.env?.CLAUDE_CONFIG_DIR).toBe(operatorConfigDir);
+    // Prefix remapped host→sandbox: same relative subpath, in-sandbox workspace root.
+    expect(meta[0]?.env?.CLAUDE_CONFIG_DIR).toBe(path.posix.join(remoteCwd, ".claude-config"));
+    expect(meta[0]?.env?.CLAUDE_CONFIG_DIR).not.toBe(operatorConfigDir);
+    // No managed config seed is materialized — the operator dir is authoritative.
     expect(String(meta[0]?.env?.CLAUDE_CONFIG_DIR ?? "")).not.toContain(".paperclip-runtime");
-    // No managed config was materialized under the operator dir.
-    await expect(fs.readFile(path.join(operatorConfigDir, "settings.json"), "utf8")).rejects.toThrow();
-    // Observability: the override is logged so a host-only path is diagnosable.
-    expect(logs.join("")).toContain(`Honoring operator-provided CLAUDE_CONFIG_DIR=${operatorConfigDir}`);
+    expect(logs.join("")).toContain(
+      `Remapped operator CLAUDE_CONFIG_DIR from host path ${operatorConfigDir}`,
+    );
+  });
+
+  it("ignores a host-only explicit CLAUDE_CONFIG_DIR that cannot reach the sandbox and seeds the managed config instead", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-explicit-hostonly-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const sharedClaudeConfig = path.join(root, "shared-claude-config");
+    // An operator-pinned config dir OUTSIDE the workspace cwd: a host-only path the
+    // sandbox cannot reach, so it must not be forwarded verbatim.
+    const operatorConfigDir = path.join(root, "operator-claude-config");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sharedClaudeConfig, { recursive: true });
+    // Host shared Claude config the managed seed is built from.
+    await fs.writeFile(
+      path.join(sharedClaudeConfig, "settings.json"),
+      JSON.stringify({ permissions: { defaultMode: "acceptEdits" } }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(sharedClaudeConfig, "CLAUDE.md"), "# shared guidance\n", "utf8");
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+    process.env.CLAUDE_CONFIG_DIR = sharedClaudeConfig;
+
+    const meta: AdapterInvocationMeta[] = [];
+    const logs: string[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          // Explicit user-managed CLAUDE_CONFIG_DIR (adapter config env, not a host
+          // env leak) pointing at a host-only path.
+          env: { CLAUDE_CONFIG_DIR: operatorConfigDir },
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+        onLog: async (_stream: "stdout" | "stderr", chunk: string) => {
+          logs.push(chunk);
+        },
+        onMeta: async (payload: AdapterInvocationMeta) => {
+          meta.push(payload);
+        },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const remappedConfigDir = String(meta[0]?.env?.CLAUDE_CONFIG_DIR ?? "");
+    // The un-portable host path is dropped; managed config is seeded in-sandbox.
+    expect(remappedConfigDir).not.toBe(operatorConfigDir);
+    expect(remappedConfigDir).toContain(".paperclip-runtime");
+    expect(remappedConfigDir.endsWith("/config")).toBe(true);
+    await expect(fs.readFile(path.join(remappedConfigDir, "settings.json"), "utf8")).resolves.toContain(
+      "permissions",
+    );
+    // Observability: the un-portable override is flagged so the substitution is diagnosable.
+    expect(logs.join("")).toContain(
+      `operator-provided CLAUDE_CONFIG_DIR=${operatorConfigDir} is outside the staged workspace`,
+    );
   });
 
   it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
