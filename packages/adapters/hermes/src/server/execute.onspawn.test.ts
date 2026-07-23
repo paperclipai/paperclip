@@ -195,6 +195,23 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     );
     expect(vi.mocked(serverUtils.runChildProcess)).not.toHaveBeenCalled();
   });
+
+  it("rejects legacy remote transports before spawning a local process", async () => {
+    const { ctx } = makeCtx();
+    (ctx as any).executionTransport = {
+      remoteExecution: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteCwd: "/remote/workspace",
+      },
+    };
+
+    await expect(execute(ctx as any)).rejects.toThrow(
+      "Hermes local adapter does not support remote execution targets",
+    );
+    expect(vi.mocked(serverUtils.runChildProcess)).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildHermesChildEnv", () => {

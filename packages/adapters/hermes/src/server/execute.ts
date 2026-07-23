@@ -26,6 +26,7 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { readAdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 
 import {
   runChildProcess,
@@ -425,7 +426,11 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
 export async function execute(
   ctx: AdapterExecutionContext,
 ): Promise<AdapterExecutionResult> {
-  if (ctx.executionTarget?.kind === "remote") {
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  if (executionTarget?.kind === "remote") {
     throw new Error("Hermes local adapter does not support remote execution targets");
   }
   const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;

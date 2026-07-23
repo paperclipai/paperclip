@@ -25,6 +25,15 @@ function asString(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
+function readEnvironmentValue(env: Record<string, string>, key: string): string | undefined {
+  if (env[key] !== undefined) return env[key];
+  if (process.platform !== "win32") return undefined;
+
+  const normalizedKey = key.toLowerCase();
+  const matchingKey = Object.keys(env).find((candidate) => candidate.toLowerCase() === normalizedKey);
+  return matchingKey === undefined ? undefined : env[matchingKey];
+}
+
 // ---------------------------------------------------------------------------
 // Checks
 // ---------------------------------------------------------------------------
@@ -157,7 +166,10 @@ async function checkApiKeys(
   // accurate results for keys that Hermes already knows about.
   const hermesEnvKeys: Record<string, string> = {};
   try {
-    const homeDir = childEnv.HOME || childEnv.USERPROFILE || "/root";
+    const homeDir =
+      readEnvironmentValue(childEnv, "HOME") ||
+      readEnvironmentValue(childEnv, "USERPROFILE") ||
+      "/root";
     const hermesEnvPath = `${homeDir}/.hermes/.env`;
     const content = readFileSync(hermesEnvPath, "utf-8");
     for (const line of content.split("\n")) {
@@ -174,7 +186,12 @@ async function checkApiKeys(
     // ~/.hermes/.env may not exist — that's fine
   }
 
-  const has = (key: string): boolean => !!(resolvedEnv[key] ?? childEnv[key] ?? hermesEnvKeys[key]);
+  const has = (key: string): boolean =>
+    !!(
+      readEnvironmentValue(resolvedEnv, key) ??
+      readEnvironmentValue(childEnv, key) ??
+      readEnvironmentValue(hermesEnvKeys, key)
+    );
 
   const hasAnthropic = has("ANTHROPIC_API_KEY");
   const hasOpenRouter = has("OPENROUTER_API_KEY");
