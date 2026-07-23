@@ -269,7 +269,11 @@ export async function ensureBundledPlugins(
         );
         continue;
       }
-      // Transition installed -> ready and activate the worker.
+      // Transition installed -> ready. Whether this also starts the worker
+      // depends on the injected lifecycle manager: one built with a
+      // runtime-capable loader activates here; the boot-time manager in
+      // app.ts is not, so at startup this only records `ready` and the
+      // worker is started exactly once by the subsequent loader.loadAll().
       const installed = await deps.registry.getByKey(discovered.manifest.id);
       if (installed) {
         await deps.lifecycle.load(installed.id);

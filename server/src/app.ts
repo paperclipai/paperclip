@@ -557,6 +557,13 @@ export async function createApp(
   // installed here from their local paths. This runs BEFORE loadAll() so
   // loadAll() can activate them in the same startup pass.
   //
+  // Workers are started exactly once, by loadAll(): the `lifecycle` manager
+  // above is constructed without a runtime-capable loader
+  // (pluginLifecycleManager(db, { workerManager }) — no `loader` option), so
+  // the lifecycle.load() that ensureBundledPlugins performs per newly
+  // installed bundle only records the `ready` status and does not spawn a
+  // worker (see activateReadyPlugin in services/plugin-lifecycle.ts).
+  //
   // Managed instances (`plugins.autoInstall` from PAPERCLIP_MANAGED_CONFIG)
   // drive the key list from the control plane; self-hosted instances keep
   // the pre-existing behavior of ensuring only the kubernetes bundle.
