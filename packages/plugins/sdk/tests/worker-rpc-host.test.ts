@@ -412,15 +412,22 @@ describe("worker configChanged cross-tenant guard", () => {
     }
   });
 
-  it("allows an idempotent replay of the same config under a different scope row", async () => {
+  it("acknowledges an idempotent replay under a different scope row without transferring the tenant binding", async () => {
     // Mirrors the live single-tenant gateway: several plugin_config rows keyed
     // by distinct row companyIds but all embedding the same config. Replaying
-    // them must be a no-op, not a fail-closed rejection.
-    const appliedScopes: Array<string | null> = [];
+    // them must be acknowledged as a no-op — not rejected, but also not
+    // re-dispatched under the second scope and, critically, not allowed to
+    // move the tenant binding. Pre-fix, the replay for row-scope-2 rebound the
+    // worker to row-scope-2, so the deterministically-first company
+    // (row-scope-1) was rejected as cross-tenant on its next real update.
+    const applied: Array<{ companyId: string | null; token: unknown }> = [];
     const plugin = definePlugin({
       async setup() {},
-      async onConfigChanged(_newConfig, context) {
-        appliedScopes.push(context?.companyId ?? null);
+      async onConfigChanged(newConfig, context) {
+        applied.push({
+          companyId: context?.companyId ?? null,
+          token: newConfig.slackBotToken,
+        });
       },
     });
     const { callWorker, initialize, stop } = makeWorker(plugin);
@@ -440,7 +447,158 @@ describe("worker configChanged cross-tenant guard", () => {
         }),
       ).resolves.toBeNull();
 
-      expect(appliedScopes).toEqual(["row-scope-1", "row-scope-2"]);
+      // The replay was acknowledged but the plugin only ever saw the binding
+      // scope — a single-tenant plugin must not observe a second company id.
+      expect(applied).toEqual([{ companyId: "row-scope-1", token: "xoxb-A" }]);
+
+      // The binding stayed on the first company: a real config update for it
+      // still lands…
+      await expect(
+        callWorker("configChanged", {
+          config: { ...embedded, slackBotToken: "xoxb-A2" },
+          companyId: "row-scope-1",
+        }),
+      ).resolves.toBeNull();
+      expect(applied[1]).toEqual({ companyId: "row-scope-1", token: "xoxb-A2" });
+
+      // …while a distinct config for the replayed scope still fails closed.
+      await expect(
+        callWorker("configChanged", {
+          config: { ...embedded, slackBotToken: "xoxb-B" },
+          companyId: "row-scope-2",
+        }),
+      ).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG,
+      });
+    } finally {
+      stop();
+    }
+  });
+
+  it("does not commit the tenant binding when the plugin rejects the config", async () => {
+    // Pre-fix, currentConfig/configCompanyId were committed before
+    // onConfigChanged ran, so a config the plugin threw on still bound the
+    // worker to that company — and every other company's delivery was then
+    // rejected as cross-tenant even though nothing was ever applied.
+    const applied: Array<string | null> = [];
+    const plugin = definePlugin({
+      async setup() {},
+      async onConfigChanged(newConfig, context) {
+        if (newConfig.bad === true) throw new Error("config rejected by plugin");
+        applied.push(context?.companyId ?? null);
+      },
+    });
+    const { callWorker, initialize, stop } = makeWorker(plugin);
+
+    try {
+      await initialize();
+
+      await expect(
+        callWorker("configChanged", {
+          config: { bad: true },
+          companyId: "company-a",
+        }),
+      ).rejects.toMatchObject({ message: expect.stringContaining("config rejected") });
+
+      // The failed delivery must not have bound the worker to company A:
+      // company B's (distinct) config is applied, not rejected as cross-tenant.
+      await expect(
+        callWorker("configChanged", {
+          config: { slackBotToken: "xoxb-B" },
+          companyId: "company-b",
+        }),
+      ).resolves.toBeNull();
+      expect(applied).toEqual(["company-b"]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("serializes concurrent deliveries so the tenant transition is atomic", async () => {
+    // The commit-after-callback ordering means the binding is read before the
+    // plugin callback resolves and written after. Without worker-side
+    // serialization, two concurrent initial deliveries for different
+    // companies both observe an unbound worker, both dispatch, and commit a
+    // torn binding (bound to one company, currentConfig from the other). The
+    // second delivery must instead queue behind the first and then fail
+    // closed as cross-tenant.
+    const applied: Array<string | null> = [];
+    let releaseFirst!: () => void;
+    const firstInFlight = new Promise<void>((r) => (releaseFirst = r));
+    let deliveries = 0;
+    const plugin = definePlugin({
+      async setup() {},
+      async onConfigChanged(_newConfig, context) {
+        deliveries += 1;
+        if (deliveries === 1) await firstInFlight;
+        applied.push(context?.companyId ?? null);
+      },
+    });
+    const { callWorker, initialize, stop } = makeWorker(plugin);
+
+    try {
+      await initialize();
+
+      const first = callWorker("configChanged", {
+        config: { slackBotToken: "xoxb-A" },
+        companyId: "company-a",
+      });
+      const second = callWorker("configChanged", {
+        config: { slackBotToken: "xoxb-B" },
+        companyId: "company-b",
+      });
+
+      // Let the first delivery enter the plugin callback, then release it.
+      await new Promise((r) => setImmediate(r));
+      releaseFirst();
+
+      await expect(first).resolves.toBeNull();
+      await expect(second).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG,
+      });
+      // Only company A's config ever reached the plugin.
+      expect(applied).toEqual(["company-a"]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("keeps the applied config when a later delivery for the bound company fails", async () => {
+    // Pre-fix, a failed update still overwrote currentConfig, so the guard's
+    // idempotency comparison ran against a config that was never applied: an
+    // equal-config replay of the *applied* value under another scope row was
+    // then misclassified as a distinct cross-tenant config and rejected.
+    const plugin = definePlugin({
+      async setup() {},
+      async onConfigChanged(newConfig) {
+        if (newConfig.bad === true) throw new Error("config rejected by plugin");
+      },
+    });
+    const { callWorker, initialize, stop } = makeWorker(plugin);
+
+    try {
+      await initialize();
+      const embedded = { companyId: "company-a", slackBotToken: "xoxb-A" };
+
+      await callWorker("configChanged", {
+        config: { ...embedded },
+        companyId: "row-scope-1",
+      });
+      await expect(
+        callWorker("configChanged", {
+          config: { ...embedded, bad: true },
+          companyId: "row-scope-1",
+        }),
+      ).rejects.toMatchObject({ message: expect.stringContaining("config rejected") });
+
+      // currentConfig still holds the applied value, so replaying it under a
+      // duplicate scope row is recognized as idempotent.
+      await expect(
+        callWorker("configChanged", {
+          config: { ...embedded },
+          companyId: "row-scope-2",
+        }),
+      ).resolves.toBeNull();
     } finally {
       stop();
     }

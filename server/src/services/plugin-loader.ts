@@ -43,6 +43,7 @@ import { logger } from "../middleware/logger.js";
 import { pluginManifestValidator } from "./plugin-manifest-validator.js";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
 import { pluginRegistryService } from "./plugin-registry.js";
+import { deliverStoredCompanyConfig } from "./plugin-config-delivery.js";
 import type { PluginWorkerManager, WorkerStartOptions, WorkerToHostHandlers } from "./plugin-worker-manager.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
@@ -2187,12 +2188,20 @@ export function pluginLoader(
       // (METHOD_NOT_IMPLEMENTED) or is momentarily unavailable simply keeps the
       // runtime ctx.config.get(companyId) model. onConfigChanged is idempotent
       // for well-behaved plugins, so replaying an unchanged config is safe.
+      //
+      // listConfigs only enumerates the configured companies (in deterministic
+      // order); the value actually sent is re-read at delivery time by
+      // deliverStoredCompanyConfig, serialized against the operator
+      // config-save path. An operator save landing mid-replay therefore can't
+      // be overwritten by this loop's earlier snapshot.
       try {
         const configRows = await registry.listConfigs(pluginId);
         for (const row of configRows) {
           try {
-            await workerManager.call(pluginId, "configChanged", {
-              config: (row.configJson ?? {}) as Record<string, unknown>,
+            await deliverStoredCompanyConfig({
+              registry,
+              workerManager,
+              pluginId,
               companyId: row.companyId,
             });
           } catch (configErr) {
