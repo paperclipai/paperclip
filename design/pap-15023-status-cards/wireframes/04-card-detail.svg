@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- board behind, dimmed by drawer -->
+  <rect width="208" height="800" />
+  <text x="24" y="45" font-size="14" font-weight="600" stroke="none" fill="#000">Paperclip</text>
+  <text x="232" y="56" font-size="28" font-weight="700" stroke="none" fill="#000">Status cards</text>
+  <rect x="232" y="160" width="312" height="280" rx="6" />
+  <rect x="232" y="464" width="312" height="280" rx="6" />
+  <rect x="0" y="0" width="1280" height="800" fill="#000" fill-opacity="0.4" stroke="none" />
+
+  <!-- ===== Right drawer: card detail ===== -->
+  <g transform="translate(608, 0)">
+    <rect width="672" height="800" />
+    <!-- header -->
+    <circle cx="32" cy="40" r="5" fill="#000" />
+    <text x="48" y="45" font-size="20" font-weight="600" stroke="none" fill="#000">Cloud + ID + Content projects</text>
+    <text x="560" y="45" font-size="14" stroke="none" fill="#666">⟳ Refresh</text>
+    <text x="648" y="45" font-size="14" stroke="none" fill="#666">×</text>
+    <text x="32" y="68" font-size="12" stroke="none" fill="#666">Updated 28m ago · every 15m if changed · watching 23 issues · debug</text>
+    <line x1="0" y1="88" x2="672" y2="88" />
+
+    <!-- tabs -->
+    <g transform="translate(32, 96)">
+      <line x1="0" y1="40" x2="608" y2="40" />
+      <text x="0" y="26" font-size="14" font-weight="600" stroke="none" fill="#000">Summary</text>
+      <line x1="0" y1="40" x2="72" y2="40" stroke-width="3" />
+      <text x="104" y="26" font-size="14" stroke="none" fill="#666">Updates (12)</text>
+      <text x="224" y="26" font-size="14" stroke="none" fill="#666">Watched issues (23)</text>
+      <text x="392" y="26" font-size="14" stroke="none" fill="#666">Settings</text>
+    </g>
+
+    <!-- summary body -->
+    <g transform="translate(32, 160)">
+      <text x="0" y="16" font-size="14" font-weight="600" stroke="none" fill="#000">Decide:</text>
+      <text x="0" y="40" font-size="14" stroke="none" fill="#000">• Unblock PAP-14882 first — it gates two ID tracks.</text>
+      <text x="16" y="60" font-size="14" stroke="none" fill="#000">I suggest: reassign the review to CodexCoder today.</text>
+      <line x1="0" y1="84" x2="608" y2="84" stroke="#666" />
+      <line x1="0" y1="104" x2="608" y2="104" stroke="#666" />
+      <line x1="0" y1="124" x2="480" y2="124" stroke="#666" />
+      <text x="0" y="160" font-size="14" font-weight="600" stroke="none" fill="#000">Recent work:</text>
+      <line x1="0" y1="184" x2="608" y2="184" stroke="#666" />
+      <line x1="0" y1="204" x2="544" y2="204" stroke="#666" />
+      <line x1="0" y1="224" x2="416" y2="224" stroke="#666" />
+    </g>
+
+    <!-- changes since last update -->
+    <g transform="translate(32, 416)">
+      <text x="0" y="16" font-size="12" font-weight="600" stroke="none" fill="#666">INTEGRATED IN THIS UPDATE (3 CHANGES)</text>
+      <g transform="translate(0, 32)">
+        <rect width="608" height="40" rx="4" />
+        <text x="12" y="25" font-size="12" stroke="none" fill="#000">PAP-14882 · in_progress → blocked · 31m ago</text>
+      </g>
+      <g transform="translate(0, 80)">
+        <rect width="608" height="40" rx="4" />
+        <text x="12" y="25" font-size="12" stroke="none" fill="#000">PAP-14990 · in_review → done · 42m ago</text>
+      </g>
+      <g transform="translate(0, 128)">
+        <rect width="608" height="40" rx="4" />
+        <text x="12" y="25" font-size="12" stroke="none" fill="#000">PAP-15001 · new issue matched the query · 55m ago</text>
+      </g>
+    </g>
+
+    <!-- history / cost footer -->
+    <line x1="0" y1="624" x2="672" y2="624" />
+    <g transform="translate(32, 640)">
+      <text x="0" y="16" font-size="12" font-weight="600" stroke="none" fill="#666">HISTORY &amp; COST</text>
+      <text x="0" y="44" font-size="12" stroke="none" fill="#000">28m ago · incremental · 0.4k in / 0.2k out · $0.006</text>
+      <text x="0" y="68" font-size="12" stroke="none" fill="#666">1h ago · incremental · 0.3k in / 0.1k out · $0.004</text>
+      <text x="0" y="92" font-size="12" stroke="none" fill="#666">3h ago · full rebuild · 6.1k in / 0.9k out · $0.03</text>
+      <text x="0" y="120" font-size="12" stroke="none" fill="#000">Today: 12 updates · 9.4k tokens · ~$0.09 · daily cap 100k</text>
+      <!-- revision select -->
+      <g transform="translate(448, 24)">
+        <rect width="160" height="40" rx="4" />
+        <text x="12" y="25" font-size="14" stroke="none" fill="#000">Revision 12 ▾</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ===== Annotations ===== -->
+  <g data-region="annotations">
+    <g transform="translate(1216, 68)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <g transform="translate(592, 136)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+    <g transform="translate(592, 456)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">3</text>
+    </g>
+    <g transform="translate(592, 688)">
+      <circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">4</text>
+    </g>
+  </g>
+</svg>

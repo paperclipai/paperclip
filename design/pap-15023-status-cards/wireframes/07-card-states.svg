@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <text x="48" y="56" font-size="28" font-weight="700" stroke="none" fill="#000">Card anatomy &amp; states</text>
+  <text x="48" y="84" font-size="14" stroke="none" fill="#666">Reference sheet — not a screen. Left: one card at full size. Right: every lifecycle state.</text>
+
+  <!-- ===== Anatomy: big card ===== -->
+  <g transform="translate(48, 128)">
+    <rect width="560" height="480" rx="6" />
+    <!-- header -->
+    <circle cx="32" cy="40" r="6" fill="#000" />
+    <text x="52" y="45" font-size="20" font-weight="600" stroke="none" fill="#000">Cloud + ID + Content projects</text>
+    <text x="528" y="45" font-size="14" text-anchor="middle" stroke="none" fill="#666">⋯</text>
+    <!-- policy chip -->
+    <rect x="32" y="64" width="176" height="28" rx="14" />
+    <text x="120" y="83" font-size="12" text-anchor="middle" stroke="none" fill="#000">every 15m if changed</text>
+    <rect x="216" y="64" width="128" height="28" rx="14" />
+    <text x="280" y="83" font-size="12" text-anchor="middle" stroke="none" fill="#000">23 issues</text>
+    <!-- summary -->
+    <text x="32" y="128" font-size="14" font-weight="600" stroke="none" fill="#000">Decide:</text>
+    <text x="32" y="152" font-size="14" stroke="none" fill="#000">• Unblock PAP-14882 — it gates two ID tracks.</text>
+    <line x1="32" y1="176" x2="528" y2="176" stroke="#666" />
+    <line x1="32" y1="200" x2="528" y2="200" stroke="#666" />
+    <line x1="32" y1="224" x2="432" y2="224" stroke="#666" />
+    <text x="32" y="264" font-size="14" font-weight="600" stroke="none" fill="#000">Recent work:</text>
+    <line x1="32" y1="288" x2="528" y2="288" stroke="#666" />
+    <line x1="32" y1="312" x2="464" y2="312" stroke="#666" />
+    <!-- delta strip -->
+    <rect x="32" y="344" width="496" height="40" rx="4" fill="#e6e6e6" />
+    <text x="48" y="369" font-size="12" stroke="none" fill="#000">3 changes since this summary · refresh now</text>
+    <!-- footer -->
+    <line x1="0" y1="416" x2="560" y2="416" />
+    <text x="32" y="452" font-size="12" stroke="none" fill="#666">Updated 28m ago · 1.8k tok today · $0.02</text>
+    <text x="448" y="452" font-size="14" stroke="none" fill="#000">⟳</text>
+    <text x="496" y="452" font-size="14" stroke="none" fill="#000">↗</text>
+  </g>
+
+  <!-- anatomy callouts -->
+  <g data-region="annotations">
+    <g transform="translate(32, 168)"><circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" /><text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text></g>
+    <g transform="translate(32, 208)"><circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" /><text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text></g>
+    <g transform="translate(32, 280)"><circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" /><text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">3</text></g>
+    <g transform="translate(32, 492)"><circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" /><text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">4</text></g>
+    <g transform="translate(32, 572)"><circle r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" /><text y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">5</text></g>
+  </g>
+
+  <!-- ===== States column ===== -->
+  <g transform="translate(672, 128)">
+    <text x="0" y="16" font-size="20" font-weight="600" stroke="none" fill="#000">Lifecycle states</text>
+
+    <g transform="translate(0, 40)">
+      <rect width="560" height="64" rx="6" stroke-dasharray="6 3" />
+      <text x="24" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">compiling</text>
+      <text x="24" y="48" font-size="12" stroke="none" fill="#666">just created; agent building query + first summary; dashed border, progress strip</text>
+    </g>
+
+    <g transform="translate(0, 120)">
+      <rect width="560" height="64" rx="6" />
+      <circle cx="24" cy="24" r="5" fill="#000" />
+      <text x="40" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">fresh</text>
+      <text x="24" y="48" font-size="12" stroke="none" fill="#666">summary reflects all known changes; nothing pending</text>
+    </g>
+
+    <g transform="translate(0, 200)">
+      <rect width="560" height="64" rx="6" />
+      <circle cx="24" cy="24" r="5" fill="#fff" />
+      <text x="40" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">stale</text>
+      <text x="24" y="48" font-size="12" stroke="none" fill="#666">N changes pending; shows "N changes since last update" strip; manual cards stay here</text>
+    </g>
+
+    <g transform="translate(0, 280)">
+      <rect width="560" height="64" rx="6" />
+      <circle cx="24" cy="24" r="5" fill="#e6e6e6" />
+      <text x="40" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">updating</text>
+      <text x="24" y="48" font-size="12" stroke="none" fill="#666">incremental: old summary stays visible, delta banner streams; full rebuild: skeleton + stream</text>
+    </g>
+
+    <g transform="translate(0, 360)">
+      <rect width="560" height="64" rx="6" />
+      <circle cx="24" cy="24" r="5" fill="#fff" stroke-dasharray="2 2" />
+      <text x="40" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">error</text>
+      <text x="24" y="48" font-size="12" stroke="none" fill="#666">last run failed; last good summary stays; Retry + Details (link to run log)</text>
+    </g>
+
+    <g transform="translate(0, 440)">
+      <rect width="560" height="64" rx="6" />
+      <text x="24" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">‖ paused (budget / hours)</text>
+      <text x="24" y="48" font-size="12" stroke="none" fill="#666">daily cap hit or outside active hours; auto-updates suspended, manual refresh still allowed</text>
+    </g>
+
+    <g transform="translate(0, 520)">
+      <rect width="560" height="64" rx="6" fill="#f4f4f4" />
+      <text x="24" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">archived</text>
+      <text x="24" y="48" font-size="12" stroke="none" fill="#666">no auto-updates, no watches, hidden from board; restore from Archived tab → comes back stale</text>
+    </g>
+  </g>
+
+  <!-- annotation legend -->
+  <g transform="translate(48, 664)">
+    <text x="0" y="16" font-size="12" font-weight="600" stroke="none" fill="#666">ANATOMY</text>
+    <text x="0" y="40" font-size="12" stroke="none" fill="#000">1 — state dot + agent-maintained title · 2 — policy + query-size chips · 3 — latest summary (markdown, Decide/Recent format)</text>
+    <text x="0" y="64" font-size="12" stroke="none" fill="#000">4 — delta strip: pending changes count, click = refresh · 5 — footer: freshness, today's tokens/cost, refresh, open detail</text>
+  </g>
+</svg>

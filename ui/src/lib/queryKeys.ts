@@ -118,6 +118,14 @@ export const queryKeys = {
     revisions: (companyId: string, scopeKind: string, slotKey: string, scopeId?: string | null) =>
       ["summary-slots", companyId, scopeKind, slotKey, scopeId ?? null, "revisions"] as const,
   },
+  statusCards: {
+    list: (companyId: string, archived: boolean) =>
+      ["status-cards", companyId, archived ? "archived" : "active"] as const,
+    detail: (id: string) => ["status-cards", "detail", id] as const,
+    updates: (id: string) => ["status-cards", "detail", id, "updates"] as const,
+    summaryRevisions: (id: string) => ["status-cards", "detail", id, "summary-revisions"] as const,
+    dryRun: (id: string) => ["status-cards", "detail", id, "dry-run"] as const,
+  },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
     mentionPool: (companyId: string) => ["issues", companyId, "mention-pool"] as const,

@@ -372,6 +372,7 @@ export function InstanceExperimentalSettings() {
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
   const enableSummaries = experimentalQuery.data?.enableSummaries === true;
+  const enableStatusCards = experimentalQuery.data?.enableStatusCards === true;
   const enableDecisions = experimentalQuery.data?.enableDecisions === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
@@ -572,6 +573,16 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         managed={managedKeys.enableExperimentalFileViewer}
         ariaLabel="Toggle experimental file viewer setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Status Cards"
+        description="Enable the experimental shared status-card board and its gated API. Existing card data is kept when this is disabled."
+        checked={enableStatusCards}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableStatusCards: checked })}
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableStatusCards}
+        ariaLabel="Toggle status cards experimental setting"
       />
 
       <ExperimentalToggleCard

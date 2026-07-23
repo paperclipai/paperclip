@@ -107,6 +107,7 @@ import {
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
@@ -6743,11 +6744,20 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
-        if (
-          (updated.status === "done" || updated.status === "cancelled") &&
-          existing.status !== updated.status
-        ) {
-          await finalizeSummarySlotsForTerminalIssue(tx, updated);
+        if (existing.status !== updated.status) {
+          if (updated.status === "done" || updated.status === "cancelled") {
+            await finalizeSummarySlotsForTerminalIssue(tx, updated);
+          }
+          // A status-card generation task that goes done/cancelled/blocked stops
+          // making progress; release the card's generation claim so the board tile
+          // stops spinning and offers "Run now" again (blocked = stuck on a human).
+          if (
+            updated.status === "done" ||
+            updated.status === "cancelled" ||
+            updated.status === "blocked"
+          ) {
+            await finalizeStatusCardsForStalledGeneration(tx, updated);
+          }
         }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
