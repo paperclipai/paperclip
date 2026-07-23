@@ -48,6 +48,9 @@ vi.mock("../context/BreadcrumbContext", () => ({
 
 vi.mock("../context/ToastContext", () => ({
   useToastActions: () => ({ pushToast: vi.fn() }),
+  // RoutineList rows call useCopyLink, which reads the optional toast
+  // actions; the partial mock must expose this export too.
+  useOptionalToastActions: () => null,
 }));
 
 vi.mock("../api/routines", () => ({

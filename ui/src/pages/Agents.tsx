@@ -23,7 +23,13 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
+import { AlertTriangle, Bot, Plus, List, GitBranch, ExternalLink, Link2 } from "lucide-react";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import {
   isStarred,
@@ -31,6 +37,7 @@ import {
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
+import { useCopyLink } from "../hooks/useCopyLink";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -188,6 +195,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
 export function Agents() {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
+  const copyLink = useCopyLink();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
@@ -378,117 +386,133 @@ export function Agents() {
         )}
       </>
     ) : null;
+    const agentHref = agentUrl(agent);
     return (
-      <EntityRow
-        key={agent.id}
-        title={agent.name}
-        // Fixed (truncating) title width at xl so the `meta` group starts at a
-        // constant x on every row — that's what makes the model + timestamp
-        // columns line up vertically. Below xl the meta columns are hidden, so
-        // the title flexes instead: a fixed width there let the shrink-0
-        // trailing actions squeeze the name to zero width on mobile.
-        titleClassName="flex-1 xl:flex-none xl:w-56"
-        titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
-        subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
-        subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
-        to={agentUrl(agent)}
-        className={cn(
-          "group",
-          agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
-          resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
-        )}
-        leading={hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
-        ) : (
-          <AgentStatusCapsule status={agent.status} />
-        )}
-        secondaryRow={
-          builtInCluster ? (
-            <div className="xl:hidden flex flex-wrap items-center gap-1.5">
-              {builtInCluster}
-            </div>
-          ) : undefined
-        }
-        meta={
-          <div className="flex items-center gap-3">
-            {builtInCluster && (
-              <div className="hidden xl:flex items-center gap-1.5">
-                {builtInCluster}
-              </div>
-            )}
-            <div className="hidden xl:flex items-center gap-3">
-              <AgentMetaColumns
-                agent={agent}
-                environment={resolveRenderedEnvironment(agent.id)}
-                showEnvironment={showEnvironmentColumn}
-              />
-            </div>
-          </div>
-        }
-        metaSpacerClassName="hidden xl:block"
-        trailing={
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-3">
-              {liveRunByAgent.has(agent.id) && (
-                <LiveRunIndicator
-                  agentRef={agentRouteRef(agent)}
-                  runId={liveRunByAgent.get(agent.id)!.runId}
-                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
-                />
+      <ContextMenu key={agent.id}>
+        <ContextMenuTrigger asChild>
+          <div>
+            <EntityRow
+              title={agent.name}
+              // Fixed (truncating) title width at xl so the `meta` group starts at a
+              // constant x on every row — that's what makes the model + timestamp
+              // columns line up vertically. Below xl the meta columns are hidden, so
+              // the title flexes instead: a fixed width there let the shrink-0
+              // trailing actions squeeze the name to zero width on mobile.
+              titleClassName="flex-1 xl:flex-none xl:w-56"
+              titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
+              subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
+              subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+              to={agentHref}
+              className={cn(
+                "group",
+                agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
+                resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
               )}
-              <span className="w-20 flex justify-end">
-                <AgentStatusBadge status={agent.status} />
-              </span>
-              {/* Row actions mirror the agent detail page; stop the click
-                  from bubbling to the row link so buttons don't navigate.
-                  Hidden on mobile so the agent name keeps room to render. */}
-              <div
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-              >
-                <AgentActionButtons
-                  agent={agent}
-                  companyId={selectedCompanyId}
-                  runLabel="Run Heartbeat"
-                  showStatus={false}
-                />
-              </div>
-              <StarToggle
-                size="row"
-                starred={agentStarred}
-                pending={agentStarPending}
-                resourceName={agent.name}
-                onToggle={(next) => membershipMutation.mutate({
-                  resourceType: "agent",
-                  resourceId: agent.id,
-                  resourceName: agent.name,
-                  starred: next,
-                })}
-              />
-            </div>
-            <MembershipAction
-              state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
-              pending={agentJoinLeavePending}
-              pendingState={agentJoinLeavePending ? membershipMutation.variables?.state ?? null : null}
-              resourceName={agent.name}
-              onJoin={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "joined",
-              })}
-              onLeave={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "left",
-              })}
+              leading={hasInvalidOrgChain ? (
+                <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
+              ) : (
+                <AgentStatusCapsule status={agent.status} />
+              )}
+              secondaryRow={
+                builtInCluster ? (
+                  <div className="xl:hidden flex flex-wrap items-center gap-1.5">
+                    {builtInCluster}
+                  </div>
+                ) : undefined
+              }
+              meta={
+                <div className="flex items-center gap-3">
+                  {builtInCluster && (
+                    <div className="hidden xl:flex items-center gap-1.5">
+                      {builtInCluster}
+                    </div>
+                  )}
+                  <div className="hidden xl:flex items-center gap-3">
+                    <AgentMetaColumns
+                      agent={agent}
+                      environment={resolveRenderedEnvironment(agent.id)}
+                      showEnvironment={showEnvironmentColumn}
+                    />
+                  </div>
+                </div>
+              }
+              metaSpacerClassName="hidden xl:block"
+              trailing={
+                <div className="flex items-center gap-3">
+                  <div className="hidden sm:flex items-center gap-3">
+                    {liveRunByAgent.has(agent.id) && (
+                      <LiveRunIndicator
+                        agentRef={agentRouteRef(agent)}
+                        runId={liveRunByAgent.get(agent.id)!.runId}
+                        liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                      />
+                    )}
+                    <span className="w-20 flex justify-end">
+                      <AgentStatusBadge status={agent.status} />
+                    </span>
+                    {/* Row actions mirror the agent detail page; stop the click
+                        from bubbling to the row link so buttons don't navigate.
+                        Hidden on mobile so the agent name keeps room to render. */}
+                    <div
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                    >
+                      <AgentActionButtons
+                        agent={agent}
+                        companyId={selectedCompanyId}
+                        runLabel="Run Heartbeat"
+                        showStatus={false}
+                      />
+                    </div>
+                    <StarToggle
+                      size="row"
+                      starred={agentStarred}
+                      pending={agentStarPending}
+                      resourceName={agent.name}
+                      onToggle={(next) => membershipMutation.mutate({
+                        resourceType: "agent",
+                        resourceId: agent.id,
+                        resourceName: agent.name,
+                        starred: next,
+                      })}
+                    />
+                  </div>
+                  <MembershipAction
+                    state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
+                    pending={agentJoinLeavePending}
+                    pendingState={agentJoinLeavePending ? membershipMutation.variables?.state ?? null : null}
+                    resourceName={agent.name}
+                    onJoin={() => membershipMutation.mutate({
+                      resourceType: "agent",
+                      resourceId: agent.id,
+                      resourceName: agent.name,
+                      state: "joined",
+                    })}
+                    onLeave={() => membershipMutation.mutate({
+                      resourceType: "agent",
+                      resourceId: agent.id,
+                      resourceName: agent.name,
+                      state: "left",
+                    })}
+                  />
+                </div>
+              }
             />
           </div>
-        }
-      />
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onClick={() => window.open(agentHref, "_blank", "noopener,noreferrer")}>
+            <ExternalLink className="h-4 w-4" />
+            Open in new tab
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => copyLink(agentHref)}>
+            <Link2 className="h-4 w-4" />
+            Copy link
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     );
   };
 
@@ -644,6 +668,7 @@ function OrgTreeNode({
   builtInByAgentId: Map<string, BuiltInAgentState>;
   onConfigureBuiltIn: (state: BuiltInAgentState) => void;
 }) {
+  const copyLink = useCopyLink();
   const agent = agentMap.get(node.id);
   const builtInState = builtInByAgentId.get(node.id);
   const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
@@ -656,121 +681,137 @@ function OrgTreeNode({
   const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
   const starred = isStarred(memberships, "agent", node.id);
 
+  const nodeHref = agent ? agentUrl(agent) : `/agents/${node.id}`;
+
   return (
     <div style={{ paddingLeft: depth * 24 }}>
-      <Link
-        to={agent ? agentUrl(agent) : `/agents/${node.id}`}
-        className={cn(
-          "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
-          agent?.pausedAt && tab !== "paused" && "opacity-50",
-          membershipState === "left" && "sm:text-foreground/55",
-        )}
-      >
-        {hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
-        ) : (
-          <AgentStatusCapsule status={node.status} />
-        )}
-        <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2">
-          {/* Name floor + `truncate` keeps the primary identifier readable; the
-              cluster wraps to a second line under pressure instead of starving
-              the name at narrow widths. */}
-          <div className="min-w-(--sz-7rem) truncate">
-            <span className="text-sm font-medium">{node.name}</span>
-            <span className="text-xs text-muted-foreground ml-2">
-              {roleLabels[node.role] ?? node.role}
-              {agent?.title ? ` - ${agent.title}` : ""}
-            </span>
-          </div>
-          {builtInState && showBuiltInLifecycle && (
-            <div className="flex items-center gap-1.5 shrink-0">
-              <BuiltInLifecycleChip status={builtInState.status} />
-              {builtInState.status === "needs_setup" && (
-                <span
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                >
-                  <Button size="xs" variant="outline" onClick={() => onConfigureBuiltIn(builtInState)}>
-                    Set up
-                  </Button>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <Link
+            to={nodeHref}
+            className={cn(
+              "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
+              agent?.pausedAt && tab !== "paused" && "opacity-50",
+              membershipState === "left" && "sm:text-foreground/55",
+            )}
+          >
+            {hasInvalidOrgChain ? (
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+            ) : (
+              <AgentStatusCapsule status={node.status} />
+            )}
+            <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2">
+              {/* Name floor + `truncate` keeps the primary identifier readable; the
+                  cluster wraps to a second line under pressure instead of starving
+                  the name at narrow widths. */}
+              <div className="min-w-(--sz-7rem) truncate">
+                <span className="text-sm font-medium">{node.name}</span>
+                <span className="text-xs text-muted-foreground ml-2">
+                  {roleLabels[node.role] ?? node.role}
+                  {agent?.title ? ` - ${agent.title}` : ""}
                 </span>
+              </div>
+              {builtInState && showBuiltInLifecycle && (
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <BuiltInLifecycleChip status={builtInState.status} />
+                  {builtInState.status === "needs_setup" && (
+                    <span
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                    >
+                      <Button size="xs" variant="outline" onClick={() => onConfigureBuiltIn(builtInState)}>
+                        Set up
+                      </Button>
+                    </span>
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          <span className="sm:hidden">
-            {liveRunByAgent.has(node.id) ? (
-              <LiveRunIndicator
-                agentRef={agent ? agentRouteRef(agent) : node.id}
-                runId={liveRunByAgent.get(node.id)!.runId}
-                liveCount={liveRunByAgent.get(node.id)!.liveCount}
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="sm:hidden">
+                {liveRunByAgent.has(node.id) ? (
+                  <LiveRunIndicator
+                    agentRef={agent ? agentRouteRef(agent) : node.id}
+                    runId={liveRunByAgent.get(node.id)!.runId}
+                    liveCount={liveRunByAgent.get(node.id)!.liveCount}
+                  />
+                ) : (
+                  <AgentStatusBadge status={node.status} />
+                )}
+              </span>
+              <div className="hidden sm:flex items-center gap-3">
+                {liveRunByAgent.has(node.id) && (
+                  <LiveRunIndicator
+                    agentRef={agent ? agentRouteRef(agent) : node.id}
+                    runId={liveRunByAgent.get(node.id)!.runId}
+                    liveCount={liveRunByAgent.get(node.id)!.liveCount}
+                  />
+                )}
+                {agent && (
+                  <div className="hidden xl:flex items-center gap-3">
+                    <AgentMetaColumns
+                      agent={agent}
+                      environment={
+                        environmentDataLoading
+                          ? loadingEnvironmentDescriptor
+                          : environmentByAgentId.get(agent.id) ?? localEnvironmentDescriptor
+                      }
+                      showEnvironment={showEnvironment}
+                    />
+                  </div>
+                )}
+                <span className="w-20 flex justify-end">
+                  <AgentStatusBadge status={node.status} />
+                </span>
+              </div>
+              <MembershipAction
+                state={membershipState}
+                pending={joinLeavePending}
+                pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
+                resourceName={node.name}
+                onJoin={() => membershipMutation.mutate({
+                  resourceType: "agent",
+                  resourceId: node.id,
+                  resourceName: node.name,
+                  state: "joined",
+                })}
+                onLeave={() => membershipMutation.mutate({
+                  resourceType: "agent",
+                  resourceId: node.id,
+                  resourceName: node.name,
+                  state: "left",
+                })}
               />
-            ) : (
-              <AgentStatusBadge status={node.status} />
-            )}
-          </span>
-          <div className="hidden sm:flex items-center gap-3">
-            {liveRunByAgent.has(node.id) && (
-              <LiveRunIndicator
-                agentRef={agent ? agentRouteRef(agent) : node.id}
-                runId={liveRunByAgent.get(node.id)!.runId}
-                liveCount={liveRunByAgent.get(node.id)!.liveCount}
-              />
-            )}
-            {agent && (
-              <div className="hidden xl:flex items-center gap-3">
-                <AgentMetaColumns
-                  agent={agent}
-                  environment={
-                    environmentDataLoading
-                      ? loadingEnvironmentDescriptor
-                      : environmentByAgentId.get(agent.id) ?? localEnvironmentDescriptor
-                  }
-                  showEnvironment={showEnvironment}
+              <div className="hidden sm:flex items-center gap-3">
+                <StarToggle
+                  size="row"
+                  starred={starred}
+                  pending={starPending}
+                  resourceName={node.name}
+                  onToggle={(next) => membershipMutation.mutate({
+                    resourceType: "agent",
+                    resourceId: node.id,
+                    resourceName: node.name,
+                    starred: next,
+                  })}
                 />
               </div>
-            )}
-            <span className="w-20 flex justify-end">
-              <AgentStatusBadge status={node.status} />
-            </span>
-          </div>
-          <MembershipAction
-            state={membershipState}
-            pending={joinLeavePending}
-            pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
-            resourceName={node.name}
-            onJoin={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "joined",
-            })}
-            onLeave={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "left",
-            })}
-          />
-          <div className="hidden sm:flex items-center gap-3">
-            <StarToggle
-              size="row"
-              starred={starred}
-              pending={starPending}
-              resourceName={node.name}
-              onToggle={(next) => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: node.id,
-                resourceName: node.name,
-                starred: next,
-              })}
-            />
-          </div>
-        </div>
-      </Link>
+            </div>
+          </Link>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onClick={() => window.open(nodeHref, "_blank", "noopener,noreferrer")}>
+            <ExternalLink className="h-4 w-4" />
+            Open in new tab
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => copyLink(nodeHref)}>
+            <Link2 className="h-4 w-4" />
+            Copy link
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
       {node.reports && node.reports.length > 0 && (
         <div className="border-l border-border ml-4">
           {node.reports.map((child) => (

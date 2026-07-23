@@ -1,9 +1,16 @@
 import type { Goal } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { StatusBadge } from "./StatusBadge";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, ExternalLink, Link2 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useState } from "react";
+import { useCopyLink } from "../hooks/useCopyLink";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 
 interface GoalTreeProps {
   goals: Goal[];
@@ -22,6 +29,7 @@ interface GoalNodeProps {
 
 function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalNodeProps) {
   const [expanded, setExpanded] = useState(true);
+  const copyLink = useCopyLink();
   const hasChildren = children.length > 0;
   const link = goalLink?.(goal);
 
@@ -58,14 +66,30 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
   return (
     <div>
       {link ? (
-        <Link
-          to={link}
-          className={cn(classes, "no-underline text-inherit")}
-          style={{ paddingLeft: `${depth * 16 + 12}px` }}
-        >
-          {inner}
-        </Link>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <Link
+              to={link}
+              className={cn(classes, "no-underline text-inherit")}
+              style={{ paddingLeft: `${depth * 16 + 12}px` }}
+            >
+              {inner}
+            </Link>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onClick={() => window.open(link, "_blank", "noopener,noreferrer")}>
+              <ExternalLink className="h-4 w-4" />
+              Open in new tab
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => copyLink(link)}>
+              <Link2 className="h-4 w-4" />
+              Copy link
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
       ) : (
+        // Picker mode (onSelect without goalLink): goals aren't necessarily
+        // individually routable here, so skip the link-based context menu.
         <div
           className={classes}
           style={{ paddingLeft: `${depth * 16 + 12}px` }}

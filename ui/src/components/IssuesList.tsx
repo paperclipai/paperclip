@@ -11,6 +11,7 @@ import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useCopyLink } from "../hooks/useCopyLink";
 import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
@@ -64,8 +65,18 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw, ListCollapse,
-  SquareKanban,
+  SquareKanban, ExternalLink, Link2, Flag,
 } from "lucide-react";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
   KanbanBoard,
   KANBAN_BOARD_HIGH_VOLUME_THRESHOLD,
@@ -679,6 +690,7 @@ export function IssuesList({
     // null, so continuous hovering triggers no re-render.
     setSelectedNavKey((prev) => (prev === null ? prev : null));
   }, []);
+  const copyLink = useCopyLink();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const { data: session } = useQuery({
@@ -2013,6 +2025,9 @@ export function IssuesList({
                     </button>
                   ) : null;
 
+                  const issuePathId = issue.identifier ?? issue.id;
+                  const issueHref = createIssueDetailPath(issuePathId);
+
                   return (
                     <div
                       key={issue.id}
@@ -2021,232 +2036,285 @@ export function IssuesList({
                       // (vertical connector slots); mobile keeps a plain
                       // padding indent (guides are sm-only).
                       className={depth > 0 ? MOBILE_TREE_INDENT[Math.min(depth, MOBILE_TREE_INDENT.length - 1)] : undefined}
-                      style={useDeferredRowRendering
-                        ? {
-                          contentVisibility: "auto",
-                          containIntrinsicSize: "44px",
-                        }
-                        : undefined}
                     >
-                      <IssueRow
-                        issue={issue}
-                        issueLinkState={issueLinkState}
-                        selected={selectedNavKey === `issue:${issue.id}`}
-                        onMouseEnter={() => setNavSelectionFromPointer(`issue:${issue.id}`)}
-                        treeGuides={depth}
-                        chevronInGuide={depth > 0 && hasChildren}
-                        hideDivider={hasChildren && isExpanded}
-                        checklistStepNumber={checklistStepNumber}
-                        checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
-                        checklistDependencyChips={checklistDependencyChips}
-                        checklistRowId={checklistRowId}
-                        titleClassName={doneRowTitleClass}
-                        externalObjectSummary={externalObjectSummaryByIssueId.get(issue.id) ?? null}
-                        titleSuffix={(
-                          <>
-                            {hasChildren && !isExpanded ? (
-                              <span className="ml-1.5 text-xs text-muted-foreground">
-                                ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
-                              </span>
-                            ) : null}
-                            {issueBadge ? (
-                              issueBadge === "Paused" ? (
-                                <Badge variant="ghost"
-                                  className={cn("ml-1.5 px-1.5 text-(length:--text-nano)", statusBadge.paused)}
-                                  aria-label="Paused"
-                                  title="Paused"
-                                >
-                                  <CircleSlash2 className="h-3 w-3" />
-                                  Paused
-                                </Badge>
-                              ) : (
-                                <Badge variant="outline" className="ml-1.5 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) text-amber-700 dark:text-amber-300">
-                                  {issueBadge}
-                                </Badge>
-                              )
-                            ) : null}
-                            {isSuccessfulRunHandoffRequired(issue) ? (
-                              <Badge variant="outline"
-                                className="ml-1.5 border-amber-400/45 bg-amber-50/60 px-1.5 text-(length:--text-nano) text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
-                                aria-label="Needs next step"
-                                title="This task needs a next step"
-                              >
-                                <CircleDot className="h-3 w-3" />
-                                Needs next step
-                              </Badge>
-                            ) : null}
-                          </>
-                        )}
-                        className={cn(isMutedIssue && "opacity-70", selectedNavKey === `issue:${issue.id}` && "bg-accent/50 hover:bg-accent/50")}
-                        mobileLeading={
-                          hasChildren ? (
-                            <button type="button" data-slot="icon-button" onClick={toggleCollapse}>
-                              <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
-                            </button>
-                          ) : (
-                            <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
-                            </span>
-                          )
-                        }
-                        desktopMetaLeading={(
-                          <>
-                            {hasChildren ? (
-                              <button
-                                type="button"
-                                data-slot="icon-button"
-                                className="relative z-10 hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
-                                onClick={toggleCollapse}
-                              >
-                                <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
-                              </button>
-                            ) : (
-                              <span className="hidden w-4 shrink-0 sm:block" />
-                            )}
-                            <InboxIssueMetaLeading
+                      <ContextMenu>
+                        <ContextMenuTrigger asChild>
+                          <div
+                            style={useDeferredRowRendering
+                              ? {
+                                contentVisibility: "auto",
+                                containIntrinsicSize: "44px",
+                              }
+                              : undefined}
+                          >
+                            <IssueRow
                               issue={issue}
-                              isLive={liveIssueIds?.has(issue.id) === true}
-                              subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
-                              showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
-                              showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
+                              issueLinkState={issueLinkState}
+                              selected={selectedNavKey === `issue:${issue.id}`}
+                              onMouseEnter={() => setNavSelectionFromPointer(`issue:${issue.id}`)}
+                              treeGuides={depth}
+                              chevronInGuide={depth > 0 && hasChildren}
+                              hideDivider={hasChildren && isExpanded}
                               checklistStepNumber={checklistStepNumber}
-                              statusSlot={(
-                                <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
-                                </span>
-                              )}
-                            />
-                          </>
-                        )}
-                        mobileMeta={issueActivityText(issue).toLowerCase()}
-                        desktopTrailing={(
-                          visibleTrailingIssueColumns.length > 0 ? (
-                            <InboxIssueTrailingColumns
-                              issue={issue}
-                              columns={visibleTrailingIssueColumns}
-                              projectName={issueProject?.name ?? null}
-                              projectColor={issueProject?.color ?? null}
-                              workspaceId={resolveIssueFilterWorkspaceId(issue, issueFilterWorkspaceContext)}
-                              workspaceName={resolveIssueWorkspaceName(issue, {
-                                executionWorkspaceById,
-                                projectWorkspaceById,
-                                defaultProjectWorkspaceIdByProjectId,
-                              })}
-                              onFilterWorkspace={filterToWorkspace}
-                              assigneeName={agentName(issue.assigneeAgentId)}
-                              assigneeUserName={assigneeUserLabel}
-                              assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}
-                              creatorAgentName={agentName(issue.createdByAgentId)}
-                              creatorUserName={originatingUserId ? (companyUserProfileMap.get(originatingUserId)?.label ?? null) : null}
-                              creatorUserAvatarUrl={originatingUserId ? (companyUserProfileMap.get(originatingUserId)?.image ?? null) : null}
-                              viaAgentName={originatingViaAgentId ? agentName(originatingViaAgentId) : null}
-                              currentUserId={currentUserId}
-                              parentIdentifier={parentIssue?.identifier ?? null}
-                              parentTitle={parentIssue?.title ?? null}
-                              assigneeContent={(
-                                <Popover
-                                  open={assigneePickerIssueId === issue.id}
-                                  onOpenChange={(open) => {
-                                    setAssigneePickerIssueId(open ? issue.id : null);
-                                    if (!open) setAssigneeSearch("");
-                                  }}
-                                >
-                                  <PopoverTrigger asChild>
-                                    <button
-                                      className="flex w-full shrink-0 items-center overflow-hidden rounded-md px-2 py-1 transition-colors hover:bg-accent/50"
-                                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                              checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
+                              checklistDependencyChips={checklistDependencyChips}
+                              checklistRowId={checklistRowId}
+                              titleClassName={doneRowTitleClass}
+                              externalObjectSummary={externalObjectSummaryByIssueId.get(issue.id) ?? null}
+                              titleSuffix={(
+                                <>
+                                  {hasChildren && !isExpanded ? (
+                                    <span className="ml-1.5 text-xs text-muted-foreground">
+                                      ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
+                                    </span>
+                                  ) : null}
+                                  {issueBadge ? (
+                                    issueBadge === "Paused" ? (
+                                      <Badge variant="ghost"
+                                        className={cn("ml-1.5 px-1.5 text-(length:--text-nano)", statusBadge.paused)}
+                                        aria-label="Paused"
+                                        title="Paused"
+                                      >
+                                        <CircleSlash2 className="h-3 w-3" />
+                                        Paused
+                                      </Badge>
+                                    ) : (
+                                      <Badge variant="outline" className="ml-1.5 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) text-amber-700 dark:text-amber-300">
+                                        {issueBadge}
+                                      </Badge>
+                                    )
+                                  ) : null}
+                                  {isSuccessfulRunHandoffRequired(issue) ? (
+                                    <Badge variant="outline"
+                                      className="ml-1.5 border-amber-400/45 bg-amber-50/60 px-1.5 text-(length:--text-nano) text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
+                                      aria-label="Needs next step"
+                                      title="This task needs a next step"
                                     >
-                                      {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
-                                        <Identity name={agentName(issue.assigneeAgentId)!} size="sm" shape="square" className="min-w-0" />
-                                      ) : issue.assigneeUserId ? (
-                                        <Identity
-                                          name={assigneeUserLabel ?? "User"}
-                                          avatarUrl={assigneeUserProfile?.image ?? null}
-                                          size="sm"
-                                          className="min-w-0"
-                                        />
-                                      ) : (
-                                        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                                          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
-                                            <User className="h-3.5 w-3.5" />
-                                          </span>
-                                          Assignee
-                                        </span>
-                                      )}
+                                      <CircleDot className="h-3 w-3" />
+                                      Needs next step
+                                    </Badge>
+                                  ) : null}
+                                </>
+                              )}
+                              className={cn(isMutedIssue && "opacity-70", selectedNavKey === `issue:${issue.id}` && "bg-accent/50 hover:bg-accent/50")}
+                              mobileLeading={
+                                hasChildren ? (
+                                  <button type="button" data-slot="icon-button" onClick={toggleCollapse}>
+                                    <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
+                                  </button>
+                                ) : (
+                                  <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                                    <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                  </span>
+                                )
+                              }
+                              desktopMetaLeading={(
+                                <>
+                                  {hasChildren ? (
+                                    <button
+                                      type="button"
+                                      data-slot="icon-button"
+                                      className="relative z-10 hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
+                                      onClick={toggleCollapse}
+                                    >
+                                      <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                                     </button>
-                                  </PopoverTrigger>
-                                  <PopoverContent
-                                    className="w-56 p-1"
-                                    align="end"
-                                    onClick={(e) => e.stopPropagation()}
-                                    onPointerDownOutside={() => setAssigneeSearch("")}
-                                  >
-                                    <input
-                                      className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search responsible..."
-                                      value={assigneeSearch}
-                                      onChange={(e) => setAssigneeSearch(e.target.value)}
-                                      autoFocus
-                                    />
-                                    <div className="max-h-48 overflow-y-auto overscroll-contain">
-                                      <button
-                                        className={cn(
-                                          "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
-                                          !issue.assigneeAgentId && !issue.assigneeUserId && "bg-accent",
-                                        )}
-                                        onClick={(e) => {
-                                          e.preventDefault();
-                                          e.stopPropagation();
-                                          assignIssue(issue.id, null, null);
+                                  ) : (
+                                    <span className="hidden w-4 shrink-0 sm:block" />
+                                  )}
+                                  <InboxIssueMetaLeading
+                                    issue={issue}
+                                    isLive={liveIssueIds?.has(issue.id) === true}
+                                    subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
+                                    showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
+                                    showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
+                                    checklistStepNumber={checklistStepNumber}
+                                    statusSlot={(
+                                      <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                                        <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                      </span>
+                                    )}
+                                  />
+                                </>
+                              )}
+                              mobileMeta={issueActivityText(issue).toLowerCase()}
+                              desktopTrailing={(
+                                visibleTrailingIssueColumns.length > 0 ? (
+                                  <InboxIssueTrailingColumns
+                                    issue={issue}
+                                    columns={visibleTrailingIssueColumns}
+                                    projectName={issueProject?.name ?? null}
+                                    projectColor={issueProject?.color ?? null}
+                                    workspaceId={resolveIssueFilterWorkspaceId(issue, issueFilterWorkspaceContext)}
+                                    workspaceName={resolveIssueWorkspaceName(issue, {
+                                      executionWorkspaceById,
+                                      projectWorkspaceById,
+                                      defaultProjectWorkspaceIdByProjectId,
+                                    })}
+                                    onFilterWorkspace={filterToWorkspace}
+                                    assigneeName={agentName(issue.assigneeAgentId)}
+                                    assigneeUserName={assigneeUserLabel}
+                                    assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}
+                                    creatorAgentName={agentName(issue.createdByAgentId)}
+                                    creatorUserName={originatingUserId ? (companyUserProfileMap.get(originatingUserId)?.label ?? null) : null}
+                                    creatorUserAvatarUrl={originatingUserId ? (companyUserProfileMap.get(originatingUserId)?.image ?? null) : null}
+                                    viaAgentName={originatingViaAgentId ? agentName(originatingViaAgentId) : null}
+                                    currentUserId={currentUserId}
+                                    parentIdentifier={parentIssue?.identifier ?? null}
+                                    parentTitle={parentIssue?.title ?? null}
+                                    assigneeContent={(
+                                      <Popover
+                                        open={assigneePickerIssueId === issue.id}
+                                        onOpenChange={(open) => {
+                                          setAssigneePickerIssueId(open ? issue.id : null);
+                                          if (!open) setAssigneeSearch("");
                                         }}
                                       >
-                                        No responsible
-                                      </button>
-                                      {currentUserId && (
-                                        <button
-                                          className={cn(
-                                            "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
-                                            issue.assigneeUserId === currentUserId && "bg-accent",
-                                          )}
-                                          onClick={(e) => {
-                                            e.preventDefault();
-                                            e.stopPropagation();
-                                            assignIssue(issue.id, null, currentUserId);
-                                          }}
-                                        >
-                                          <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                          <span>Me</span>
-                                        </button>
-                                      )}
-                                      {(agents ?? [])
-                                        .filter((agent) => {
-                                          if (!assigneeSearch.trim()) return true;
-                                          return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
-                                        })
-                                        .map((agent) => (
+                                        <PopoverTrigger asChild>
                                           <button
-                                            key={agent.id}
-                                            className={cn(
-                                              "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
-                                              issue.assigneeAgentId === agent.id && "bg-accent",
-                                            )}
-                                            onClick={(e) => {
-                                              e.preventDefault();
-                                              e.stopPropagation();
-                                              assignIssue(issue.id, agent.id, null);
-                                            }}
+                                            className="flex w-full shrink-0 items-center overflow-hidden rounded-md px-2 py-1 transition-colors hover:bg-accent/50"
+                                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
                                           >
-                                            <Identity name={agent.name} size="sm" className="min-w-0" />
+                                            {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
+                                              <Identity name={agentName(issue.assigneeAgentId)!} size="sm" shape="square" className="min-w-0" />
+                                            ) : issue.assigneeUserId ? (
+                                              <Identity
+                                                name={assigneeUserLabel ?? "User"}
+                                                avatarUrl={assigneeUserProfile?.image ?? null}
+                                                size="sm"
+                                                className="min-w-0"
+                                              />
+                                            ) : (
+                                              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                                                <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
+                                                  <User className="h-3.5 w-3.5" />
+                                                </span>
+                                                Assignee
+                                              </span>
+                                            )}
                                           </button>
-                                        ))}
-                                    </div>
-                                  </PopoverContent>
-                                </Popover>
+                                        </PopoverTrigger>
+                                        <PopoverContent
+                                          className="w-56 p-1"
+                                          align="end"
+                                          onClick={(e) => e.stopPropagation()}
+                                          onPointerDownOutside={() => setAssigneeSearch("")}
+                                        >
+                                          <input
+                                            className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
+                                            placeholder="Search responsible..."
+                                            value={assigneeSearch}
+                                            onChange={(e) => setAssigneeSearch(e.target.value)}
+                                            autoFocus
+                                          />
+                                          <div className="max-h-48 overflow-y-auto overscroll-contain">
+                                            <button
+                                              className={cn(
+                                                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                                                !issue.assigneeAgentId && !issue.assigneeUserId && "bg-accent",
+                                              )}
+                                              onClick={(e) => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                assignIssue(issue.id, null, null);
+                                              }}
+                                            >
+                                              No responsible
+                                            </button>
+                                            {currentUserId && (
+                                              <button
+                                                className={cn(
+                                                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                                                  issue.assigneeUserId === currentUserId && "bg-accent",
+                                                )}
+                                                onClick={(e) => {
+                                                  e.preventDefault();
+                                                  e.stopPropagation();
+                                                  assignIssue(issue.id, null, currentUserId);
+                                                }}
+                                              >
+                                                <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                                <span>Me</span>
+                                              </button>
+                                            )}
+                                            {(agents ?? [])
+                                              .filter((agent) => {
+                                                if (!assigneeSearch.trim()) return true;
+                                                return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
+                                              })
+                                              .map((agent) => (
+                                                <button
+                                                  key={agent.id}
+                                                  className={cn(
+                                                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                                                    issue.assigneeAgentId === agent.id && "bg-accent",
+                                                  )}
+                                                  onClick={(e) => {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    assignIssue(issue.id, agent.id, null);
+                                                  }}
+                                                >
+                                                  <Identity name={agent.name} size="sm" className="min-w-0" />
+                                                </button>
+                                              ))}
+                                          </div>
+                                        </PopoverContent>
+                                      </Popover>
+                                    )}
+                                  />
+                                ) : undefined
                               )}
                             />
-                          ) : undefined
-                        )}
-                      />
+                          </div>
+                        </ContextMenuTrigger>
+                        <ContextMenuContent>
+                          <ContextMenuItem onClick={() => window.open(issueHref, "_blank", "noopener,noreferrer")}>
+                            <ExternalLink className="h-4 w-4" />
+                            Open in new tab
+                          </ContextMenuItem>
+                          <ContextMenuItem onClick={() => copyLink(issueHref)}>
+                            <Link2 className="h-4 w-4" />
+                            Copy link
+                          </ContextMenuItem>
+                          <ContextMenuSeparator />
+                          <ContextMenuSub>
+                            <ContextMenuSubTrigger>
+                              <StatusIcon status={issue.status} />
+                              Set status
+                            </ContextMenuSubTrigger>
+                            <ContextMenuSubContent>
+                              {ISSUE_STATUSES.map((s) => (
+                                <ContextMenuItem
+                                  key={s}
+                                  onClick={() => onUpdateIssue(issue.id, { status: s })}
+                                  className={cn(s === issue.status && "bg-accent")}
+                                >
+                                  <StatusIcon status={s} />
+                                  {issueStatusLabels[s]}
+                                </ContextMenuItem>
+                              ))}
+                            </ContextMenuSubContent>
+                          </ContextMenuSub>
+                          <ContextMenuSub>
+                            <ContextMenuSubTrigger>
+                              <Flag className="h-4 w-4" />
+                              Set priority
+                            </ContextMenuSubTrigger>
+                            <ContextMenuSubContent>
+                              {(["critical", "high", "medium", "low"] as const).map((p) => (
+                                <ContextMenuItem
+                                  key={p}
+                                  onClick={() => onUpdateIssue(issue.id, { priority: p })}
+                                  className={cn("capitalize", p === issue.priority && "bg-accent")}
+                                >
+                                  {p}
+                                </ContextMenuItem>
+                              ))}
+                            </ContextMenuSubContent>
+                          </ContextMenuSub>
+                        </ContextMenuContent>
+                      </ContextMenu>
                       {hasChildren && isExpanded && children.map((child) => renderIssueRow(child, depth + 1))}
                     </div>
                   );
