@@ -2396,6 +2396,16 @@ function isCheapRecoveryDeliverableHandoffContext(
   );
 }
 
+function isStatusOnlyCheapRecoveryContext(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  return readContextModelProfile(contextSnapshot) === "cheap" &&
+    readNonEmptyString(contextSnapshot?.recoveryIntent) === "status_only" &&
+    contextSnapshot?.allowDeliverableWork === false &&
+    contextSnapshot?.allowDocumentUpdates === false &&
+    contextSnapshot?.resumeRequiresNormalModel === true;
+}
+
 export function normalizeModelProfileWakeContext(input: {
   contextSnapshot: Record<string, unknown>;
   payload: Record<string, unknown> | null | undefined;
@@ -9686,7 +9696,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const shouldQuarantineWorkspaceForRetry =
       workspaceValidationRetryPayload !== null &&
       Object.keys(workspaceValidationRetryPayload).length > 0;
-    const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
+    const retryContextSeed: Record<string, unknown> = {
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason,
@@ -9710,7 +9720,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
         : {}),
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
-    }, "normal_model");
+    };
+    const retryContextSnapshot: Record<string, unknown> = isStatusOnlyCheapRecoveryContext(contextSnapshot)
+      ? withRecoveryModelProfileHint(retryContextSeed, "status_only")
+      : withRecoveryModelProfileHint(retryContextSeed, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
     const continuationRetryIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
       ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
@@ -14542,6 +14555,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .then((rows) => rows[0] ?? null);
 
         if (!deferred) break;
+
+        // A bounded retry scheduled by the finalizing run already owns this
+        // issue's next execution slot. Keep later deferred work durable until
+        // that retry runs (or exhausts) so provider retryNotBefore/backoff
+        // cannot be bypassed by immediate deferred-wake promotion.
+        const existingExecutionPath = await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              sql`${heartbeatRuns.id} <> ${run.id}`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existingExecutionPath) break;
 
         const deferredAgent = await tx
           .select()
