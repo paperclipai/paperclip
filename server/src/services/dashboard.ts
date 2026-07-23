@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
@@ -6,6 +6,26 @@ import { budgetService } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
+
+/**
+ * Error codes that indicate a run could not authenticate — i.e. a credential
+ * outage rather than isolated flakiness. When these appear back-to-back across
+ * the whole company, it is almost always a systemic auth failure (expired/
+ * missing token, quoting bug that empties the Bearer header) rather than the
+ * inactivity-monitor pollution that dominates the ordinary failed count.
+ */
+const AUTH_FAILURE_ERROR_CODES = [
+  "auth_required",
+  "acpx_auth_required",
+  "github_auth_required",
+  "github_token_unavailable",
+] as const;
+/** Consecutive auth failures at which the dashboard alert flips on. */
+const AUTH_FAILURE_ALERT_THRESHOLD = 3;
+/** How many most-recent terminal runs to scan when measuring the streak. */
+const AUTH_FAILURE_SCAN_LIMIT = 50;
+/** Statuses that represent a finished run; queued/running runs don't reset the streak. */
+const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "timed_out", "cancelled"] as const;
 
 function formatUtcDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -179,6 +199,52 @@ export function dashboardService(db: Db) {
           : 0;
       const budgetOverview = await budgets.overview(companyId);
 
+      // Auth-outage signal: walk the most-recent terminal runs newest-first and
+      // count how many, uninterrupted, failed on an auth error code. A success,
+      // a non-auth failure, or a cancel breaks the streak — so a triggered alert
+      // means the company's latest activity is a run of pure auth failures, the
+      // signature of a credential outage rather than inactivity-monitor noise.
+      const authFailureCodes = new Set<string>(AUTH_FAILURE_ERROR_CODES);
+      const recentTerminalRuns = await db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          createdAt: heartbeatRuns.createdAt,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, [...TERMINAL_RUN_STATUSES]),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(AUTH_FAILURE_SCAN_LIMIT);
+
+      let consecutiveAuthFailures = 0;
+      let latestAuthFailureAt: Date | null = null;
+      let latestAuthFailureCode: string | null = null;
+      for (const run of recentTerminalRuns) {
+        const isAuthFailure =
+          (run.status === "failed" || run.status === "timed_out") &&
+          run.errorCode != null &&
+          authFailureCodes.has(run.errorCode);
+        if (!isAuthFailure) break;
+        consecutiveAuthFailures += 1;
+        if (latestAuthFailureAt === null) {
+          latestAuthFailureAt = run.createdAt;
+          latestAuthFailureCode = run.errorCode;
+        }
+      }
+
+      const authFailureAlert = {
+        consecutiveFailures: consecutiveAuthFailures,
+        threshold: AUTH_FAILURE_ALERT_THRESHOLD,
+        triggered: consecutiveAuthFailures >= AUTH_FAILURE_ALERT_THRESHOLD,
+        latestFailureAt: latestAuthFailureAt ? latestAuthFailureAt.toISOString() : null,
+        errorCode: latestAuthFailureCode,
+      };
+
       return {
         companyId,
         agents: {
@@ -201,6 +267,7 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
         runActivity: Array.from(runActivity.values()),
+        authFailureAlert,
       };
     },
   };

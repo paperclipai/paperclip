@@ -1302,6 +1302,13 @@ export const storybookDashboardSummary: DashboardSummary = {
     { date: "2026-04-19", succeeded: 5, failed: 2, recovered: 6, other: 1, total: 14, failedByErrorCode: { process_lost: 2 } },
     { date: "2026-04-20", succeeded: 4, failed: 1, recovered: 3, other: 2, total: 10, failedByErrorCode: { process_lost: 1 } },
   ],
+  authFailureAlert: {
+    consecutiveFailures: 0,
+    threshold: 3,
+    triggered: false,
+    latestFailureAt: null,
+    errorCode: null,
+  },
 };
 
 export const storybookLiveRuns: LiveRunForIssue[] = [
