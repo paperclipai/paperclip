@@ -193,9 +193,23 @@ async function prepareClaudeRemoteManagedHome(
 ): Promise<AcpxRemoteManagedHomeResult> {
   const { env, runId, onLog, executionTarget } = input;
   const envConfig = parseObject(input.config.env);
-  const hasExplicitClaudeConfigDir =
-    typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0;
-  if (hasExplicitClaudeConfigDir) {
+  const explicitClaudeConfigDir =
+    typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0
+      ? envConfig.CLAUDE_CONFIG_DIR.trim()
+      : "";
+  if (explicitClaudeConfigDir) {
+    // User-managed escape hatch — mirrors the Claude CLI lane's
+    // `!hasExplicitClaudeConfigDir` gate (`claude-local/execute.ts`): when the run
+    // explicitly pins CLAUDE_CONFIG_DIR the operator owns that directory, so we
+    // stage no managed config and do not remap the var. The engine already
+    // rewrites workspace-relative values onto the in-sandbox workspace, but an
+    // absolute value is forwarded verbatim and MUST resolve inside the sandbox —
+    // a host-only path would leave remote Claude without config/credentials.
+    // Log it so that misconfiguration is diagnosable instead of silent.
+    await onLog(
+      "stdout",
+      `[paperclip] Honoring operator-provided CLAUDE_CONFIG_DIR=${explicitClaudeConfigDir} for the remote ACP run; it must resolve inside the sandbox (no managed config is staged).\n`,
+    );
     return { stagedRuntime: await input.stage([]) };
   }
 

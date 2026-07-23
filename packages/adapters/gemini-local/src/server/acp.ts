@@ -130,10 +130,13 @@ export function buildGeminiAcpConfig(config: Record<string, unknown>): Record<st
  * is present — pre-select the api-key auth in `$HOME/.gemini/settings.json`
  * (Gemini refuses headless runs without a persisted auth selection).
  *
- * The credential itself is never placed in an env var: the key is only read as a
- * boolean signal to decide whether to write the auth-method selector, which
- * carries no key bytes (the key reaches the sandbox via the provider's per-run
- * secret, file-only). Gemini has no credential copy-back, so no teardown hook.
+ * The seed never writes key bytes: the key is only read as a boolean signal to
+ * decide whether to persist the auth-method selector. The key itself reaches the
+ * sandbox through the engine's process-session env forwarding (the run env AND
+ * the host env — `sanitizeRemoteExecutionEnv` preserves credential keys, stripping
+ * only identity keys), so the selector is written only when the credential will
+ * actually be available in-sandbox. Gemini has no credential copy-back, so no
+ * teardown hook.
  */
 async function prepareGeminiRemoteManagedHome(
   input: AcpxRemoteManagedHomeContext,
@@ -179,8 +182,18 @@ async function prepareGeminiRemoteManagedHome(
 
   // Pre-select api-key auth (file-only; no key bytes) so headless Gemini does not
   // fail with "Invalid auth method selected". Only the credential's PRESENCE is
-  // used as a signal — the key never enters the run env. An existing settings.json
-  // is left untouched.
+  // used as a signal — no key bytes are written to settings.json.
+  //
+  // The presence check spans BOTH the run env and the host process env on purpose:
+  // the engine forwards `{ ...process.env, ...env }` into the sandbox process and
+  // `sanitizeRemoteExecutionEnv` strips only identity keys (PATH/HOME/XDG_*), never
+  // credential keys. So a GEMINI_API_KEY/GOOGLE_API_KEY present on EITHER source is
+  // available in-sandbox — the host env is a valid signal that the selected
+  // api-key auth will have its credential (matches the Gemini CLI lane, which
+  // relies on the same host-env passthrough). Basing the check on the run env
+  // alone would drop the common host-env-provided key and make headless Gemini
+  // fail auth despite the credential being present in the sandbox. An existing
+  // settings.json (user-shipped via workspace) is left untouched.
   const hasGeminiApiKey = Boolean(
     env.GEMINI_API_KEY ||
       env.GOOGLE_API_KEY ||
