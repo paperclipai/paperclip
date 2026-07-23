@@ -2616,6 +2616,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/secrets/catalog",
+  tags: ["secrets"],
+  summary: "List secret metadata (id, name, key, status) — accessible to agents",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/secrets",
   tags: ["secrets"],
   summary: "List secrets in a company",

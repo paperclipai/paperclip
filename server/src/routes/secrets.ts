@@ -16,7 +16,7 @@ import {
   updateUserSecretValueSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource } from "./authz.js";
+import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { forbidden, unauthorized } from "../errors.js";
@@ -339,6 +339,17 @@ export function secretRoutes(db: Db) {
     });
 
     res.json(health);
+  });
+
+  // Agent-readable catalog: returns only non-sensitive metadata (id, name, key, status).
+  // Agents need this to resolve a secret name to its UUID when wiring env bindings,
+  // without requiring board access or exposing any secret values.
+  router.get("/companies/:companyId/secrets/catalog", async (req, res) => {
+    assertBoardOrAgent(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const secrets = await svc.list(companyId);
+    res.json(secrets.map(({ id, name, key, status }) => ({ id, name, key, status })));
   });
 
   router.get("/companies/:companyId/secrets", async (req, res) => {

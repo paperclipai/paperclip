@@ -18,6 +18,7 @@ const mockSecretService = vi.hoisted(() => ({
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
   getById: vi.fn(),
+  list: vi.fn(),
   getByKey: vi.fn(),
   create: vi.fn(),
   rotate: vi.fn(),
@@ -980,5 +981,78 @@ describe("secret routes", () => {
         entityId: secret.id,
       }),
     );
+  });
+
+  describe("GET /companies/:companyId/secrets/catalog", () => {
+    const fullSecrets = [
+      {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        name: "MY_API_KEY",
+        key: "my_api_key",
+        status: "active",
+        companyId: "company-1",
+        provider: "local_encrypted",
+        providerMetadata: null,
+        referenceCount: 2,
+      },
+      {
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        name: "DB_PASSWORD",
+        key: "db_password",
+        status: "active",
+        companyId: "company-1",
+        provider: "local_encrypted",
+        providerMetadata: null,
+        referenceCount: 0,
+      },
+    ];
+
+    it("returns id/name/key/status only for board callers", async () => {
+      mockSecretService.list.mockResolvedValue(fullSecrets);
+
+      const res = await request(createApp()).get("/api/companies/company-1/secrets/catalog");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([
+        { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "MY_API_KEY", key: "my_api_key", status: "active" },
+        { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "DB_PASSWORD", key: "db_password", status: "active" },
+      ]);
+      expect(res.body[0]).not.toHaveProperty("provider");
+      expect(res.body[0]).not.toHaveProperty("referenceCount");
+    });
+
+    it("returns id/name/key/status only for agent callers in the same company", async () => {
+      mockSecretService.list.mockResolvedValue(fullSecrets);
+
+      const agentApp = createApp({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+      });
+      const res = await request(agentApp).get("/api/companies/company-1/secrets/catalog");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(2);
+      expect(res.body[0]).toMatchObject({ id: expect.any(String), name: "MY_API_KEY", key: "my_api_key", status: "active" });
+    });
+
+    it("rejects unauthenticated requests", async () => {
+      const res = await request(createApp({ type: "none" }))
+        .get("/api/companies/company-1/secrets/catalog");
+
+      // assertBoardOrAgent throws forbidden (403) for all non-agent/non-board actors;
+      // it does not call assertAuthenticated first, so type:"none" gets 403, not 401.
+      expect(res.status).toBe(403);
+    });
+
+    it("rejects agents from a different company", async () => {
+      const res = await request(createApp({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-2",
+      })).get("/api/companies/company-1/secrets/catalog");
+
+      expect(res.status).toBe(403);
+    });
   });
 });
