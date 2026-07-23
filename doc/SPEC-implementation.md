@@ -1018,6 +1018,26 @@ Behavior:
 - `thin`: send IDs and pointers only; agent fetches context via API
 - `fat`: include current assignments, goal summary, budget snapshot, and recent comments
 
+Issue-scoped wake payloads include a `goalProjectIntake` snapshot when the
+authoritative issue links a project or goal. The snapshot is restricted to the
+issue company and contains:
+
+- the linked project, including description, lead, target date, status, and
+  timestamps
+- the linked goal (falling back to the project's goal), including description,
+  owner, hierarchy, status, and timestamps
+- active direct child goals as the linked goal's active milestones
+- the previous comparable wake timestamp and full changed records since that
+  timestamp, including milestones that became inactive
+
+The first comparable wake is an initial snapshot; subsequent wakes use the
+previous snapshot's `capturedAt` as `changedSince`. Consumers can therefore
+validate outcome, owner, horizon, dependencies, evidence, approval boundaries,
+and ranking inputs from the scoped descriptions and fields without listing
+unrelated issues. Bounded or truncated intake snapshots set
+`fallbackFetchNeeded` so consumers do not silently treat partial scope as
+complete.
+
 ## 11.5 Recovery Model Profiles
 
 The optional `modelProfiles.cheap` lane is not a retry worker lane. Paperclip may request the cheap profile only for status-only recovery coordination, and those wakes must include guard context that prevents deliverable work and document/plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`).

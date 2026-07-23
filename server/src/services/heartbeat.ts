@@ -46,6 +46,7 @@ import {
   documentRevisions,
   issueDocuments,
   executionWorkspaces,
+  goals,
   heartbeatRunEvents,
   heartbeatRuns,
   issueApprovals,
@@ -315,6 +316,9 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const MAX_INLINE_WAKE_ACTIVE_MILESTONES = 20;
+const MAX_INLINE_WAKE_INTAKE_DESCRIPTION_CHARS = 4_000;
+const MAX_INLINE_WAKE_INTAKE_DESCRIPTION_TOTAL_CHARS = 16_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -4376,10 +4380,296 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
+type PaperclipWakeIssueSummary = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  workMode: string;
+  projectId?: string | null;
+  goalId?: string | null;
+  executionPolicy?: unknown;
+};
+
+type PaperclipWakeRunScope = {
+  id: string;
+  agentId: string;
+  createdAt: Date;
+};
+
+function readIntakeRecordId(value: unknown) {
+  return readNonEmptyString(parseObject(value).id);
+}
+
+function readPreviousActiveMilestoneIds(value: unknown) {
+  const intake = parseObject(value);
+  if (!Array.isArray(intake.activeMilestones)) return [];
+  return intake.activeMilestones
+    .map((entry) => readIntakeRecordId(entry))
+    .filter((id): id is string => Boolean(id));
+}
+
+async function buildGoalProjectIntakeContext(input: {
+  db: Db;
+  companyId: string;
+  issueSummary: PaperclipWakeIssueSummary;
+  run?: PaperclipWakeRunScope | null;
+}) {
+  const project = input.issueSummary.projectId
+    ? await input.db
+        .select({
+          id: projects.id,
+          goalId: projects.goalId,
+          name: projects.name,
+          description: projects.description,
+          status: projects.status,
+          leadAgentId: projects.leadAgentId,
+          targetDate: projects.targetDate,
+          createdAt: projects.createdAt,
+          updatedAt: projects.updatedAt,
+        })
+        .from(projects)
+        .where(
+          and(
+            eq(projects.id, input.issueSummary.projectId),
+            eq(projects.companyId, input.companyId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null)
+    : null;
+  const goalId = input.issueSummary.goalId ?? project?.goalId ?? null;
+  const goal = goalId
+    ? await input.db
+        .select({
+          id: goals.id,
+          title: goals.title,
+          description: goals.description,
+          level: goals.level,
+          status: goals.status,
+          parentId: goals.parentId,
+          ownerAgentId: goals.ownerAgentId,
+          createdAt: goals.createdAt,
+          updatedAt: goals.updatedAt,
+        })
+        .from(goals)
+        .where(and(eq(goals.id, goalId), eq(goals.companyId, input.companyId)))
+        .then((rows) => rows[0] ?? null)
+    : null;
+  const activeMilestoneRows = goal
+    ? await input.db
+        .select({
+          id: goals.id,
+          title: goals.title,
+          description: goals.description,
+          level: goals.level,
+          status: goals.status,
+          parentId: goals.parentId,
+          ownerAgentId: goals.ownerAgentId,
+          createdAt: goals.createdAt,
+          updatedAt: goals.updatedAt,
+          totalCount: sql<number>`count(*) over()`,
+        })
+        .from(goals)
+        .where(
+          and(
+            eq(goals.companyId, input.companyId),
+            eq(goals.parentId, goal.id),
+            eq(goals.status, "active"),
+          ),
+        )
+        .orderBy(desc(goals.updatedAt), asc(goals.title))
+        .limit(MAX_INLINE_WAKE_ACTIVE_MILESTONES + 1)
+    : [];
+  const activeMilestoneTruncated =
+    activeMilestoneRows.length > MAX_INLINE_WAKE_ACTIVE_MILESTONES;
+  const activeMilestoneCount = Number(activeMilestoneRows[0]?.totalCount ?? 0);
+  const activeMilestoneSourceRows = activeMilestoneRows.slice(
+    0,
+    MAX_INLINE_WAKE_ACTIVE_MILESTONES,
+  );
+  const previousProjectIdExpression =
+    sql<string | null>`${heartbeatRuns.contextSnapshot} #>> '{paperclipWake,goalProjectIntake,project,id}'`;
+  const previousGoalIdExpression =
+    sql<string | null>`${heartbeatRuns.contextSnapshot} #>> '{paperclipWake,goalProjectIntake,goal,id}'`;
+
+  const previousRun = input.run
+    ? await input.db
+        .select({
+          id: heartbeatRuns.id,
+          createdAt: heartbeatRuns.createdAt,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, input.companyId),
+            eq(heartbeatRuns.agentId, input.run.agentId),
+            lt(heartbeatRuns.createdAt, input.run.createdAt),
+            eq(
+              sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+              input.issueSummary.id,
+            ),
+            sql`${heartbeatRuns.contextSnapshot} -> 'paperclipWake' -> 'goalProjectIntake' is not null`,
+            project?.id
+              ? eq(previousProjectIdExpression, project.id)
+              : isNull(previousProjectIdExpression),
+            goal?.id
+              ? eq(previousGoalIdExpression, goal.id)
+              : isNull(previousGoalIdExpression),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+    : null;
+  const previousWake = parseObject(
+    parseObject(previousRun?.contextSnapshot).paperclipWake,
+  );
+  const previousIntake = parseObject(previousWake.goalProjectIntake);
+  const previousProjectId = readIntakeRecordId(previousIntake.project);
+  const previousGoalId = readIntakeRecordId(previousIntake.goal);
+  const comparablePreviousIntake =
+    previousRun &&
+    (project?.id ?? null) === (previousProjectId ?? null) &&
+    (goal?.id ?? null) === (previousGoalId ?? null) &&
+    readNonEmptyString(previousIntake.capturedAt)
+      ? previousIntake
+      : null;
+  const changedSince = comparablePreviousIntake
+    ? readNonEmptyString(comparablePreviousIntake.capturedAt)
+    : null;
+  const changedSinceDate = changedSince ? new Date(changedSince) : null;
+  const validChangedSinceDate =
+    changedSinceDate && Number.isFinite(changedSinceDate.getTime())
+      ? changedSinceDate
+      : null;
+  const previousActiveMilestoneIds = new Set(
+    comparablePreviousIntake
+      ? readPreviousActiveMilestoneIds(comparablePreviousIntake)
+      : [],
+  );
+
+  let remainingDescriptionChars =
+    MAX_INLINE_WAKE_INTAKE_DESCRIPTION_TOTAL_CHARS;
+  let descriptionTruncated = false;
+  const inlineDescription = (value: string | null) => {
+    if (!value) return { description: null, descriptionTruncated: false };
+    const allowedChars = Math.min(
+      MAX_INLINE_WAKE_INTAKE_DESCRIPTION_CHARS,
+      remainingDescriptionChars,
+    );
+    const description = allowedChars > 0 ? value.slice(0, allowedChars) : "";
+    const truncated = description.length < value.length;
+    remainingDescriptionChars -= description.length;
+    descriptionTruncated ||= truncated;
+    return {
+      description,
+      descriptionTruncated: truncated,
+    };
+  };
+  const serializeGoal = (
+    row: NonNullable<typeof goal>,
+  ) => ({
+    id: row.id,
+    title: row.title,
+    ...inlineDescription(row.description),
+    level: row.level,
+    status: row.status,
+    parentId: row.parentId,
+    ownerAgentId: row.ownerAgentId,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  });
+  const serializedProject = project
+    ? {
+        id: project.id,
+        goalId: project.goalId,
+        name: project.name,
+        ...inlineDescription(project.description),
+        status: project.status,
+        leadAgentId: project.leadAgentId,
+        targetDate: project.targetDate,
+        createdAt: project.createdAt.toISOString(),
+        updatedAt: project.updatedAt.toISOString(),
+      }
+    : null;
+  const serializedGoal = goal ? serializeGoal(goal) : null;
+  const activeMilestones = activeMilestoneSourceRows.map(serializeGoal);
+  const hasChangedSince = (updatedAt: Date) =>
+    !validChangedSinceDate || updatedAt > validChangedSinceDate;
+  const changeKind = (createdAt: Date) =>
+    !validChangedSinceDate
+      ? "snapshot"
+      : createdAt > validChangedSinceDate
+        ? "created"
+        : "updated";
+  const activeMilestoneDeltas = activeMilestones
+    .filter((milestone) => {
+      const source = activeMilestoneSourceRows.find(
+        (row) => row.id === milestone.id,
+      );
+      return source ? hasChangedSince(source.updatedAt) : false;
+    })
+    .map((milestone) => {
+      const source = activeMilestoneSourceRows.find(
+        (row) => row.id === milestone.id,
+      )!;
+      return {
+        id: milestone.id,
+        updatedAt: milestone.updatedAt,
+        changeKind: changeKind(source.createdAt),
+      };
+    });
+  const currentActiveMilestoneIds = new Set(
+    activeMilestones.map((milestone) => milestone.id),
+  );
+  const noLongerActiveMilestoneIds =
+    comparablePreviousIntake && !activeMilestoneTruncated
+      ? [...previousActiveMilestoneIds].filter(
+          (milestoneId) => !currentActiveMilestoneIds.has(milestoneId),
+        )
+      : [];
+
+  return {
+    capturedAt: new Date().toISOString(),
+    changedSince,
+    baselineRunId: comparablePreviousIntake ? previousRun?.id ?? null : null,
+    baselineKind: comparablePreviousIntake ? "incremental" : "initial",
+    project: serializedProject,
+    goal: serializedGoal,
+    activeMilestones,
+    deltas: {
+      project:
+        project && hasChangedSince(project.updatedAt)
+          ? {
+              id: project.id,
+              updatedAt: project.updatedAt.toISOString(),
+              changeKind: changeKind(project.createdAt),
+            }
+          : null,
+      goal:
+        goal && hasChangedSince(goal.updatedAt)
+          ? {
+              id: goal.id,
+              updatedAt: goal.updatedAt.toISOString(),
+              changeKind: changeKind(goal.createdAt),
+            }
+          : null,
+      activeMilestones: activeMilestoneDeltas,
+      noLongerActiveMilestoneIds,
+    },
+    activeMilestoneCount,
+    includedActiveMilestoneCount: activeMilestones.length,
+    truncated: activeMilestoneTruncated || descriptionTruncated,
+  };
+}
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
   contextSnapshot: Record<string, unknown>;
+  run?: PaperclipWakeRunScope | null;
   continuationSummary?:
     | {
         key: string;
@@ -4389,18 +4679,7 @@ export async function buildPaperclipWakePayload(input: {
         updatedAt: Date;
       }
     | null;
-  issueSummary?:
-    | {
-        id: string;
-        identifier: string | null;
-        title: string;
-        status: string;
-        priority: string;
-        workMode: string;
-        projectId?: string | null;
-        executionPolicy?: unknown;
-      }
-    | null;
+  issueSummary?: PaperclipWakeIssueSummary | null;
   exposeLowTrustRaw?: boolean;
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
@@ -4419,12 +4698,22 @@ export async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            projectId: issues.projectId,
+            goalId: issues.goalId,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  const goalProjectIntake = issueSummary
+    ? await buildGoalProjectIntakeContext({
+        db: input.db,
+        companyId: input.companyId,
+        issueSummary,
+        run: input.run,
+      })
+    : null;
 
   const commentRows =
     commentIds.length === 0
@@ -4582,7 +4871,10 @@ export async function buildPaperclipWakePayload(input: {
       interactionId,
     })
     : null;
-  const payloadTruncated = truncated || planReviewContext?.truncated === true;
+  const payloadTruncated =
+    truncated ||
+    planReviewContext?.truncated === true ||
+    goalProjectIntake?.truncated === true;
   const recoveryActionId = readNonEmptyString(input.contextSnapshot.recoveryActionId);
   const recoveryCause = readNonEmptyString(input.contextSnapshot.recoveryCause);
   const recoveryAction = recoveryActionId
@@ -4630,8 +4922,14 @@ export async function buildPaperclipWakePayload(input: {
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
+          projectId: issueSummary.projectId ?? null,
+          goalId:
+            issueSummary.goalId ??
+            goalProjectIntake?.goal?.id ??
+            null,
         }
       : null,
+    goalProjectIntake,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
       ? input.contextSnapshot.childIssueSummaries
       : [],
@@ -4689,7 +4987,10 @@ export async function buildPaperclipWakePayload(input: {
       missingCount: missingCommentCount,
     },
     truncated: payloadTruncated,
-    fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
+    fallbackFetchNeeded:
+      payloadTruncated ||
+      missingCommentCount > 0 ||
+      goalProjectIntake?.truncated === true,
   };
 }
 
@@ -5914,6 +6215,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         workMode: issues.workMode,
         priority: issues.priority,
         projectId: issues.projectId,
+        goalId: issues.goalId,
         projectWorkspaceId: issues.projectWorkspaceId,
         executionWorkspaceId: issues.executionWorkspaceId,
         executionWorkspacePreference: issues.executionWorkspacePreference,
@@ -12022,6 +12324,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           workMode: issueContext.workMode,
           description: issueContext.description,
           projectId: issueContext.projectId,
+          goalId: issueContext.goalId,
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
@@ -12069,6 +12372,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       db,
       companyId: agent.companyId,
       contextSnapshot: context,
+      run: {
+        id: run.id,
+        agentId: run.agentId,
+        createdAt: run.createdAt,
+      },
       continuationSummary,
       issueSummary: issueRef
         ? {
@@ -12079,6 +12387,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             priority: issueRef.priority,
             workMode: issueRef.workMode,
             projectId: issueRef.projectId,
+            goalId: issueRef.goalId,
             executionPolicy: issueContext?.executionPolicy ?? null,
           }
         : null,
