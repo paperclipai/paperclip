@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -27,6 +27,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -279,6 +280,175 @@ describeEmbeddedPostgres("heartbeat list", () => {
     expect(typeof result?.stdout).toBe("string");
     expect((result?.stdout as string).length).toBeLessThan(oversizedStdout.length);
     expect(result).not.toHaveProperty("nestedHuge");
+  });
+
+  it("lists safe run details for a caller-specified time window", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const failedRunId = randomUUID();
+    const missingIssueRunId = randomUUID();
+    const signalRunId = randomUUID();
+    const outsideRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      title: "Founding Engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: { secret: "must-not-leak" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Fix the failing run",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      identifier: "PC-123",
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: failedRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "issue_assigned",
+        status: "failed",
+        startedAt: new Date("2026-07-18T10:00:00.000Z"),
+        finishedAt: new Date("2026-07-18T10:05:00.000Z"),
+        createdAt: new Date("2026-07-18T09:59:00.000Z"),
+        error: "Raw stack with token sk-secret and patient data must not leak",
+        stdoutExcerpt: "transcript must not leak",
+        stderrExcerpt: "stderr must not leak",
+        resultJson: {
+          error: "raw adapter error must not leak",
+          stdout: "raw stdout must not leak",
+        },
+        errorCode: "provider_quota",
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_assigned",
+        },
+      },
+      {
+        id: missingIssueRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "timed_out",
+        startedAt: new Date("2026-07-18T11:00:00.000Z"),
+        finishedAt: new Date("2026-07-18T11:30:00.000Z"),
+        errorCode: null,
+        contextSnapshot: {
+          issueId: randomUUID(),
+          taskKey: "external-task-1",
+        },
+      },
+      {
+        id: signalRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "failed",
+        startedAt: new Date("2026-07-18T10:30:00.000Z"),
+        finishedAt: new Date("2026-07-18T10:31:00.000Z"),
+        errorCode: null,
+        signal: "SIGKILL",
+        contextSnapshot: {
+          issueId,
+        },
+      },
+      {
+        id: outsideRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "failed",
+        startedAt: new Date("2026-07-17T11:00:00.000Z"),
+        errorCode: "adapter_failed",
+        contextSnapshot: {
+          issueId,
+        },
+      },
+    ]);
+
+    const details = await heartbeatService(db).listRunDetails(companyId, {
+      start: new Date("2026-07-18T00:00:00.000Z"),
+      end: new Date("2026-07-19T00:00:00.000Z"),
+      limit: 10,
+    });
+
+    expect(details.map((run) => run.id)).toEqual([missingIssueRunId, signalRunId, failedRunId]);
+
+    expect(details[1]).toMatchObject({
+      id: signalRunId,
+      failureClass: "runtime_process",
+      safeReasonSummary: "Run was terminated by a process signal.",
+    });
+
+    expect(details[2]).toMatchObject({
+      id: failedRunId,
+      agent: {
+        id: agentId,
+        name: "CodexCoder",
+        role: "engineer",
+        title: "Founding Engineer",
+        status: "running",
+        adapterType: "codex_local",
+      },
+      linkedEntityId: issueId,
+      linkedIssue: {
+        id: issueId,
+        identifier: "PC-123",
+        title: "Fix the failing run",
+        status: "in_progress",
+      },
+      status: "failed",
+      durationMs: 300_000,
+      failureClass: "provider_quota",
+      safeReasonSummary: "Run failed with safe error code provider_quota.",
+    });
+
+    expect(details[0]).toMatchObject({
+      id: missingIssueRunId,
+      linkedIssue: null,
+      status: "timed_out",
+      durationMs: 1_800_000,
+      failureClass: "timeout",
+      safeReasonSummary: "Run timed out.",
+    });
+
+    const serialized = JSON.stringify(details);
+    expect(details[2]).not.toHaveProperty("companyId");
+    expect(details[2]).not.toHaveProperty("invocationSource");
+    expect(details[2]).not.toHaveProperty("triggerDetail");
+    expect(details[2]).not.toHaveProperty("wakeReason");
+    expect(details[2]).not.toHaveProperty("livenessState");
+    expect(details[2]).not.toHaveProperty("livenessReason");
+    expect(details[2]).not.toHaveProperty("exitCode");
+    expect(details[2]).not.toHaveProperty("signal");
+    expect(details[2]).not.toHaveProperty("failure");
+    expect(serialized).not.toContain("Raw stack");
+    expect(serialized).not.toContain("transcript");
+    expect(serialized).not.toContain("stderr must not leak");
+    expect(serialized).not.toContain("raw adapter error");
+    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("sk-secret");
   });
 });
 

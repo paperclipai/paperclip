@@ -1931,6 +1931,105 @@ const heartbeatRunIssueSummaryColumns = {
   issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
 } as const;
 
+const heartbeatRunDetailColumns = {
+  id: heartbeatRuns.id,
+  companyId: heartbeatRuns.companyId,
+  agentId: heartbeatRuns.agentId,
+  agentName: agents.name,
+  agentRole: agents.role,
+  agentTitle: agents.title,
+  agentStatus: agents.status,
+  adapterType: agents.adapterType,
+  status: heartbeatRuns.status,
+  startedAt: heartbeatRuns.startedAt,
+  finishedAt: heartbeatRuns.finishedAt,
+  createdAt: heartbeatRuns.createdAt,
+  updatedAt: heartbeatRuns.updatedAt,
+  errorCode: heartbeatRuns.errorCode,
+  exitCode: heartbeatRuns.exitCode,
+  signal: heartbeatRuns.signal,
+  livenessState: heartbeatRuns.livenessState,
+  livenessReason: heartbeatRuns.livenessReason,
+  invocationSource: heartbeatRuns.invocationSource,
+  triggerDetail: heartbeatRuns.triggerDetail,
+  contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("contextIssueId"),
+  contextTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`.as("contextTaskId"),
+  contextTaskKey: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`.as("contextTaskKey"),
+  contextWakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`.as("contextWakeReason"),
+  issueId: issues.id,
+  issueIdentifier: issues.identifier,
+  issueTitle: issues.title,
+  issueStatus: issues.status,
+} as const;
+
+type HeartbeatRunFailureClass =
+  | "none"
+  | "adapter"
+  | "configuration"
+  | "provider_quota"
+  | "workspace"
+  | "timeout"
+  | "cancelled"
+  | "interrupted"
+  | "runtime_process"
+  | "responsible_user"
+  | "unknown";
+
+function classifySafeHeartbeatRunFailure(input: {
+  status: string;
+  errorCode: string | null;
+  signal: string | null;
+}): { failureClass: HeartbeatRunFailureClass; safeReasonSummary: string | null } {
+  if (input.status === "succeeded") return { failureClass: "none", safeReasonSummary: null };
+  if (input.status === "cancelled") {
+    return { failureClass: "cancelled", safeReasonSummary: "Run was cancelled." };
+  }
+  if (input.status === "interrupted") {
+    return { failureClass: "interrupted", safeReasonSummary: "Run was interrupted." };
+  }
+  if (input.status === "timed_out") {
+    return { failureClass: "timeout", safeReasonSummary: "Run timed out." };
+  }
+  if (!["failed", "cancelled", "interrupted", "timed_out"].includes(input.status)) {
+    return { failureClass: "none", safeReasonSummary: null };
+  }
+
+  const code = input.errorCode?.trim() || null;
+  if (!code) {
+    if (input.signal) {
+      return { failureClass: "runtime_process", safeReasonSummary: "Run was terminated by a process signal." };
+    }
+    return {
+      failureClass: "unknown",
+      safeReasonSummary: `Run ended with status ${input.status}; no safe error code was recorded.`,
+    };
+  }
+
+  if (code.includes("quota") || code.includes("rate_limit")) {
+    return { failureClass: "provider_quota", safeReasonSummary: `Run failed with safe error code ${code}.` };
+  }
+  if (code.includes("workspace")) {
+    return { failureClass: "workspace", safeReasonSummary: `Run failed with safe error code ${code}.` };
+  }
+  if (code.includes("timeout") || code === "max_turns_exhausted") {
+    return { failureClass: "timeout", safeReasonSummary: `Run failed with safe error code ${code}.` };
+  }
+  if (code.includes("configuration") || code.includes("credential") || code.includes("missing")) {
+    return { failureClass: "configuration", safeReasonSummary: `Run failed with safe error code ${code}.` };
+  }
+  if (code.includes("responsible_user")) {
+    return { failureClass: "responsible_user", safeReasonSummary: `Run failed with safe error code ${code}.` };
+  }
+  if (code.includes("process") || code.includes("shutdown") || input.signal) {
+    return { failureClass: "runtime_process", safeReasonSummary: `Run failed with safe error code ${code}.` };
+  }
+  if (code.includes("adapter") || code.includes("setup")) {
+    return { failureClass: "adapter", safeReasonSummary: `Run failed with safe error code ${code}.` };
+  }
+
+  return { failureClass: "unknown", safeReasonSummary: `Run failed with safe error code ${code}.` };
+}
+
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithByteCap(prev, chunk, MAX_EXCERPT_BYTES);
 }
@@ -16774,6 +16873,85 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 costUsd: resultCostUsd,
                 costUsdCamel: resultCostUsdCamel,
               }),
+        };
+      });
+    },
+
+    listRunDetails: async (
+      companyId: string,
+      options: {
+        start: Date;
+        end: Date;
+        agentId?: string | null;
+        status?: string | null;
+        limit?: number;
+      },
+    ) => {
+      const runWindowAt = sql<Date>`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt})`;
+      const conditions = [
+        eq(heartbeatRuns.companyId, companyId),
+        sql`${runWindowAt} >= ${options.start.toISOString()}::timestamptz`,
+        sql`${runWindowAt} < ${options.end.toISOString()}::timestamptz`,
+      ];
+      if (options.agentId) conditions.push(eq(heartbeatRuns.agentId, options.agentId));
+      if (options.status) conditions.push(eq(heartbeatRuns.status, options.status));
+
+      const rows = await db
+        .select(heartbeatRunDetailColumns)
+        .from(heartbeatRuns)
+        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .leftJoin(
+          issues,
+          and(
+            eq(issues.companyId, heartbeatRuns.companyId),
+            sql`cast(${issues.id} as text) = coalesce(
+              nullif(${heartbeatRuns.contextSnapshot} ->> 'issueId', ''),
+              nullif(${heartbeatRuns.contextSnapshot} ->> 'taskId', '')
+            )`,
+          ),
+        )
+        .where(and(...conditions))
+        .orderBy(desc(runWindowAt), desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(Math.max(1, Math.min(1000, options.limit ?? 200)));
+
+      return rows.map((row) => {
+        const startedAt = row.startedAt ?? row.createdAt;
+        const endedAt = row.finishedAt ?? null;
+        const durationMs = endedAt && startedAt ? Math.max(0, endedAt.getTime() - startedAt.getTime()) : null;
+        const failure = classifySafeHeartbeatRunFailure({
+          status: row.status,
+          errorCode: row.errorCode,
+          signal: row.signal,
+        });
+        const linkedEntityId = row.contextIssueId ?? row.contextTaskId ?? row.contextTaskKey ?? null;
+
+        return {
+          id: row.id,
+          agent: {
+            id: row.agentId,
+            name: row.agentName,
+            role: row.agentRole,
+            title: row.agentTitle,
+            status: row.agentStatus,
+            adapterType: row.adapterType,
+          },
+          linkedEntityId,
+          linkedIssue: row.issueId
+            ? {
+                id: row.issueId,
+                identifier: row.issueIdentifier,
+                title: row.issueTitle,
+                status: row.issueStatus,
+              }
+            : null,
+          status: row.status,
+          startedAt: row.startedAt,
+          endedAt,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+          durationMs,
+          failureClass: failure.failureClass,
+          safeReasonSummary: failure.safeReasonSummary,
         };
       });
     },

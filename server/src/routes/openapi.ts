@@ -3609,6 +3609,24 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/heartbeat-runs/details",
+  tags: ["runs"],
+  summary: "List safe heartbeat run details for a time window",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      start: z.string().datetime(),
+      end: z.string().datetime(),
+      agentId: z.string().optional(),
+      status: z.string().optional(),
+      limit: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/live-runs",
   tags: ["runs"],
   summary: "List live runs for a company",

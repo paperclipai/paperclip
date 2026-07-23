@@ -12,6 +12,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
+  listRunDetails: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
 }));
@@ -229,6 +230,29 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
+    mockHeartbeatService.listRunDetails.mockResolvedValue([
+      {
+        id: "run-1",
+        agent: {
+          id: "agent-1",
+          name: "Builder",
+          role: "engineer",
+          title: null,
+          status: "running",
+          adapterType: "codex_local",
+        },
+        linkedEntityId: "issue-1",
+        linkedIssue: null,
+        status: "failed",
+        startedAt: new Date("2026-04-10T09:30:00.000Z"),
+        endedAt: new Date("2026-04-10T09:31:00.000Z"),
+        createdAt: new Date("2026-04-10T09:29:59.000Z"),
+        updatedAt: new Date("2026-04-10T09:31:00.000Z"),
+        durationMs: 60_000,
+        failureClass: "adapter",
+        safeReasonSummary: "Run failed with safe error code adapter_failed.",
+      },
+    ]);
     mockHeartbeatService.wakeup.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
@@ -365,6 +389,60 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
+  });
+
+  it("returns safe heartbeat run details for an explicit window", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(
+        "/api/companies/company-1/heartbeat-runs/details?start=2026-04-10T00:00:00.000Z&end=2026-04-11T00:00:00.000Z&limit=25&status=failed",
+      ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.listRunDetails).toHaveBeenCalledWith("company-1", {
+      start: new Date("2026-04-10T00:00:00.000Z"),
+      end: new Date("2026-04-11T00:00:00.000Z"),
+      agentId: null,
+      status: "failed",
+      limit: 25,
+    });
+    expect(res.body).toMatchObject({
+      runs: [
+        {
+          id: "run-1",
+          agent: { id: "agent-1", name: "Builder" },
+          linkedEntityId: "issue-1",
+          status: "failed",
+          durationMs: 60_000,
+          failureClass: "adapter",
+          safeReasonSummary: "Run failed with safe error code adapter_failed.",
+        },
+      ],
+    });
+    expect(JSON.stringify(res.body)).not.toContain("resultJson");
+    expect(JSON.stringify(res.body)).not.toContain("logRef");
+    expect(res.body.runs[0]).not.toHaveProperty("companyId");
+    expect(res.body.runs[0]).not.toHaveProperty("invocationSource");
+    expect(res.body.runs[0]).not.toHaveProperty("triggerDetail");
+    expect(res.body.runs[0]).not.toHaveProperty("wakeReason");
+    expect(res.body.runs[0]).not.toHaveProperty("livenessState");
+    expect(res.body.runs[0]).not.toHaveProperty("livenessReason");
+    expect(res.body.runs[0]).not.toHaveProperty("exitCode");
+    expect(res.body.runs[0]).not.toHaveProperty("signal");
+    expect(res.body.runs[0]).not.toHaveProperty("failure");
+  });
+
+  it("rejects non-ISO heartbeat run detail windows", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(
+        "/api/companies/company-1/heartbeat-runs/details?start=July%2018%202026&end=2026-04-11T00:00:00.000Z",
+      ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(mockHeartbeatService.listRunDetails).not.toHaveBeenCalled();
   });
 
   it("caps company live run polling by default", async () => {
