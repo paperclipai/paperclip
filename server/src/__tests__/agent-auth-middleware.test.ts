@@ -247,6 +247,31 @@ describe("agent auth middleware", () => {
     expect(res.body).toMatchObject({ type: "none", source: "none" });
   });
 
+  it("rejects a JWT for a run that has not been claimed from the queue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: {
+        id: runId,
+        companyId,
+        agentId,
+        responsibleUserId: "user-claim",
+        status: "queued",
+      },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "none", source: "none" });
+  });
+
   it("preserves signed skill_test JWT scope on the request actor", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
