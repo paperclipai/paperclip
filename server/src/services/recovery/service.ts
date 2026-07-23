@@ -288,6 +288,22 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "issue_dependencies_blocked",
 ]);
 
+// Output-inactivity-monitor kills are NOT transient infra failures and must be
+// classified apart from process-loss / upstream-transient retries. The monitor
+// SIGTERMs a run after a long stretch with no stdout; an immediate continuation
+// retry just resumes the same long-quiet work and is killed the same way
+// (observed: roughly half of inactivity-killed continuation retries were
+// themselves re-killed — a wasted, deterministically-failing loop). Under the
+// previous `default` classification (maxAttempts 1, no backoff) such a run still
+// ended up `blocked` after one re-kill, so treating these codes as non-retryable
+// reaches the same disposition without burning that re-kill, and surfaces a
+// genuinely hung run for intervention. Defense-in-depth behind the tool-aware
+// monitor change that reduces false kills at the source.
+const OUTPUT_INACTIVITY_MONITOR_CONTINUATION_ERROR_CODES = new Set<string>([
+  "claude_output_inactivity_monitor",
+  "codex_output_inactivity_monitor",
+]);
+
 // A continuation cancelled with this code is a *deliberate wait* (the latest run
 // reported it was parked for review/approval), not a lost execution path. When the
 // issue has a real waiting target we convert it into a normal dependency wait rather
@@ -425,6 +441,9 @@ type ContinuationRetryClassification = {
 export function classifyContinuationFailure(latestRun: LatestIssueRun): ContinuationRetryClassification {
   const errorCode = readNonEmptyString(latestRun?.errorCode);
   if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
+  }
+  if (errorCode && OUTPUT_INACTIVITY_MONITOR_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
   }
   if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {

@@ -35,4 +35,16 @@ describe("pause durability: continuation retry classification", () => {
     expect(classifyContinuationFailure(run(null)).kind).toBe("default");
     expect(classifyContinuationFailure(run("some_adapter_error")).kind).toBe("default");
   });
+
+  it("output-inactivity-monitor kills are non-retryable (no immediate re-kill loop)", () => {
+    // The monitor SIGTERMs a run after a long stdout-silent stretch; an immediate
+    // continuation retry resumes the same long-quiet work and is killed again.
+    // Classify apart from transient infra so it escalates to `blocked` for
+    // visibility instead of burning a deterministically-failing retry.
+    for (const code of ["claude_output_inactivity_monitor", "codex_output_inactivity_monitor"]) {
+      const c = classifyContinuationFailure(run(code));
+      expect(c.kind).toBe("non_retryable");
+      expect(c.maxAttempts).toBe(0);
+    }
+  });
 });
