@@ -5326,7 +5326,7 @@ export function resolveNextSessionState(input: {
     };
   };
 
-  if (input.outcome !== "succeeded") {
+  if (input.outcome !== "succeeded" && input.outcome !== "timed_out") {
     return previousState();
   }
 
