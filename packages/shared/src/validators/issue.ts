@@ -442,7 +442,7 @@ const createIssueDuplicateGuardSchema = {
 export const createIssueInputSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
   ...createIssueDuplicateGuardSchema,
-}).superRefine(requireBlockedStatusForUnblockDescriptor);
+});
 
 export const createIssueSchema = withCreateIssueStatusDefault(
   createIssueBaseSchema.extend(createIssueDuplicateGuardSchema),
@@ -497,7 +497,7 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
-}).superRefine(requireBlockedStatusForUnblockDescriptor);
+});
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
