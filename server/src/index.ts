@@ -64,7 +64,7 @@ import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runt
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
-import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { getBoardClaimWarningUrl, hasRealInstanceAdmin, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
@@ -575,7 +575,25 @@ export async function startServer(): Promise<StartedServer> {
       },
       "Authenticated mode auth origin configuration",
     );
-    const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
+    // Secure-by-default sign-up: unless the operator pinned `auth.disableSignUp`
+    // explicitly, close public registration once the board has been claimed by a
+    // real instance admin. Public sign-up stays open only during the bootstrap
+    // window (placeholder `local-board` admin only), so the first operator can
+    // still register and claim the board. Prevents internet-exposed deployments
+    // from leaving open self-registration on indefinitely.
+    const realInstanceAdminExists = await hasRealInstanceAdmin(db as any);
+    const effectiveDisableSignUp = config.authDisableSignUpExplicit
+      ? config.authDisableSignUp
+      : config.deploymentMode === "authenticated" && realInstanceAdminExists;
+    if (!config.authDisableSignUpExplicit && effectiveDisableSignUp) {
+      logger.warn(
+        "Public sign-up auto-disabled: an instance admin already exists. " +
+          "Set auth.disableSignUp=false (or PAPERCLIP_AUTH_DISABLE_SIGN_UP=false) to re-open registration.",
+      );
+    }
+    const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins, {
+      disableSignUp: effectiveDisableSignUp,
+    });
     betterAuthHandler = createBetterAuthHandler(auth);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
