@@ -3,14 +3,18 @@ import pc from "picocolors";
 import type { PaperclipConfig } from "../config/schema.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 import {
+  activityLogSizeCheck,
   agentJwtSecretCheck,
   configCheck,
   databaseCheck,
   deploymentAuthCheck,
   llmCheck,
   logCheck,
+  plannerStatsCheck,
   portCheck,
   secretsCheck,
+  serverLogSizeCheck,
+  sharedBuffersCheck,
   storageCheck,
   type CheckResult,
 } from "../checks/index.js";
@@ -101,12 +105,39 @@ export async function doctor(opts: {
     }),
   );
 
-  // 7. LLM check
+  // 7. Planner statistics freshness
+  results.push(
+    await runRepairableCheck({
+      run: () => plannerStatsCheck(config, configPath),
+      configPath,
+      opts,
+    }),
+  );
+
+  // 8. Activity log size
+  results.push(
+    await runRepairableCheck({
+      run: () => activityLogSizeCheck(config, configPath),
+      configPath,
+      opts,
+    }),
+  );
+
+  // 9. Embedded PostgreSQL shared buffers
+  results.push(
+    await runRepairableCheck({
+      run: () => sharedBuffersCheck(config, configPath),
+      configPath,
+      opts,
+    }),
+  );
+
+  // 10. LLM check
   const llmResult = await llmCheck(config);
   results.push(llmResult);
   printResult(llmResult);
 
-  // 8. Log directory check
+  // 11. Log directory check
   results.push(
     await runRepairableCheck({
       run: () => logCheck(config, configPath),
@@ -115,7 +146,16 @@ export async function doctor(opts: {
     }),
   );
 
-  // 9. Port check
+  // 12. Server log size
+  results.push(
+    await runRepairableCheck({
+      run: () => serverLogSizeCheck(config, configPath),
+      configPath,
+      opts,
+    }),
+  );
+
+  // 13. Port check
   const portResult = await portCheck(config);
   results.push(portResult);
   printResult(portResult);
