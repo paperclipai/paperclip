@@ -73,6 +73,28 @@ describe("resolveDesiredGatewaySkillSections", () => {
     expect(sections[0]?.content.length).toBeLessThan(oversized.length);
   });
 
+  test("fails closed rather than silently dropping a skill that would exceed the total size budget", async () => {
+    // Each skill is truncated to just under the 20k per-skill cap, so three
+    // of them land just over the 60k combined budget.
+    const skillA = await writeSkill(tempRoot, "skill-a", "a".repeat(19_999));
+    const skillB = await writeSkill(tempRoot, "skill-b", "b".repeat(19_999));
+    const skillC = await writeSkill(tempRoot, "skill-c", "c".repeat(19_999));
+
+    await expect(
+      resolveDesiredGatewaySkillSections(
+        {
+          paperclipRuntimeSkills: [
+            { key: "skill-a", runtimeName: "skill-a", source: skillA },
+            { key: "skill-b", runtimeName: "skill-b", source: skillB },
+            { key: "skill-c", runtimeName: "skill-c", source: skillC },
+          ],
+          paperclipSkillSync: { desiredSkills: ["skill-a", "skill-b", "skill-c"] },
+        },
+        tempRoot,
+      ),
+    ).rejects.toThrow("exceed the combined skill size budget");
+  });
+
   test("fails closed when a desired skill is not in the available set at all", async () => {
     await expect(
       resolveDesiredGatewaySkillSections(

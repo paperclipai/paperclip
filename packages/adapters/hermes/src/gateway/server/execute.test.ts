@@ -213,6 +213,46 @@ describe("execute", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("still delivers assigned skills when a custom payloadTemplate.input overrides the generated prompt", async () => {
+    // A custom input template must not become a silent bypass for skill
+    // delivery — assigned skills are appended even when input is overridden.
+    const skillDir = await makeSkillDir("---\nname: vp-rd-persona\n---\n\nSome persona instructions.");
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs")) {
+          return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+        }
+        return new Response(
+          sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"output\":\"done\"}\n\n"),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = await execute(makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642",
+        apiKey: "secret-key",
+        timeoutSec: 5,
+        payloadTemplate: { input: "Totally custom operator-supplied prompt." },
+        paperclipRuntimeSkills: [
+          { key: "vp-rd-persona", runtimeName: "vp-rd-persona", source: skillDir },
+        ],
+        paperclipSkillSync: { desiredSkills: ["vp-rd-persona"] },
+      }));
+
+      expect(result.exitCode).toBe(0);
+      const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+      const createCall = calls.find(([callInput]) => String(callInput).endsWith("/v1/runs"));
+      const body = JSON.parse(String(createCall?.[1]?.body));
+      expect(body.input).toContain("Totally custom operator-supplied prompt.");
+      expect(body.input).toContain("### Skill: vp-rd-persona");
+      expect(body.input).toContain("Some persona instructions.");
+    } finally {
+      await fs.rm(skillDir, { recursive: true, force: true });
+    }
+  });
+
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

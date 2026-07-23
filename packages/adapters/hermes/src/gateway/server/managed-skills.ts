@@ -25,8 +25,9 @@ export interface ResolvedGatewaySkillSection {
  * available.
  *
  * Fails closed: a skill that is explicitly desired but whose SKILL.md
- * cannot be read throws, rather than silently running the agent without a
- * skill it was promised.
+ * cannot be read, or that would push the combined skill content past the
+ * total size budget, throws rather than silently running the agent
+ * without a skill it was promised.
  */
 export async function resolveDesiredGatewaySkillSections(
   config: Record<string, unknown>,
@@ -65,7 +66,16 @@ export async function resolveDesiredGatewaySkillSections(
     if (content.length > MAX_SKILL_CHARS) {
       content = `${content.slice(0, MAX_SKILL_CHARS)}\n... [truncated ${content.length - MAX_SKILL_CHARS} chars]`;
     }
-    if (totalChars + content.length > MAX_TOTAL_SKILL_CHARS) break;
+    if (totalChars + content.length > MAX_TOTAL_SKILL_CHARS) {
+      // Fail closed here too: silently dropping this skill (and any after
+      // it) would mean the agent runs believing it has every assigned skill
+      // when it does not, exactly the failure mode this module exists to
+      // prevent for missing/unreadable sources.
+      throw new Error(
+        `Desired company skill ${JSON.stringify(desired)} would exceed the combined skill size budget ` +
+          `(${MAX_TOTAL_SKILL_CHARS} chars). Reduce the number or size of skills assigned to this agent.`,
+      );
+    }
     totalChars += content.length;
     sections.push({ key: entry.key, content });
   }
