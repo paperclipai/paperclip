@@ -185,6 +185,7 @@ import {
 import {
   evaluateExecutionAllowlist,
   isExecutionForcedToKubernetes,
+  isExecutionForcedToSandbox,
 } from "./execution-allowlist.js";
 import {
   RECOVERY_ORIGIN_KINDS,
@@ -12172,13 +12173,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (!bootstrap) {
             bootstrapSkipReason =
               'PAPERCLIP_EXECUTION_MODE bootstrap env is not kubernetes-forced (absent or "any")';
+          } else if (bootstrap.executionMode !== "kubernetes") {
+            bootstrapSkipReason =
+              `PAPERCLIP_EXECUTION_MODE bootstrap env is "${bootstrap.executionMode}", not "kubernetes"; cannot derive a managed Kubernetes config`;
           }
         } catch (err) {
           bootstrapSkipReason = `PAPERCLIP_EXECUTION_MODE bootstrap env failed to parse: ${
             err instanceof Error ? err.message : String(err)
           }`;
         }
-        if (bootstrap) {
+        if (bootstrap && bootstrap.executionMode === "kubernetes") {
           await environmentsSvc.ensureKubernetesEnvironment(
             agent.companyId,
             bootstrap.kubernetesConfig,
@@ -12217,6 +12221,62 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       }
       selectedEnvironmentId = kubernetesEnvironment.id;
+    } else if (isExecutionForcedToSandbox(executionPolicy)) {
+      // Provider-agnostic sandbox forcing: pin the run onto the sandbox
+      // environment configured for this instance (Daytona, E2B, Modal, …).
+      let sandboxEnvironment = await environmentsSvc.findManagedSandboxEnvironment();
+      if (!sandboxEnvironment) {
+        // Lazily auto-provision from the operator's default sandbox config —
+        // mirrors the Kubernetes path so a deployment just works on first
+        // heartbeat without the tenant configuring cloud details. Only
+        // possible when the operator set PAPERCLIP_SANDBOX_PROVIDER; if not
+        // (config drift / manual-env operators), fail loudly below instead of
+        // falling back to local. The allowlist guard after acquisition is the
+        // backstop if selection were somehow bypassed.
+        let sandboxBootstrap: ReturnType<typeof parseExecutionPolicyBootstrapEnv> = null;
+        try {
+          sandboxBootstrap = parseExecutionPolicyBootstrapEnv(process.env);
+        } catch (err) {
+          logger.warn(
+            { runId: run.id, agentId: agent.id, companyId: agent.companyId, err },
+            "executionMode=sandbox is persisted but PAPERCLIP_SANDBOX_* bootstrap env failed to parse; cannot lazily provision",
+          );
+        }
+        if (
+          sandboxBootstrap &&
+          sandboxBootstrap.executionMode === "sandbox" &&
+          sandboxBootstrap.sandbox
+        ) {
+          await environmentsSvc.ensureManagedSandboxEnvironment(sandboxBootstrap.sandbox);
+          sandboxEnvironment = await environmentsSvc.findManagedSandboxEnvironment();
+        }
+      }
+      if (!sandboxEnvironment) {
+        throw new Error(
+          "Instance execution policy requires a sandbox-provider environment " +
+            "(executionMode=sandbox) but no active sandbox environment is configured " +
+            "and no default provider (PAPERCLIP_SANDBOX_PROVIDER) is set " +
+            "to auto-provision one. Configure a sandbox provider before running agents; " +
+            "refusing to fall back to local execution.",
+        );
+      }
+      if (sandboxEnvironment.id !== selectedEnvironmentId) {
+        logger.info(
+          {
+            runId: run.id,
+            issueId,
+            agentId: agent.id,
+            resolvedEnvironmentId: selectedEnvironmentId,
+            forcedSandboxEnvironmentId: sandboxEnvironment.id,
+            sandboxProvider:
+              typeof sandboxEnvironment.config?.provider === "string"
+                ? sandboxEnvironment.config.provider
+                : null,
+          },
+          "Forcing run onto the configured sandbox environment (executionMode=sandbox)",
+        );
+      }
+      selectedEnvironmentId = sandboxEnvironment.id;
     }
     const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
       agentConfig: config,

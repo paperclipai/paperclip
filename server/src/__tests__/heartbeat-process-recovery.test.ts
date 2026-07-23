@@ -2295,12 +2295,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       body: "Agent failed to resume after approval: `adapter_failed` — retrying (attempt 1/3)",
     });
 
-    const interaction = await db
-      .select({ result: issueThreadInteractions.result })
-      .from(issueThreadInteractions)
-      .where(eq(issueThreadInteractions.id, interactionId))
-      .then((rows) => rows[0] ?? null);
-    expect(interaction?.result).toMatchObject({
+    // The resumeFailure marker is the last write in the recovery flow (after
+    // the retry run is committed and the system comment is inserted), so poll
+    // for it instead of reading once.
+    const interactionResult = await waitForValue(async () => {
+      const row = await db
+        .select({ result: issueThreadInteractions.result })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+      const result = row?.result as { resumeFailure?: unknown } | null;
+      return result?.resumeFailure ? result : null;
+    });
+    expect(interactionResult).toMatchObject({
       version: 1,
       outcome: "accepted",
       resumeFailure: {
