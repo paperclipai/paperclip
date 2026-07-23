@@ -4850,6 +4850,63 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
+  it("tries the original assignee before creator and cto candidates when choosing stranded recovery owner", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      runErrorCode: "process_lost",
+    });
+    const creatorAgentId = randomUUID();
+    const ctoAgentId = randomUUID();
+
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "OriginalCreator",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: ctoAgentId,
+        companyId,
+        name: "PaperclipCTO",
+        role: "cto",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db
+      .update(issues)
+      .set({ createdByAgentId: creatorAgentId })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "todo",
+      retryReason: "assignment_recovery",
+    });
+    expect(recoveryAction.ownerAgentId).toBe(agentId);
+    expect(recoveryAction.ownerAgentId).not.toBe(creatorAgentId);
+    expect(recoveryAction.ownerAgentId).not.toBe(ctoAgentId);
+  });
+
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "todo",
