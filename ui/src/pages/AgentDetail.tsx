@@ -2246,7 +2246,7 @@ export function PromptsTab({
     };
   }, [bundle, currentEntryFile, currentMode, currentRootPath, selectedOrEntryFile]);
 
-  const currentContent = selectedFileExists ? (selectedFileDetail?.content ?? "") : "";
+  const currentContent = selectedFileDetail?.content ?? "";
   const displayValue = draft ?? currentContent;
   const useMarkdownEditor = shouldUseMarkdownInstructionsEditor({
     selectedFileExists,
