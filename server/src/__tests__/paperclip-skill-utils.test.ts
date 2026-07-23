@@ -74,6 +74,14 @@ describe("paperclip skill utils", () => {
     expect(skillBody).toContain("`assigneeUserId` is null");
   });
 
+  it("forbids searching for an unavailable issue update helper", async () => {
+    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+
+    expect(skillBody).toContain(
+      "If the helper is unavailable from your current working directory, do not search the filesystem for it. Use the raw `PATCH /api/issues/{issueId}` request above instead.",
+    );
+  });
+
   it("keeps the create-issue-interaction-ui guide as a maintainer-only skill", async () => {
     const skillPath = path.resolve(".agents/skills/create-issue-interaction-ui/SKILL.md");
     const skillBody = await fs.readFile(skillPath, "utf8");
