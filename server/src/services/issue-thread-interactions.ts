@@ -47,6 +47,7 @@ import {
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
 } from "@paperclipai/shared";
+import { z } from "zod";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
@@ -148,6 +149,32 @@ function isEquivalentCreateRequest(
   );
 }
 
+/**
+ * Parse a stored interaction `result` blob tolerantly. Rows persisted by older
+ * builds can carry a `result` shape that predates the current schema — e.g. a
+ * legacy `outcome` value ("withdrawn_by_creator") no longer in the enum.
+ * `hydrateInteraction` runs over every row in `listForIssue`, so a hard
+ * `.parse()` on one stale row throws and 500s the *entire* issue's interaction
+ * list — which bricks both the web thread and plugin consumers such as the
+ * Slack gateway's notifier/digest/aging loops (LOOA-629). Degrade an
+ * unparseable `result` to `null` (the interaction still lists; a
+ * resolved-but-unparseable result is treated as absent) instead of throwing.
+ */
+function parseStoredInteractionResult<S extends z.ZodTypeAny>(
+  schema: S,
+  raw: unknown,
+  row: Pick<IssueThreadInteractionRow, "id" | "kind">,
+): z.infer<S> | null {
+  if (raw == null) return null;
+  const parsed = schema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  console.warn(
+    `[paperclip] Dropping unparseable ${row.kind} interaction result for interaction ${row.id}`,
+    parsed.error.issues,
+  );
+  return null;
+}
+
 function hydrateInteraction(
   row: IssueThreadInteractionRow,
 ): IssueThreadInteraction {
@@ -164,35 +191,35 @@ function hydrateInteraction(
         ...base,
         kind: "suggest_tasks",
         payload: suggestTasksPayloadSchema.parse(row.payload),
-        result: row.result ? suggestTasksResultSchema.parse(row.result) : null,
+        result: parseStoredInteractionResult(suggestTasksResultSchema, row.result, row),
       } satisfies SuggestTasksInteraction;
     case "ask_user_questions":
       return {
         ...base,
         kind: "ask_user_questions",
         payload: askUserQuestionsPayloadSchema.parse(row.payload),
-        result: row.result ? askUserQuestionsResultSchema.parse(row.result) : null,
+        result: parseStoredInteractionResult(askUserQuestionsResultSchema, row.result, row),
       } satisfies AskUserQuestionsInteraction;
     case "request_confirmation":
       return {
         ...base,
         kind: "request_confirmation",
         payload: requestConfirmationPayloadSchema.parse(row.payload),
-        result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
+        result: parseStoredInteractionResult(requestConfirmationResultSchema, row.result, row),
       } satisfies RequestConfirmationInteraction;
     case "request_checkbox_confirmation":
       return {
         ...base,
         kind: "request_checkbox_confirmation",
         payload: requestCheckboxConfirmationPayloadSchema.parse(row.payload),
-        result: row.result ? requestCheckboxConfirmationResultSchema.parse(row.result) : null,
+        result: parseStoredInteractionResult(requestCheckboxConfirmationResultSchema, row.result, row),
       } satisfies RequestCheckboxConfirmationInteraction;
     case "request_item_verdicts":
       return {
         ...base,
         kind: "request_item_verdicts",
         payload: requestItemVerdictsPayloadSchema.parse(row.payload),
-        result: row.result ? requestItemVerdictsResultSchema.parse(row.result) : null,
+        result: parseStoredInteractionResult(requestItemVerdictsResultSchema, row.result, row),
       } satisfies RequestItemVerdictsInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);

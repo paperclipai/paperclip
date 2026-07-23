@@ -1574,6 +1574,39 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.status).toBe("pending");
   });
 
+  it("lists interactions whose stored result predates the current schema without throwing (LOOA-629)", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Legacy result outcome");
+
+    // Simulate a row persisted by an older build: a resolved confirmation whose
+    // result.outcome is a value no longer in the current enum. A hard parse
+    // would 500 the whole listForIssue call and brick every consumer (web
+    // thread + Slack gateway notifier/digest/aging).
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "cancelled",
+      continuationPolicy: { kind: "none" },
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+      },
+      result: {
+        version: 1,
+        outcome: "withdrawn_by_creator",
+      },
+      createdByUserId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.kind).toBe("request_confirmation");
+    // The unparseable result degrades to null; the interaction still lists.
+    expect(listed[0]?.result).toBeNull();
+    expect(listed[0]?.status).toBe("cancelled");
+  });
+
   it("does not supersede request confirmations for agent, system, or older user comments", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Comment supersede exclusions");
 
