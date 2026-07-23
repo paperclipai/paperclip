@@ -1639,6 +1639,10 @@ export interface AgentSessionEvent {
   /** The kind of event: "chunk" for output data, "status" for run state changes, "done" for end-of-stream, "error" for failures. */
   eventType: "chunk" | "status" | "done" | "error";
   stream: "stdout" | "stderr" | "system" | null;
+  /**
+   * Event text. On a successful `done` event this is the canonical final
+   * user-facing assistant reply, or null when the run produced no reply text.
+   */
   message: string | null;
   payload: Record<string, unknown> | null;
 }

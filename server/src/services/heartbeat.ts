@@ -308,6 +308,7 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
+const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -4408,6 +4409,8 @@ export async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
+  const agentMessage = parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
+  const agentMessageText = readNonEmptyString(agentMessage.text);
   const issueSummary =
     input.issueSummary ??
     (issueId
@@ -4424,7 +4427,12 @@ export async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  if (
+    commentIds.length === 0
+    && Object.keys(executionStage).length === 0
+    && !issueSummary
+    && !agentMessageText
+  ) return null;
 
   const commentRows =
     commentIds.length === 0
@@ -4632,6 +4640,14 @@ export async function buildPaperclipWakePayload(input: {
           workMode: issueSummary.workMode,
         }
       : null,
+    agentMessage: agentMessageText
+      ? {
+          text: agentMessageText,
+          source: readNonEmptyString(agentMessage.source),
+          pluginKey: readNonEmptyString(agentMessage.pluginKey),
+          sessionId: readNonEmptyString(agentMessage.sessionId),
+        }
+      : null,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
       ? input.contextSnapshot.childIssueSummaries
       : [],
@@ -4711,6 +4727,37 @@ function isHeartbeatRunTerminalStatus(
   return HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
     status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
   );
+}
+
+export function buildHeartbeatRunStatusLiveEventPayload(
+  run: Pick<
+    typeof heartbeatRuns.$inferSelect,
+    | "id"
+    | "agentId"
+    | "status"
+    | "invocationSource"
+    | "triggerDetail"
+    | "error"
+    | "errorCode"
+    | "startedAt"
+    | "finishedAt"
+    | "resultJson"
+  >,
+) {
+  return {
+    runId: run.id,
+    agentId: run.agentId,
+    status: run.status,
+    invocationSource: run.invocationSource,
+    triggerDetail: run.triggerDetail,
+    error: run.error ?? null,
+    errorCode: run.errorCode ?? null,
+    startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
+    finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
+    finalText: isHeartbeatRunTerminalStatus(run.status)
+      ? buildHeartbeatRunIssueComment(parseObject(run.resultJson))
+      : null,
+  };
 }
 
 function isHeartbeatRunRuntimeStatusActive(status: string | null | undefined): boolean {
@@ -7570,17 +7617,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
-        payload: {
-          runId: updated.id,
-          agentId: updated.agentId,
-          status: updated.status,
-          invocationSource: updated.invocationSource,
-          triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
+        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
       publishRunLifecyclePluginEvent(updated);
     }
@@ -7607,17 +7644,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
-        payload: {
-          runId: updated.id,
-          agentId: updated.agentId,
-          status: updated.status,
-          invocationSource: updated.invocationSource,
-          triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
+        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
       publishRunLifecyclePluginEvent(updated);
       return { run: updated, updated: true as const };
