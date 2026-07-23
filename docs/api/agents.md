@@ -101,6 +101,7 @@ POST /api/agents/{agentId}/clear-error
 
 Moves an agent from `error` back to `idle` without deleting run history or runtime diagnostics.
 Only agents currently in `error` can be cleared.
+This endpoint requires board operator authentication; agent API keys and agent JWTs are rejected.
 
 ## Terminate Agent
 
