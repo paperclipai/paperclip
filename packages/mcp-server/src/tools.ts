@@ -85,6 +85,19 @@ const listCommentsSchema = z.object({
   limit: z.number().int().positive().max(500).optional(),
 });
 
+const listDocumentAnnotationsSchema = z.object({
+  issueId: issueIdSchema,
+  key: documentKeySchema,
+  status: z.enum(["open", "resolved", "all"]).optional().default("all"),
+  includeComments: z.boolean().optional().default(true),
+});
+
+const getDocumentToolSchema = z.object({
+  issueId: issueIdSchema,
+  key: documentKeySchema,
+  includeAnnotationComments: z.boolean().optional(),
+});
+
 const upsertDocumentToolSchema = z.object({
   issueId: issueIdSchema,
   key: documentKeySchema,
@@ -295,7 +308,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipListComments",
-      "List issue comments with incremental options",
+      "List issue-thread comments on an issue (general discussion), with incremental options. For inline highlight comments on issue documents, use paperclipListDocumentAnnotations instead.",
       listCommentsSchema,
       async ({ issueId, after, order, limit }) => {
         const params = new URLSearchParams();
@@ -328,9 +341,44 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     makeTool(
       "paperclipGetDocument",
       "Get one issue document by key",
-      z.object({ issueId: issueIdSchema, key: documentKeySchema }),
-      async ({ issueId, key }) =>
-        client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}`),
+      getDocumentToolSchema,
+      async ({ issueId, key, includeAnnotationComments }) => {
+        const params = new URLSearchParams();
+        if (includeAnnotationComments === true) params.set("includeAnnotationComments", "true");
+        const qs = params.toString();
+        return client.requestJson(
+          "GET",
+          `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}${qs ? `?${qs}` : ""}`,
+        );
+      },
+    ),
+    makeTool(
+      "paperclipListDocumentAnnotations",
+      "List a document's inline annotations (highlights) with their comment threads/content — read reviewer comments left on a document. Distinct from paperclipListComments (issue-thread comments).",
+      listDocumentAnnotationsSchema,
+      async ({ issueId, key, status, includeComments }) => {
+        const params = new URLSearchParams();
+        params.set("status", status);
+        params.set("includeComments", includeComments ? "true" : "false");
+        return client.requestJson(
+          "GET",
+          `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/annotations?${params.toString()}`,
+        );
+      },
+    ),
+    makeTool(
+      "paperclipGetDocumentAnnotation",
+      "Get one document inline annotation thread by id, including its comment thread",
+      z.object({
+        issueId: issueIdSchema,
+        key: documentKeySchema,
+        threadId: z.string().uuid(),
+      }),
+      async ({ issueId, key, threadId }) =>
+        client.requestJson(
+          "GET",
+          `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/annotations/${encodeURIComponent(threadId)}`,
+        ),
     ),
     makeTool(
       "paperclipListDocumentRevisions",
