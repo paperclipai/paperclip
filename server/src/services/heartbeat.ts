@@ -4130,6 +4130,13 @@ export function shouldAutoCheckoutIssueForWake(input: {
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason === "source_scoped_recovery_action") return false;
   if (wakeReason.startsWith("execution_")) return false;
+  // A `blocked` status is a deliberate disposition (human- or agent-chosen)
+  // and a completed child is not evidence that disposition changed — unlike
+  // issue_blockers_resolved/_restored, this reason carries no information
+  // about the parent's own blocker. Auto-checking-out here silently flips
+  // the parent to in_progress on every subsequent child completion, and the
+  // agent re-blocking it just re-fires the same wake on the next child event.
+  if (issueStatus === "blocked" && wakeReason === "issue_children_completed") return false;
 
   return true;
 }
