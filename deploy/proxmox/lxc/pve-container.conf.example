@@ -1,0 +1,19 @@
+# Example Proxmox LXC config for Docker-based Paperclip.
+# Adjust the VM/CT id-specific lines to match your node setup.
+
+arch: amd64
+cores: 4
+memory: 8192
+swap: 2048
+hostname: paperclip
+onboot: 1
+ostype: debian
+rootfs: local-lvm:8
+unprivileged: 0
+features: nesting=1,keyctl=1
+
+# Optional if your host profile blocks Docker storage/network setup.
+# Use only when required by your environment.
+# lxc.apparmor.profile: unconfined
+# lxc.cgroup2.devices.allow: a
+# lxc.cap.drop:
