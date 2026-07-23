@@ -35,7 +35,10 @@ import {
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  listUnfinalizedExecutionWorkspaceIds,
+  runWorkspaceIsFinalized,
 } from "../services/issues.ts";
+import { workspaceOperationService } from "../services/workspace-operations.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -3347,6 +3350,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(workspaceOperations);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -3359,14 +3363,17 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await tempDb?.cleanup();
   });
 
-  async function seedSharedWorkspaceDependency() {
+  async function seedSharedWorkspaceDependency(ids: {
+    blockerId?: string;
+    dependentId?: string;
+  } = {}) {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
     const executionWorkspaceId = randomUUID();
-    const blockerId = randomUUID();
-    const dependentId = randomUUID();
+    const blockerId = ids.blockerId ?? randomUUID();
+    const dependentId = ids.dependentId ?? randomUUID();
     const foreignIssueId = randomUUID();
 
     await db.insert(companies).values({
@@ -3453,6 +3460,29 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       dependentId,
       foreignIssueId,
     };
+  }
+
+  async function waitForConcurrentDatabaseLock(input: {
+    blockingPid: number;
+    queryIncludes: string;
+    minimumWaiters?: number;
+  }) {
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const rows = await db.execute(sql<{ pid: number; query: string }>`
+        select pid, query
+        from pg_stat_activity
+        where datname = current_database()
+          and pid <> pg_backend_pid()
+          and wait_event_type = 'Lock'
+          and ${input.blockingPid} = any(pg_blocking_pids(pid))
+          and query ilike ${`%${input.queryIncludes}%`}
+      `);
+      if (rows.length >= (input.minimumWaiters ?? 1)) return Array.from(rows);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(
+      `Timed out waiting for ${input.minimumWaiters ?? 1} query(s) containing ${input.queryIncludes} blocked by backend ${input.blockingPid}`,
+    );
   }
 
   it("persists blocked-by relations and exposes both blockedBy and blocks summaries", async () => {
@@ -3865,6 +3895,792 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       isDependencyReady: true,
       pendingFinalizeBlockerIssueIds: [],
     });
+  });
+
+  it("does not relock a finalized done blocker after a later setup-only run fails", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+      assigneeAgentId,
+    } = await seedSharedWorkspaceDependency();
+    const completedAt = new Date("2026-05-23T22:04:00.000Z");
+    await db.update(issues).set({ completedAt }).where(eq(issues.id, blockerId));
+    await db.insert(workspaceOperations).values([
+      {
+        companyId,
+        executionWorkspaceId,
+        issueId: blockerId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      },
+      {
+        companyId,
+        executionWorkspaceId,
+        issueId: blockerId,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      },
+      {
+        companyId,
+        executionWorkspaceId,
+        issueId: blockerId,
+        phase: "worktree_prepare",
+        status: "failed",
+        startedAt: new Date("2026-05-23T22:10:00.000Z"),
+      },
+    ]);
+
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      pendingFinalizeBlockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+    });
+    await expect(
+      svc.checkout(dependentId, assigneeAgentId, ["blocked"], null),
+    ).resolves.toMatchObject({ id: dependentId, status: "in_progress" });
+
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "workspace_finalize",
+      status: "failed",
+      startedAt: new Date("2026-05-23T22:15:00.000Z"),
+    });
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      pendingFinalizeBlockerIssueIds: [blockerId],
+      unresolvedBlockerIssueIds: [blockerId],
+    });
+  });
+
+  it("applies unattributed workspace history to batched blockers at their own completion boundary", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+    } = await seedSharedWorkspaceDependency();
+    const laterBlockerId = randomUUID();
+    await db.update(issues)
+      .set({ completedAt: new Date("2026-05-23T22:06:00.000Z") })
+      .where(eq(issues.id, blockerId));
+    await db.insert(issues).values({
+      id: laterBlockerId,
+      companyId,
+      title: "Later predecessor",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+      completedAt: new Date("2026-05-23T22:12:00.000Z"),
+    });
+    await svc.update(dependentId, { blockedByIssueIds: [blockerId, laterBlockerId] });
+    await db.insert(workspaceOperations).values([
+      {
+        companyId,
+        executionWorkspaceId,
+        issueId: null,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      },
+      {
+        companyId,
+        executionWorkspaceId,
+        issueId: null,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      },
+      {
+        companyId,
+        executionWorkspaceId,
+        issueId: null,
+        phase: "worktree_prepare",
+        status: "failed",
+        startedAt: new Date("2026-05-23T22:10:00.000Z"),
+      },
+    ]);
+
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      pendingFinalizeBlockerIssueIds: [laterBlockerId],
+      unresolvedBlockerIssueIds: [laterBlockerId],
+    });
+  });
+
+  it("fails checkout closed with pending-finalize blocker identity", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+      assigneeAgentId,
+    } = await seedSharedWorkspaceDependency();
+    await db.update(issues)
+      .set({ completedAt: new Date("2026-05-23T22:01:00.000Z") })
+      .where(eq(issues.id, blockerId));
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "worktree_prepare",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:00:00.000Z"),
+    });
+
+    await expect(
+      svc.checkout(dependentId, assigneeAgentId, ["blocked"], null),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        unresolvedBlockerIssueIds: [blockerId],
+        pendingFinalizeBlockerIssueIds: [blockerId],
+      },
+    });
+  });
+
+  it("enforces finalize readiness when replacing blockers and transitioning to in_progress", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+    } = await seedSharedWorkspaceDependency();
+    const previousBlockerId = randomUUID();
+    await db.insert(issues).values({
+      id: previousBlockerId,
+      companyId,
+      title: "Previous blocker",
+      status: "done",
+      priority: "medium",
+    });
+    await svc.update(dependentId, { blockedByIssueIds: [previousBlockerId] });
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "worktree_prepare",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:00:00.000Z"),
+    });
+
+    await expect(
+      svc.update(dependentId, {
+        status: "in_progress",
+        blockedByIssueIds: [blockerId],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        unresolvedBlockerIssueIds: [blockerId],
+        pendingFinalizeBlockerIssueIds: [blockerId],
+      },
+    });
+    await expect(svc.getById(dependentId)).resolves.toMatchObject({ status: "blocked" });
+    await expect(svc.getRelationSummaries(dependentId)).resolves.toMatchObject({
+      blockedBy: [expect.objectContaining({ id: previousBlockerId })],
+    });
+
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:05:00.000Z"),
+    });
+
+    await expect(
+      svc.update(dependentId, {
+        status: "in_progress",
+        blockedByIssueIds: [blockerId],
+      }),
+    ).resolves.toMatchObject({ id: dependentId, status: "in_progress" });
+    await expect(svc.getRelationSummaries(dependentId)).resolves.toMatchObject({
+      blockedBy: [expect.objectContaining({ id: blockerId })],
+    });
+  });
+
+  it("keeps tied successful and failed finalize attempts pending across every readiness helper", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+      assigneeAgentId,
+    } = await seedSharedWorkspaceDependency();
+    const tiedStartedAt = new Date("2026-05-23T22:05:00.000Z");
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: assigneeAgentId,
+      status: "succeeded",
+      invocationSource: "manual",
+      startedAt: tiedStartedAt,
+      finishedAt: tiedStartedAt,
+    });
+    await db.update(issues)
+      .set({ completedAt: tiedStartedAt })
+      .where(eq(issues.id, blockerId));
+    await db.insert(workspaceOperations).values([
+      {
+        id: "00000000-0000-4000-8000-000000000001",
+        companyId,
+        executionWorkspaceId,
+        issueId: blockerId,
+        heartbeatRunId: runId,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: tiedStartedAt,
+      },
+      {
+        id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        companyId,
+        executionWorkspaceId,
+        issueId: blockerId,
+        heartbeatRunId: runId,
+        phase: "workspace_finalize",
+        status: "failed",
+        startedAt: tiedStartedAt,
+      },
+    ]);
+
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      pendingFinalizeBlockerIssueIds: [blockerId],
+    });
+    await expect(
+      listUnfinalizedExecutionWorkspaceIds(db, companyId, [executionWorkspaceId]),
+    ).resolves.toEqual(new Set([executionWorkspaceId]));
+    await expect(
+      runWorkspaceIsFinalized(db, companyId, executionWorkspaceId, runId),
+    ).resolves.toBe(false);
+  });
+
+  it("serializes concurrent parent-blocking child creation without losing either edge", async () => {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: parentId,
+      companyId,
+      title: "Parent",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const relationLockHeld = deferred<void>();
+    const releaseRelationLock = deferred<void>();
+    const blockingPid = deferred<number>();
+    const relationLock = db.transaction(async (tx) => {
+      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid()::int as pid`);
+      await tx.execute(sql`select pg_advisory_xact_lock(
+        hashtextextended(${`issue-relations:${companyId}`}, 0)
+      )`);
+      blockingPid.resolve(pid);
+      relationLockHeld.resolve();
+      await releaseRelationLock.promise;
+    });
+    await relationLockHeld.promise;
+
+    const childPromises = ["First", "Second"].map((title) =>
+      svc.createChild(parentId, {
+        title: `${title} blocking child`,
+        status: "todo",
+        priority: "medium",
+        blockParentUntilDone: true,
+      }));
+    await waitForConcurrentDatabaseLock({
+      blockingPid: await blockingPid.promise,
+      queryIncludes: "pg_advisory_xact_lock",
+    });
+    releaseRelationLock.resolve();
+    await relationLock;
+    const children = await Promise.all(childPromises);
+
+    await expect(svc.getRelationSummaries(parentId)).resolves.toMatchObject({
+      blockedBy: expect.arrayContaining(
+        children.map(({ issue }) => expect.objectContaining({ id: issue.id })),
+      ),
+    });
+    expect((await svc.getRelationSummaries(parentId)).blockedBy).toHaveLength(2);
+  });
+
+  it("rolls back child creation when atomic parent attachment fails", async () => {
+    const companyId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const parentId = randomUUID();
+    const foreignBlockerId = randomUUID();
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: foreignCompanyId,
+        name: "Foreign",
+        issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Parent", status: "todo", priority: "medium" },
+      {
+        id: foreignBlockerId,
+        companyId: foreignCompanyId,
+        title: "Foreign blocker",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: foreignBlockerId,
+      relatedIssueId: parentId,
+      type: "blocks",
+    });
+
+    await expect(svc.createChild(parentId, {
+      title: "Must roll back",
+      status: "todo",
+      priority: "medium",
+      blockParentUntilDone: true,
+    })).rejects.toMatchObject({ status: 422 });
+    await expect(
+      db.select({ id: issues.id }).from(issues).where(eq(issues.title, "Must roll back")),
+    ).resolves.toEqual([]);
+  });
+
+  it("rechecks readiness inside stale execution-run checkout adoption", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+      assigneeAgentId,
+    } = await seedSharedWorkspaceDependency();
+    const staleRunId = randomUUID();
+    const actorRunId = randomUUID();
+    await db.update(issues)
+      .set({ completedAt: new Date("2026-05-23T22:01:00.000Z") })
+      .where(eq(issues.id, blockerId));
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:05:00.000Z"),
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId: assigneeAgentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date(),
+      },
+      {
+        id: actorRunId,
+        companyId,
+        agentId: assigneeAgentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date(),
+      },
+    ]);
+    await db.update(issues)
+      .set({ executionRunId: staleRunId })
+      .where(eq(issues.id, dependentId));
+
+    const beforePrimary = deferred<void>();
+    const continuePrimary = deferred<void>();
+    const afterPrimary = deferred<void>();
+    const continueFallback = deferred<void>();
+    let transactionCall = 0;
+    const checkoutDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "transaction") {
+          return async (...args: Parameters<typeof target.transaction>) => {
+            transactionCall += 1;
+            const currentCall = transactionCall;
+            const result = await target.transaction(...args);
+            if (currentCall === 2) {
+              beforePrimary.resolve();
+              await continuePrimary.promise;
+            } else if (currentCall === 3) {
+              afterPrimary.resolve();
+              await continueFallback.promise;
+            }
+            return result;
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const checkoutSvc = issueService(checkoutDb);
+    const checkoutPromise = checkoutSvc.checkout(
+      dependentId,
+      assigneeAgentId,
+      ["blocked"],
+      actorRunId,
+    );
+
+    await beforePrimary.promise;
+    await db.update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, staleRunId));
+    continuePrimary.resolve();
+    await afterPrimary.promise;
+    await svc.update(blockerId, { status: "todo" });
+    continueFallback.resolve();
+
+    await expect(checkoutPromise).rejects.toMatchObject({
+      status: 422,
+      details: {
+        unresolvedBlockerIssueIds: [blockerId],
+        pendingFinalizeBlockerIssueIds: [],
+      },
+    });
+    await expect(svc.getById(dependentId)).resolves.toMatchObject({ status: "blocked" });
+  });
+
+  it("serializes workspace-operation start with readiness writers", async () => {
+    const { companyId, executionWorkspaceId, blockerId } = await seedSharedWorkspaceDependency();
+    const releaseBlocker = deferred<void>();
+    const blockingPid = deferred<number>();
+    const blockerLock = db.transaction(async (tx) => {
+      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid()::int as pid`);
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${blockerId} for update`);
+      blockingPid.resolve(pid);
+      await releaseBlocker.promise;
+    });
+    const blockerBackendPid = await blockingPid.promise;
+
+    const operationPromise = workspaceOperationService(db)
+      .createRecorder({ companyId, executionWorkspaceId, issueId: blockerId })
+      .recordOperation({
+        phase: "workspace_finalize",
+        run: async () => ({ status: "succeeded" }),
+      });
+    await waitForConcurrentDatabaseLock({
+      blockingPid: blockerBackendPid,
+      queryIncludes: "issues",
+    });
+    releaseBlocker.resolve();
+    await blockerLock;
+    await expect(operationPromise).resolves.toMatchObject({ status: "succeeded" });
+  });
+
+  it.each(["succeeded", "failed"] as const)(
+    "serializes workspace-operation %s finish with readiness writers",
+    async (status) => {
+      const { companyId, executionWorkspaceId, blockerId } = await seedSharedWorkspaceDependency();
+      const operationStarted = deferred<void>();
+      const finishOperation = deferred<{ status: typeof status }>();
+      const operationPromise = workspaceOperationService(db)
+        .createRecorder({ companyId, executionWorkspaceId, issueId: blockerId })
+        .recordOperation({
+          phase: "workspace_finalize",
+          run: async () => {
+            operationStarted.resolve();
+            return finishOperation.promise;
+          },
+        });
+      await operationStarted.promise;
+
+      const releaseBlocker = deferred<void>();
+      const blockingPid = deferred<number>();
+      const blockerLock = db.transaction(async (tx) => {
+        const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid()::int as pid`);
+        await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${blockerId} for update`);
+        blockingPid.resolve(pid);
+        await releaseBlocker.promise;
+      });
+      const blockerBackendPid = await blockingPid.promise;
+      finishOperation.resolve({ status });
+      await waitForConcurrentDatabaseLock({
+        blockingPid: blockerBackendPid,
+        queryIncludes: "issues",
+      });
+      releaseBlocker.resolve();
+      await blockerLock;
+      await expect(operationPromise).resolves.toMatchObject({ status });
+    },
+  );
+
+  it("serializes late workspace attachment with readiness writers", async () => {
+    const { companyId, executionWorkspaceId, blockerId } = await seedSharedWorkspaceDependency();
+    const recorder = workspaceOperationService(db).createRecorder({ companyId, issueId: blockerId });
+    const operation = await recorder.recordOperation({
+      phase: "workspace_finalize",
+      run: async () => ({ status: "succeeded" }),
+    });
+    const releaseBlocker = deferred<void>();
+    const blockingPid = deferred<number>();
+    const blockerLock = db.transaction(async (tx) => {
+      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid()::int as pid`);
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${blockerId} for update`);
+      blockingPid.resolve(pid);
+      await releaseBlocker.promise;
+    });
+    const blockerBackendPid = await blockingPid.promise;
+
+    const attachmentPromise = recorder.attachExecutionWorkspaceId(executionWorkspaceId);
+    await waitForConcurrentDatabaseLock({
+      blockingPid: blockerBackendPid,
+      queryIncludes: "issues",
+    });
+    releaseBlocker.resolve();
+    await blockerLock;
+    await attachmentPromise;
+    await expect(workspaceOperationService(db).getById(operation.id)).resolves.toMatchObject({
+      executionWorkspaceId,
+    });
+  });
+
+  it("serializes in_progress create with concurrent blocker resolution changes", async () => {
+    const { companyId, blockerId, assigneeAgentId } = await seedSharedWorkspaceDependency();
+    const releaseBlocker = deferred<void>();
+    const blockingPid = deferred<number>();
+    const blockerWrite = db.transaction(async (tx) => {
+      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid()::int as pid`);
+      await tx.update(issues).set({ status: "todo", completedAt: null }).where(eq(issues.id, blockerId));
+      blockingPid.resolve(pid);
+      await releaseBlocker.promise;
+    });
+    const blockerBackendPid = await blockingPid.promise;
+
+    const createPromise = svc.create(companyId, {
+      title: "Concurrent create must not start",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+      blockedByIssueIds: [blockerId],
+    });
+    await waitForConcurrentDatabaseLock({
+      blockingPid: blockerBackendPid,
+      queryIncludes: "issues",
+    });
+    releaseBlocker.resolve();
+    await blockerWrite;
+    await expect(createPromise).rejects.toMatchObject({
+      status: 422,
+      details: { unresolvedBlockerIssueIds: [blockerId] },
+    });
+    await expect(
+      db.select({ id: issues.id }).from(issues).where(eq(issues.title, "Concurrent create must not start")),
+    ).resolves.toEqual([]);
+  });
+
+  it("rejects in_progress create with unresolved blocker identity and rolls back the issue", async () => {
+    const {
+      companyId,
+      assigneeAgentId,
+    } = await seedSharedWorkspaceDependency();
+    const unresolvedBlockerId = randomUUID();
+    await db.insert(issues).values({
+      id: unresolvedBlockerId,
+      companyId,
+      title: "Unresolved create blocker",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.create(companyId, {
+      title: "Must not start",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+      blockedByIssueIds: [unresolvedBlockerId],
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        unresolvedBlockerIssueIds: [unresolvedBlockerId],
+        pendingFinalizeBlockerIssueIds: [],
+      },
+    });
+    await expect(
+      db.select({ id: issues.id }).from(issues).where(eq(issues.title, "Must not start")),
+    ).resolves.toEqual([]);
+  });
+
+  it("rejects in_progress create while a done blocker still awaits finalize", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      assigneeAgentId,
+    } = await seedSharedWorkspaceDependency();
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "worktree_prepare",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:00:00.000Z"),
+    });
+
+    await expect(svc.create(companyId, {
+      title: "Must await finalize",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+      blockedByIssueIds: [blockerId],
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        unresolvedBlockerIssueIds: [blockerId],
+        pendingFinalizeBlockerIssueIds: [blockerId],
+      },
+    });
+  });
+
+  it.each(["checkout", "update"] as const)(
+    "rechecks blocker status after %s waits on a concurrent write lock",
+    async (transitionKind) => {
+      const {
+        companyId,
+        executionWorkspaceId,
+        blockerId,
+        dependentId,
+        assigneeAgentId,
+      } = await seedSharedWorkspaceDependency({
+        blockerId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        dependentId: "00000000-0000-4000-8000-000000000001",
+      });
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        issueId: blockerId,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      });
+
+      const dependentLocked = deferred<void>();
+      const releaseDependent = deferred<void>();
+      const blockingPid = deferred<number>();
+      const concurrentDependentLock = db.transaction(async (tx) => {
+        const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid()::int as pid`);
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${dependentId} for update`,
+        );
+        blockingPid.resolve(pid);
+        dependentLocked.resolve();
+        await releaseDependent.promise;
+      });
+      await dependentLocked.promise;
+
+      const transitionPromise = transitionKind === "checkout"
+        ? svc.checkout(dependentId, assigneeAgentId, ["blocked"], null)
+        : svc.update(dependentId, { status: "in_progress" });
+      await waitForConcurrentDatabaseLock({
+        blockingPid: await blockingPid.promise,
+        queryIncludes: "issues",
+      });
+      await svc.update(blockerId, { status: "todo" });
+      releaseDependent.resolve();
+      await concurrentDependentLock;
+
+      await expect(transitionPromise).rejects.toMatchObject({
+        status: 422,
+        details: {
+          unresolvedBlockerIssueIds: [blockerId],
+          pendingFinalizeBlockerIssueIds: [],
+        },
+      });
+      await expect(svc.getById(dependentId)).resolves.toMatchObject({ status: "blocked" });
+    },
+  );
+
+  it("rechecks finalize state after checkout waits on a concurrent write lock", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+      assigneeAgentId,
+    } = await seedSharedWorkspaceDependency({
+      blockerId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      dependentId: "00000000-0000-4000-8000-000000000001",
+    });
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:05:00.000Z"),
+    });
+
+    const dependentLocked = deferred<void>();
+    const releaseDependent = deferred<void>();
+    const blockingPid = deferred<number>();
+    const concurrentDependentLock = db.transaction(async (tx) => {
+      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid()::int as pid`);
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${dependentId} for update`,
+      );
+      blockingPid.resolve(pid);
+      dependentLocked.resolve();
+      await releaseDependent.promise;
+    });
+    await dependentLocked.promise;
+
+    const checkoutPromise = svc.checkout(dependentId, assigneeAgentId, ["blocked"], null);
+    await waitForConcurrentDatabaseLock({
+      blockingPid: await blockingPid.promise,
+      queryIncludes: "issues",
+    });
+
+    const finalizeStarted = deferred<void>();
+    const finishFinalize = deferred<{
+      status: "failed";
+    }>();
+    const finalizePromise = workspaceOperationService(db)
+      .createRecorder({
+        companyId,
+        executionWorkspaceId,
+        issueId: blockerId,
+      })
+      .recordOperation({
+        phase: "workspace_finalize",
+        run: async () => {
+          finalizeStarted.resolve();
+          return finishFinalize.promise;
+        },
+      });
+    await finalizeStarted.promise;
+
+    releaseDependent.resolve();
+    await concurrentDependentLock;
+    await expect(checkoutPromise).rejects.toMatchObject({
+      status: 422,
+      details: {
+        unresolvedBlockerIssueIds: [blockerId],
+        pendingFinalizeBlockerIssueIds: [blockerId],
+      },
+    });
+
+    finishFinalize.resolve({ status: "failed" });
+    await finalizePromise;
+    await expect(svc.getById(dependentId)).resolves.toMatchObject({ status: "blocked" });
   });
 
   it("treats blockers with no executionWorkspaceId as not subject to the workspace-finalize barrier", async () => {
