@@ -1066,6 +1066,82 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
   });
 
+  it("allows same-company non-viewer board members to comment and mutate issues assigned to another agent", async () => {
+    const company = await createCompany(db, "BoardIssueMutation");
+    const userId = `user-${randomUUID()}`;
+    const assignee = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: assignee.id });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId, source: "board_key" as const };
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+      status: issue.status,
+    };
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+  });
+
+  it("denies same-company viewer board members issue comment and mutation", async () => {
+    const company = await createCompany(db, "BoardViewerIssueMutation");
+    const userId = `user-${randomUUID()}`;
+    const assignee = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: assignee.id });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId, source: "board_key" as const };
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+      status: issue.status,
+    };
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+  });
+
   it("denies null-mapped visibility actions for board users without an active membership", async () => {
     const memberCompany = await createCompany(db, "BoardVisibilityMember");
     const otherCompany = await createCompany(db, "BoardVisibilityOther");
