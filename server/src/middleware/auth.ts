@@ -374,7 +374,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         runId: claims.run_id,
       });
       if (!activeRun) {
-        next();
+        next(unauthorized("Agent JWT is not authorized for an active run"));
         return;
       }
 
