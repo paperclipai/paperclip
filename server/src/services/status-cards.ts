@@ -49,6 +49,17 @@ function promptHash(prompt: string) {
   return createHash("sha256").update(prompt).digest("hex");
 }
 
+/**
+ * Normalize a timestamp that may arrive as a `Date` or as a driver string
+ * (postgres-js returns aggregate `max(timestamp)` values as strings) into an
+ * ISO string, or `null` when absent/unparseable.
+ */
+function toIsoString(value: Date | string | null | undefined): string | null {
+  if (value == null) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function untrustedPromptBlock(label: string, value: unknown) {
   return `<untrusted-data name=${JSON.stringify(label)}>\n${JSON.stringify(value, null, 2)}\n</untrusted-data>`;
 }
@@ -457,7 +468,10 @@ export function statusCardService(db: Db) {
     const latestHumanComments = await db
       .select({
         issueId: issueComments.issueId,
-        latestHumanCommentAt: sql<Date | null>`max(${issueComments.updatedAt})`,
+        // The postgres-js driver returns the `max()` aggregate over a timestamp
+        // column as a string (not a Date), so this must be coerced rather than
+        // assumed to have a `.toISOString()` method.
+        latestHumanCommentAt: sql<Date | string | null>`max(${issueComments.updatedAt})`,
       })
       .from(issueComments)
       .where(and(
@@ -466,7 +480,9 @@ export function statusCardService(db: Db) {
         isNull(issueComments.deletedAt),
       ))
       .groupBy(issueComments.issueId);
-    const commentByIssueId = new Map(latestHumanComments.map((row) => [row.issueId, row.latestHumanCommentAt?.toISOString() ?? null]));
+    const commentByIssueId = new Map(
+      latestHumanComments.map((row) => [row.issueId, toIsoString(row.latestHumanCommentAt)]),
+    );
     return snapshot.map((issue) => ({ ...issue, latestHumanCommentAt: commentByIssueId.get(issue.id) ?? null }));
   }
 

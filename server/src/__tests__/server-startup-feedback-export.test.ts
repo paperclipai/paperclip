@@ -208,6 +208,7 @@ vi.mock("../services/index.js", () => ({
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
+  issueService: vi.fn(() => ({ update: vi.fn(async () => null) })),
   instanceSettingsService: vi.fn(() => ({
     getGeneral: vi.fn(async () => ({
       backupRetention: {

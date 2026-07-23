@@ -1296,6 +1296,13 @@
       "when": 1784822400000,
       "tag": "0186_status_card_pending_change_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "7",
+      "when": 1784837337101,
+      "tag": "0187_status_card_generation_issue_index",
+      "breakpoints": true
     }
   ]
 }

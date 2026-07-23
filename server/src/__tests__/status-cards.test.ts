@@ -13,6 +13,7 @@ import {
   documents,
   heartbeatRuns,
   instanceSettings,
+  issueComments,
   issues,
   statusCards,
   statusCardUpdates,
@@ -86,6 +87,7 @@ describeEmbeddedPostgres("status card routes", () => {
     await db.delete(statusCards);
     await db.delete(documentRevisions);
     await db.delete(documents);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
@@ -282,6 +284,50 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(list.status).toBe(200);
     expect(list.body).toEqual([expect.objectContaining({ id: card.id, summaryBody: null })]);
     expect(list.body[0]).not.toHaveProperty("watchedIssueCount");
+  });
+
+  it("refreshes a card whose watched issues carry human comments", async () => {
+    // Regression: the postgres-js driver returns `max(updated_at)` as a string,
+    // so `latestHumanCommentAt.toISOString()` threw and refresh 500'd whenever a
+    // matched issue had a human comment. executeQueries now coerces the value.
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    const service = statusCardService(db);
+    const issueSvc = issueService(db);
+
+    const card = await service.create(
+      company.id,
+      {
+        interestPrompt: "Launch tasks",
+        titlePinned: false,
+        instructionsMode: "none",
+        refreshPolicy: defaultStatusCardRefreshPolicy,
+      },
+      { agentId: null, userId: "board-user" },
+    );
+    await db
+      .update(statusCards)
+      .set({ queries: [{ q: "launch", scope: "issues" }] as typeof card.queries, queryVersion: 1 })
+      .where(eq(statusCards.id, card.id));
+
+    const issue = await issueSvc.create(company.id, {
+      title: "Launch tasks tracking",
+      status: "todo",
+      priority: "medium",
+      createdByUserId: "board-user",
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      body: "human comment on the watched issue",
+      authorUserId: "board-user",
+    });
+
+    const app = createApp(db, localBoardActor());
+    const res = await request(app).post(`/api/status-cards/${card.id}/refresh`).send({ full: true });
+    expect(res.status).toBe(202);
+    expect(res.body.enqueued).toBe(true);
   });
 
   it("requires tasks:assign for mutations", async () => {

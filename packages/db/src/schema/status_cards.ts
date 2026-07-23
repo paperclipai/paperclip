@@ -89,5 +89,6 @@ export const statusCardUpdates = pgTable(
   },
   (table) => ({
     cardStartedIdx: index("status_card_updates_card_started_idx").on(table.cardId, table.startedAt),
+    generationIssueIdx: index("status_card_updates_generation_issue_idx").on(table.generationIssueId),
   }),
 );
