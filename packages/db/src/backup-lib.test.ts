@@ -4,7 +4,12 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  createBufferedTextFileWriter,
+  monthlyRetentionCutoff,
+  runDatabaseBackup,
+  runDatabaseRestore,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -71,6 +76,16 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+  });
+});
+
+describe("monthlyRetentionCutoff", () => {
+  it("anchors monthly retention at the start of the retained calendar month", () => {
+    const now = new Date(2026, 2, 31, 12, 0, 0).getTime();
+
+    expect(monthlyRetentionCutoff(now, 2)).toBe(new Date(2026, 0, 1, 0, 0, 0, 0).getTime());
+    expect(new Date(2026, 0, 28, 12, 0, 0).getTime()).toBeGreaterThanOrEqual(monthlyRetentionCutoff(now, 2));
+    expect(new Date(2025, 11, 31, 23, 59, 59).getTime()).toBeLessThan(monthlyRetentionCutoff(now, 2));
   });
 });
 
