@@ -44,8 +44,14 @@ import {
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
+  markProcessAsOrphaned,
+  updateProcessActivity,
+  updateOrphanedProcessActivity,
+  scheduleProcessHandleMonitoring,
+  scheduleOrphanReaper,
+  PROCESS_HANDLE_GRACE_MS,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { isOpenCodeInvalidMessageError, isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -57,6 +63,9 @@ import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+let orphanReaperInterval: NodeJS.Timeout | null = null;
+let processHandleMonitorInterval: NodeJS.Timeout | null = null;
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -214,6 +223,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+
+  // Initialize process handle monitoring and orphan reaper (once per adapter module lifetime)
+  if (!processHandleMonitorInterval) {
+    processHandleMonitorInterval = scheduleProcessHandleMonitoring((handle) => {
+      console.warn(
+        `[paperclip] Process handle lost for runId ${handle.runId}, pid ${handle.pid} (${handle.adapterType}). ` +
+          `Orphaned process will be terminated after ${PROCESS_HANDLE_GRACE_MS / 1000}s.`,
+      );
+    });
+  }
+  if (!orphanReaperInterval) {
+    orphanReaperInterval = scheduleOrphanReaper((orphaned) => {
+      console.warn(
+        `[paperclip] Terminating orphaned process pid ${orphaned.pid} (runId ${orphaned.runId ?? "unknown"}, ` +
+          `${orphaned.adapterType}) after grace period.`,
+      );
+    });
+  }
+
+  // Update process activity to prevent false orphan detection
+  updateProcessActivity(runId);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -706,6 +736,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return toResult(retry, true);
       }
 
+      if (
+        sessionId &&
+        initialFailed &&
+        isOpenCodeInvalidMessageError(initial.proc.stdout, initial.rawStderr)
+      ) {
+        await onLog(
+          "stdout",
+          `[paperclip] OpenCode session "${sessionId}" contains invalid messages (empty content); retrying with a fresh session.\n`,
+        );
+        const retry = await runAttempt(null);
+        return toResult(retry, true);
+      }
+
       return toResult(initial);
     } finally {
       await Promise.all([
@@ -716,5 +759,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   } finally {
     await preparedRuntimeConfig.cleanup();
+    if (processHandleMonitorInterval) {
+      clearInterval(processHandleMonitorInterval);
+      processHandleMonitorInterval = null;
+    }
+    if (orphanReaperInterval) {
+      clearInterval(orphanReaperInterval);
+      orphanReaperInterval = null;
+    }
   }
 }
