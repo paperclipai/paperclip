@@ -22,6 +22,9 @@ const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.
 const adapterUtilsPackage = JSON.parse(
   await readFile(new URL("../packages/adapter-utils/package.json", import.meta.url), "utf8"),
 );
+const dbPackage = JSON.parse(
+  await readFile(new URL("../packages/db/package.json", import.meta.url), "utf8"),
+);
 const releaseScript = await readFile(new URL("./release.sh", import.meta.url), "utf8");
 const releaseLib = await readFile(new URL("./release-lib.sh", import.meta.url), "utf8");
 
@@ -36,6 +39,16 @@ test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(cliEsbuildConfig.external.includes("acpx"), false);
 });
 
+test("published packages preserve the patched embedded-postgres runtime", () => {
+  assert.equal(
+    rootPackage.pnpm.patchedDependencies["embedded-postgres@18.1.0-beta.16"],
+    "patches/embedded-postgres@18.1.0-beta.16.patch",
+  );
+  assert.deepEqual(dbPackage.bundleDependencies, ["embedded-postgres"]);
+  assert.equal(bundledCliNpmDependencies.has("embedded-postgres"), true);
+  assert.equal(cliEsbuildConfig.external.includes("embedded-postgres"), false);
+});
+
 test("bundled package staging materializes publishConfig entrypoints", () => {
   const staged = materializePublishManifest(adapterUtilsPackage);
 
@@ -43,6 +56,20 @@ test("bundled package staging materializes publishConfig entrypoints", () => {
   assert.equal(staged.main, "./dist/index.js");
   assert.equal(staged.types, "./dist/index.d.ts");
   assert.deepEqual(staged.exports, adapterUtilsPackage.publishConfig.exports);
+});
+
+test("bundled package staging materializes workspace dependency versions", () => {
+  const staged = materializePublishManifest({
+    name: "@paperclipai/example",
+    version: "2026.723.0",
+    dependencies: { exact: "workspace:*", caret: "workspace:^", tilde: "workspace:~" },
+  });
+
+  assert.deepEqual(staged.dependencies, {
+    exact: "2026.723.0",
+    caret: "^2026.723.0",
+    tilde: "~2026.723.0",
+  });
 });
 
 test("bundled package staging rebuilds npm dependencies and applies the acpx patch", (t) => {

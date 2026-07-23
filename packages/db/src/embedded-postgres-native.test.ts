@@ -2,12 +2,11 @@ import childProcess from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  ensureLinuxSharedLibraryAliases,
-  mergeEmbeddedPostgresSpawnEnv,
-  prepareEmbeddedPostgresNativeRuntime,
-} from "./embedded-postgres-native.js";
+import { ensureLinuxSharedLibraryAliases, prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
+
+const require = createRequire(import.meta.url);
 
 describe("embedded Postgres native runtime", () => {
   const tempDirs: string[] = [];
@@ -45,36 +44,19 @@ describe("embedded Postgres native runtime", () => {
     expect(second).toEqual([]);
     expect(fs.readlinkSync(path.join(tempDir, "libicuuc.so.60"))).toBe("libicuuc.so.60.2");
   });
-});
 
-describe("embedded Postgres spawn environment", () => {
-  it("preserves the process environment for initdb and forces a portable locale", () => {
-    const previousPath = process.env.PATH;
-    process.env.PATH = "/paperclip/bin";
-    try {
-      expect(mergeEmbeddedPostgresSpawnEnv("/native/bin/initdb", { env: { LC_MESSAGES: "en_US.UTF-8" } })).toEqual({
-        env: expect.objectContaining({ PATH: "/paperclip/bin", LC_MESSAGES: "C" }),
-      });
-    } finally {
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
-    }
-  });
+  it("keeps the child process API untouched while preparing the runtime", async () => {
+    const originalSpawn = childProcess.spawn;
 
-  it("does not alter unrelated child processes", () => {
-    const options = { env: { ONLY: "value" } };
-    expect(mergeEmbeddedPostgresSpawnEnv("node", options)).toBe(options);
-  });
-
-  it("preserves the spawn options-only overload after installing the patch", async () => {
     await prepareEmbeddedPostgresNativeRuntime();
 
-    const exitCode = await new Promise<number | null>((resolve, reject) => {
-      const child = childProcess.spawn(process.execPath, { stdio: "ignore" });
-      child.once("error", reject);
-      child.once("close", resolve);
-    });
+    expect(childProcess.spawn).toBe(originalSpawn);
+  });
 
-    expect(exitCode).toBe(0);
+  it("uses the dependency-scoped portable locale patch", () => {
+    const source = fs.readFileSync(require.resolve("embedded-postgres"), "utf8");
+
+    expect(source).toContain("const LC_MESSAGES_LOCALE = 'C';");
+    expect(source).toContain("globalThis.process.env");
   });
 });

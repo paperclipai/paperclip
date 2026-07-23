@@ -195,7 +195,9 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     await runCommand("corepack", ["pnpm", "--filter", "@paperclipai/db", "build"], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "--filter", "@paperclipai/server", "build"], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
-    await runCommand("corepack", ["pnpm", "--dir", "packages/db", "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, maxBuffer: 16 * 1024 * 1024 });
+    const stagedDbPackage = path.join(stagingRoot, "db-package");
+    await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), path.join(checkoutPath, "packages", "db"), stagedDbPackage], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
+    await runCommand("npm", ["pack", stagedDbPackage, "--pack-destination", stagingRoot], { cwd: checkoutPath, maxBuffer: 16 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "--dir", "server", "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, env: { ...process.env, PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }, maxBuffer: 32 * 1024 * 1024 });
     await runCommand("npm", ["pack", "--pack-destination", stagingRoot], { cwd: path.join(checkoutPath, "cli"), maxBuffer: 16 * 1024 * 1024 });
     const tarballs = fs.readdirSync(stagingRoot).filter((entry) => entry.endsWith(".tgz"));

@@ -1,46 +1,8 @@
 import { promises as fs } from "node:fs";
-import childProcess from "node:child_process";
-import { createRequire, syncBuiltinESMExports } from "node:module";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
-let embeddedPostgresSpawnPatchInstalled = false;
-
-export function mergeEmbeddedPostgresSpawnEnv(
-  command: string,
-  options: { env?: NodeJS.ProcessEnv } | undefined,
-): { env?: NodeJS.ProcessEnv } | undefined {
-  const executable = path.basename(command).replace(/\.exe$/i, "");
-  if (executable !== "initdb" && executable !== "postgres") return options;
-  return { ...options, env: { ...process.env, ...options?.env, LC_MESSAGES: "C" } };
-}
-
-function installEmbeddedPostgresSpawnPatch(): void {
-  if (embeddedPostgresSpawnPatchInstalled) return;
-  const originalSpawn = childProcess.spawn;
-  childProcess.spawn = ((
-    command: string,
-    argsOrOptions?: readonly string[] | childProcess.SpawnOptions,
-    options?: childProcess.SpawnOptions,
-  ) => {
-    if (Array.isArray(argsOrOptions)) {
-      return originalSpawn(
-        command,
-        argsOrOptions,
-        mergeEmbeddedPostgresSpawnEnv(command, options) as childProcess.SpawnOptions,
-      );
-    }
-    return originalSpawn(
-      command,
-      mergeEmbeddedPostgresSpawnEnv(
-        command,
-        argsOrOptions as childProcess.SpawnOptions | undefined,
-      ) as childProcess.SpawnOptions,
-    );
-  }) as typeof childProcess.spawn;
-  syncBuiltinESMExports();
-  embeddedPostgresSpawnPatchInstalled = true;
-}
 
 function resolveNativePackageName(): string | null {
   if (process.platform !== "linux") return null;
@@ -110,7 +72,6 @@ export async function ensureLinuxSharedLibraryAliases(libDir: string): Promise<s
 }
 
 export async function prepareEmbeddedPostgresNativeRuntime(): Promise<void> {
-  installEmbeddedPostgresSpawnPatch();
   const nativePackageName = resolveNativePackageName();
   const packageRoot = resolveEmbeddedPostgresPackageRoot();
   if (!nativePackageName || !packageRoot) return;

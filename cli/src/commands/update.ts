@@ -97,6 +97,24 @@ async function defaultConfirm(message: string): Promise<boolean> {
 }
 function emit(options: UpdateOptions, value: Record<string, unknown>, message: string): void { if (options.json) console.log(JSON.stringify(value, null, 2)); else console.log(message); }
 
+async function rollbackAfterServiceValidationFailure(
+  paths: InstallStorePaths,
+  restartActiveService: (expectedVersion: string) => Promise<boolean>,
+  validationError: unknown,
+  payloadLabel: string,
+): Promise<never> {
+  const rolledBack = await withInstallStoreLock(async () => rollbackManagedInstall(paths), paths);
+  try {
+    await restartActiveService(rolledBack.version);
+  } catch (restartError) {
+    throw new Error(
+      `${payloadLabel} failed service validation and was rolled back to ${rolledBack.version}, but the rolled-back service also failed to restart.`,
+      { cause: new AggregateError([validationError, restartError]) },
+    );
+  }
+  throw new Error(`${payloadLabel} failed service validation and was rolled back to ${rolledBack.version}.`, { cause: validationError });
+}
+
 export async function updateCommand(options: UpdateOptions, overrides: Partial<Dependencies> = {}): Promise<void> {
   const paths = overrides.paths ?? resolveInstallStorePaths();
   const executablePath = overrides.executablePath ?? process.argv[1] ?? "";
@@ -132,9 +150,12 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
     try {
       restarted = await (overrides.restartActiveService ?? restartActiveManagedService)(installed.version);
     } catch (error) {
-      const rolledBack = await withInstallStoreLock(async () => rollbackManagedInstall(paths), paths);
-      await (overrides.restartActiveService ?? restartActiveManagedService)(rolledBack.version).catch(() => undefined);
-      throw new Error(`Updated git payload failed service validation and was rolled back to ${rolledBack.version}.`, { cause: error });
+      return rollbackAfterServiceValidationFailure(
+        paths,
+        overrides.restartActiveService ?? restartActiveManagedService,
+        error,
+        "Updated git payload",
+      );
     }
     emit(options, { mode, source: "git", changed: true, currentSha: manifest.sha, targetSha, reused: installed.reused, restarted }, pc.yellow(`Updated unreleased git payload ${manifest.sha.slice(0, 12)} → ${targetSha.slice(0, 12)} from ${manifest.repo}@${manifest.ref}${restarted ? " and restarted the active service" : ""}.`));
     return;
@@ -183,9 +204,12 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
   try {
     restarted = await (overrides.restartActiveService ?? restartActiveManagedService)(targetVersion);
   } catch (error) {
-    const rolledBack = await withInstallStoreLock(async () => rollbackManagedInstall(paths), paths);
-    await (overrides.restartActiveService ?? restartActiveManagedService)(rolledBack.version).catch(() => undefined);
-    throw new Error(`Updated payload failed service validation and was rolled back to ${rolledBack.version}.`, { cause: error });
+    return rollbackAfterServiceValidationFailure(
+      paths,
+      overrides.restartActiveService ?? restartActiveManagedService,
+      error,
+      "Updated payload",
+    );
   }
   emit(options, { mode, currentVersion, targetVersion, changed: true, reused: installed.reused, restarted }, pc.green(`Updated paperclipai ${currentVersion} → ${targetVersion}${restarted ? " and restarted the active service" : ""}. Run \`paperclipai update --rollback\` for an instant payload rollback.`));
 }

@@ -15,6 +15,18 @@ export function materializePublishManifest(pkg) {
     if (publishConfig[key] !== undefined) publishManifest[key] = publishConfig[key];
   }
 
+  for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+    if (!publishManifest[section]) continue;
+    publishManifest[section] = Object.fromEntries(
+      Object.entries(publishManifest[section]).map(([name, specifier]) => {
+        if (typeof specifier !== "string" || !specifier.startsWith("workspace:")) return [name, specifier];
+        const range = specifier.slice("workspace:".length);
+        const prefix = range === "^" || range === "~" ? range : "";
+        return [name, `${prefix}${pkg.version}`];
+      }),
+    );
+  }
+
   delete publishManifest.publishConfig;
   return publishManifest;
 }
@@ -81,6 +93,30 @@ export function prepareBundledPackage(sourceDir, destinationDir) {
     )
   ) {
     throw new Error("staged acpx runtime is missing the repository patch");
+  }
+
+  if (bundledDependencies.includes("embedded-postgres")) {
+    const embeddedPostgresSource = readFileSync(
+      resolve(destinationDir, "node_modules/embedded-postgres/dist/index.js"),
+      "utf8",
+    );
+    if (
+      !embeddedPostgresSource.includes("const LC_MESSAGES_LOCALE = 'C';") ||
+      !embeddedPostgresSource.includes("globalThis.process.env")
+    ) {
+      throw new Error("staged embedded-postgres runtime is missing the repository patch");
+    }
+
+    const embeddedPostgresPackage = JSON.parse(
+      readFileSync(resolve(destinationDir, "node_modules/embedded-postgres/package.json"), "utf8"),
+    );
+    const stagedPackage = JSON.parse(readFileSync(deployedPackagePath, "utf8"));
+    stagedPackage.optionalDependencies = {
+      ...(stagedPackage.optionalDependencies ?? {}),
+      ...(embeddedPostgresPackage.optionalDependencies ?? {}),
+    };
+    writeFileSync(deployedPackagePath, `${JSON.stringify(stagedPackage, null, 2)}\n`);
+    rmSync(resolve(destinationDir, "node_modules/@embedded-postgres"), { recursive: true, force: true });
   }
 }
 

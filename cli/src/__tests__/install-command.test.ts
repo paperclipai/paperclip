@@ -111,8 +111,17 @@ describe("managed install commands", () => {
         return { stdout: "", stderr: "" };
       }
       if (file === "bash") return { stdout: "", stderr: "" };
-      if (file === "npm" && args[0] === "pack") { fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], "paperclipai-0.3.1.tgz"), "package"); return { stdout: "", stderr: "" }; }
+      if (file === "npm" && args[0] === "pack") {
+        const packageName = args[1]?.endsWith("db-package") ? "paperclipai-db" : "paperclipai";
+        fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], `${packageName}-0.3.1.tgz`), "package");
+        return { stdout: "", stderr: "" };
+      }
       if (file === "npm" && args[0] === "install") { const prefix = args[args.indexOf("--prefix") + 1]; const packageRoot = path.join(prefix, "node_modules", "paperclipai"); fs.mkdirSync(path.join(packageRoot, "dist"), { recursive: true }); fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ version: "0.3.1" })); fs.writeFileSync(path.join(packageRoot, "dist", "index.js"), "#!/usr/bin/env node\n"); return { stdout: "", stderr: "" }; }
+      if (file === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs")) {
+        fs.mkdirSync(args[2], { recursive: true });
+        fs.writeFileSync(path.join(args[2], "package.json"), JSON.stringify({ name: "@paperclipai/db", version: "0.3.1" }));
+        return { stdout: "", stderr: "" };
+      }
       if (file === process.execPath) return { stdout: "0.3.1\n", stderr: "" };
       throw new Error(`Unexpected command: ${file} ${args.join(" ")}`);
     });
@@ -123,7 +132,9 @@ describe("managed install commands", () => {
     expect(manifest?.payloadPath).toContain(path.join("git", sha.slice(0, 12)));
     expect(runCommand.mock.calls.filter(([command, args]) => command === "curl" && args.includes("--output"))).toHaveLength(1);
     expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args[1] === "install")).toHaveLength(1);
-    expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args.includes("pack"))).toHaveLength(2);
+    expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args.includes("pack"))).toHaveLength(1);
+    expect(runCommand.mock.calls.filter(([command, args]) => command === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs"))).toHaveLength(1);
+    expect(runCommand.mock.calls.filter(([command, args]) => command === "npm" && args[0] === "pack")).toHaveLength(2);
   });
 
   it("installs through the shim, reports provenance, and uninstalls without deleting user data", async () => {

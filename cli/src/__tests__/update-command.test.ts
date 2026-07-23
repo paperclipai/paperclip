@@ -175,4 +175,30 @@ describe("update command", () => {
     expect(restartActiveService).toHaveBeenLastCalledWith("1.0.0");
   });
 
+  it("surfaces a failure to restart the rolled-back payload", async () => {
+    const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
+    const oldPayload = payloadPathFor(paths, "npm", "1.0.0"); const executable = createPayload(oldPayload, "1.0.0"); flipCurrentAtomic(oldPayload, paths);
+    writeInstallManifestAtomic({ schemaVersion: 1, ...record(oldPayload, "1.0.0"), previous: [] }, paths);
+    const runCommand = vi.fn(async (file: string, args: string[]) => {
+      if (args[0] === "view") return { stdout: '"2.0.0"\n', stderr: "" };
+      if (file === "npm" && args[0] === "install") { createPayload(args[args.indexOf("--prefix") + 1], "2.0.0"); return { stdout: "", stderr: "" }; }
+      return { stdout: "2.0.0\n", stderr: "" };
+    });
+    const restartActiveService = vi.fn(async (version: string) => {
+      throw new Error(version === "2.0.0" ? "health timeout" : "rollback restart failed");
+    });
+
+    await expect(updateCommand({}, {
+      paths,
+      executablePath: executable,
+      runCommand,
+      backup: async () => undefined,
+      restartActiveService,
+    })).rejects.toThrow("rolled-back service also failed to restart");
+    expect(readInstallManifest(paths)?.version).toBe("1.0.0");
+    expect(fs.realpathSync(paths.currentPath)).toBe(fs.realpathSync(oldPayload));
+    expect(restartActiveService).toHaveBeenNthCalledWith(1, "2.0.0");
+    expect(restartActiveService).toHaveBeenNthCalledWith(2, "1.0.0");
+  });
+
 });
