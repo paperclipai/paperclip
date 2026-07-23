@@ -14601,6 +14601,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        // A system continuation wake promoted onto an issue that is parked on a
+        // future-dated monitor (or already settled) re-fires at every run end:
+        // the promoted run does a no-op state check, exits, and its own
+        // finalization promotes the next deferred continuation — a
+        // self-sustaining loop (~40 no-op runs/hr observed on one issue).
+        // The armed monitor owns the next wake, so drop the deferred
+        // continuation instead of promoting it. Event-carrying wakes
+        // (comments, interactions, user/agent-requested resumes) are never
+        // suppressed here.
+        const deferredRetryReason = readNonEmptyString(deferredContextSeed.retryReason);
+        const deferredIsSystemContinuation =
+          (deferred.requestedByActorType === "system" || deferred.requestedByActorType === null) &&
+          deferredCommentIds.length === 0 &&
+          deferredContextSeed.resumeIntent !== true &&
+          deferredContextSeed.followUpRequested !== true &&
+          (deferredWakeReason === "issue_continuation_needed" ||
+            deferredRetryReason === "issue_continuation_needed");
+        if (deferredIsSystemContinuation) {
+          const monitorParkedUntil =
+            issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()
+              ? issue.monitorNextCheckAt
+              : null;
+          const issueSettled = issue.status === "done" || issue.status === "cancelled";
+          if (monitorParkedUntil || issueSettled) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: new Date(),
+                error: monitorParkedUntil
+                  ? `Deferred continuation wake suppressed: issue is parked on a monitor scheduled for ${monitorParkedUntil.toISOString()}`
+                  : `Deferred continuation wake suppressed: issue reached settled status (${issue.status})`,
+                updatedAt: new Date(),
+              })
+              .where(eq(agentWakeupRequests.id, deferred.id));
+            continue;
+          }
+        }
         // Local-CLI agents post comments under user auth, so a self-comment from
         // the run that is now ending would otherwise look like a real human
         // comment and trigger a reopen on the very issue this run just closed.
