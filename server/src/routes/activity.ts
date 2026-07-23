@@ -7,6 +7,7 @@ import { activityService, normalizeActivityLimit } from "../services/activity.js
 import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
+import { logRouteActivity } from "./activity-audit.js";
 
 const createActivitySchema = z.object({
   actorType: z.enum(["agent", "user", "system", "plugin"]).optional().default("system"),
@@ -85,6 +86,7 @@ export function activityRoutes(db: Db) {
       limit: normalizeActivityLimit(Number(req.query.limit)),
     };
     const result = await svc.list(filters);
+    await logRouteActivity(db, req, { companyId, action: "activity_log.read", entityType: "company", entityId: companyId, details: { resultCount: result.length } });
     res.json(result);
   });
 

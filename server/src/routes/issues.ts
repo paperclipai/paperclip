@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { logRouteActivity } from "./activity-audit.js";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -10521,6 +10522,8 @@ export function issueRoutes(
       res.status(416).end();
       return;
     }
+
+    await logRouteActivity(db, req, { companyId: attachment.companyId, action: "attachment.downloaded", entityType: "issue_attachment", entityId: attachment.id, issueId: attachment.issueId, details: { byteSize: attachment.byteSize, contentType: attachment.contentType } });
 
     const object = await storage.getObject(
       attachment.companyId,

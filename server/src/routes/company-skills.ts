@@ -33,6 +33,7 @@ import {
   logActivity,
 } from "../services/index.js";
 import { isGitRepoSkillImportSource, parseSkillImportSourceInput } from "../services/company-skills.js";
+import { logRouteActivity } from "./activity-audit.js";
 import {
   getCatalogSkillOrThrow,
   listCatalogSkillsOrEmpty,
@@ -294,7 +295,11 @@ export function companySkillRoutes(db: Db) {
     assertAuthenticated(req);
     const catalogRef = firstQueryString(req.query.ref) ?? (req.params.catalogId as string);
     const relativePath = firstQueryString(req.query.path) ?? "SKILL.md";
-    res.json(await readCatalogSkillFile(catalogRef, relativePath));
+    const result = await readCatalogSkillFile(catalogRef, relativePath);
+    if (req.actor.companyId) {
+      await logRouteActivity(db, req, { companyId: req.actor.companyId, action: "skill.source_read", entityType: "skill_catalog", entityId: catalogRef, details: { path: relativePath } });
+    }
+    res.json(result);
   });
 
   router.get("/skills/catalog/:catalogId", async (req, res) => {
@@ -957,6 +962,7 @@ export function companySkillRoutes(db: Db) {
       res.status(404).json({ error: "Skill not found" });
       return;
     }
+    await logRouteActivity(db, req, { companyId, action: "skill.source_read", entityType: "company_skill", entityId: skillId, details: { path: relativePath } });
     res.json(result);
   });
 
