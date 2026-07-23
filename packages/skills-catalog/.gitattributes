@@ -1,0 +1,9 @@
+# Catalog skill files are integrity-pinned by sha256 in generated/catalog.json.
+# Those hashes (and the runtime check in server readCatalogFileBytes) are computed
+# over the RAW file bytes, so the working-tree bytes must equal the committed (LF)
+# bytes on every platform. Without pinning EOL, core.autocrlf=true on Windows
+# rewrites these files to CRLF at checkout; the runtime hash then no longer matches
+# the pinned hash and every catalog skill install fails with HTTP 422
+# "Pinned catalog file hash mismatch". Force LF so the bytes are identical everywhere.
+catalog/** text eol=lf
+generated/catalog.json text eol=lf
