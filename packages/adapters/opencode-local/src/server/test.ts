@@ -230,7 +230,7 @@ export async function testEnvironment(
       modelValidationPassed = true;
     } else if (canRunProbe && configuredModel) {
       try {
-        const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
+        const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv, modelsProbeTimeoutSec: config.modelsProbeTimeoutSec });
         if (discovered.length > 0) {
           checks.push({
             code: "opencode_models_discovered",
@@ -266,7 +266,7 @@ export async function testEnvironment(
       }
     } else if (!targetIsRemote && canRunProbe && !configuredModel) {
       try {
-        const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
+        const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv, modelsProbeTimeoutSec: config.modelsProbeTimeoutSec });
         if (discovered.length > 0) {
           checks.push({
             code: "opencode_models_discovered",
@@ -305,6 +305,7 @@ export async function testEnvironment(
           command,
           cwd,
           env: runtimeEnv,
+          modelsProbeTimeoutSec: config.modelsProbeTimeoutSec,
         });
         checks.push({
           code: "opencode_model_configured",
