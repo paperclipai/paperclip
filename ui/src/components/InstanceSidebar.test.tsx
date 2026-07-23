@@ -73,8 +73,10 @@ function makePlugin(overrides: Partial<PluginRecord> & { manifestJson: PluginRec
 
 async function flushReact() {
   await act(async () => {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    for (let i = 0; i < 5; i += 1) {
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
   });
 }
 
