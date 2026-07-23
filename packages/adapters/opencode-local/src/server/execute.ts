@@ -221,6 +221,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "opencode");
   const model = asString(config.model, "").trim();
+  if (!model) {
+    const message =
+      "opencode adapter: config.model is empty — set adapterConfig.model on the agent";
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: message,
+      errorCode: "adapter_config_invalid",
+      provider: null,
+      biller: null,
+      model: null,
+      billingType: "unknown",
+      costUsd: null,
+      resultJson: {
+        stderr: message,
+      },
+    };
+  }
   const variant = asString(config.variant, "").trim();
 
   const workspaceContext = parseObject(context.paperclipWorkspace);

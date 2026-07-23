@@ -122,6 +122,43 @@ describe("opencode remote execution", () => {
     }
   });
 
+  it("fails before spawning when config.model is empty", async () => {
+    const result = await execute({
+      runId: "run-empty-model",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "opencode",
+        model: "   ",
+      },
+      context: {},
+      onLog: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "adapter_config_invalid",
+      errorMessage:
+        "opencode adapter: config.model is empty — set adapterConfig.model on the agent",
+      model: null,
+    });
+    expect(runChildProcess).not.toHaveBeenCalled();
+    expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
+  });
+
   it("prepares the workspace, syncs OpenCode skills, and restores workspace changes for remote SSH execution", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-"));
     cleanupDirs.push(rootDir);
