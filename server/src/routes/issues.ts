@@ -167,6 +167,11 @@ import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
+  assertProductionHealthyForClosure,
+  ProductionHealthGateError,
+  toPublicUnhealthy,
+} from "../services/production-health-gate.js";
+import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
 } from "../services/company-search-rate-limit.js";
@@ -7926,6 +7931,29 @@ export function issueRoutes(
           assigneeUserId: nextAssigneeUserId,
         });
       }
+    }
+
+    // Production health gate: a production incident may not be closed while the
+    // live production URLs are unhealthy (no-op unless PRODUCTION_HEALTH_TARGETS
+    // is configured and the issue looks like a production incident).
+    try {
+      await assertProductionHealthyForClosure({
+        issue: { title: existing.title, labels: (existing as { labels?: unknown }).labels },
+        existingStatus: existing.status,
+        requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+      });
+    } catch (gateErr) {
+      if (gateErr instanceof ProductionHealthGateError) {
+        // toPublicUnhealthy() strips each target's `url` (internal production
+        // infrastructure) so it is never disclosed to issue-closers.
+        res.status(409).json({
+          error: gateErr.message,
+          code: "production_health_gate_failed",
+          unhealthy: toPublicUnhealthy(gateErr.results),
+        });
+        return;
+      }
+      throw gateErr;
     }
 
     let issue;
