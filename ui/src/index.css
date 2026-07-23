@@ -288,7 +288,14 @@
     @apply antialiased bg-background text-foreground;
     font-family: var(--font-sans);
     height: 100%;
-    overflow: hidden;
+  }
+  #root {
+    height: 100%;
+  }
+  @media (min-width: 768px) {
+    body {
+      overflow: hidden;
+    }
   }
   h1,
   h2,
