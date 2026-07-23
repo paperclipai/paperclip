@@ -125,7 +125,7 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 
-For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
+For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together and can accidentally expand shell/runtime text before Paperclip receives it. Use the helpers below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines, `$()`, `${VAR}`, and backticks remain data:
 
 ```bash
 scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
@@ -135,6 +135,18 @@ Done
 - Verified the raw stored comment body keeps paragraph breaks
 MD
 ```
+
+To add a comment without changing issue status, use:
+
+```bash
+scripts/paperclip-issue-comment.sh --issue-id "$PAPERCLIP_TASK_ID" <<'MD'
+Update
+
+- Literal examples like $(command), ${VAR}, and `code` remain data here.
+MD
+```
+
+The helper `--comment` and `--body` inline arguments are only for short plain text. They reject newlines and shell-expansion-looking content; use stdin/heredoc for markdown, code examples, environment variable names, command substitutions, or anything copied from a runtime.
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
 
