@@ -23,7 +23,17 @@ import {
   companySkillUpdateSchema,
   companySkillVersionCreateSchema,
 } from "@paperclipai/shared";
-import { trackSkillImported } from "@paperclipai/shared/telemetry";
+import type {
+  CompanySkillFileInventoryEntry,
+  CompanySkillSharingScope,
+} from "@paperclipai/shared";
+import {
+  trackSkillCreated,
+  trackSkillForked,
+  trackSkillImported,
+  trackSkillTestRun,
+  trackSkillVersionSaved,
+} from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -107,6 +117,25 @@ export function companySkillRoutes(db: Db) {
       return null;
     }
     return skill.key;
+  }
+
+  function emitSkillTelemetry(run: (client: NonNullable<ReturnType<typeof getTelemetryClient>>) => void) {
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) run(telemetryClient);
+  }
+
+  function deriveSkillCreationSource(skill: { forkedFromSkillId?: string | null; metadata?: Record<string, unknown> | null }) {
+    if (skill.forkedFromSkillId) return "fork";
+    return asString(skill.metadata?.sourceKind) === "project_scan" ? "project_scan" : "blank";
+  }
+
+  function normalizeTelemetrySharingScope(value: CompanySkillSharingScope | string | null | undefined): CompanySkillSharingScope {
+    return value === "private" || value === "public_link" ? value : "company";
+  }
+
+  function deriveVersionFileType(fileInventory: Array<Pick<CompanySkillFileInventoryEntry, "kind">>) {
+    const kinds = new Set(fileInventory.map((entry) => entry.kind));
+    return kinds.size === 1 ? [...kinds][0]! : "other";
   }
 
   function firstQueryString(value: unknown): string | undefined {
@@ -664,6 +693,13 @@ export function companySkillRoutes(db: Db) {
           issueId: result.issueId,
         },
       });
+      emitSkillTelemetry((client) => trackSkillTestRun(client, {
+        skill_id: result.skillId,
+        status: result.status,
+        run_source: req.body.skillVersionId ? "rerun" : "run",
+        ad_hoc: result.inputId === null,
+        template_used: Boolean(result.templateId),
+      }));
       res.status(201).json(result);
     },
   );
@@ -774,6 +810,11 @@ export function companySkillRoutes(db: Db) {
           label: result.label,
         },
       });
+      emitSkillTelemetry((client) => trackSkillVersionSaved(client, {
+        skill_id: skillId,
+        revision_number: result.revisionNumber,
+        file_type: deriveVersionFileType(result.fileInventory),
+      }));
       res.status(201).json(result);
     },
   );
@@ -851,6 +892,13 @@ export function companySkillRoutes(db: Db) {
           reassignedAgentIds: result.reassignments.map((entry: { agentId: string }) => entry.agentId),
         },
       });
+      emitSkillTelemetry((client) => trackSkillForked(client, {
+        skill_id: result.skill.id,
+        fork_from_skill_id: result.original.id,
+        source_type: result.original.sourceType,
+        sharing_scope: normalizeTelemetrySharingScope(result.skill.sharingScope),
+        reassign_agent_count: result.reassignments.length,
+      }));
       res.status(201).json(result);
     },
   );
@@ -986,6 +1034,13 @@ export function companySkillRoutes(db: Db) {
           name: result.name,
         },
       });
+      emitSkillTelemetry((client) => trackSkillCreated(client, {
+        skill_id: result.id,
+        creation_source: deriveSkillCreationSource(result),
+        sharing_scope: normalizeTelemetrySharingScope(result.sharingScope),
+        category_count: result.categories.length,
+        file_count: result.fileInventory.length,
+      }));
 
       res.status(201).json(result);
     },
@@ -1053,6 +1108,18 @@ export function companySkillRoutes(db: Db) {
           markdown: result.markdown,
         },
       });
+      const telemetryClient = getTelemetryClient();
+      if (telemetryClient) {
+        const updatedSkill = await svc.detail(companyId, skillId, skillActor(req));
+        const currentVersion = updatedSkill?.currentVersion ?? null;
+        if (currentVersion) {
+          trackSkillVersionSaved(telemetryClient, {
+            skill_id: skillId,
+            revision_number: currentVersion.revisionNumber,
+            file_type: result.kind,
+          });
+        }
+      }
 
       res.json(result);
     },

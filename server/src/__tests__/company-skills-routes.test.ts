@@ -78,7 +78,11 @@ const mockCatalogService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockTrackSkillCreated = vi.hoisted(() => vi.fn());
+const mockTrackSkillForked = vi.hoisted(() => vi.fn());
 const mockTrackSkillImported = vi.hoisted(() => vi.fn());
+const mockTrackSkillTestRun = vi.hoisted(() => vi.fn());
+const mockTrackSkillVersionSaved = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockReflectionCoachMutationGate = vi.hoisted(() => ({
   assertConsented: vi.fn(),
@@ -132,7 +136,11 @@ function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
   vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackSkillCreated: mockTrackSkillCreated,
+    trackSkillForked: mockTrackSkillForked,
     trackSkillImported: mockTrackSkillImported,
+    trackSkillTestRun: mockTrackSkillTestRun,
+    trackSkillVersionSaved: mockTrackSkillVersionSaved,
     trackErrorHandlerCrash: vi.fn(),
   }));
 
@@ -847,6 +855,13 @@ describe("company skill mutation permissions", () => {
     }));
     expect(mockAccessService.canUser).not.toHaveBeenCalledWith("company-1", "board-user", "agents:create");
     expect(mockCompanySkillService.createLocalSkill).toHaveBeenCalled();
+    expect(mockTrackSkillCreated).toHaveBeenCalledWith(expect.anything(), {
+      skill_id: "skill-1",
+      creation_source: "blank",
+      sharing_scope: "company",
+      category_count: 0,
+      file_count: 1,
+    });
     expect(mockCompanySkillService.importFromSource).toHaveBeenCalled();
     expect(mockCompanySkillService.installFromCatalog).toHaveBeenCalled();
     expect(mockCompanySkillService.updateSkill).toHaveBeenCalled();
@@ -1557,6 +1572,54 @@ describe("company skill mutation permissions", () => {
       entityType: "company_skill_version",
       entityId: "version-1",
     }));
+    expect(mockTrackSkillVersionSaved).toHaveBeenCalledWith(expect.anything(), {
+      skill_id: "skill-1",
+      revision_number: 1,
+      file_type: "skill",
+    });
+  });
+
+  it("tracks Skill Studio file saves with the current version and file kind", async () => {
+    mockCompanySkillService.detail.mockResolvedValueOnce({
+      currentVersion: { revisionNumber: 7 },
+    });
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    await request(app)
+      .patch("/api/companies/company-1/skills/skill-1/files")
+      .send({ path: "SKILL.md", content: "# Updated" })
+      .expect(200);
+
+    expect(mockCompanySkillService.updateFile).toHaveBeenCalledWith("company-1", "skill-1", "SKILL.md", "# Updated", {
+      type: "user",
+      userId: "user-1",
+    });
+    expect(mockCompanySkillService.detail).toHaveBeenCalledWith("company-1", "skill-1", {
+      type: "user",
+      userId: "user-1",
+    });
+    expect(mockTrackSkillVersionSaved).toHaveBeenCalledWith(expect.anything(), {
+      skill_id: "skill-1",
+      revision_number: 7,
+      file_type: "skill",
+    });
+  });
+
+  it("does not load skill detail for file saves when telemetry is disabled", async () => {
+    mockGetTelemetryClient.mockReturnValue(null);
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    await request(app)
+      .patch("/api/companies/company-1/skills/skill-1/files")
+      .send({ path: "SKILL.md", content: "# Updated" })
+      .expect(200);
+
+    expect(mockCompanySkillService.updateFile).toHaveBeenCalledWith("company-1", "skill-1", "SKILL.md", "# Updated", {
+      type: "user",
+      userId: "user-1",
+    });
+    expect(mockCompanySkillService.detail).not.toHaveBeenCalled();
+    expect(mockTrackSkillVersionSaved).not.toHaveBeenCalled();
   });
 
   it("deletes skill files and logs the mutation", async () => {
@@ -1635,6 +1698,13 @@ describe("company skill mutation permissions", () => {
       action: "company.skill_forked",
       entityId: "skill-fork",
     }));
+    expect(mockTrackSkillForked).toHaveBeenCalledWith(expect.anything(), {
+      skill_id: "skill-fork",
+      fork_from_skill_id: "skill-1",
+      source_type: "github",
+      sharing_scope: "company",
+      reassign_agent_count: 0,
+    });
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "company.skill_comment_created",
       entityId: "comment-1",
@@ -2010,6 +2080,13 @@ describe("company skill mutation permissions", () => {
       reason: "skill_test_run_created",
       payload: expect.objectContaining({ issueId: "44444444-4444-4444-8444-444444444444", skillId: "skill-1" }),
     }));
+    expect(mockTrackSkillTestRun).toHaveBeenCalledWith(expect.anything(), {
+      skill_id: "skill-1",
+      status: "queued",
+      run_source: "run",
+      ad_hoc: false,
+      template_used: true,
+    });
 
     const cancelled = await request(app)
       .post("/api/companies/company-1/skills/skill-1/test-runs/22222222-2222-4222-8222-222222222222/cancel")
