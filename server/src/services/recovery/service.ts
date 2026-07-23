@@ -84,6 +84,7 @@ export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+export const STRANDED_ISSUE_RECOVERY_RATE_CAP_PER_HOUR = 50;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
@@ -2610,6 +2611,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
+
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const recentCount = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, input.issue.companyId),
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          gt(issues.createdAt, oneHourAgo),
+        ),
+      )
+      .then((rows) => Number(rows[0]?.count ?? 0));
+
+    if (recentCount >= STRANDED_ISSUE_RECOVERY_RATE_CAP_PER_HOUR) {
+      logger.warn(
+        { companyId: input.issue.companyId, recentCount, cap: STRANDED_ISSUE_RECOVERY_RATE_CAP_PER_HOUR },
+        "stranded issue recovery rate cap reached, skipping creation",
+      );
+      return null;
+    }
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
