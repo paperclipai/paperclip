@@ -1493,6 +1493,43 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it.each(["todo", "in_progress"])("rejects a stale owner run from moving a cancelled issue to %s", async (status) => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        status: "cancelled",
+        assigneeAgentId: ownerAgentId,
+        executionRunId: null,
+        checkoutRunId: null,
+      }),
+    );
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("preserves board authority to reopen a cancelled issue", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        status: "cancelled",
+        assigneeAgentId: ownerAgentId,
+        executionRunId: null,
+        checkoutRunId: null,
+      }),
+    );
+
+    const res = await request(await createApp(boardActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
