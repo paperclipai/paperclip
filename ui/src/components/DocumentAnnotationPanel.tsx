@@ -128,11 +128,9 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
     };
   }, [session]);
 
-  // Show every thread that can be anchored in the document (orphaned threads have
-  // lost their anchor). Filters were removed in favour of a single simple list.
-  // Sort in document order (top-to-bottom) — not by recency — so the comment list
+  // Anchored threads sort in document order (top-to-bottom) so the comment list
   // stays congruent with the highlights as you scroll the document.
-  const visibleThreads = useMemo(
+  const anchoredThreads = useMemo(
     () =>
       props.threads
         .filter((thread) => thread.anchorState !== "orphaned")
@@ -140,6 +138,14 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
           (a.normalizedStart - b.normalizedStart)
           || (a.markdownStart - b.markdownStart)
           || (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())),
+    [props.threads],
+  );
+
+  const detachedThreads = useMemo(
+    () =>
+      props.threads
+        .filter((thread) => thread.anchorState === "orphaned")
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
     [props.threads],
   );
 
@@ -328,7 +334,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
     if (card && typeof card.scrollIntoView === "function") {
       card.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
-  }, [props.focusedThreadId, visibleThreads]);
+  }, [props.focusedThreadId, anchoredThreads, detachedThreads]);
 
   return (
     <>
@@ -370,13 +376,14 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
         </p>
       ) : null}
       <div ref={listScrollRef} className="min-h-0 flex-1 overflow-y-auto bg-popover px-3 py-2">
-        {visibleThreads.length === 0 ? null : (
+        {anchoredThreads.length > 0 ? (
           <ul className="space-y-2">
-            {visibleThreads.map((thread) => (
+            {anchoredThreads.map((thread) => (
               <ThreadCard
                 key={thread.id}
                 thread={thread}
                 expanded={thread.id === props.focusedThreadId}
+                focused={thread.id === props.focusedThreadId}
                 focusedCommentId={
                   thread.id === props.focusedThreadId ? props.focusedCommentId : null
                 }
@@ -404,7 +411,48 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
               />
             ))}
           </ul>
-        )}
+        ) : null}
+        {detachedThreads.length > 0 ? (
+          <section className={cn(anchoredThreads.length > 0 && "mt-4 border-t border-border pt-3")}>
+            <h3 className="mb-2 px-0.5 text-(length:--text-micro) font-medium text-muted-foreground">
+              Detached — anchor lost in a later revision
+            </h3>
+            <ul className="space-y-2">
+              {detachedThreads.map((thread) => (
+                <ThreadCard
+                  key={thread.id}
+                  thread={thread}
+                  expanded
+                  focused={thread.id === props.focusedThreadId}
+                  focusedCommentId={
+                    thread.id === props.focusedThreadId ? props.focusedCommentId : null
+                  }
+                  onFocus={() => props.onFocusThread(thread.id)}
+                  replyDraft={replyDrafts[thread.id] ?? ""}
+                  onReplyChange={(value) =>
+                    setReplyDrafts((current) => ({ ...current, [thread.id]: value }))
+                  }
+                  onSubmitReply={() => {
+                    const body = (replyDrafts[thread.id] ?? "").trim();
+                    if (!body) return;
+                    addReply.mutate({ threadId: thread.id, body });
+                  }}
+                  onResolveToggle={() =>
+                    updateStatus.mutate({
+                      threadId: thread.id,
+                      status: thread.status === "resolved" ? "open" : "resolved",
+                    })
+                  }
+                  onCopyLink={() => copyAnnotationLink(props.documentKey, thread.id)}
+                  pendingReply={addReply.isPending && addReply.variables?.threadId === thread.id}
+                  pendingStatus={updateStatus.isPending && updateStatus.variables?.threadId === thread.id}
+                  agentMap={props.agentMap}
+                  userProfileMap={props.userProfileMap}
+                />
+              ))}
+            </ul>
+          </section>
+        ) : null}
       </div>
       {props.pendingAnchor ? (
         <div className="border-t border-border bg-popover px-3 py-2">
@@ -477,6 +525,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
 function ThreadCard(props: {
   thread: DocumentAnnotationThreadWithComments;
   expanded: boolean;
+  focused?: boolean;
   focusedCommentId: string | null;
   onFocus: () => void;
   replyDraft: string;
@@ -499,11 +548,11 @@ function ThreadCard(props: {
         data-thread-id={thread.id}
         data-anchor-state={thread.anchorState}
         data-status={thread.status}
-        data-focused={props.expanded || undefined}
+        data-focused={props.focused || undefined}
         aria-labelledby={`thread-quote-${thread.id}`}
         className={cn(
           "scroll-mt-2 rounded-none border border-border bg-background transition-colors",
-          props.expanded && "ring-2 ring-primary/80 ring-offset-1 ring-offset-popover",
+          props.focused && "ring-2 ring-primary/80 ring-offset-1 ring-offset-popover",
           thread.status === "resolved" && "bg-muted",
         )}
         tabIndex={0}
