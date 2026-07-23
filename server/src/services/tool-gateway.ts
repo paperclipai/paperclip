@@ -279,6 +279,13 @@ const BUILTIN_LOCAL_STDIO_RUNTIME_TEMPLATES: Record<string, Omit<LocalStdioRunti
     args: [],
     envKeys: [],
   },
+  // Fixed, non-overridable args: connection.config can never widen this to write
+  // scopes or a different mailbox. See SAG-7582 / docs/graph-scope-allowlist-sop.md.
+  "paperclip.ms365-mail-readonly": {
+    command: "ms-365-mcp-server",
+    args: ["--preset", "mail", "--read-only", "--expected-username", "gus@sagesurfaces.com"],
+    envKeys: ["MS365_MCP_CLIENT_ID", "MS365_MCP_CLIENT_SECRET", "MS365_MCP_TENANT_ID"],
+  },
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -2579,8 +2586,15 @@ export function createToolGatewayService(
     }
     for (const key of template.envKeys) {
       const configured = configEnv[key];
-      if (typeof configured === "string") {
+      if (typeof configured === "string" && configured.length > 0) {
         env[key] = configured;
+        continue;
+      }
+      // Fall back to the Paperclip server's own process env for this approved key so
+      // connections never need to carry a literal credential value in `config.env`.
+      const fromServerProcess = process.env[key];
+      if (typeof fromServerProcess === "string" && fromServerProcess.length > 0) {
+        env[key] = fromServerProcess;
       }
     }
     return env;

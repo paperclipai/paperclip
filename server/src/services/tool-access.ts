@@ -359,6 +359,32 @@ const APPROVED_STDIO_TEMPLATES: Record<string, {
       },
     ],
   },
+  // Mirrors the `mail` preset's GET-method (read-only-eligible) tool set from
+  // @softeria/ms-365-mcp-server's endpoints.json. Fixed args (--read-only, fixed
+  // mailbox) live only in the matching BUILTIN_LOCAL_STDIO_RUNTIME_TEMPLATES entry in
+  // tool-gateway.ts; nothing here can widen scope. See SAG-7582 / docs/graph-scope-allowlist-sop.md.
+  "paperclip.ms365-mail-readonly": {
+    name: "Microsoft 365 Mail (read-only)",
+    command: "ms-365-mcp-server",
+    args: ["--preset", "mail", "--read-only", "--expected-username", "gus@sagesurfaces.com"],
+    envKeys: ["MS365_MCP_CLIENT_ID", "MS365_MCP_CLIENT_SECRET", "MS365_MCP_TENANT_ID"],
+    tools: [
+      { name: "list-mail-messages", description: "List/search mail messages across folders.", annotations: { readOnlyHint: true } },
+      { name: "list-mail-folders", description: "List top-level mail folders.", annotations: { readOnlyHint: true } },
+      { name: "list-mail-child-folders", description: "List child folders of a mail folder.", annotations: { readOnlyHint: true } },
+      { name: "list-mail-folder-messages", description: "List/search mail messages within a specific folder.", annotations: { readOnlyHint: true } },
+      { name: "get-mail-message", description: "Get a single mail message by id.", annotations: { readOnlyHint: true } },
+      { name: "list-mail-attachments", description: "List attachments on a mail message.", annotations: { readOnlyHint: true } },
+      { name: "list-mail-rules", description: "List inbox message rules.", annotations: { readOnlyHint: true } },
+      { name: "list-focused-inbox-overrides", description: "List Focused Inbox classification overrides.", annotations: { readOnlyHint: true } },
+      { name: "get-mail-message-mime", description: "Download a mail message as raw MIME (.eml) content.", annotations: { readOnlyHint: true } },
+      { name: "get-mailbox-settings", description: "Get the mailbox's settings.", annotations: { readOnlyHint: true } },
+      { name: "list-mail-folder-messages-delta", description: "Incremental sync of messages within a mail folder.", annotations: { readOnlyHint: true } },
+      { name: "list-outlook-categories", description: "List Outlook categories (colored labels).", annotations: { readOnlyHint: true } },
+      { name: "list-supported-time-zones", description: "List time zones the mailbox server supports.", annotations: { readOnlyHint: true } },
+      { name: "list-supported-languages", description: "List locales/languages the mailbox server supports.", annotations: { readOnlyHint: true } },
+    ],
+  },
 };
 
 const GOOGLE_SHEETS_GALLERY_KEY = "google-sheets";

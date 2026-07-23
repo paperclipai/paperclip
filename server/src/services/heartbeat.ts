@@ -2145,6 +2145,15 @@ export async function revokeHeartbeatRunGatewayTokens(input: {
     ));
 }
 
+// Transports that can be auto-provisioned as a runtime MCP gateway for an agent's
+// heartbeat run. Historically this only covered "mcp_remote"; "local_stdio" was added
+// for SAG-7582 so an agent-scoped local_stdio connection (e.g. a per-agent Microsoft
+// Graph allowlist) is actually reachable, not just ACL-wired with nothing to deliver it.
+const RUNTIME_DELIVERABLE_TRANSPORTS = new Set<typeof toolConnections.$inferSelect["transport"]>([
+  "mcp_remote",
+  "local_stdio",
+]);
+
 export async function buildPaperclipRuntimeMcpServers(input: {
   db: Db;
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
@@ -2175,14 +2184,14 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       ))
     : [];
   const permittedNotInstalledConnections = permittedConnections
-    .filter((connection) => connection.transport === "mcp_remote" && !installedConnectionIds.has(connection.id))
+    .filter((connection) => RUNTIME_DELIVERABLE_TRANSPORTS.has(connection.transport) && !installedConnectionIds.has(connection.id))
     .map(({ id, name }) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const uniqueConnections = effective.installedConnections.filter((connection) =>
     permittedConnectionIds.has(connection.id)
     && connection.status === "active"
     && connection.enabled
-    && connection.transport === "mcp_remote"
+    && RUNTIME_DELIVERABLE_TRANSPORTS.has(connection.transport)
   );
   const service = createToolGatewayService(input.db);
   if (uniqueConnections.length === 0) {
