@@ -22,6 +22,7 @@ const INVOCATION_SCOPE_WORKER_ENTRYPOINT = path.join(
   "plugin-worker-invocation-scope.cjs",
 );
 const TERMINATED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-terminated.cjs");
+const ENV_REPORT_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-env-report.cjs");
 
 const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   id: "test.plugin",
@@ -415,6 +416,99 @@ describe("plugin-worker-manager stderr failure context", () => {
       expect(companiesGet).not.toHaveBeenCalled();
     } finally {
       await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("forwards the host PAPERCLIP_COMPANY_ID into the worker environment", async () => {
+    vi.stubEnv("PAPERCLIP_COMPANY_ID", "6bcff946-2075-4bce-8b86-c20c0cfe7129");
+
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: ENV_REPORT_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {},
+    });
+
+    try {
+      await handle.start();
+
+      await expect(
+        handle.call(
+          "reportEnv" as keyof HostToWorkerMethods,
+          {} as HostToWorkerMethods[keyof HostToWorkerMethods][0],
+        ),
+      ).resolves.toMatchObject({
+        companyId: "6bcff946-2075-4bce-8b86-c20c0cfe7129",
+        pluginId: "test.plugin",
+      });
+    } finally {
+      await handle.stop().catch(() => undefined);
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("omits PAPERCLIP_COMPANY_ID from the worker when the host value is blank", async () => {
+    vi.stubEnv("PAPERCLIP_COMPANY_ID", "   ");
+
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: ENV_REPORT_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {},
+    });
+
+    try {
+      await handle.start();
+
+      await expect(
+        handle.call(
+          "reportEnv" as keyof HostToWorkerMethods,
+          {} as HostToWorkerMethods[keyof HostToWorkerMethods][0],
+        ),
+      ).resolves.toMatchObject({ companyId: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("omits PAPERCLIP_COMPANY_ID from the worker when the host value is unset", async () => {
+    vi.stubEnv("PAPERCLIP_COMPANY_ID", undefined as unknown as string);
+
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: ENV_REPORT_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {},
+    });
+
+    try {
+      await handle.start();
+
+      await expect(
+        handle.call(
+          "reportEnv" as keyof HostToWorkerMethods,
+          {} as HostToWorkerMethods[keyof HostToWorkerMethods][0],
+        ),
+      ).resolves.toMatchObject({ companyId: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+      vi.unstubAllEnvs();
     }
   });
 });
