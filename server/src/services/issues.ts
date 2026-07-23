@@ -7654,10 +7654,14 @@ export function issueService(db: Db) {
       const explicitAgentMentionIds = extractAgentMentionIds(body);
       if (explicitAgentMentionIds.length === 0) return [];
 
-      const rows = await db.select({ id: agents.id })
+      const rows = await db.select({ id: agents.id, status: agents.status })
         .from(agents).where(eq(agents.companyId, companyId));
-      const companyAgentIds = new Set(rows.map((agent) => agent.id));
-      return explicitAgentMentionIds.filter((agentId) => companyAgentIds.has(agentId));
+      const wakeableCompanyAgentIds = new Set(
+        rows
+          .filter((agent) => agent.status !== "paused" && agent.status !== "terminated" && agent.status !== "pending_approval")
+          .map((agent) => agent.id),
+      );
+      return explicitAgentMentionIds.filter((agentId) => wakeableCompanyAgentIds.has(agentId));
     },
 
     findMentionedProjectIds: async (
