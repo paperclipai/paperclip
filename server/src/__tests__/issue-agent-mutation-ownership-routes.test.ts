@@ -792,6 +792,83 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("allows authorized manager agents to add PATCH comments without checkout ownership", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_manager_comment" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:comment"
+          ? "Allowed by comment-only route policy."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Comment-only PATCH should match POST comment auth." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Comment-only PATCH should match POST comment auth.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  it("allows authorized legacy creator agents to add PATCH comments without checkout ownership", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      assigneeAgentId: ownerAgentId,
+      createdByAgentId: peerAgentId,
+      createdByUserId: null,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_legacy_creator_comment" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:comment"
+          ? "Allowed by legacy creator comment policy."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Legacy creator PATCH comment should match POST comment auth." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Legacy creator PATCH comment should match POST comment auth.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  it("rejects unauthorized same-company agents from PATCH comments", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read",
+      action: input.action,
+      reason: input.action === "issue:read" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "issue:read" ? "Allowed by test read grant." : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "I should not be able to comment." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("rejects non-mentioned peer agents from posting comments", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:read",
@@ -914,6 +991,69 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not widen PATCH issue mutation authority for comment-bearing updates", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_manager_comment" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:comment"
+          ? "Allowed by comment-only route policy."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Unauthorized mutation", comment: "Manager note." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("does not treat manager PATCH comments as review decisions without mutation authority", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_review", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_manager_comment" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:comment"
+          ? "Allowed by comment-only route policy."
+          : "Missing permission.",
+    }));
+
+    const commentOnly = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Manager non-decision note." });
+
+    expect(commentOnly.status, JSON.stringify(commentOnly.body)).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Manager non-decision note.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+
+    mockIssueService.update.mockClear();
+    mockIssueService.addComment.mockClear();
+    mockAccessService.decide.mockClear();
+
+    const decisionAttempt = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Approve." });
+
+    expect(decisionAttempt.status, JSON.stringify(decisionAttempt.body)).toBe(403);
+    expect(decisionAttempt.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("denies cross-company agents before comment authorization is evaluated", async () => {

@@ -1338,8 +1338,14 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("rejects non-assignee agent PATCH comments on closed issues", async () => {
+  it("allows mention-granted non-assignee agent PATCH comments on closed issues without reopening", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_issue_mention_grant" : "deny_missing_grant",
+      explanation: input.action === "issue:comment" ? "Allowed by mention grant." : "Missing permission.",
+    }));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -1365,8 +1371,75 @@ describe.sequential("issue comment reopen routes", () => {
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello" });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    // Mention-granting access is intentionally allowed here, while explicit
+    // comment-only checks must still avoid mutation authority.
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      {
+        actorAgentId: "33333333-3333-4333-8333-333333333333",
+        actorUserId: null,
+      },
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ status: expect.any(String) }),
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-mentioned non-assignee agent PATCH comments on closed issues without mutation authority", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_issue_comment" : "deny_missing_grant",
+      explanation: input.action === "issue:comment" ? "Allowed by issue comment grant." : "Missing permission.",
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "88888888-8888-4888-8888-888888888888",
+    }))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "hello" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects unauthorized non-assignee agent PATCH comments on closed issues", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "issue:read",
+      action: input.action,
+      reason: input.action === "issue:read" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "issue:read" ? "Allowed by test read grant." : "Missing permission.",
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "88888888-8888-4888-8888-888888888888",
+    }))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "hello" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
