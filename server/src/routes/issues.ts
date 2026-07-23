@@ -3605,6 +3605,68 @@ export function issueRoutes(
     return true;
   }
 
+  // BRO-1313: a direct-child assignee may attach a deliverable to its DIRECT
+  // parent, even though it does not own the parent. The parent's issue:mutate
+  // ownership boundary is deliberately left intact — status / assignee / title
+  // mutations by a non-assignee stay denied, and BRO-1290's comment-to-parent
+  // grant is not extended to issue:mutate — so this exception lives only in the
+  // attachment route. It does NOT weaken the deliverable guards: instead of
+  // proving ownership of the PARENT's checkout, the child proves liveness via
+  // its OWN checkout (run-id + assertCheckoutOwner against the child it is live
+  // on). Returns true when the exception applied and the child's checkout was
+  // proven; assertCheckoutOwner throws (409) if the actor does not currently own
+  // that checkout. Returns false when the request is not a direct-child parent
+  // attach, so the caller falls back to the standard mutation check.
+  async function tryDirectChildParentAttach(
+    req: Request,
+    issue: { id: string; companyId: string; assigneeAgentId: string | null },
+  ): Promise<boolean> {
+    if (req.actor.type !== "agent") return false;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) return false;
+    // Only when the parent is owned by a DIFFERENT agent — otherwise the standard
+    // mutation check already authorizes the write (own or unassigned issue), so
+    // there is nothing to override and requiring a child checkout would regress.
+    if (!issue.assigneeAgentId || issue.assigneeAgentId === actorAgentId) return false;
+    // Task-watchdog runs carry their own scoped grant handled by the base check;
+    // don't shadow that path here.
+    const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (watchdogScope.kind !== "none") return false;
+    const runId = req.actor.runId?.trim();
+    if (!runId) return false;
+    const childIssueId = await svc.findLiveDirectChildForParentAttach(
+      issue.id,
+      issue.companyId,
+      actorAgentId,
+      runId,
+    );
+    if (!childIssueId) return false;
+    // Prove the child's OWN checkout liveness. Throws conflict (409) if the actor
+    // does not currently own the child's checkout run — the child, not the
+    // parent, is the liveness anchor for this attach.
+    const ownership = await svc.assertCheckoutOwner(childIssueId, actorAgentId, runId);
+    if (ownership.adoptedFromRunId) {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.checkout_lock_adopted",
+        entityType: "issue",
+        entityId: childIssueId,
+        details: {
+          previousCheckoutRunId: ownership.adoptedFromRunId,
+          checkoutRunId: runId,
+          reason: "stale_checkout_run",
+        },
+      });
+    }
+    return true;
+  }
+
   async function assertFreshTaskWatchdogSourceMutation(
     res: Response,
     scope: Awaited<ReturnType<typeof resolveTaskWatchdogMutationScope>>,
@@ -10416,7 +10478,12 @@ export function issueRoutes(
       res.status(422).json({ error: "Issue does not belong to company" });
       return;
     }
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    // A direct-child assignee may attach a deliverable to its DIRECT parent by
+    // proving its own checkout liveness (BRO-1290/1313). Fall back to the
+    // standard mutation check for everyone else.
+    if (!(await tryDirectChildParentAttach(req, issue))) {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    }
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
 
     const company = await companiesSvc.getById(companyId);
