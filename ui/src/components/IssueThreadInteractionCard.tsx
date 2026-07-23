@@ -1837,6 +1837,7 @@ function RequestConfirmationCard({
   const [shots, setShots] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Screenshots ride along in the decline reason as markdown image refs so the
   // board can attach images when sending a plan back — no schema change needed.
@@ -1858,6 +1859,7 @@ function RequestConfirmationCard({
     setActionError(null);
     setShots([]);
     setUploadError(null);
+    setDetailsOpen(false);
     if (interaction.status !== "pending") {
       setRejecting(false);
       setWorking(null);
@@ -2089,7 +2091,47 @@ function RequestConfirmationCard({
           ) : null}
         </div>
       ) : (
-        <RequestConfirmationResolution interaction={interaction} />
+        <div className="space-y-2">
+          <RequestConfirmationResolution interaction={interaction} />
+          {interaction.payload.prompt || interaction.payload.detailsMarkdown ? (
+            <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
+              <CollapsibleTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 w-full justify-between px-2 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <span>{detailsOpen ? "Hide details" : "Show details"}</span>
+                  <ChevronDown
+                    className={cn(
+                      "h-3.5 w-3.5 transition-transform duration-200",
+                      detailsOpen && "rotate-180",
+                    )}
+                  />
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="mt-1 space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
+                  {interaction.payload.prompt ? (
+                    <div className="text-sm leading-6 text-foreground">
+                      {interaction.payload.prompt}
+                    </div>
+                  ) : null}
+                  {interaction.payload.detailsMarkdown ? (
+                    <div
+                      className={cn(
+                        "text-sm",
+                        interaction.payload.prompt && "border-t border-border/60 pt-3",
+                      )}
+                    >
+                      <MarkdownBody externalReferences={externalReferences}>{interaction.payload.detailsMarkdown}</MarkdownBody>
+                    </div>
+                  ) : null}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          ) : null}
+        </div>
       )}
     </div>
   );
