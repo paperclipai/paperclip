@@ -133,14 +133,15 @@ Granular overrides remain available if needed (`PAPERCLIP_AUTH_PUBLIC_BASE_URL`,
 
 Set `PAPERCLIP_ALLOWED_HOSTNAMES` explicitly only when you need additional hostnames beyond the public URL host (for example Tailscale/LAN aliases or multiple private hostnames).
 
-## Claude + Codex Local Adapters in Docker
+## Claude + Codex + GitHub Copilot Local Adapters in Docker
 
 The image pre-installs:
 
 - `claude` (Anthropic Claude Code CLI)
 - `codex` (OpenAI Codex CLI)
+- `copilot` (GitHub Copilot CLI)
 
-If you want local adapter runs inside the container, pass API keys when starting the container:
+If you want local adapter runs inside the container, pass the relevant credentials when starting it:
 
 ```sh
 docker run --name paperclip \
@@ -156,6 +157,9 @@ docker run --name paperclip \
 Notes:
 
 - Without API keys, the app still runs normally.
+- Copilot CLI checks `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, then `GITHUB_TOKEN`. OAuth tokens from GitHub CLI are supported; classic `ghp_` PATs are not.
+- Configure Copilot tokens as secret environment bindings on the Copilot agent rather than exposing repository-capable GitHub credentials to the Paperclip server and every adapter process.
+- The GitHub account must have a Copilot entitlement, and enterprise policy must allow Copilot CLI.
 - Adapter environment checks in Paperclip will surface missing auth/CLI prerequisites.
 
 ## Podman Quadlet (systemd)

@@ -28,6 +28,7 @@ COPY packages/skills-catalog/package.json packages/skills-catalog/
 COPY packages/teams-catalog/package.json packages/teams-catalog/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
+COPY packages/adapters/copilot-local/package.json packages/adapters/copilot-local/
 COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
 COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
@@ -61,7 +62,7 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest @github/copilot@latest opencode-ai @google/gemini-cli@latest \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \

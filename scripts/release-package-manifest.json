@@ -15,6 +15,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/copilot-local",
+    "name": "@paperclipai/adapter-copilot-local",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/adapters/cursor-cloud",
     "name": "@paperclipai/adapter-cursor-cloud",
     "publishFromCi": true
