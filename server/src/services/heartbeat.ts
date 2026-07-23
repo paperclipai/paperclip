@@ -14601,12 +14601,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        // Local-CLI agents post comments under user auth, so a self-comment from
-        // the run that is now ending would otherwise look like a real human
-        // comment and trigger a reopen on the very issue this run just closed.
-        // Suppress reopen only when every referenced comment came from this run;
-        // mixed batches must still reopen because they contain a real follow-up.
-        let deferredCommentWakeIsSelfAuthored = false;
+        // Local-CLI agents post comments under user auth, so a machine-authored
+        // comment would otherwise look like a real human comment and trigger a
+        // reopen on a closed issue. The durable signal is createdByRunId: any
+        // comment carrying a heartbeat run id is machine-authored (a genuine
+        // interactive board comment carries none). Suppress reopen when every
+        // referenced comment is machine-authored — not only when they match this
+        // exact run, since a reviewer's comment is often posted in an earlier run
+        // than the one finalizing the issue. Mixed batches must still reopen
+        // because they contain a real human follow-up. Mirrors PR #9015. See
+        // POS-127/POS-151.
+        let deferredCommentWakeIsMachineAuthored = false;
         if (deferredCommentIds.length > 0) {
           const deferredComments = await tx
             .select({ createdByRunId: issueComments.createdByRunId })
@@ -14619,15 +14624,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
             )
             .then((rows) => rows);
-          deferredCommentWakeIsSelfAuthored =
+          deferredCommentWakeIsMachineAuthored =
             deferredComments.length > 0 &&
-            deferredComments.every((comment) => comment.createdByRunId === run.id);
+            deferredComments.every((comment) => !!comment.createdByRunId);
         }
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
-          !deferredCommentWakeIsSelfAuthored &&
+          !deferredCommentWakeIsMachineAuthored &&
           (issue.status === "done" || issue.status === "cancelled") &&
           (
             deferred.requestedByActorType === "user" ||

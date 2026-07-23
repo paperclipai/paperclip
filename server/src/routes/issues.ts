@@ -1721,20 +1721,17 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   actorType: "agent" | "user";
   actorId: string;
   actorRunId: string | null | undefined;
-  checkoutRunId: string | null | undefined;
-  executionRunId: string | null | undefined;
 }) {
-  // Local-CLI agents post comments under user auth, so the actor.type is "user"
-  // even though the comment originates from the same heartbeat run that owns
-  // the issue lock. Without this guard, an agent that closes its own issue and
-  // then posts a follow-up comment in the same run silently reopens it.
-  // Suppress the implicit move whenever the comment's source run matches the
-  // issue's checkout/execution run.
-  if (
-    typeof input.actorRunId === "string"
-    && input.actorRunId.length > 0
-    && (input.actorRunId === input.checkoutRunId || input.actorRunId === input.executionRunId)
-  ) {
+  // A comment carrying a heartbeat run id is machine-authored, even when the
+  // local-CLI adapter posts it under user auth (which nondeterministically sets
+  // actor.type to "user"). Only a genuine interactive human comment — one with
+  // no run context — should implicitly reopen finished work. This previously
+  // suppressed the reopen only when the comment's run matched the issue's own
+  // checkout/execution run, which missed the cross-run case: a reviewer whose
+  // run never owned the issue lock (handed-off review children are never
+  // checked out) reopened the done issue and re-woke itself indefinitely.
+  // Mirrors the createdByRunId supersession guard from PR #9015. See POS-127/POS-151.
+  if (typeof input.actorRunId === "string" && input.actorRunId.length > 0) {
     return false;
   }
   // Only human comments should implicitly reopen finished work.
@@ -7723,8 +7720,6 @@ export function issueRoutes(
             actorType: actor.actorType,
             actorId: actor.actorId,
             actorRunId: actor.runId,
-            checkoutRunId: existing.checkoutRunId,
-            executionRunId: existing.executionRunId,
           })) ||
         shouldResumeInProgressScheduledRetry);
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -9741,8 +9736,6 @@ export function issueRoutes(
           actorType: actor.actorType,
           actorId: actor.actorId,
           actorRunId: actor.runId,
-          checkoutRunId: issue.checkoutRunId,
-          executionRunId: issue.executionRunId,
         }) ||
         shouldResumeInProgressScheduledRetry);
     const hasUnresolvedFirstClassBlockers =

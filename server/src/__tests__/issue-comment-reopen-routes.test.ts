@@ -1156,7 +1156,13 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("still implicitly reopens done issues via POST comments when the comment runId differs from the issue's owning run", async () => {
+  // POS-151: a run-bearing comment is machine-authored even when its run differs
+  // from the issue's owning run. This is the reviewer self-wake case — a reviewer
+  // posts on a done issue it never checked out (handed-off review children carry
+  // no checkout/execution run), so a checkout-run-only guard let it reopen the
+  // issue and re-wake itself indefinitely. Any run id now suppresses the implicit
+  // reopen; only a genuine board comment with no run id reopens (covered above).
+  it("does not implicitly reopen done issues via POST comments when the comment runId differs from the issue's owning run", async () => {
     mockIssueService.getById.mockResolvedValue({
       ...makeIssue("done"),
       checkoutRunId: "run-owning",
@@ -1176,12 +1182,17 @@ describe.sequential("issue comment reopen routes", () => {
       runId: "run-different",
     }))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: "Real human follow-up — please reopen" });
+      .send({ body: "Reviewer note posted from a heartbeat run" });
 
     expect(res.status).toBe(201);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
-      { status: "todo" },
+      expect.objectContaining({ status: "todo" }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
     );
   });
 
