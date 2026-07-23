@@ -883,6 +883,7 @@ export async function startSandboxCallbackBridgeServer(input: {
   responseTimeoutMs?: number | null;
   timeoutMs?: number | null;
   nodeCommand?: string;
+  runtimePath?: string | null;
   shellCommand?: "bash" | "sh" | null;
   maxQueueDepth?: number | null;
   maxBodyBytes?: number | null;
@@ -929,6 +930,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     cwd: input.remoteCwd,
     env: {
       [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
+      ...(input.runtimePath?.trim() ? { PATH: input.runtimePath } : {}),
       ...env,
     },
     timeoutMs,

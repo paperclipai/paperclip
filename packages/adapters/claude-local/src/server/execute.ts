@@ -679,6 +679,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir,
       adapterKey: "claude",
       timeoutSec,
+      runtimePath: env.PATH,
       hostApiToken: env.PAPERCLIP_API_KEY,
       onLog,
     });
