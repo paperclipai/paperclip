@@ -85,14 +85,14 @@ function render(node: ReactNode) {
 
 const noop = () => {};
 
-function tile(card: StatusCardView) {
+function tile(card: StatusCardView, handlers: Partial<Record<"onOpen" | "onRefresh" | "onRecompile", () => void>> = {}) {
   return (
     <StatusCardTile
       card={card}
       companyId="company-1"
-      onOpen={noop}
-      onRefresh={noop}
-      onRecompile={noop}
+      onOpen={handlers.onOpen ?? noop}
+      onRefresh={handlers.onRefresh ?? noop}
+      onRecompile={handlers.onRecompile ?? noop}
       onEditInterest={noop}
       onOpenDebug={noop}
       onArchive={noop}
@@ -167,5 +167,37 @@ describe("StatusCardTile lifecycle rendering", () => {
     render(tile(baseCard({ todayTokens: 1100, todayCostCents: 62 })));
     expect(container.textContent).toContain("1.1k tok");
     expect(container.textContent).toContain("$0.62");
+  });
+
+  it("opens the card when the tile body is clicked", () => {
+    let opened = 0;
+    render(tile(baseCard({}), { onOpen: () => (opened += 1) }));
+    const el = container.querySelector<HTMLElement>('[data-testid="status-card-tile"]');
+    flushSync(() => el?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(opened).toBe(1);
+  });
+
+  it("does not open the card when the actions menu trigger is clicked", () => {
+    let opened = 0;
+    render(tile(baseCard({}), { onOpen: () => (opened += 1) }));
+    const trigger = container.querySelector<HTMLElement>('[aria-label="Card actions"]');
+    flushSync(() => trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(opened).toBe(0);
+  });
+
+  it("offers a Build query action on a stuck compiling card without opening the card", () => {
+    let opened = 0;
+    let recompiled = 0;
+    render(
+      tile(baseCard({ state: "compiling", title: null, summaryBody: null }), {
+        onOpen: () => (opened += 1),
+        onRecompile: () => (recompiled += 1),
+      }),
+    );
+    const buildButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Build query now"));
+    expect(buildButton).toBeTruthy();
+    flushSync(() => buildButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(recompiled).toBe(1);
+    expect(opened).toBe(0);
   });
 });
