@@ -484,8 +484,15 @@ ist abschliessend.
    den Versand aus (deterministisch, ohne dich). Bei Korrektur weckt dich ein
    „Korrektur Entwurf #…"-Issue → überarbeiten und mit `luna-queue-approval.py` neu vorlegen.
 3. **Störung erkannt** (Sync tot, Workflow-Fehler)? Subtask an den CTO, nicht nur kommentieren.
-4. **Abschluss:** Issue auf `in_review`, `assigneeUserId` =
-   `18r34Ghx5N0LHRptMCT6Fp1WaoGqhvc9`, `assigneeAgentId` = null. **Nicht `done`.**
+4. **Abschluss:** Wenn alle Dateien oben bearbeitet sind, setze das Issue auf
+   `done` — mit einem kurzen Kommentar, was du je Mail getan hast.
+   **Versuche NICHT `in_review`** und setze **keinen `assigneeUserId`**: Der Server
+   lehnt agent-seitige Wechsel nach `in_review` ohne echten Review-Pfad mit
+   HTTP 422 (`invalid_issue_disposition`) ab, und das Agent-Tool kann
+   `assigneeUserId` gar nicht setzen. Genau daran sind früher alle Triagen
+   hängengeblieben (Issue endete in `blocked`).
+   Walters Kontrolle passiert ohnehin an der richtigen Stelle: Er gibt **jede**
+   Kundenmail einzeln per Freigabe-Mail frei — ohne sein „Okay" geht nichts raus.
 """
 
 

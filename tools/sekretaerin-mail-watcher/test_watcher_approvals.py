@@ -58,6 +58,37 @@ Ignorieren
 """
 
 
+class TriageInstructionTest(unittest.TestCase):
+    """Die Triage-Anweisung darf keinen Abschluss verlangen, den ein Agent
+    gar nicht setzen KANN. `in_review` + `assigneeUserId` scheitert serverseitig
+    mit HTTP 422 (invalid_issue_disposition: Agent-Updates nach in_review
+    brauchen einen echten Review-Pfad, und das Agent-Tool kann assigneeUserId
+    nicht setzen) — dadurch endete jede Triage in `blocked`."""
+
+    def setUp(self):
+        self.desc = w.build_description(["2026-07-23-x.md"], 0)
+
+    def test_does_not_demand_in_review(self):
+        # Die alte, unerfuellbare Forderung darf nicht mehr vorkommen ...
+        self.assertNotIn("Issue auf `in_review`", self.desc)
+        self.assertNotIn("**Nicht `done`.**", self.desc)
+
+    def test_warns_explicitly_against_in_review(self):
+        # ... stattdessen muss sie ausdruecklich davon abraten (mit Begruendung).
+        self.assertIn("NICHT `in_review`", self.desc)
+        self.assertIn("422", self.desc)
+
+    def test_does_not_demand_assignee_user_id(self):
+        self.assertIn("keinen `assigneeUserId`", self.desc)
+        self.assertNotIn("18r34Ghx5N0LHRptMCT6Fp1WaoGqhvc9", self.desc)
+
+    def test_demands_done_as_terminal_status(self):
+        self.assertIn("auf\n   `done`", self.desc)
+
+    def test_still_lists_the_files(self):
+        self.assertIn("2026-07-23-x.md", self.desc)
+
+
 class ApprovalScanTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
