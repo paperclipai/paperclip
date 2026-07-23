@@ -23,6 +23,16 @@ def two_stage_measure(baseline_total, after_total):
     return m
 
 
+def _cfg(tmp_path, **over):
+    """Config fuer Tests: beide Flag-Dateien zeigen garantiert ins Leere,
+    damit die Suite nicht vom echten ~/.paperclip-Zustand abhaengt."""
+    base = dict(Config.default().__dict__)
+    base["pause_flag"] = tmp_path / "kein.pause"
+    base["dry_run_flag"] = tmp_path / "kein.dryrun"
+    base.update(over)
+    return Config(**base)
+
+
 def base_deps(**over):
     d = dict(
         prepare_worktree=lambda cfg: cfg.worktree_path,
@@ -44,10 +54,9 @@ def base_deps(**over):
 def test_run_once_paused_when_flag_present(tmp_path):
     global sent
     sent = []
-    cfg = Config.default()
     flag = tmp_path / "academy-auto.pause"
     flag.write_text("stop")
-    cfg = Config(**{**cfg.__dict__, "pause_flag": flag})
+    cfg = _cfg(tmp_path, pause_flag=flag)
 
     report = run_once(cfg, "irgendeine Aufgabe", base_deps())
     assert report.status == "paused"
@@ -57,8 +66,7 @@ def test_run_once_paused_when_flag_present(tmp_path):
 def test_run_once_green_commits_and_reports(tmp_path):
     global sent
     sent = []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
 
     report = run_once(cfg, "Login-Bug fixen", base_deps())
     assert report.status == "committed"
@@ -69,8 +77,7 @@ def test_run_once_green_commits_and_reports(tmp_path):
 def test_run_once_red_gate_discards_and_reports(tmp_path):
     global sent
     sent = []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(
         measure_gate=two_stage_measure(0, 3),  # grün Baseline, rotes After
         commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("darf nicht committen")),
@@ -84,8 +91,7 @@ def test_run_once_red_gate_discards_and_reports(tmp_path):
 def test_run_once_impl_failure_skips_gate_and_reports(tmp_path):
     global sent
     sent = []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(
         implement_task=lambda cfg, cwd, prompt: RunOutcome(ok=False, output="claude timeout"),
         commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("kein Commit")),
@@ -98,8 +104,7 @@ def test_run_once_impl_failure_skips_gate_and_reports(tmp_path):
 def test_run_once_diff_cap_exceeded_discards(tmp_path):
     global sent
     sent = []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(
         count_diff_lines=lambda cfg, cwd: 900,
         commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("darf nicht committen")),
@@ -113,8 +118,7 @@ def test_run_once_diff_cap_exceeded_discards(tmp_path):
 def test_run_once_scope_violation_discards(tmp_path):
     global sent
     sent = []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(
         list_changed_files=lambda cfg, cwd: ["src/App.tsx", ".env"],
         count_diff_lines=lambda cfg, cwd: (_ for _ in ()).throw(AssertionError("Cap darf nicht laufen")),
@@ -131,8 +135,7 @@ def test_run_once_triage_mode_picks_and_commits(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
     from academy_auto.triage.rank import Pick
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(triage_and_pick=lambda cfg, cwd, baseline_red: Pick("tsc:a.ts:5:TS1", "Fix a.ts:5", "prio"))
     report = run_once(cfg, None, deps)  # None -> Triage-Modus
     assert report.status == "committed"
@@ -144,8 +147,7 @@ def test_run_once_triage_mode_picks_and_commits(tmp_path):
 def test_run_once_triage_nothing_to_do(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(triage_and_pick=lambda cfg, cwd, baseline_red: None, quarantined=lambda cfg: ["todo:z.ts:3"])
     report = run_once(cfg, None, deps)
     assert report.status == "nothing_to_do"
@@ -157,8 +159,7 @@ def test_run_once_triage_discard_records_and_resets(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
     from academy_auto.triage.rank import Pick
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(
         triage_and_pick=lambda cfg, cwd, baseline_red: Pick("todo:b.ts:1", "b umsetzen", "einfach"),
         measure_gate=two_stage_measure(0, 3),  # grün Baseline, rotes After
@@ -173,8 +174,7 @@ def test_run_once_triage_discard_records_and_resets(tmp_path):
 def test_run_once_manual_prompt_skips_triage_and_recording(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(triage_and_pick=lambda cfg, cwd, baseline_red: (_ for _ in ()).throw(AssertionError("Triage darf nicht laufen")))
     report = run_once(cfg, "manueller Auftrag", deps)  # String -> kein Triage
     assert report.status == "committed"
@@ -184,8 +184,7 @@ def test_run_once_manual_prompt_skips_triage_and_recording(tmp_path):
 def test_run_once_impl_fail_resets_worktree(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(implement_task=lambda cfg, cwd, prompt: RunOutcome(ok=False, output="claude weg"))
     report = run_once(cfg, "manuell", deps)
     assert report.status == "impl_failed"
@@ -195,8 +194,7 @@ def test_run_once_impl_fail_resets_worktree(tmp_path):
 def test_run_once_committed_digest_lists_quarantine(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(quarantined=lambda cfg: ["todo:z.ts:9"])
     report = run_once(cfg, "manuell", deps)
     assert report.status == "committed"
@@ -206,8 +204,7 @@ def test_run_once_committed_digest_lists_quarantine(tmp_path):
 def test_run_once_green_baseline_absolute_pass_commits(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(measure_gate=two_stage_measure(0, 0))  # grün → grün
     assert run_once(cfg, "manuell", deps).status == "committed"
 
@@ -215,8 +212,7 @@ def test_run_once_green_baseline_absolute_pass_commits(tmp_path):
 def test_run_once_green_baseline_after_red_discards(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(
         measure_gate=two_stage_measure(0, 2),  # grün → rot: neuer Fehler → discard
         commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("kein Commit")),
@@ -229,8 +225,7 @@ def test_run_once_green_baseline_after_red_discards(tmp_path):
 def test_run_once_red_baseline_delta_progress_commits(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(measure_gate=two_stage_measure(5, 2))  # rot → weniger Fehler → Delta-Commit
     r = run_once(cfg, "manuell", deps)
     assert r.status == "committed"
@@ -240,8 +235,7 @@ def test_run_once_red_baseline_delta_progress_commits(tmp_path):
 def test_run_once_red_baseline_no_progress_discards(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(
         measure_gate=two_stage_measure(5, 5),  # rot → kein Fortschritt → discard
         commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("kein Commit")),
@@ -253,8 +247,7 @@ def test_run_once_triage_receives_baseline_red(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
     from academy_auto.triage.rank import Pick
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause"})
+    cfg = _cfg(tmp_path)
     seen = {}
 
     def tp(cfg, cwd, baseline_red):
@@ -272,8 +265,7 @@ def test_run_once_dry_run_skips_commit_and_recording(tmp_path):
     from academy_auto.triage.rank import Pick
     dry = tmp_path / "academy-auto.dryrun"
     dry.write_text("")
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause", "dry_run_flag": dry})
+    cfg = _cfg(tmp_path, dry_run_flag=dry)
     deps = base_deps(
         triage_and_pick=lambda cfg, cwd, baseline_red: Pick("todo:b.ts:1", "b umsetzen", "grund"),
         commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("Trockenlauf darf NICHT committen")),
@@ -288,9 +280,7 @@ def test_run_once_dry_run_skips_commit_and_recording(tmp_path):
 def test_run_once_commits_when_dry_run_flag_absent(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause",
-                    "dry_run_flag": tmp_path / "kein.dryrun"})
+    cfg = _cfg(tmp_path)
     report = run_once(cfg, "manuell", base_deps())
     assert report.status == "committed"
 
@@ -298,9 +288,7 @@ def test_run_once_commits_when_dry_run_flag_absent(tmp_path):
 def test_run_once_top_level_error_is_caught(tmp_path):
     global sent, recorded, resets
     sent, recorded, resets = [], [], []
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": tmp_path / "nope.pause",
-                    "dry_run_flag": tmp_path / "kein.dryrun"})
+    cfg = _cfg(tmp_path)
     deps = base_deps(prepare_worktree=lambda cfg: (_ for _ in ()).throw(RuntimeError("worktree kaputt")))
     report = run_once(cfg, "manuell", deps)
     assert report.status == "error"
@@ -312,7 +300,6 @@ def test_pause_flag_wins_over_dry_run(tmp_path):
     sent, recorded, resets = [], [], []
     pause = tmp_path / "p.pause"; pause.write_text("")
     dry = tmp_path / "d.dryrun"; dry.write_text("")
-    cfg = Config.default()
-    cfg = Config(**{**cfg.__dict__, "pause_flag": pause, "dry_run_flag": dry})
+    cfg = _cfg(tmp_path, pause_flag=pause, dry_run_flag=dry)
     assert run_once(cfg, None, base_deps()).status == "paused"
     assert sent == []
