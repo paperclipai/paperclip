@@ -342,7 +342,30 @@ The state `projectWorkspaceId` plus `executionWorkspaceId` without `projectId` i
 
 Workspace incoherence feeds into the same non-terminal liveness and stranded assigned-work model as a disappeared run. The recovery path should first fail or reject the incoherent wake, then either repair and requeue one bounded continuation for the same assignee or surface an explicit recovery action. It must not leave an agent-owned `in_progress` issue healthy solely because a wake record exists that would invoke the adapter in the wrong cwd, a non-git directory where git is required, an unrelated project workspace, or an unrecoverable missing worktree.
 
-For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`. If the run switched to a publishing/PR branch without updating the execution workspace record, finalization may auto-restore the recorded branch only when the worktree is clean, still registered, and the recorded branch points at the current `HEAD`; the repair is recorded as a workspace operation before the successful finalize row. If that safe repair cannot be proven, finalization records a failed workspace finalize and the run fails with bounded evidence for the expected and actual branch. A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when the finalizer performs this clean same-commit restoration.
+For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`.
+
+#### Contract A — anchored-clean divergence is self-healing
+
+If a run switched the worktree to another branch without updating the execution workspace record, the resulting recorded-branch divergence is repairable without loss whenever the worktree is *clean*, *still registered*, and *uncontended*, and the live `HEAD` is anchored by a local branch ref. Checking out the recorded branch discards nothing in that state: the foreign commits stay anchored on their own ref. Both start validation and finalization perform this restore instead of failing the run. Each repair is recorded as a workspace operation before the corresponding validation or finalize row, and Paperclip posts one fingerprint-deduped audit comment naming the parked branch so the drift stays visible after it is healed. This subsumes the earlier same-commit-only restore rule: restoring the recorded branch when it already points at the current `HEAD` is the trivial case of the same repair.
+
+Hard stops remain only for divergence that cannot be proven safe to restore:
+
+- dirty trees — take the quarantine path instead of discarding or carrying uncommitted changes
+- in-progress git operations (rebase, merge, cherry-pick, bisect)
+- detached `HEAD`s not covered by the ancestor rule
+- live contention — another workspace claims the live branch and has an active run
+
+In those cases validation or finalization records a failed workspace check and the run fails with bounded evidence for the expected and actual branch.
+
+A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when validation/finalization performs the anchored-clean restore above.
+
+#### Contract B — workspace-validation failures are always visible
+
+Every run that fails workspace validation — including pre-start failures that never invoke the adapter — stamps structured `workspaceValidation` evidence on the run row: the expected and actual branch, the divergence shape, and which repair options were evaluated and why each was or was not taken.
+
+Every such failure yields exactly one live source-scoped, fingerprint-deduped recovery action, regardless of the source issue's status — including `blocked` issues and issues with pending interactions. Opening that action must not clobber the source issue's status, assignee, or pending interactions; visibility is additive. Status-gated promotion or reconciler paths that skip these issues violate this contract: a broken shared workspace must never fail runs silently.
+
+The run page renders diagnosis and repair affordances from the run's own `workspaceValidation` evidence even when no recovery action exists, so a failed validation is never a blank surface. When a consumed wake (for example a comment wake) died on the failed validation, one bounded continuation is replayed after a successful repair so the triggering activity is not silently dropped.
 
 ### Explicit recovery actions
 
