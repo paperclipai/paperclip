@@ -188,6 +188,7 @@ import {
 } from "./execution-allowlist.js";
 import {
   RECOVERY_ORIGIN_KINDS,
+  RECOVERY_REASON_KINDS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   RUN_LIVENESS_CONTINUATION_REASON,
@@ -524,6 +525,7 @@ function mergeAdapterRecoveryMetadata(input: {
 }
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "approval_approved",
+  RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff,
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
 ]);
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
@@ -2383,6 +2385,27 @@ function readContextModelProfile(
   return readModelProfileKey(contextSnapshot?.modelProfile);
 }
 
+function isCheapRecoveryDeliverableHandoffContext(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  return (
+    readNonEmptyString(contextSnapshot?.wakeReason) ===
+      RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff ||
+    readNonEmptyString(contextSnapshot?.livenessContinuationReason) ===
+      RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff
+  );
+}
+
+function isStatusOnlyCheapRecoveryContext(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  return readContextModelProfile(contextSnapshot) === "cheap" &&
+    readNonEmptyString(contextSnapshot?.recoveryIntent) === "status_only" &&
+    contextSnapshot?.allowDeliverableWork === false &&
+    contextSnapshot?.allowDocumentUpdates === false &&
+    contextSnapshot?.resumeRequiresNormalModel === true;
+}
+
 export function normalizeModelProfileWakeContext(input: {
   contextSnapshot: Record<string, unknown>;
   payload: Record<string, unknown> | null | undefined;
@@ -2418,7 +2441,10 @@ export function resolveModelProfileApplication(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   profileResolutionFallbackReason?: string | null;
 }): ModelProfileApplication {
-  const issueModelProfile = input.issueModelProfile ?? null;
+  const isNormalDeliverableHandoff = isCheapRecoveryDeliverableHandoffContext(input.contextSnapshot);
+  const issueModelProfile = isNormalDeliverableHandoff
+    ? null
+    : input.issueModelProfile ?? null;
   const contextModelProfile = readContextModelProfile(input.contextSnapshot);
   const requested = issueModelProfile ?? contextModelProfile;
   const requestedBy: ModelProfileRequestSource | null = issueModelProfile
@@ -4134,7 +4160,7 @@ export function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
-function shouldQueueFollowupForRunningIssueWake(input: {
+export function shouldQueueFollowupForRunningIssueWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   wakeCommentId: string | null;
 }) {
@@ -9670,7 +9696,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const shouldQuarantineWorkspaceForRetry =
       workspaceValidationRetryPayload !== null &&
       Object.keys(workspaceValidationRetryPayload).length > 0;
-    const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
+    const retryContextSeed: Record<string, unknown> = {
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason,
@@ -9694,7 +9720,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
         : {}),
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
-    }, "normal_model");
+    };
+    const retryContextSnapshot: Record<string, unknown> = isStatusOnlyCheapRecoveryContext(contextSnapshot)
+      ? withRecoveryModelProfileHint(retryContextSeed, "status_only")
+      : withRecoveryModelProfileHint(retryContextSeed, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
     const continuationRetryIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
       ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
@@ -14527,6 +14556,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         if (!deferred) break;
 
+        // A bounded retry scheduled by the finalizing run already owns this
+        // issue's next execution slot. Keep later deferred work durable until
+        // that retry runs (or exhausts) so provider retryNotBefore/backoff
+        // cannot be bypassed by immediate deferred-wake promotion.
+        const existingExecutionPath = await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              sql`${heartbeatRuns.id} <> ${run.id}`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existingExecutionPath) break;
+
         const deferredAgent = await tx
           .select()
           .from(agents)
@@ -15964,12 +16012,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 existingDeferredContext,
                 enrichedContextSnapshot,
               );
-              const mergedDeferredPayload = {
+              const preservesNormalDeliverableHandoff =
+                isCheapRecoveryDeliverableHandoffContext(existingDeferredContext) ||
+                isCheapRecoveryDeliverableHandoffContext(enrichedContextSnapshot);
+              const stickyMergedDeferredContext = preservesNormalDeliverableHandoff
+                ? {
+                    ...mergedDeferredContext,
+                    wakeReason: RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff,
+                  }
+                : mergedDeferredContext;
+              const safeMergedDeferredContext =
+                preservesNormalDeliverableHandoff
+                  ? withRecoveryModelProfileHint(stickyMergedDeferredContext, "normal_model")
+                  : stickyMergedDeferredContext;
+              const mergedDeferredPayloadBase = {
                 ...existingDeferredPayload,
                 ...(payload ?? {}),
                 issueId,
-                [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
+                [DEFERRED_WAKE_CONTEXT_KEY]: safeMergedDeferredContext,
               };
+              const mergedDeferredPayload =
+                preservesNormalDeliverableHandoff
+                  ? withRecoveryModelProfileHint(mergedDeferredPayloadBase, "normal_model")
+                  : mergedDeferredPayloadBase;
 
               await tx
                 .update(agentWakeupRequests)

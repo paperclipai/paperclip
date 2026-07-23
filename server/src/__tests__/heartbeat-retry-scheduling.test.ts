@@ -30,11 +30,15 @@ import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
+  resolveModelProfileApplication,
 } from "../services/heartbeat.ts";
+import { withRecoveryModelProfileHint } from "../services/recovery/model-profile-hint.ts";
+import { RECOVERY_REASON_KINDS } from "../services/recovery/origins.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+let providerQuotaExecutionGate: Promise<void> | null = null;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -67,20 +71,23 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     heartbeat = heartbeatService(db);
     registerServerAdapter({
       type: PROVIDER_QUOTA_TEST_ADAPTER,
-      execute: async () => ({
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: "You've hit your session limit - resets at 4pm (America/Chicago).",
-        errorCode: "provider_quota",
-        errorFamily: "provider_quota",
-        retryNotBefore: "2030-04-22T21:00:00.000Z",
-        resultJson: {
+      execute: async () => {
+        await providerQuotaExecutionGate;
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: "You've hit your session limit - resets at 4pm (America/Chicago).",
+          errorCode: "provider_quota",
           errorFamily: "provider_quota",
           retryNotBefore: "2030-04-22T21:00:00.000Z",
-          providerQuotaRetryNotBefore: "2030-04-22T21:00:00.000Z",
-        },
-      }),
+          resultJson: {
+            errorFamily: "provider_quota",
+            retryNotBefore: "2030-04-22T21:00:00.000Z",
+            providerQuotaRetryNotBefore: "2030-04-22T21:00:00.000Z",
+          },
+        };
+      },
       testEnvironment: async () => ({
         adapterType: PROVIDER_QUOTA_TEST_ADAPTER,
         status: "pass",
@@ -91,6 +98,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   }, 20_000);
 
   afterEach(async () => {
+    providerQuotaExecutionGate = null;
     await cleanupRetryFixture();
   });
 
@@ -208,11 +216,13 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   it("records provider quota failures, schedules the reset-time retry, and leaves the agent idle", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
@@ -230,11 +240,37 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
           wakeOnDemand: true,
           maxConcurrentRuns: 1,
         },
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {},
+          },
+        },
       },
       permissions: {},
     });
 
-    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Publish recovered evidence after quota reset",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      assigneeAdapterOverrides: { modelProfile: "cheap" },
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.invoke(agentId, "on_demand", {
+      issueId,
+      taskId: issueId,
+      forceFreshSession: true,
+      wakeReason: "cheap_recovery_deliverable_handoff",
+      livenessContinuationReason: "cheap_recovery_deliverable_handoff",
+      livenessContinuationInstruction: "Publish the recovered evidence with the normal model.",
+    }, "manual");
     expect(run).not.toBeNull();
 
     const failedRun = await waitForRunToFinish(heartbeat, run!.id);
@@ -273,6 +309,15 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       "2030-04-22T21:00:00.000Z",
     );
     expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.codexTransientFallbackMode ?? null).toBeNull();
+    expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.livenessContinuationReason).toBe(
+      "cheap_recovery_deliverable_handoff",
+    );
+    expect(resolveModelProfileApplication({
+      adapterModelProfiles: [{ key: "cheap", enabled: true, adapterConfig: { model: "cheap-model" } }],
+      agentRuntimeConfig: {},
+      issueModelProfile: "cheap",
+      contextSnapshot: retryRun?.contextSnapshot as Record<string, unknown> | null,
+    })).toMatchObject({ requested: null, applied: null });
 
     await expect
       .poll(
@@ -285,6 +330,144 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("keeps restricted quota retries guarded and defers the normal handoff until the reset-time retry runs", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const reason = RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff;
+    let releaseExecution = () => {};
+    providerQuotaExecutionGate = new Promise<void>((resolve) => {
+      releaseExecution = resolve;
+    });
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Restricted Quota Test",
+        role: "engineer",
+        status: "idle",
+        adapterType: PROVIDER_QUOTA_TEST_ADAPTER,
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+          modelProfiles: { cheap: { enabled: true, adapterConfig: {} } },
+        },
+        permissions: {},
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Publish recovered evidence after quota reset",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        assigneeAdapterOverrides: { modelProfile: "cheap" },
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const restrictedContext = withRecoveryModelProfileHint({
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+      }, "status_only");
+      const run = await heartbeat.invoke(agentId, "on_demand", restrictedContext, "manual");
+      expect(run).not.toBeNull();
+      await expect.poll(
+        () => heartbeat.getRun(run!.id).then((current) => current?.status),
+        { timeout: 5_000, interval: 50 },
+      ).toBe("running");
+
+      const normalHandoffContext = withRecoveryModelProfileHint({
+        issueId,
+        taskId: issueId,
+        sourceRunId: run!.id,
+        forceFreshSession: true,
+        wakeReason: reason,
+        livenessContinuationReason: reason,
+        livenessContinuationInstruction: "Publish the recovered evidence with the normal model.",
+      }, "normal_model");
+      expect(await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason,
+        idempotencyKey: [reason, issueId, run!.id].join(":"),
+        payload: normalHandoffContext,
+        contextSnapshot: normalHandoffContext,
+        requestedByActorType: "system",
+        requestedByActorId: "test",
+      })).toBeNull();
+
+      releaseExecution();
+      providerQuotaExecutionGate = null;
+      const failedRun = await waitForRunToFinish(heartbeat, run!.id);
+      expect(failedRun?.status).toBe("failed");
+
+      await expect.poll(
+        () => db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+          .then((rows) => rows.length),
+        { timeout: 5_000, interval: 50 },
+      ).toBe(1);
+      const retryRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+        .then((rows) => rows[0]!);
+      expect(retryRun.status).toBe("scheduled_retry");
+      expect(retryRun.scheduledRetryAt?.toISOString()).toBe("2030-04-22T21:00:00.000Z");
+      expect(retryRun.contextSnapshot).toMatchObject({
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      });
+
+      const deferred = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        ));
+      expect(deferred).toHaveLength(1);
+      expect((deferred[0]?.payload as Record<string, unknown>)._paperclipWakeContext).toMatchObject({
+        forceFreshSession: true,
+        livenessContinuationReason: reason,
+      });
+      const executionIssue = await db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]);
+      expect(executionIssue?.executionRunId).toBe(retryRun.id);
+      const immediateSuccessors = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(and(
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+        ));
+      expect(immediateSuccessors).toEqual([]);
+    } finally {
+      releaseExecution();
+      providerQuotaExecutionGate = null;
+    }
   });
 
   async function seedMaxTurnFixture(input?: {
