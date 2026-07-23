@@ -407,6 +407,32 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("does not re-wake the requesting agent on a request-revision retry", async () => {
+    const { unprocessable } = await import("../errors.js");
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-10",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: "agent-8",
+    });
+    mockApprovalService.requestRevision.mockRejectedValue(
+      unprocessable("Only pending approvals can request revision"),
+    );
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-10/request-revision")
+      .send({ decisionNote: "Need changes" });
+
+    expect(res.status).toBe(422);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "approval.requester_wakeup_queued" }),
+    );
+  });
+
   it("does not wake any agent when a rejected approval has no requesting agent", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-11",
