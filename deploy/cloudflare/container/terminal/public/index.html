@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>agency terminal — ghostty-web</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#1a1b26;overflow:hidden}
+  #terminal{position:absolute;inset:0;padding:6px}
+  #status{position:fixed;top:8px;right:12px;font:12px ui-monospace,monospace;color:#565f89;z-index:10}
+</style>
+</head>
+<body>
+<div id="status">connecting…</div>
+<div id="terminal"></div>
+<script type="module">
+import { init, Terminal } from "/vendor/ghostty-web.js";
+
+const status = document.getElementById("status");
+
+await init();
+
+const term = new Terminal({
+  fontSize: 14,
+  cursorBlink: true,
+  theme: {
+    background: "#1a1b26",
+    foreground: "#a9b1d6",
+    cursor: "#c0caf5",
+  },
+});
+term.open(document.getElementById("terminal"));
+
+const proto = location.protocol === "https:" ? "wss:" : "ws:";
+const ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+ws.onopen = () => {
+  status.textContent = "connected";
+  status.style.color = "#9ece6a";
+  sendResize();
+};
+ws.onclose = () => {
+  status.textContent = "disconnected — reload to reconnect";
+  status.style.color = "#f7768e";
+};
+ws.onmessage = (e) => term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
+
+term.onData((data) => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(data);
+});
+
+function sendResize() {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send("\x01" + JSON.stringify({ cols: term.cols, rows: term.rows }));
+  }
+}
+term.onResize(() => sendResize());
+
+function fit() {
+  const el = document.getElementById("terminal");
+  const cell = term._core?.dimensions ?? null;
+  // ghostty-web is xterm-compatible; approximate fit via measured char size.
+  const cw = 8.4, ch = 17;
+  const cols = Math.max(20, Math.floor((el.clientWidth - 12) / cw));
+  const rows = Math.max(5, Math.floor((el.clientHeight - 12) / ch));
+  try { term.resize(cols, rows); } catch {}
+  sendResize();
+}
+window.addEventListener("resize", fit);
+fit();
+</script>
+</body>
+</html>

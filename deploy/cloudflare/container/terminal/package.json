@@ -1,0 +1,11 @@
+{
+  "name": "ghostty-terminal-server",
+  "private": true,
+  "version": "1.0.0",
+  "main": "server.js",
+  "dependencies": {
+    "ghostty-web": "0.4.0",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  }
+}

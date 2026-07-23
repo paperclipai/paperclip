@@ -1,0 +1,22 @@
+{
+  "name": "paperclip-agency-deploy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "0.12.4"
+  },
+  "devDependencies": {
+    "wrangler": "^4.113.0",
+    "typescript": "^5.6.0",
+    "@cloudflare/workers-types": "^4.20260701.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260721.1": true,
+    "sharp@0.34.5": true
+  }
+}

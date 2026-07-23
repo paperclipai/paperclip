@@ -1,0 +1,44 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "paperclip-agency",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "5dae265f74e6077ad674a3d855bf9853",
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./container/Dockerfile",
+      "instance_type": { "vcpu": 2, "memory_mib": 8192, "disk_mb": 10240 },
+      "max_instances": 2,
+      "name": "paperclip-agency-sandbox"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "class_name": "Sandbox", "name": "Sandbox" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+  "kv_namespaces": [
+    { "binding": "STATE", "id": "6ff4325244574ca494295d807fb9c6be" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "paperclip-agency",
+      "database_id": "2a778435-df9b-4e65-aef7-0a3b1a4b6556"
+    }
+  ],
+  "r2_buckets": [
+    { "binding": "ARTIFACTS", "bucket_name": "paperclip-agency-artifacts" }
+  ],
+  "routes": [
+    { "pattern": "agency.bitbuilder.dev/*", "zone_name": "bitbuilder.dev" },
+    { "pattern": "3100-agency-main-app.bitbuilder.dev/*", "zone_name": "bitbuilder.dev" },
+    { "pattern": "7681-agency-main-term.bitbuilder.dev/*", "zone_name": "bitbuilder.dev" }
+  ],
+  "vars": {
+    "PUBLIC_HOST": "agency.bitbuilder.dev",
+    "PREVIEW_HOST": "bitbuilder.dev"
+  },
+  "observability": { "enabled": true }
+}

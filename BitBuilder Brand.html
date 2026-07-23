@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>BitBuilder Cloud — Brand & Letterhead</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles/tokens.css" />
+<style>
+  body { background: var(--bg-0); padding: 56px 0; }
+  .stack { display: grid; gap: 56px; max-width: 1200px; margin: 0 auto; padding: 0 32px; }
+  .card { background: var(--bg-1); border: 1px solid var(--line); padding: 0; }
+  .card .head { display:flex; justify-content:space-between; align-items:center; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--bg-2); font-family: var(--font-mono); font-size: 11px; letter-spacing:.14em; text-transform:uppercase; color: var(--fg-2); }
+  .card .body { padding: 56px 32px; display: grid; place-items: center; min-height: 240px; }
+  .card .body.dark { background: #0b0d10; color: #fff; }
+  .card .body.light { background: #f3efe6; color: #14171f; }
+  .card .body.signal { background: var(--accent); color: #0b0d10; }
+  .gridbg { background-image: linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px); background-size: 24px 24px; }
+
+  /* === LOGO PRIMITIVES === */
+  .wm { display: inline-flex; align-items: baseline; white-space: nowrap; font-family: "JetBrains Mono", ui-monospace, monospace; font-weight: 700; letter-spacing: .12em; }
+  .wm .prompt { color: var(--accent); margin: 0 .5em; position: relative; white-space: nowrap; display: inline-flex; align-items: baseline; }
+  .wm .prompt::after { content: ""; display: inline-block; width: .5em; height: .9em; background: currentColor; margin-left: .12em; animation: blink 1.05s steps(2) infinite; flex: none; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* monogram */
+  .mark { display: inline-block; }
+
+  /* sizes */
+  .wm-xl { font-size: 64px; }
+  .wm-lg { font-size: 36px; }
+  .wm-md { font-size: 22px; }
+  .wm-sm { font-size: 14px; letter-spacing: .14em; }
+
+  /* row */
+  .row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
+  .row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+  .row4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+
+  /* ===== Letterhead (US Letter) ===== */
+  .sheet {
+    width: 816px; height: 1056px;
+    background: #f3efe6; color: #14171f;
+    margin: 0 auto;
+    box-shadow: 0 32px 80px -30px rgba(0,0,0,.6), 0 4px 16px rgba(0,0,0,.4);
+    position: relative; overflow: hidden;
+    font-family: "Inter", system-ui, sans-serif;
+  }
+  .sheet::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 6px;
+    background: var(--accent);
+  }
+  .sheet .top {
+    display: grid; grid-template-columns: 1fr auto;
+    align-items: end; padding: 56px 64px 28px;
+    border-bottom: 1px solid #1a1d24;
+  }
+  .sheet .top .meta { text-align: right; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: #14171f; opacity: .6; line-height: 1.7; }
+  .sheet .col {
+    padding: 36px 64px 0;
+  }
+  .sheet .body {
+    padding: 24px 64px 0;
+    font-size: 13px; line-height: 1.65; color: #2a2e38;
+  }
+  .sheet h1 {
+    font-family: "Fraunces", serif; font-weight: 500; font-style: italic;
+    font-size: 38px; line-height: 1.1; letter-spacing: -.02em; margin: 0 0 8px;
+  }
+  .sheet h1 em { color: var(--accent); font-style: italic; }
+  .sheet .ref {
+    display: grid; grid-template-columns: repeat(4,1fr); gap: 12px;
+    padding: 16px 64px 0; font-family: "JetBrains Mono", monospace;
+    font-size: 10px; color: #5b626c; letter-spacing: .1em; text-transform: uppercase;
+  }
+  .sheet .ref .k { display: block; opacity: .6; margin-bottom: 2px; }
+  .sheet .ref .v { color: #14171f; font-weight: 600; text-transform: none; letter-spacing: .04em; font-size: 11px; }
+
+  .sheet .salutation { font-family: "Fraunces", serif; font-style: italic; font-size: 17px; color: #14171f; margin-bottom: 14px; }
+  .sheet p { margin: 0 0 12px; }
+  .sheet .sig { padding: 0 64px; margin-top: 28px; font-family: "Fraunces", serif; font-style: italic; font-size: 22px; }
+  .sheet .sig + .meta { padding: 4px 64px 0; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: #5b626c; }
+
+  .sheet .footer {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 18px 64px 22px; border-top: 1px solid #d6cfbe;
+    display: flex; justify-content: space-between;
+    font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: #5b626c;
+  }
+  .sheet .corner-mark {
+    position: absolute; right: 36px; bottom: 84px;
+    font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: .2em; color: #5b626c;
+    writing-mode: vertical-rl; transform: rotate(180deg); opacity: .55;
+  }
+
+  /* svg mark wrapper */
+  .square {
+    display: inline-grid; place-items: center;
+    width: 88px; height: 88px;
+    border: 1.5px solid currentColor;
+    position: relative;
+  }
+  .square::before, .square::after {
+    content: ""; position: absolute; width: 6px; height: 6px;
+    border: 1.5px solid currentColor; background: transparent;
+  }
+  .square::before { top: -4px; left: -4px; border-right: none; border-bottom: none; }
+  .square::after { bottom: -4px; right: -4px; border-left: none; border-top: none; }
+
+  .biz {
+    width: 360px; height: 210px;
+    background: #0b0d10; color: #fff;
+    padding: 24px;
+    display: flex; flex-direction: column; justify-content: space-between;
+    position: relative; overflow: hidden;
+    border: 1px solid #1e232c;
+  }
+  .biz.light { background: #f3efe6; color: #14171f; border-color: #d6cfbe; }
+  .biz .name { font-family: "Fraunces", serif; font-style: italic; font-size: 18px; }
+  .biz .role { font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin-top: 2px; }
+  .biz .ct { font-family: "JetBrains Mono", monospace; font-size: 10px; line-height: 1.6; opacity: .75; }
+  .biz .corner { position: absolute; right: 16px; top: 16px; font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: .2em; opacity: .35; }
+
+  .swatch { aspect-ratio: 1; display: flex; flex-direction: column; justify-content: space-between; padding: 14px; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+  .swatch .name { font-weight: 600; }
+  .swatch .hex { opacity: .7; }
+</style>
+</head>
+<body>
+
+<div class="stack">
+
+  <header style="display:flex; justify-content:space-between; align-items:end; padding-bottom: 24px; border-bottom: 1px solid var(--line);">
+    <div>
+      <div class="caps" style="color:var(--fg-2)">brand · sheet 01</div>
+      <h1 class="display" style="font-size:48px; margin:6px 0 0;">BitBuilder Cloud<br/><em>logo &amp; letterhead system</em></h1>
+    </div>
+    <div class="mono" style="font-size:11px; color:var(--fg-2); text-align:right; line-height:1.7;">
+      v4.2 · 2026<br/>
+      austin, tx · usa<br/>
+      bitbuilder.cloud
+    </div>
+  </header>
+
+  <!-- ============== PRIMARY LOGO ============== -->
+  <section>
+    <div class="caps" style="margin-bottom:12px; color:var(--fg-2);">§ 01 · primary wordmark</div>
+
+    <div class="card">
+      <div class="head"><span>primary lockup · dark</span><span>min width 240 px</span></div>
+      <div class="body dark gridbg">
+        <span class="wm wm-xl" style="--accent:#22c55e">BITBUILDER<span class="prompt">&gt;_</span>CLOUD</span>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top: 24px;">
+      <div class="card">
+        <div class="head"><span>on light · paper</span><span>print-safe</span></div>
+        <div class="body light">
+          <span class="wm wm-lg" style="color:#14171f; --accent:#15803d">BITBUILDER<span class="prompt">&gt;_</span>CLOUD</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="head"><span>signal · accent fill</span><span>marketing</span></div>
+        <div class="body signal" style="--accent:#22c55e">
+          <span class="wm wm-lg" style="color:#0b0d10; --accent:#0b0d10">BITBUILDER<span class="prompt">&gt;_</span>CLOUD</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============== MONOGRAM / MARK ============== -->
+  <section>
+    <div class="caps" style="margin-bottom:12px; color:var(--fg-2);">§ 02 · monogram &amp; favicon</div>
+    <div class="row3">
+      <div class="card">
+        <div class="head"><span>monogram · primary</span><span>square</span></div>
+        <div class="body dark gridbg">
+          <svg width="160" height="160" viewBox="0 0 160 160" aria-label="BitBuilder mark">
+            <!-- bracket frame -->
+            <rect x="6" y="6" width="148" height="148" fill="none" stroke="#fff" stroke-width="2"/>
+            <!-- corner ticks -->
+            <g stroke="#22c55e" stroke-width="2" fill="none">
+              <path d="M2 14 L2 2 L14 2"/>
+              <path d="M158 146 L158 158 L146 158"/>
+            </g>
+            <!-- left bracket -->
+            <path d="M44 50 L26 80 L44 110" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="square"/>
+            <!-- prompt > _ -->
+            <path d="M64 60 L84 80 L64 100" stroke="#22c55e" stroke-width="3" fill="none" stroke-linecap="square"/>
+            <rect x="92" y="96" width="22" height="4" fill="#22c55e"/>
+            <!-- right bracket -->
+            <path d="M134 50 L116 80 L134 110" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="square" transform="rotate(180 125 80)"/>
+            <!-- bit pattern -->
+            <g fill="#fff" opacity=".6">
+              <rect x="52" y="124" width="3" height="3"/>
+              <rect x="60" y="124" width="3" height="3"/>
+              <rect x="68" y="124" width="3" height="3"/>
+              <rect x="76" y="124" width="3" height="3"/>
+              <rect x="84" y="124" width="3" height="3"/>
+              <rect x="92" y="124" width="3" height="3"/>
+              <rect x="100" y="124" width="3" height="3"/>
+              <rect x="108" y="124" width="3" height="3"/>
+            </g>
+          </svg>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="head"><span>app icon · 1024</span><span>signal</span></div>
+        <div class="body" style="background:#22c55e; color:#0b0d10;">
+          <svg width="160" height="160" viewBox="0 0 160 160">
+            <rect x="0" y="0" width="160" height="160" fill="#22c55e"/>
+            <path d="M48 56 L30 80 L48 104" stroke="#0b0d10" stroke-width="4" fill="none" stroke-linecap="square"/>
+            <path d="M68 64 L88 80 L68 96" stroke="#0b0d10" stroke-width="4" fill="none" stroke-linecap="square"/>
+            <rect x="96" y="92" width="26" height="5" fill="#0b0d10"/>
+            <path d="M132 56 L130 80 L130 104" stroke="#0b0d10" stroke-width="4" fill="none" opacity="0"/>
+          </svg>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="head"><span>favicon · 32 / 16</span><span>raster</span></div>
+        <div class="body dark" style="gap: 24px; flex-direction:row; display:flex;">
+          <div style="display:flex; flex-direction:column; align-items:center; gap:8px;">
+            <div style="width:64px; height:64px; background:#0b0d10; border:1px solid #1e232c; display:grid; place-items:center;">
+              <span class="wm" style="font-size:14px; color:#fff; --accent:#22c55e; letter-spacing:0;">B<span style="color:#22c55e;">&gt;</span>C</span>
+            </div>
+            <span class="caps" style="color:var(--fg-2)">64</span>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:8px;">
+            <div style="width:32px; height:32px; background:#0b0d10; border:1px solid #1e232c; display:grid; place-items:center;">
+              <span class="wm" style="font-size:9px; color:#fff; --accent:#22c55e; letter-spacing:0;">B<span style="color:#22c55e;">&gt;</span>C</span>
+            </div>
+            <span class="caps" style="color:var(--fg-2)">32</span>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:8px;">
+            <div style="width:16px; height:16px; background:#0b0d10; border:1px solid #1e232c; display:grid; place-items:center;">
+              <span style="color:#22c55e; font-family:monospace; font-size:8px; font-weight:700;">&gt;_</span>
+            </div>
+            <span class="caps" style="color:var(--fg-2)">16</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============== LOCKUPS / VARIANTS ============== -->
+  <section>
+    <div class="caps" style="margin-bottom:12px; color:var(--fg-2);">§ 03 · lockup variants</div>
+    <div class="row">
+      <div class="card">
+        <div class="head"><span>horizontal · with mark</span><span>email signature</span></div>
+        <div class="body dark" style="justify-content:flex-start; flex-direction:row; display:flex; gap:18px; align-items:center; padding:32px;">
+          <svg width="44" height="44" viewBox="0 0 44 44" aria-label="bb">
+            <rect x="1" y="1" width="42" height="42" fill="none" stroke="#fff" stroke-width="1.5"/>
+            <path d="M14 16 L8 22 L14 28" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="square"/>
+            <path d="M20 16 L26 22 L20 28" stroke="#22c55e" stroke-width="2" fill="none" stroke-linecap="square"/>
+            <rect x="28" y="26" width="8" height="2" fill="#22c55e"/>
+          </svg>
+          <span class="wm wm-md" style="--accent:#22c55e">BITBUILDER<span class="prompt">&gt;_</span>CLOUD</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="head"><span>stacked · plate</span><span>print / docs</span></div>
+        <div class="body light">
+          <div style="text-align:center;">
+            <div class="caps" style="color:#5b626c">established · austin, tx · 2012</div>
+            <div class="wm wm-lg" style="margin-top:8px; color:#14171f; --accent:#15803d">BITBUILDER<span class="prompt">&gt;_</span>CLOUD</div>
+            <div class="caps" style="margin-top:10px; color:#5b626c;">— vendor-neutral cloud infrastructure —</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============== COLOR ============== -->
+  <section>
+    <div class="caps" style="margin-bottom:12px; color:var(--fg-2);">§ 04 · color tokens</div>
+    <div class="row4">
+      <div class="swatch" style="background:#0b0d10; color:#fff;">
+        <span class="name">ink</span>
+        <div><div>ink · 950</div><div class="hex">#0B0D10</div></div>
+      </div>
+      <div class="swatch" style="background:#22c55e; color:#0b0d10;">
+        <span class="name">signal</span>
+        <div><div>signal · 500</div><div class="hex">#22C55E</div></div>
+      </div>
+      <div class="swatch" style="background:#15803d; color:#fff;">
+        <span class="name">signal · deep</span>
+        <div><div>signal · 700</div><div class="hex">#15803D</div></div>
+      </div>
+      <div class="swatch" style="background:#f3efe6; color:#14171f; border:1px solid #d6cfbe;">
+        <span class="name">paper</span>
+        <div><div>paper · 50</div><div class="hex">#F3EFE6</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============== BUSINESS CARD ============== -->
+  <section>
+    <div class="caps" style="margin-bottom:12px; color:var(--fg-2);">§ 05 · business card · 3.5 × 2 in</div>
+    <div class="row">
+      <div class="card">
+        <div class="head"><span>front</span><span>dark</span></div>
+        <div class="body dark gridbg" style="padding:36px;">
+          <div class="biz">
+            <div>
+              <span class="wm" style="font-size:14px; color:#fff; --accent:#22c55e">BITBUILDER<span class="prompt">&gt;_</span>CLOUD</span>
+            </div>
+            <div>
+              <div class="name">Sasha Reinhardt</div>
+              <div class="role">principal · platform engineering</div>
+            </div>
+            <div class="ct">
+              sasha@bitbuilder.cloud<br/>
+              +1 (512) 555 0218 · austin, tx
+            </div>
+            <span class="corner">v4.2 / 0042</span>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="head"><span>back</span><span>signal accent</span></div>
+        <div class="body dark gridbg" style="padding:36px;">
+          <div class="biz" style="background:#22c55e; color:#0b0d10; border-color:#15803d;">
+            <span class="caps" style="color:#0b0d10; opacity:.7;">vendor-neutral · 14+ yrs</span>
+            <div style="font-family:'Fraunces',serif; font-style:italic; font-size:32px; line-height:1.05;">build it once.<br/><em>run it anywhere.</em></div>
+            <div class="ct" style="opacity:1;">bitbuilder.cloud · status / nominal</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============== LETTERHEAD ============== -->
+  <section>
+    <div class="caps" style="margin-bottom:12px; color:var(--fg-2);">§ 06 · letterhead · us letter (8.5 × 11 in)</div>
+    <div class="card" style="padding:48px; background:#1a1d24;">
+      <div class="sheet">
+        <div class="top">
+          <div>
+            <span class="wm" style="font-size:20px; color:#14171f; --accent:#15803d">BITBUILDER<span class="prompt">&gt;_</span>CLOUD</span>
+            <div style="margin-top:6px; font-family:'JetBrains Mono', monospace; font-size:9.5px; letter-spacing:.16em; text-transform:uppercase; color:#5b626c;">vendor-neutral · multi-cloud · edge-first</div>
+          </div>
+          <div class="meta">
+            BitBuilder Cloud, LLC<br/>
+            1209 East 6th St, Austin TX 78702<br/>
+            +1 512 555 0218 · bitbuilder.cloud
+          </div>
+        </div>
+
+        <div class="ref">
+          <div><span class="k">date</span><span class="v">28 Apr 2026</span></div>
+          <div><span class="k">ref</span><span class="v">BB-NW-2026-Q2-014</span></div>
+          <div><span class="k">re</span><span class="v">Architecture review · Q2</span></div>
+          <div><span class="k">classification</span><span class="v">Confidential</span></div>
+        </div>
+
+        <div class="col">
+          <h1>An honest letter,<br/><em>about your cloud bill.</em></h1>
+        </div>
+
+        <div class="body">
+          <div class="salutation">Dear Marta,</div>
+          <p>Thank you for the brief. After reviewing Northwind's current footprint — three providers, fourteen regions, a quarterly cloud-exit obligation you cannot currently demonstrate — we believe the engagement scopes cleanly into three phases over twelve weeks.</p>
+          <p>Our recommendation is to keep the origin tier multi-cloud, push the user-facing surface to the edge, and consolidate observability behind a single vendor-neutral pipeline. We've built this pattern fourteen times now; the math is consistent and the cutover is calm.</p>
+          <p>Pricing is fixed-fee, paid in three milestones tied to deliverables you can refuse. There is no retainer. There is a fourteen-day exit clause in every page of every contract we've ever signed.</p>
+          <p>Indicative budget for the full engagement is enclosed. We can be on-site in Zürich the week of 18 May.</p>
+        </div>
+
+        <div class="sig">— Mara Okafor</div>
+        <div class="meta" style="padding-left:64px; padding-top:6px; opacity:.7;">Mara Okafor · Managing Partner</div>
+
+        <span class="corner-mark">BB · LETTERHEAD · v4.2</span>
+
+        <div class="footer">
+          <span>BitBuilder Cloud, LLC · est. 2012</span>
+          <span>SOC 2 II · ISO 27001 · HIPAA-ready</span>
+          <span>page 01 / 01</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+</body>
+</html>
