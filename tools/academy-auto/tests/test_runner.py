@@ -44,15 +44,20 @@ def test_implement_task_runs_inside_sandbox():
 
 def test_implement_task_fail_closed_when_sandbox_unavailable():
     cfg = Config.default()
+    calls = {"n": 0}
 
-    def must_not_run(*a, **k):
-        raise AssertionError("claude darf ohne Sandbox NICHT starten")
+    def counting_runner(*a, **k):
+        calls["n"] += 1
+        return _ok_proc()
 
     outcome = implement_task(
-        cfg, "/tmp/wt", "x", runner=must_not_run, **_deps(available=lambda cfg: False)
+        cfg, "/tmp/wt", "x", runner=counting_runner, **_deps(available=lambda cfg: False)
     )
     assert outcome.ok is False
-    assert "andbox" in outcome.output  # nennt die Sandbox als Ursache
+    # Belastbarer Wächter: claude wurde NICHT gestartet — unabhängig davon,
+    # ob eine Exception vom breiten except verschluckt würde.
+    assert calls["n"] == 0
+    assert "andbox" in outcome.output
 
 
 def test_implement_task_reports_failure_on_nonzero_exit():
