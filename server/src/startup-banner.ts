@@ -74,9 +74,10 @@ function resolveAgentJwtSecretStatus(
 } {
   const envValue = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
   if (envValue) {
+    const ephemeral = process.env.PAPERCLIP_AGENT_JWT_EPHEMERAL?.trim() === "1";
     return {
       status: "pass",
-      message: "set",
+      message: ephemeral ? "ephemeral (this dev session)" : "set",
     };
   }
 
