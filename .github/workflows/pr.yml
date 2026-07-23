@@ -67,6 +67,36 @@ jobs:
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
+      - name: Test commitperclip bot token resolution
+        run: node --test .github/scripts/tests/get-bot-token.test.mjs
+
+      - name: Test PR file fetching
+        run: node --test .github/scripts/tests/fetch-pr-files.test.mjs
+
+      - name: Test PR template quality gate
+        run: node --test .github/scripts/tests/check-pr-template.test.mjs
+
+      - name: Test PR linked-issue quality gate
+        run: node --test .github/scripts/tests/check-pr-linked-issue.test.mjs
+
+      - name: Test PR dedup-search quality gate
+        run: node --test .github/scripts/tests/check-pr-dedup-search.test.mjs
+
+      - name: Test PR test-coverage quality gate
+        run: node --test .github/scripts/tests/check-pr-test-coverage.test.mjs
+
+      - name: Test PR lockfile quality gate
+        run: node --test .github/scripts/tests/check-pr-lockfile.test.mjs
+
+      - name: Test PR dependency quality gate
+        run: node --test .github/scripts/tests/check-pr-dependencies.test.mjs
+
+      - name: Test PR security review gates
+        run: node --test .github/scripts/tests/check-pr-security.test.mjs
+
+      - name: Test quality gate orchestration
+        run: node --test .github/scripts/tests/run-quality-gates.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
