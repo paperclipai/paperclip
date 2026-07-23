@@ -7125,7 +7125,12 @@ export function issueService(db: Db) {
       });
     },
 
-    release: async (id: string, actorAgentId?: string, actorRunId?: string | null) =>
+    release: async (
+      id: string,
+      actorAgentId?: string,
+      actorRunId?: string | null,
+      options: { managerOverride?: boolean } = {},
+    ) =>
       db.transaction(async (tx) => {
         await tx.execute(
           sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
@@ -7137,24 +7142,30 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) return null;
-        if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
-          throw conflict("Only assignee can release issue");
-        }
-        if (
-          actorAgentId &&
-          existing.status === "in_progress" &&
-          existing.assigneeAgentId === actorAgentId &&
-          existing.checkoutRunId &&
-          !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
-        ) {
-          const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId, tx);
-          if (!stale) {
-            throw conflict("Only checkout run can release issue", {
-              issueId: existing.id,
-              assigneeAgentId: existing.assigneeAgentId,
-              checkoutRunId: existing.checkoutRunId,
-              actorRunId: actorRunId ?? null,
-            });
+        // A manager-line override (authorized + audited at the route layer, and
+        // with the held run already cancelled there) intentionally bypasses the
+        // assignee-only and checkout-run guards below: the whole point is to
+        // recover an issue owned by a *different* agent whose run has stalled.
+        if (!options.managerOverride) {
+          if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+            throw conflict("Only assignee can release issue");
+          }
+          if (
+            actorAgentId &&
+            existing.status === "in_progress" &&
+            existing.assigneeAgentId === actorAgentId &&
+            existing.checkoutRunId &&
+            !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
+          ) {
+            const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId, tx);
+            if (!stale) {
+              throw conflict("Only checkout run can release issue", {
+                issueId: existing.id,
+                assigneeAgentId: existing.assigneeAgentId,
+                checkoutRunId: existing.checkoutRunId,
+                actorRunId: actorRunId ?? null,
+              });
+            }
           }
         }
 

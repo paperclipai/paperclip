@@ -8900,9 +8900,70 @@ export function issueRoutes(
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
 
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : undefined;
+    // Only treat this as a manager-line force-release when the actor genuinely
+    // holds the checkout-management grant over the assignee (i.e. is an ancestor
+    // in the assignee's reportsTo chain — allow_manager_chain). Checking merely
+    // "actor != assignee" would also capture other paths assertAgentIssueMutationAllowed
+    // accepts (e.g. task-watchdog scope); re-confirming the grant here keeps the
+    // force-release strictly scoped to the reporting line.
+    const isManagerLineForceRelease =
+      req.actor.type === "agent" &&
+      !!actorAgentId &&
+      !!existing.assigneeAgentId &&
+      existing.assigneeAgentId !== actorAgentId &&
+      (await hasActiveCheckoutManagementOverride(actorAgentId, existing.companyId, existing.assigneeAgentId));
+
+    if (isManagerLineForceRelease) {
+      // Cancel the held IC run *before* clearing the lock so no second run can
+      // check the issue out while the original run is still live, then release
+      // (status -> todo, assignee + lock cleared) via the managerOverride path,
+      // and write an explicit audited override entry.
+      const cancelledRunIds: string[] = [];
+      for (const heldRunId of [existing.checkoutRunId, existing.executionRunId]) {
+        if (!heldRunId || cancelledRunIds.includes(heldRunId)) {
+          continue;
+        }
+        const cancelled = await heartbeat.cancelRun(heldRunId);
+        if (cancelled) {
+          cancelledRunIds.push(heldRunId);
+        }
+      }
+
+      const overridden = await svc.release(id, actorAgentId, actorRunId, { managerOverride: true });
+      if (!overridden) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+
+      const overrideActor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: overridden.companyId,
+        actorType: overrideActor.actorType,
+        actorId: overrideActor.actorId,
+        agentId: overrideActor.agentId,
+        runId: overrideActor.runId,
+        action: "issue.manager_force_release",
+        entityType: "issue",
+        entityId: overridden.id,
+        details: {
+          issueId: overridden.id,
+          decisionReason: "allow_manager_chain",
+          overriddenAssigneeAgentId: existing.assigneeAgentId,
+          actorAgentId,
+          prevCheckoutRunId: existing.checkoutRunId ?? null,
+          prevExecutionRunId: existing.executionRunId ?? null,
+          cancelledRunIds,
+        },
+      });
+
+      res.json(overridden);
+      return;
+    }
+
     const released = await svc.release(
       id,
-      req.actor.type === "agent" ? req.actor.agentId : undefined,
+      actorAgentId,
       actorRunId,
     );
     if (!released) {

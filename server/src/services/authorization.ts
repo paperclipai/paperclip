@@ -1965,8 +1965,17 @@ export function authorizationService(db: Db) {
       });
     }
 
+    // Scoped manager-line recovery override. An actor that is an ancestor in
+    // the issue assignee's reportsTo chain may recover a stuck issue owned by a
+    // report: manage the active checkout (release/force-clear), reassign or
+    // otherwise mutate the issue, and comment on it. Strictly scoped to the
+    // reporting line via isManagerOf (transitive reportsTo) — a non-line agent
+    // falls through to deny_missing_grant below. This is what lets a manager
+    // recover a genuinely stalled IC-owned issue without a human in the loop.
     if (
-      input.action === "tasks:manage_active_checkouts" &&
+      (input.action === "tasks:manage_active_checkouts" ||
+        input.action === "issue:mutate" ||
+        input.action === "issue:comment") &&
       input.resource.type === "issue" &&
       input.resource.assigneeAgentId &&
       await isManagerOf(companyId, actorAgentId, input.resource.assigneeAgentId)

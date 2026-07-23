@@ -1553,6 +1553,90 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("another company");
   });
 
+  it("allows a manager in the reportsTo chain to recover a stuck report-owned issue", async () => {
+    const company = await createCompany(db, "ManagerChainRecovery");
+    const ceo = await createAgent(db, company.id, { role: "ceo" });
+    const cto = await createAgent(db, company.id, { role: "cto", reportsTo: ceo.id });
+    const ic = await createAgent(db, company.id, { role: "engineer", reportsTo: cto.id });
+
+    const svc = authorizationService(db);
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      assigneeAgentId: ic.id,
+      assigneeUserId: null,
+      status: "in_progress",
+    };
+
+    // Direct manager (CTO -> IC) may mutate, comment, and manage the checkout.
+    for (const action of ["issue:mutate", "issue:comment", "tasks:manage_active_checkouts"] as const) {
+      const decision = await svc.decide({
+        actor: { type: "agent", agentId: cto.id, companyId: company.id, source: "agent_jwt" },
+        action,
+        resource,
+      });
+      expect(decision).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+    }
+
+    // Transitive ancestor (CEO -> CTO -> IC) is also authorized — this is the
+    // AC#1 case: a CEO no-op mutate on a deeper report's issue must not 403.
+    const transitive = await svc.decide({
+      actor: { type: "agent", agentId: ceo.id, companyId: company.id, source: "agent_jwt" },
+      action: "issue:mutate",
+      resource,
+    });
+    expect(transitive).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+  });
+
+  it("denies a non-line agent mutating or commenting on another agent's issue", async () => {
+    const company = await createCompany(db, "NonLineIssue");
+    const ic = await createAgent(db, company.id, { role: "engineer" });
+    const stranger = await createAgent(db, company.id, { role: "engineer" });
+
+    const svc = authorizationService(db);
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      assigneeAgentId: ic.id,
+      assigneeUserId: null,
+      status: "in_progress",
+    };
+
+    const mutate = await svc.decide({
+      actor: { type: "agent", agentId: stranger.id, companyId: company.id, source: "agent_jwt" },
+      action: "issue:mutate",
+      resource,
+    });
+    expect(mutate).toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+
+    const comment = await svc.decide({
+      actor: { type: "agent", agentId: stranger.id, companyId: company.id, source: "agent_jwt" },
+      action: "issue:comment",
+      resource,
+    });
+    expect(comment.allowed).toBe(false);
+  });
+
+  it("does not let a downward (report) agent override their manager's issue", async () => {
+    const company = await createCompany(db, "ReverseChain");
+    const manager = await createAgent(db, company.id, { role: "cto" });
+    const report = await createAgent(db, company.id, { role: "engineer", reportsTo: manager.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: report.id, companyId: company.id, source: "agent_jwt" },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        assigneeAgentId: manager.id,
+        assigneeUserId: null,
+        status: "in_progress",
+      },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+  });
+
   it("allows scoped assignment inside a granted project and denies other projects", async () => {
     const company = await createCompany(db, "ProjectScope");
     const project = await createProject(db, company.id, "Allowed");
