@@ -85,7 +85,7 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
 /**
- * Model-provider API keys that sandbox-provider plugins (e.g.
+ * Sensitive credentials that sandbox-provider plugins (e.g.
  * `@paperclipai/plugin-kubernetes`) are allowed to read from the
  * server's process environment so they can inject them into per-run
  * pod Secrets. All other host env vars remain stripped from plugin
@@ -96,6 +96,7 @@ const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/t
  */
 const ADAPTER_ENV_PASSTHROUGH = [
   "ANTHROPIC_API_KEY",
+  "GITHUB_TOKEN",
   "OPENAI_API_KEY",
   "GOOGLE_API_KEY",
   "GEMINI_API_KEY",
