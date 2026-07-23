@@ -156,7 +156,7 @@ export function CreateStatusCardDialog({
             <div className="rounded-md bg-muted px-3 py-2 text-xs">
               <div className="flex items-center gap-2 text-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-pulse text-muted-foreground" />
-                Building query… the first summary will follow automatically.
+                Setting up your card… the first summary will follow automatically.
               </div>
               <p className="mt-1 text-muted-foreground">“{createdCard?.interestPrompt}”</p>
             </div>

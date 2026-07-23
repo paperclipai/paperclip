@@ -133,7 +133,7 @@ describe("StatusCardTile lifecycle rendering", () => {
     const el = container.querySelector('[data-lifecycle="compiling"]');
     expect(el).toBeTruthy();
     expect(el?.className).toContain("border-dashed");
-    expect(container.textContent).toContain("Agent is building your query");
+    expect(container.textContent).toContain("Setting up your card");
   });
 
   it("renders an updating card with the delta banner and keeps the old summary", () => {
@@ -185,7 +185,7 @@ describe("StatusCardTile lifecycle rendering", () => {
     expect(opened).toBe(0);
   });
 
-  it("offers a Build query action on a stuck compiling card without opening the card", () => {
+  it("offers a Run now action on a stuck compiling card without opening the card", () => {
     let opened = 0;
     let recompiled = 0;
     render(
@@ -194,9 +194,9 @@ describe("StatusCardTile lifecycle rendering", () => {
         onRecompile: () => (recompiled += 1),
       }),
     );
-    const buildButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Build query now"));
-    expect(buildButton).toBeTruthy();
-    flushSync(() => buildButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const runButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Run now"));
+    expect(runButton).toBeTruthy();
+    flushSync(() => runButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(recompiled).toBe(1);
     expect(opened).toBe(0);
   });

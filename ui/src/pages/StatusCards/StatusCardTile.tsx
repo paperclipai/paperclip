@@ -122,7 +122,7 @@ export function StatusCardTile({
               </DropdownMenuItem>
               {lifecycle === "compiling" || lifecycle === "error" ? (
                 <DropdownMenuItem onSelect={onRecompile} disabled={recompilePending}>
-                  Build query now
+                  Run now
                 </DropdownMenuItem>
               ) : null}
               <DropdownMenuItem onSelect={onEditInterest}>Edit interest &amp; settings</DropdownMenuItem>
@@ -142,10 +142,10 @@ export function StatusCardTile({
           <div className="rounded-md bg-muted px-3 py-2 text-xs text-foreground" role="status">
             <div className="flex items-center gap-2">
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-pulse text-muted-foreground" />
-              <span>Agent is building your query…</span>
+              <span>Setting up your card…</span>
             </div>
             <p className="mt-1 line-clamp-2 text-muted-foreground">“{card.interestPrompt}”</p>
-            {/* If the compile task stalled (agent run died mid-build) the card can
+            {/* If the first run stalled (agent run died mid-setup) the card can
                 sit here forever, so always offer a manual re-kick. */}
             <button
               type="button"
@@ -154,7 +154,7 @@ export function StatusCardTile({
               className="mt-2 inline-flex items-center gap-1.5 font-medium text-foreground underline-offset-2 hover:underline disabled:opacity-60"
             >
               <Wand2 className={cn("h-3.5 w-3.5", recompilePending && "animate-pulse")} />
-              {recompilePending ? "Starting…" : "Build query now"}
+              {recompilePending ? "Starting…" : "Run now"}
             </button>
           </div>
         ) : null}

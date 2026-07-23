@@ -52,9 +52,9 @@ export const STATUS_CARD_LIFECYCLE_PRESENTATION: Record<
   StatusCardLifecyclePresentation
 > = {
   compiling: {
-    label: "Compiling",
+    label: "Setting up",
     dotClassName: "bg-cyan-400 animate-pulse",
-    description: "Just created; the agent is building the query and first summary.",
+    description: "Just created; setting up and generating the first summary.",
     dashedBorder: true,
     keepsLastSummary: false,
   },

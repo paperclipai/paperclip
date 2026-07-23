@@ -140,9 +140,9 @@ export function StatusCardDetailDrawer({
     },
     onSuccess: async () => {
       await invalidateCard();
-      setActionNote("Query build queued — the Summarizer is rebuilding this card.");
+      setActionNote("Run queued — the Summarizer is updating this card.");
     },
-    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not rebuild the query."),
+    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not run the card."),
   });
 
   const saveSettingsMutation = useMutation({
@@ -219,7 +219,7 @@ export function StatusCardDetailDrawer({
                 disabled={recompileMutation.isPending}
               >
                 <Wand2 className={cn("h-3.5 w-3.5", recompileMutation.isPending && "animate-pulse")} />
-                {recompileMutation.isPending ? "Building…" : "Build query"}
+                {recompileMutation.isPending ? "Running…" : "Run now"}
               </Button>
             ) : (
               <Button
@@ -324,7 +324,7 @@ export function StatusCardDetailDrawer({
                 <MarkdownBody className="text-sm leading-7">{card.summaryBody!}</MarkdownBody>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  No summary has been generated yet. The first summary follows automatically once the query compiles.
+                  No summary yet — the first one is generated automatically once this card finishes setting up.
                 </p>
               )}
 
@@ -390,7 +390,7 @@ export function StatusCardDetailDrawer({
             <TabsContent value="watched" className="mt-0 space-y-3">
               {card.queries.length === 0 ? (
                 <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                  The query has not compiled yet — matched issues appear here once compilation finishes.
+                  This card is still setting up — the issues it watches appear here once it's ready.
                 </div>
               ) : dryRunQuery.isLoading ? (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -427,7 +427,7 @@ export function StatusCardDetailDrawer({
                   aria-label="What this card watches"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Editing this rebuilds the query and refreshes the summary.
+                  Editing this updates what the card watches and refreshes the summary.
                 </p>
               </section>
 

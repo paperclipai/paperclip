@@ -81,7 +81,7 @@ export function StatusCards() {
     mutationFn: (id: string) => statusCardsApi.recompile(id),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not rebuild the query."),
+    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not run the card."),
   });
   const archiveMutation = useMutation({
     mutationFn: (id: string) => statusCardsApi.patch(id, { archived: true }),
