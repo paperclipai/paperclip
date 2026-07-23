@@ -778,7 +778,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     });
   });
 
-  it("allows only standard checked-out runs to comment one hop upward", async () => {
+  it("lets standard runs comment anywhere in the company but blocks upward mutate and document writes", async () => {
     const fixture = await seedLowTrustFixture(db);
     const standardApp = createApp(db, standardReportActor(fixture));
     const lowTrustApp = createApp(db, agentActor(fixture));
@@ -797,18 +797,30 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       ));
     expect(audit?.details).toMatchObject({ directParentReportGrant: true });
 
+    // Low-trust review runs remain contained by decideLowTrustAccess: they cannot
+    // comment even one hop up to their direct parent. BRO-1476 does not touch this.
     const lowTrustParentComment = await request(lowTrustApp)
       .post(`/api/issues/${fixture.issues.reviewRoot.id}/comments`)
       .send({ body: "Contained report must not cross" });
     expect(lowTrustParentComment.status, JSON.stringify(lowTrustParentComment.body)).toBe(403);
 
-    const forbiddenStandardWrites = [
+    // BRO-1476: any standard company agent may now comment on any company issue,
+    // including a grandparent or a sibling outside its direct-report grant.
+    const allowedStandardComments = [
       request(standardApp)
         .post(`/api/issues/${fixture.issues.reviewGrandparent.id}/comments`)
-        .send({ body: "No grandparent report" }),
+        .send({ body: "Grandparent comment now allowed" }),
       request(standardApp)
         .post(`/api/issues/${fixture.issues.sameBoundaryChild.id}/comments`)
-        .send({ body: "No sibling report" }),
+        .send({ body: "Sibling comment now allowed" }),
+    ];
+    for (const allowedComment of allowedStandardComments) {
+      const response = await allowedComment;
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+    }
+
+    // issue:mutate (status change) and document writes still require ownership/grant.
+    const forbiddenStandardWrites = [
       request(standardApp)
         .patch(`/api/issues/${fixture.issues.reviewRoot.id}`)
         .send({ status: "blocked" }),
