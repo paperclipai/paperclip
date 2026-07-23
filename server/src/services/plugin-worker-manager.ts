@@ -434,7 +434,14 @@ export function createPluginWorkerHandle(
       throw new Error(`Worker process for plugin "${pluginId}" is not writable`);
     }
     const serialized = serializeMessage(message as any);
-    childProcess.stdin.write(serialized);
+    // Pass a write callback so an async write error (e.g. EPIPE on the command
+    // pipe) is surfaced rather than swallowed. The stdin "error" handler wired
+    // in attachStdioHandlers() drives the actual recovery (forced restart).
+    childProcess.stdin.write(serialized, (err) => {
+      if (err) {
+        log.warn({ err: err.message }, "failed to write message to worker stdin");
+      }
+    });
   }
 
   function errorCodeForWorkerHostError(err: unknown): number {
@@ -775,6 +782,36 @@ export function createPluginWorkerHandle(
         );
       }
     });
+
+    // Supervise the command channel (host -> worker stdin), not just the
+    // process. If stdin errors (EPIPE) or closes while the process is still
+    // alive, the worker is uncommandable: every host->worker RPC write will
+    // throw "not writable" forever, yet child.on("exit") never fires, so the
+    // crash-recovery path is never reached and the worker silently zombies
+    // (observed after multi-day uptime). Force a real exit so the standard
+    // handleProcessExit() -> scheduleRestart() recovery runs. This is the
+    // missing third failure mode, mirroring the exit/error handlers above —
+    // event-driven, not a polling watchdog.
+    if (child.stdin) {
+      const onCommandChannelLost = (err?: Error): void => {
+        // Ignore during graceful stop, or if this child was already replaced.
+        if (intentionalStop || childProcess !== child) return;
+        // Only act while the process is still alive (a real exit is handled by
+        // handleProcessExit). exitCode/signalCode are null until the child dies.
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        log.error(
+          { err: err?.message },
+          "worker stdin (command channel) lost while process alive — forcing restart",
+        );
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // Best effort — handleProcessExit still runs on the eventual exit.
+        }
+      };
+      child.stdin.on("error", onCommandChannelLost);
+      child.stdin.on("close", onCommandChannelLost);
+    }
   }
 
   function handleProcessExit(
