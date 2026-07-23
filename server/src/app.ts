@@ -241,6 +241,25 @@ export async function createApp(
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
+  api.use((req, _res, next) => {
+    if (req.method === "GET" && (req.path === "/issues" || req.path === "/companies/issues")) {
+      let companyId: string | undefined;
+      if (req.actor?.type === "agent") {
+        companyId = req.actor.companyId;
+      } else if (req.actor?.type === "board") {
+        if (req.actor.companyIds && req.actor.companyIds.length > 0) {
+          companyId = req.actor.companyIds[0];
+        }
+      }
+
+      if (companyId) {
+        const queryIndex = req.url.indexOf("?");
+        const queryString = queryIndex !== -1 ? req.url.slice(queryIndex) : "";
+        req.url = `/companies/${companyId}/issues${queryString}`;
+      }
+    }
+    next();
+  });
   api.use(
     "/health",
     healthRoutes(db, {
