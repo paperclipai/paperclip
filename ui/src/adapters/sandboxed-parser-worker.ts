@@ -43,25 +43,45 @@ const WORKER_BOOTSTRAP = `
 
 const _undefined = void 0;
 
+// Helper to safely shadow globals on self and its prototype chain to prevent deletions and prototype escapes
+function shadow(prop) {
+  let curr = self;
+  while (curr && curr !== Object.prototype) {
+    try {
+      Object.defineProperty(curr, prop, {
+        value: _undefined,
+        configurable: false,
+        writable: false,
+        enumerable: true
+      });
+    } catch (e) {
+      if (curr === self) {
+        throw new Error("Failed to shadow sandbox global: " + prop);
+      }
+    }
+    curr = Object.getPrototypeOf(curr);
+  }
+}
+
 // Network
-self.fetch = _undefined;
-self.XMLHttpRequest = _undefined;
-self.WebSocket = _undefined;
-self.EventSource = _undefined;
-self.RTCPeerConnection = _undefined;
-self.RTCDataChannel = _undefined;
-self.Request = _undefined;
-self.Response = _undefined;
-self.Headers = _undefined;
-self.Cache = _undefined;
-self.CacheStorage = _undefined;
-self.caches = _undefined;
+shadow("fetch");
+shadow("XMLHttpRequest");
+shadow("WebSocket");
+shadow("EventSource");
+shadow("RTCPeerConnection");
+shadow("RTCDataChannel");
+shadow("Request");
+shadow("Response");
+shadow("Headers");
+shadow("Cache");
+shadow("CacheStorage");
+shadow("caches");
 
 // Import / eval escape hatches
-self.importScripts = _undefined;
-self.Worker = _undefined;
-self.SharedWorker = _undefined;
-self.Blob = _undefined;
+shadow("importScripts");
+shadow("Worker");
+shadow("SharedWorker");
+shadow("Blob");
 if (self.URL) {
   try { Object.defineProperty(self.URL, "createObjectURL", { value: _undefined, writable: false, configurable: false }); } catch {}
   try { Object.defineProperty(self.URL, "revokeObjectURL", { value: _undefined, writable: false, configurable: false }); } catch {}
@@ -73,11 +93,11 @@ if (self.navigator) {
 }
 
 // Service worker / broadcast channel
-self.BroadcastChannel = _undefined;
+shadow("BroadcastChannel");
 
 // IndexedDB (prevents persistent state exfiltration)
-self.indexedDB = _undefined;
-self.IDBFactory = _undefined;
+shadow("indexedDB");
+shadow("IDBFactory");
 
 // ── 2. Parser state ─────────────────────────────────────────────────────────
 
