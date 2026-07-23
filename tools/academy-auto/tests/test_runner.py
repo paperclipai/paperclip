@@ -106,3 +106,9 @@ def test_implement_task_cleans_up_profile(tmp_path):
         **_deps(make_profile=lambda cfg: str(prof)),
     )
     assert not prof.exists()  # Temp-Profil nach dem Lauf gelöscht
+
+
+def test_implementer_is_pinned_to_opus():
+    """Explizit gepinnt: ein geaenderter CLI-Standard darf den Nachtlauf nicht still mitziehen."""
+    assert "--model" in CLAUDE_CMD
+    assert CLAUDE_CMD[CLAUDE_CMD.index("--model") + 1] == "opus"

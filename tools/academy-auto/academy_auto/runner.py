@@ -8,7 +8,10 @@ from .config import Config
 
 # Headless-Aufruf der Claude Code CLI. Zentral hier anpassbar, falls sich
 # CLI-Flags ändern. acceptEdits erlaubt autonome Dateiänderungen im Worktree.
-CLAUDE_CMD = ["claude", "-p", "--permission-mode", "acceptEdits"]
+# Implementierer fest auf opus: er schreibt echten Code, der spaeter committet
+# wird — hier zaehlt Qualitaet. Explizit gepinnt, damit ein geaenderter
+# CLI-Standard (/model) den Nachtlauf nicht still mitzieht.
+CLAUDE_CMD = ["claude", "-p", "--model", "opus", "--permission-mode", "acceptEdits"]
 
 # Obergrenze für einen Implementierungslauf. Ein hängender claude darf den
 # Orchestrator nicht blockieren; TimeoutExpired wird unten fail-soft gefangen.
