@@ -2080,6 +2080,107 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
   });
 
+  it("does not schedule transient retries for runs whose adapter reported a successful result", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-04-20T18:00:00.000Z");
+
+    // Regression guard: successful Claude heartbeats (structured
+    // subtype=success, is_error=false) were mis-coded claude_transient_upstream
+    // and chained full-cost transient_failure retries.
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      adapterType: "claude_local",
+      errorCode: "claude_transient_upstream",
+      resultJson: {
+        subtype: "success",
+        is_error: false,
+        errorFamily: "transient_upstream",
+      },
+    });
+
+    const result = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(result?.outcome).toBe("not_scheduled");
+
+    const scheduledCount = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(scheduledCount).toBe(0);
+  });
+
+  it("still schedules transient retries for non-claude runs whose resultJson happens to carry subtype=success", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-04-20T18:30:00.000Z");
+
+    // The legacy subtype=success fallback is scoped to claude_local: other
+    // local adapters share the stream-json result shape, so a codex_local row
+    // with subtype=success must keep existing retry behaviour.
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      adapterType: "codex_local",
+      errorCode: "adapter_failed",
+      resultJson: {
+        subtype: "success",
+        is_error: false,
+        errorFamily: "transient_upstream",
+      },
+    });
+
+    const result = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(result?.outcome).toBe("scheduled");
+  });
+
+  it("suppresses transient retries for non-claude runs that persisted the adapterSucceeded flag", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-04-20T19:00:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      adapterType: "codex_local",
+      errorCode: "adapter_failed",
+      resultJson: {
+        adapterSucceeded: true,
+        errorFamily: "transient_upstream",
+      },
+    });
+
+    const result = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(result?.outcome).toBe("not_scheduled");
+  });
+
   it("advances codex transient fallback stages across bounded retry attempts", async () => {
     const fallbackModes = [
       "same_session",
