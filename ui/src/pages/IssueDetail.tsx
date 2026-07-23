@@ -4183,7 +4183,21 @@ export function IssueDetail() {
             priority={issue.priority}
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
-          <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+          <button
+            type="button"
+            className="bg-transparent border-0 p-0 text-sm font-mono text-muted-foreground shrink-0 hover:text-foreground transition-colors cursor-pointer"
+            title="Click to copy identifier"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(issue.identifier ?? issue.id.slice(0, 8));
+                pushToast({ title: "Identifier copied", tone: "success" });
+              } catch {
+                pushToast({ title: "Failed to copy", tone: "error" });
+              }
+            }}
+          >
+            {issue.identifier ?? issue.id.slice(0, 8)}
+          </button>
 
           {hasLiveRuns && (
             <Badge variant="outline" className={cn("gap-1.5 text-(length:--text-nano)", liveBlueBadge)}>
