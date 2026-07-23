@@ -318,6 +318,13 @@ interface AcpxPreparedRuntime {
   acpxAgent: string;
   mode: "persistent" | "oneshot";
   cwd: string;
+  // Host-only spawn cwd for the acpx runtime's host `spawn()` of the relay
+  // proxy on the remote process-session lane. On that lane `cwd` is the
+  // IN-SANDBOX `remoteCwd` (host-nonexistent), so the host proxy must `chdir`
+  // into a HOST-valid dir instead — the engine's host `cwd`. `undefined` on
+  // every other lane, where acpx falls back to `cwd` (byte-identical). It is
+  // deliberately NOT part of the session fingerprint / compat key.
+  hostSpawnCwd: string | undefined;
   workspaceId: string;
   workspaceRepoUrl: string;
   workspaceRepoRef: string;
@@ -1720,6 +1727,11 @@ async function buildRuntime(input: {
     // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
     // reads `prepared.cwd`, so binding it once here keeps them consistent.
     cwd: sessionCwd,
+    // Only the remote process-session lane needs the host proxy's `spawn()`
+    // `chdir` redirected off the in-sandbox `sessionCwd` and onto the host
+    // `cwd` (which is where the workspace was staged FROM, so it is host-valid).
+    // Every other lane leaves it `undefined` → acpx falls back to `cwd`.
+    hostSpawnCwd: useRemoteProcessSession ? cwd : undefined,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
@@ -2510,6 +2522,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     childStderrState.logPath = prepared.childStderrLogPath;
     const runtimeOptions: AcpRuntimeOptions = {
       cwd: prepared.cwd,
+      // Host-only spawn cwd for the relay proxy on the remote process-session
+      // lane; `undefined` elsewhere so acpx falls back to `cwd` (byte-identical).
+      // The advertised `session/new` cwd (`prepared.cwd` = `remoteCwd`) and the
+      // fingerprint / compat key are unaffected — this redirects ONLY the host
+      // `spawn()` `chdir`, not the in-sandbox data path.
+      spawnCwd: prepared.hostSpawnCwd,
       sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
       agentRegistry: prepared.agentRegistry,
       permissionMode: prepared.permissionMode,

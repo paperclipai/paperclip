@@ -776,12 +776,17 @@ describe("shared ACPX engine runtime behavior", () => {
     const root = await makeTempRoot();
     const localCwd = path.join(root, "local");
     const remoteCwd = "/workspace/remote";
-    const { sessionInputs } = await runExecutor(
+    const { sessionInputs, runtimeOptions } = await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js", cwd: localCwd, stateDir: path.join(root, "state") },
       { context: { paperclipWorkspace: { cwd: localCwd, workspaceWorktreePath: localCwd } }, executionTarget: { kind: "remote", transport: "ssh", remoteCwd } },
     );
     const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
     expect(env.PAPERCLIP_WORKSPACE_CWD).toBe(localCwd);
+    // The ssh remote transport is NOT the runner-backed process-session lane, so
+    // it stays byte-identical: no host-spawn redirect. `cwd` is the host cwd and
+    // `spawnCwd` is unset.
+    expect(runtimeOptions[0]!.cwd).toBe(localCwd);
+    expect(runtimeOptions[0]!.spawnCwd).toBeUndefined();
   });
 
   it("does not materialize credential wrapper scripts", async () => {
@@ -888,6 +893,9 @@ describe("shared ACPX engine runtime behavior", () => {
     const { runtimeOptions } = await runExecutor({ agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") });
     expect(runtimeOptions[0]!.verbose).toBe(false);
     expect(runtimeOptions[0]!.onAgentStderr).toBeTypeOf("function");
+    // Local lane is byte-identical: no host-spawn redirect, so `spawnCwd` is
+    // unset and acpx falls back to `cwd`.
+    expect(runtimeOptions[0]!.spawnCwd).toBeUndefined();
   });
 
   it("starts sandbox ACP process sessions in the remote execution cwd", async () => {
@@ -911,7 +919,7 @@ describe("shared ACPX engine runtime behavior", () => {
       },
     );
 
-    await runExecutor(
+    const { runtimeOptions, sessionInputs } = await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
       {
         authToken: "real-run-jwt",
@@ -930,6 +938,18 @@ describe("shared ACPX engine runtime behavior", () => {
       args: ["-lc", "exec node ./fake-acp.js"],
       cwd: remoteCwd,
     });
+
+    // Host-spawn cwd decoupling: on the remote process-session lane the acpx
+    // runtime host-spawns the relay proxy, whose `chdir` must land in a
+    // HOST-valid dir — the engine's host `cwd` (`localCwd`) — while the advertised
+    // ACP `session/new` cwd and the in-sandbox `commandPayload.cwd` stay
+    // `remoteCwd`. `spawnCwd` carries the host-only redirect; it must differ from
+    // the advertised session cwd. (Threading proof; the acpx runtime honoring
+    // `spawnCwd ?? cwd` at the real host spawn is proven in remote-spawn-smoke.)
+    expect(runtimeOptions[0]!.cwd).toBe(remoteCwd);
+    expect(sessionInputs[0]!.cwd).toBe(remoteCwd);
+    expect(runtimeOptions[0]!.spawnCwd).toBe(localCwd);
+    expect(runtimeOptions[0]!.spawnCwd).not.toBe(sessionInputs[0]!.cwd);
     const payloadEnv = ((sessionPayload as Record<string, unknown> | null)?.env ?? {}) as Record<string, unknown>;
     expect(payloadEnv).toMatchObject({
       PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
@@ -939,6 +959,48 @@ describe("shared ACPX engine runtime behavior", () => {
     );
     expect(payloadEnv.PAPERCLIP_API_KEY).toBeTruthy();
     expect(payloadEnv.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
+  });
+
+  it("keeps the session fingerprint stable when only the host spawn cwd changes", async () => {
+    // `spawnCwd` (the host-only spawn redirect = the host `cwd`) must NOT enter
+    // the session fingerprint or compat key: two runs of the same session that
+    // stage into the same in-sandbox `remoteCwd` from DIFFERENT host worktrees
+    // must reuse — not invalidate — the staged runtime. So the fingerprint has to
+    // ignore the host cwd and key only on the advertised session cwd (`remoteCwd`).
+    const root = await makeTempRoot();
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(remoteCwd, { recursive: true });
+
+    const runOnce = async (hostWorktree: string) => {
+      const localCwd = path.join(root, hostWorktree);
+      await fs.mkdir(localCwd, { recursive: true });
+      return runExecutor(
+        { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, hostWorktree, "state"), cwd: localCwd },
+        {
+          authToken: "real-run-jwt",
+          executionTarget: {
+            kind: "remote",
+            transport: "sandbox",
+            providerKey: "fake-plugin",
+            remoteCwd,
+            runner: createLocalSandboxRunner(),
+          },
+        },
+      );
+    };
+
+    const first = await runOnce("worktree-a");
+    const second = await runOnce("worktree-b");
+
+    // Host cwd (and therefore `spawnCwd`) differs between the two runs...
+    expect(first.runtimeOptions[0]!.spawnCwd).not.toBe(second.runtimeOptions[0]!.spawnCwd);
+    // ...but the advertised session cwd — and thus the fingerprint — is identical.
+    expect(first.sessionInputs[0]!.cwd).toBe(remoteCwd);
+    expect(second.sessionInputs[0]!.cwd).toBe(remoteCwd);
+    const fp = (r: { result: { sessionParams?: unknown } }) =>
+      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
+    expect(fp(first)).toBeDefined();
+    expect(fp(second)).toBe(fp(first));
   });
 
   it("routes child stderr in-process while keeping the unfiltered run log", async () => {
