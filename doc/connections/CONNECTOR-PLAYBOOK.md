@@ -4,6 +4,8 @@ This playbook is the repeatable template for adding a vendor to the Apps catalog
 
 Use it when Paperclip acts on an external system through a governed connection: a stored credential, a capability catalog, access profiles and policy rules, and audit. Inbound integrations, such as an external client acting on Paperclip, use gateway or webhook guidance instead.
 
+Every connector built with this playbook is a **plane P2** connection — a resource token in the instance vault, acquired via the connect broker, never a sign-in authenticator. Before writing a connector, read [Identity vs. connections](./README.md#identity-vs-connections) for the P1/P2/P3 boundary and the D7 standing rule (sign-in tokens are never reused as resource tokens; id.paperclip.ing never stores resource tokens; no connections hub on the ID service).
+
 ## Output
 
 A complete connector proposal produces:
