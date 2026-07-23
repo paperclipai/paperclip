@@ -90,8 +90,7 @@ export function StatusCardDetailDrawer({
       if (!card) return;
       await queryClient.invalidateQueries({ queryKey: queryKeys.statusCards.list(card.companyId, false) });
     },
-    onError: () =>
-      setActionError("Manual refresh will be available when the update engine (P4) is enabled."),
+    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not refresh the card."),
   });
 
   const saveSettingsMutation = useMutation({

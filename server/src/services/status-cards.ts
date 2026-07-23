@@ -455,9 +455,9 @@ export function statusCardService(db: Db) {
     const allChanges = diffStatusCardFingerprint(card.fingerprint as StatusCardFingerprint | null, fingerprint);
     const changes = filterStatusCardChanges(allChanges, card.refreshPolicy);
     const trigger = input.trigger ?? "manual";
-    const manual = trigger === "manual";
+    const forceRun = trigger === "manual" || trigger === "restore";
     const nextEvalAt = nextStatusCardEvaluationAt(card.refreshPolicy, now);
-    if (!manual && changes.length === 0) {
+    if (!forceRun && changes.length === 0) {
       const [next] = await db.update(statusCards).set({
         pendingChangeCount: 0,
         pendingChangeHash: null,
@@ -483,7 +483,7 @@ export function statusCardService(db: Db) {
       lastChangeAt,
       updatesLastHour: recent.filter((row) => row.kind !== "compile" && row.finishedAt).length,
       tokensToday: Number(daily[0]?.tokens ?? 0),
-      manual,
+      manual: forceRun,
     });
     if (decision.action !== "run") {
       const [next] = await db.update(statusCards).set({

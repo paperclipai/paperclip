@@ -340,6 +340,43 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(overCap.body.error).toContain(`${STATUS_CARD_AGENT_MAX_CARDS}`);
   });
 
+  it("forces a full rebuild when restoring a manual card", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    const service = statusCardService(db);
+    const card = await service.create(
+      company.id,
+      {
+        interestPrompt: "Recently updated launch tasks",
+        titlePinned: false,
+        instructionsMode: "none",
+        refreshPolicy: { mode: "manual" },
+      },
+      { agentId: null, userId: "board-user" },
+    );
+    await db.update(statusCards).set({
+      archivedAt: new Date(),
+      queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }] as typeof card.queries,
+    }).where(eq(statusCards.id, card.id));
+
+    const restored = await request(createApp(db, localBoardActor()))
+      .patch(`/api/status-cards/${card.id}`)
+      .send({ archived: false });
+
+    expect(restored.status).toBe(200);
+    expect(restored.body).toMatchObject({
+      archivedAt: null,
+      generatingIssueId: expect.any(String),
+      nextEvalAt: null,
+    });
+    expect(await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.cardId, card.id)).then((rows) => rows[0])).toMatchObject({
+      kind: "full",
+      trigger: "restore",
+      generationIssueId: restored.body.generatingIssueId,
+    });
+  });
+
   it("prevents agents from managing cards authored by the board", async () => {
     const company = await seedCompany();
     await enableStatusCards();
