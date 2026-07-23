@@ -13,9 +13,11 @@ import {
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
+  issueLabels,
   issueRelations,
   issues as issueRows,
   issueWorkProducts,
+  labels,
   pipelineCaseIssueLinks,
   pipelineCases,
   pipelineStages,
@@ -1515,6 +1517,8 @@ function buildIssueSubtreeDiagnosticsResponse(input: {
 }
 
 const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
+
+const PERPETUAL_TRACKER_LABEL = "perpetual-tracker";
 
 const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
@@ -3181,6 +3185,16 @@ export function issueRoutes(
     );
   }
 
+  async function hasPerpetualTrackerLabel(issueId: string) {
+    const rows = await db
+      .select({ issueId: issueLabels.issueId })
+      .from(issueLabels)
+      .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+      .where(and(eq(issueLabels.issueId, issueId), eq(labels.name, PERPETUAL_TRACKER_LABEL)))
+      .limit(1);
+    return rows.length > 0;
+  }
+
   async function assertAgentInReviewReviewPath(input: {
     existing: {
       id: string;
@@ -3220,6 +3234,12 @@ export function issueRoutes(
 
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(input.existing.id);
     if (approvals.some((approval) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(approval.status)))) return;
+
+    // BLU-20250: perpetual trackers are long-lived aggregation issues that rest in
+    // in_review and accept periodic digest comments; they have no review path by
+    // design. Checked last so issues with a real review path never pay this query.
+    // Stopgap until trackers migrate to routines (BLU-20249).
+    if (await hasPerpetualTrackerLabel(input.existing.id)) return;
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
       code: "invalid_issue_disposition",

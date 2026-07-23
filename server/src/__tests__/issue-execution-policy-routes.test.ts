@@ -38,7 +38,17 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
       permissions: null,
     }]).then(onFulfilled, onRejected),
 })));
-const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
+// Rows the perpetual-tracker label lookup in the in_review gate resolves to.
+const mockPerpetualTrackerLabelRows = vi.hoisted(() => ({ current: [] as unknown[] }));
+// db.select().from() feeds two chains: `.where()` (agent lookup, a thenable) and
+// `.innerJoin().where().limit()` (the perpetual-tracker label lookup).
+const mockDbFromChain = vi.hoisted(() => () => ({
+  where: mockDbSelectWhere,
+  innerJoin: () => ({
+    where: () => ({ limit: async () => mockPerpetualTrackerLabelRows.current }),
+  }),
+}));
+const mockDbSelectFrom = vi.hoisted(() => vi.fn(mockDbFromChain));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
@@ -183,7 +193,7 @@ describe("issue execution policy routes", () => {
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelectFrom.mockImplementation(mockDbFromChain);
     mockDbSelectWhere.mockImplementation(() => ({
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve([{
@@ -222,6 +232,7 @@ describe("issue execution policy routes", () => {
       };
     });
     mockAccessService.hasPermission.mockResolvedValue(false);
+    mockPerpetualTrackerLabelRows.current = [];
   });
 
   it("rejects an agent-authored in_review transition without a review path", async () => {
@@ -251,6 +262,79 @@ describe("issue execution policy routes", () => {
     expect(res.status).toBe(422);
     expect(res.body.error).toContain("invalid_issue_disposition");
     expect(res.body.error).toContain("request_confirmation");
+    expect(res.body.details).toMatchObject({
+      code: "invalid_issue_disposition",
+      missing: "review_path",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent-authored in_review transition on a perpetual-tracker issue with no review path (BLU-20250)", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1013",
+      title: "Perpetual tracker",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    // No interactions, no approvals, no human assignee, no monitor: the only
+    // thing keeping this out of a 422 is the perpetual-tracker label.
+    mockPerpetualTrackerLabelRows.current = [{ issueId: issue.id }];
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({ status: "in_review" }),
+    );
+  });
+
+  it("still rejects an in_review transition when the issue carries a different label (BLU-20250)", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1014",
+      title: "Labelled, but not a perpetual tracker",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    // The lookup filters on the label name, so a non-matching label yields no rows.
+    mockPerpetualTrackerLabelRows.current = [];
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(422);
     expect(res.body.details).toMatchObject({
       code: "invalid_issue_disposition",
       missing: "review_path",
