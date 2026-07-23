@@ -79,6 +79,10 @@ const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_r
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
+
+// Mirrors heartbeat.ts DETACHED_PROCESS_ERROR_CODE. Kept local to avoid a
+// heartbeat<->recovery import cycle (heartbeat imports this module).
+const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
@@ -5324,12 +5328,75 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runRows =
       referencedRunIds.length > 0
         ? await db
-            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+            .select({
+              id: heartbeatRuns.id,
+              companyId: heartbeatRuns.companyId,
+              agentId: heartbeatRuns.agentId,
+              status: heartbeatRuns.status,
+              errorCode: heartbeatRuns.errorCode,
+              lastOutputAt: heartbeatRuns.lastOutputAt,
+              createdAt: heartbeatRuns.createdAt,
+            })
             .from(heartbeatRuns)
             .where(inArray(heartbeatRuns.id, referencedRunIds))
         : [];
+    const now = new Date();
     const runStatusById = new Map<string, string>();
-    for (const row of runRows) runStatusById.set(row.id, row.status);
+    for (const row of runRows) {
+      let status = row.status;
+      // A `process_detached` run lost its in-memory process handle but its pid still
+      // looked alive, so the reaper keeps it `running` (a live detached child clears this
+      // warning on its next output via clearDetachedRunWarning). One that is ALSO silent
+      // past the critical threshold is a dead zombie nothing reaps — the reaper skips it
+      // (pid "alive") and the silence-detector is observability-only — so it strands the
+      // issue checkout lock forever (every /checkout, /release, PATCH and /comments 409 for
+      // all actors, including the legitimate assignee). Reap it to a terminal status so the
+      // clearing below frees the lock.
+      const silenceRef = row.lastOutputAt ?? row.createdAt;
+      const silenceMs = silenceRef ? now.getTime() - new Date(silenceRef).getTime() : Number.POSITIVE_INFINITY;
+      if (
+        status === "running" &&
+        row.errorCode === DETACHED_PROCESS_ERROR_CODE &&
+        silenceMs >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS
+      ) {
+        const reaped = await db
+          .update(heartbeatRuns)
+          .set({
+            status: "timed_out",
+            error: "Reaped by stale-lock sweep: process_detached run silent past the critical output threshold",
+            finishedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(heartbeatRuns.id, row.id),
+              eq(heartbeatRuns.status, "running"),
+              eq(heartbeatRuns.errorCode, DETACHED_PROCESS_ERROR_CODE),
+            ),
+          )
+          .returning({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .then((rows) => rows[0] ?? null);
+        if (reaped) {
+          status = reaped.status;
+          await logActivity(db, {
+            companyId: row.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: row.agentId,
+            runId: row.id,
+            action: "heartbeat.detached_run_reaped",
+            entityType: "heartbeat_run",
+            entityId: row.id,
+            details: {
+              source: "recovery.sweep_stale_issue_locks",
+              silenceAgeMs: Number.isFinite(silenceMs) ? silenceMs : null,
+              lastOutputAt: row.lastOutputAt ? new Date(row.lastOutputAt).toISOString() : null,
+            },
+          });
+        }
+      }
+      runStatusById.set(row.id, status);
+    }
 
     const isCleanable = (runId: string | null) => {
       if (!runId) return true;
