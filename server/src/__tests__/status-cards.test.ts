@@ -403,6 +403,47 @@ describeEmbeddedPostgres("status card routes", () => {
     });
   });
 
+  it("cancels refresh tasks when assignment wakeup fails", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    const service = statusCardService(db);
+    const card = await service.create(
+      company.id,
+      {
+        interestPrompt: "Recently updated launch tasks",
+        titlePinned: false,
+        instructionsMode: "none",
+        refreshPolicy: { mode: "manual" },
+      },
+      { agentId: null, userId: "board-user" },
+    );
+    await db.update(statusCards).set({
+      state: "active",
+      queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }] as typeof card.queries,
+    }).where(eq(statusCards.id, card.id));
+    const app = createApp(db, localBoardActor(), {
+      wakeup: async () => {
+        throw new Error("queue unavailable");
+      },
+    });
+
+    const response = await request(app).post(`/api/status-cards/${card.id}/refresh`).send({});
+
+    expect(response.status).toBe(500);
+    expect(await service.getById(card.id)).toMatchObject({
+      state: "error",
+      generatingIssueId: null,
+      failureReason: expect.stringContaining("cancelled"),
+    });
+    expect(await db.select().from(issues).then((rows) => rows[0])).toMatchObject({ status: "cancelled" });
+    expect(await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.cardId, card.id)).then((rows) => rows[0])).toMatchObject({
+      status: "failed",
+      finishedAt: expect.any(Date),
+      error: expect.stringContaining("cancelled"),
+    });
+  });
+
   it("finalizes cancelled generation tasks as failed ledger entries", async () => {
     const company = await seedCompany();
     await enableStatusCards();

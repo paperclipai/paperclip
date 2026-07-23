@@ -119,17 +119,22 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       },
     });
     if (result.enqueued && result.generatingIssue && !result.alreadyGenerating) {
-      await queueIssueAssignmentWakeup({
-        heartbeat,
-        issue: result.generatingIssue,
-        reason: "status_card_update_assigned",
-        mutation: "status_card.refresh_requested",
-        contextSource: "status_card_update",
-        requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
-        requestedByActorId: actor.actorId,
-        taskKey: `status-card:${cardId}`,
-        rethrowOnError: true,
-      });
+      try {
+        await queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: result.generatingIssue,
+          reason: "status_card_update_assigned",
+          mutation: "status_card.refresh_requested",
+          contextSource: "status_card_update",
+          requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+          requestedByActorId: actor.actorId,
+          taskKey: `status-card:${cardId}`,
+          rethrowOnError: true,
+        });
+      } catch (error) {
+        await issueSvc.update(result.generatingIssue.id, { status: "cancelled" });
+        throw error;
+      }
     }
     return result;
   }
