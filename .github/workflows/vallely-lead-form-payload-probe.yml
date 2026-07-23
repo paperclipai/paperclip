@@ -1,0 +1,36 @@
+name: Vallely Lead Form Payload Probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VALLELY_LEAD_FORM_PROBE_MODE: production
+      ALLOW_PRODUCTION_SYNTHETIC_LEADS: "true"
+      VALLELY_LEAD_FORM_ENDPOINT_URL: ${{ secrets.VALLELY_LEAD_FORM_ENDPOINT_URL }}
+      VALLELY_LEAD_FORM_AUTH_HEADER: ${{ secrets.VALLELY_LEAD_FORM_AUTH_HEADER }}
+      VALLELY_LEAD_FORM_PAYLOAD_FORMAT: ${{ vars.VALLELY_LEAD_FORM_PAYLOAD_FORMAT || 'dealerspike-form' }}
+      VALLELY_LEAD_FORM_LOCATION: ${{ vars.VALLELY_LEAD_FORM_LOCATION || 'Bismarck ND' }}
+      VALLELY_LEAD_FORM_PROBE_LISTING_ID: ${{ vars.VALLELY_LEAD_FORM_PROBE_LISTING_ID || '15329398' }}
+      VALLELY_LEAD_FORM_PROBE_ALERT_URL: ${{ secrets.VALLELY_LEAD_FORM_PROBE_ALERT_URL }}
+      DP360_API_URL: ${{ vars.DP360_API_URL || 'https://api.dp360crm.com/api/2.0/' }}
+      DP360_LEADS_PATH: ${{ vars.DP360_LEADS_PATH || '/leads/{dealer_id}.json' }}
+      DP360_AUTH_HEADER: ${{ vars.DP360_AUTH_HEADER || 'token' }}
+      DP360_DEALER_ID: ${{ secrets.DP360_DEALER_ID }}
+      DP360_API_TOKEN: ${{ secrets.DP360_API_TOKEN }}
+      DP360_VENDOR_TOKEN: ${{ secrets.DP360_VENDOR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/vallely-lead-form-payload-probe.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vallely-lead-form-payload-probe
+          path: artifacts/vallely-lead-form-payload-probe/*.json
+          if-no-files-found: ignore
