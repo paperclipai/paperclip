@@ -2167,8 +2167,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string; issueCreatedAtGte?: Date | null }) {
     const now = opts?.now ?? new Date();
     const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
+// Narrow projection: the candidate poll only needs id + companyId to run the cheap quiet-decision
+    // guard below. Selecting the full row detoasts heavy TOAST columns (contextSnapshot, resultJson,
+    // logStore, usageJson, ...) for every running row on every scan. The heavy columns are re-fetched
+    // by id only for candidates that survive the guard and are actually evaluated.
     let candidates = await db
-      .select()
+      .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId })
       .from(heartbeatRuns)
       .where(
         and(
@@ -2181,8 +2185,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .limit(100);
 
     if (opts?.issueCreatedAtGte) {
+      // The candidate poll deliberately dropped contextSnapshot to avoid TOAST detox; only the
+      // optional issueCreatedAtGte filter needs it, so re-fetch it as a targeted {id, contextSnapshot}
+      // projection for the (small) candidate set rather than detoasting every running row.
+      const candidateIds = candidates.map((run) => run.id);
+      const contextRows = candidateIds.length > 0
+        ? await db
+            .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+            .from(heartbeatRuns)
+            .where(inArray(heartbeatRuns.id, candidateIds))
+        : [];
+      const contextById = new Map(contextRows.map((row) => [row.id, row.contextSnapshot]));
       const issueIds = [...new Set(candidates.flatMap((run) => {
-        const context = parseObject(run.contextSnapshot);
+        const context = parseObject(contextById.get(run.id));
         const issueId = context.issueId ?? context.taskId;
         return typeof issueId === "string" && issueId.length > 0 ? [issueId] : [];
       }))];
@@ -2195,7 +2210,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           : [],
       );
       candidates = candidates.filter((run) => {
-        const context = parseObject(run.contextSnapshot);
+        const context = parseObject(contextById.get(run.id));
         const issueId = context.issueId ?? context.taskId;
         return typeof issueId === "string" && eligibleIssueIds.has(issueId);
       });
@@ -2212,9 +2227,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       evaluationIssueIds: [] as string[],
     };
 
-    for (const run of candidates) {
-      if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
+    for (const candidate of candidates) {
+      if (await latestActiveOutputQuietUntilDecision(candidate.companyId, candidate.id, now)) {
         result.snoozed += 1;
+        continue;
+      }
+      // Re-fetch the full row (heavy TOAST columns) only for candidates that survive the cheap
+      // quiet-decision guard; createOrUpdateStaleRunEvaluation and its helpers read contextSnapshot,
+      // resultJson, and other TOAST columns. If the run vanished since the poll, skip it.
+      const [run] = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, candidate.id))
+        .limit(1);
+      if (!run) {
+        result.skipped += 1;
         continue;
       }
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });

@@ -11348,10 +11348,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
-    // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
+    // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them).
+    // Project only the scalar scheduling/liveness columns the reap guards inspect — selecting the full row
+    // detoasts heavy TOAST columns (resultJson, contextSnapshot, logStore, usageJson, ...) for every running
+    // row on every poll. The one heavy column actually consumed (resultJson) is re-fetched by id below, only
+    // for the small subset of rows genuinely being reaped.
     const activeRuns = await db
       .select({
-        run: heartbeatRuns,
+        run: {
+          id: heartbeatRuns.id,
+          agentId: heartbeatRuns.agentId,
+          updatedAt: heartbeatRuns.updatedAt,
+          processPid: heartbeatRuns.processPid,
+          processGroupId: heartbeatRuns.processGroupId,
+          errorCode: heartbeatRuns.errorCode,
+          processLossRetryCount: heartbeatRuns.processLossRetryCount,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        },
         adapterType: agents.adapterType,
         adapterConfig: agents.adapterConfig,
       })
@@ -11458,16 +11471,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         : null;
 
+      // The poll above omitted resultJson to avoid TOAST detox across all running rows; re-fetch the
+      // heavy row only now, for the row actually being reaped, so the stop-metadata merge is intact.
+      const heavyRun = await getRun(run.id, { unsafeFullResultJson: true });
+
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
-        resultJson: (() => {
+resultJson: (() => {
           const result = mergeRunStopMetadataForAgent(
             { adapterType, adapterConfig },
             "failed",
             {
-              resultJson: parseObject(run.resultJson),
+              resultJson: parseObject(heavyRun?.resultJson),
               errorCode: "process_lost",
               errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
             },
