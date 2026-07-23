@@ -719,7 +719,7 @@ describe("shared ACPX engine runtime behavior", () => {
   it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+    const baseConfig = { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir };
 
     const first = await runExecutor(
       { ...baseConfig, env: { OPENROUTER_API_KEY: "value-1" } },
@@ -749,7 +749,7 @@ describe("shared ACPX engine runtime behavior", () => {
   it("busts the session fingerprint when a stable configured PAPERCLIP_* value rotates", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+    const baseConfig = { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir };
 
     // A configured PAPERCLIP_*-named value the harness does not assign (e.g. a
     // cloud provider token binding) is stable per-run config: rotating it must
