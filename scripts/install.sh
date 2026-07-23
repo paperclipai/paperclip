@@ -33,8 +33,6 @@ Usage:
 Options:
   --canary                 Install the canary channel
   --version <version>      Install an exact published version
-  --ref <ref>              Install a GitHub branch, tag, or commit
-  --repo <owner/repo>      Override the GitHub repository
   --no-onboard             Do not start onboarding after installation
   --no-prompt              Run non-interactively
   --install-service        Install the per-user Paperclip service
@@ -43,7 +41,10 @@ Options:
   -h, --help               Show this help
 
 Every option also has a PAPERCLIP_INSTALL_* environment equivalent, for example
-PAPERCLIP_INSTALL_REF=master and PAPERCLIP_INSTALL_NO_PROMPT=1.
+PAPERCLIP_INSTALL_VERSION=2026.722.0 and PAPERCLIP_INSTALL_NO_PROMPT=1.
+
+To install from a git branch, tag, or commit, use the Paperclip CLI directly:
+npx paperclipai install --ref <ref>
 EOF
 }
 
@@ -153,7 +154,7 @@ if [ "$CANARY" = "1" ] && [ -n "$VERSION" ]; then
 fi
 
 if [ -n "$REF" ] || [ -n "$REPO" ]; then
-  fail "git-ref installs are not available in this installer build; omit --ref and --repo"
+  fail "git-ref installs are not supported by install.sh; run 'npx paperclipai install --ref <ref>' instead"
 fi
 
 if { [ ! -t 0 ] || [ ! -t 1 ]; } && [ "$NO_PROMPT" != "1" ]; then
