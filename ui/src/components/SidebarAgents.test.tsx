@@ -357,9 +357,14 @@ describe("SidebarAgents", () => {
   }
 
   it("does not query built-in agents when the experimental feature is disabled", async () => {
+    queryClient.setQueryData(queryKeys.builtInAgents.list("company-1"), [
+      { agentId: "agent-1", status: "needs_setup" },
+    ]);
+
     await renderSidebarAgents();
 
     expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Needs setup");
   });
 
   it("does not query built-in agents while the experimental setting is unresolved", async () => {
