@@ -8,7 +8,7 @@ import { issuesApi } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
 import {
   canBoardManageRuntime,
@@ -1764,18 +1764,8 @@ export function IssueDetail() {
     queryFn: () => issuesApi.listFeedbackVotes(issueId!),
     enabled: !!issueId && !!currentUserId,
   });
-  const { data: instanceGeneralSettings } = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-    enabled: !!issueId,
-    retry: false,
-  });
-  const { data: instanceExperimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    enabled: !!issueId,
-    retry: false,
-  });
+  const { data: instanceGeneralSettings } = useFeatures();
+  const { data: instanceExperimentalSettings } = useFeatures();
   const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
   // Experimental Cases: linkify `PAP-C7` chips in this issue's comment bodies.
   const casesChipsEnabled = instanceExperimentalSettings?.enableCases === true;
@@ -2992,7 +2982,7 @@ export function IssueDetail() {
     onSuccess: (_savedVote, variables) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.feedbackVotes(issueId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-      queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
+      queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
       pushToast({
         title:
           variables.sharingPreferenceAtSubmit === "prompt"

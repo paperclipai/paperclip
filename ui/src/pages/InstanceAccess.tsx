@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { CompanySurfaceVisibilityCard } from "@/components/access/CompanySurfaceVisibilityCard";
 
 export function InstanceAccess() {
   const { companies } = useCompany();
@@ -246,6 +247,8 @@ export function InstanceAccess() {
           )}
         </Card>
       </div>
+
+      <CompanySurfaceVisibilityCard />
     </div>
   );
 }
