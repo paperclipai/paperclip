@@ -88,6 +88,7 @@ import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
 import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
+import { getRunErrorCodeLabel } from "../lib/runErrors";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -345,6 +346,7 @@ export function FailedRunInboxRow({
             ) : (
               <span className="inline-flex h-4 w-4" aria-hidden="true" />
             )}
+
           </span>
         ) : null}
         <Link
