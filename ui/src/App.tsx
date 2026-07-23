@@ -1,4 +1,4 @@
-import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
+import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
@@ -200,13 +200,16 @@ function boardRoutes() {
         element={<CasesExperimentalGate><CaseDetail /></CasesExperimentalGate>}
       />
       <Route
-        path="status-cards"
+        path="status"
         element={<StatusCardsExperimentalGate><StatusCards /></StatusCardsExperimentalGate>}
       />
       <Route
-        path="status-cards/:cardId"
+        path="status/:cardId"
         element={<StatusCardsExperimentalGate><StatusCards /></StatusCardsExperimentalGate>}
       />
+      {/* Back-compat: the board lived at /status-cards before PAP-15223. */}
+      <Route path="status-cards" element={<StatusCardsLegacyRedirect />} />
+      <Route path="status-cards/:cardId" element={<StatusCardsLegacyRedirect />} />
       <Route
         path="review-queue"
         element={<PipelinesExperimentalGate><ReviewQueue /></PipelinesExperimentalGate>}
@@ -455,6 +458,13 @@ function CompanyRootRedirect() {
   return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
 }
 
+function StatusCardsLegacyRedirect() {
+  const { cardId } = useParams<{ cardId?: string }>();
+  const prefix = useActiveCompanyPrefix();
+  const base = prefix ? `/${prefix}` : "";
+  return <Navigate to={`${base}/status${cardId ? `/${cardId}` : ""}`} replace />;
+}
+
 function UnprefixedBoardRedirect() {
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
@@ -535,6 +545,8 @@ export function App() {
           <Route path="learnings" element={<UnprefixedBoardRedirect />} />
           <Route path="cases" element={<UnprefixedBoardRedirect />} />
           <Route path="cases/:caseIdentifier" element={<UnprefixedBoardRedirect />} />
+          <Route path="status" element={<UnprefixedBoardRedirect />} />
+          <Route path="status/:cardId" element={<UnprefixedBoardRedirect />} />
           <Route path="status-cards" element={<UnprefixedBoardRedirect />} />
           <Route path="status-cards/:cardId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines" element={<UnprefixedBoardRedirect />} />

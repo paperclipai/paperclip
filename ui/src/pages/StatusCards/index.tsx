@@ -16,7 +16,6 @@ import { StatusCardTile } from "./StatusCardTile";
 import { ArchivedStatusCardRow } from "./ArchivedStatusCardRow";
 import { CreateStatusCardDialog } from "./CreateStatusCardDialog";
 import { StatusCardDetailDrawer } from "./StatusCardDetailDrawer";
-import { StatusCardDebugDrawer } from "./StatusCardDebugDrawer";
 import type { StatusCardView } from "./types";
 
 export function StatusCards() {
@@ -28,7 +27,9 @@ export function StatusCards() {
 
   const [showArchived, setShowArchived] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [debugCardId, setDebugCardId] = useState<string | null>(null);
+  // Which tab the detail drawer opens to (the tile's "Query debug"/"Edit"
+  // actions deep-link into Settings).
+  const [detailTab, setDetailTab] = useState("summary");
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -61,10 +62,6 @@ export function StatusCards() {
     enabled: Boolean(cardId) && !cardInLists,
   });
   const detailCard = (cardInLists ?? detailFallbackQuery.data ?? null) as StatusCardView | null;
-  const debugCard = useMemo(
-    () => [...activeCards, ...archivedCards].find((card) => card.id === debugCardId) ?? (detailCard?.id === debugCardId ? detailCard : null),
-    [activeCards, archivedCards, debugCardId, detailCard],
-  );
 
   const invalidateLists = () =>
     selectedCompanyId
@@ -99,8 +96,11 @@ export function StatusCards() {
     onError: (err) => setActionError(err instanceof Error ? err.message : "Could not restore the card."),
   });
 
-  const openDetail = (id: string) => navigate(`/status-cards/${id}`);
-  const closeDetail = () => navigate("/status-cards");
+  const openDetail = (id: string, tab: string = "summary") => {
+    setDetailTab(tab);
+    navigate(`/status/${id}`);
+  };
+  const closeDetail = () => navigate("/status");
 
   const todayTotals = activeCards.reduce(
     (acc, card) => ({
@@ -163,8 +163,8 @@ export function StatusCards() {
               onOpen={() => openDetail(card.id)}
               onRefresh={() => refreshMutation.mutate(card.id)}
               onRecompile={() => recompileMutation.mutate(card.id)}
-              onEditInterest={() => openDetail(card.id)}
-              onOpenDebug={() => setDebugCardId(card.id)}
+              onEditInterest={() => openDetail(card.id, "settings")}
+              onOpenDebug={() => openDetail(card.id, "settings")}
               onArchive={() => archiveMutation.mutate(card.id)}
               refreshPending={refreshMutation.isPending && refreshMutation.variables === card.id}
               recompilePending={recompileMutation.isPending && recompileMutation.variables === card.id}
@@ -205,13 +205,7 @@ export function StatusCards() {
         companyId={selectedCompanyId}
         open={Boolean(cardId)}
         onOpenChange={(open) => (open ? undefined : closeDetail())}
-        onOpenDebug={() => detailCard && setDebugCardId(detailCard.id)}
-      />
-
-      <StatusCardDebugDrawer
-        card={debugCard}
-        open={Boolean(debugCardId)}
-        onOpenChange={(open) => (open ? undefined : setDebugCardId(null))}
+        initialTab={detailTab}
       />
     </div>
   );

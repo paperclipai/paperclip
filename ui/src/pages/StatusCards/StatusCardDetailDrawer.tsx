@@ -2,13 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CompanySearchIssueSummary, StatusCardUpdate, SummarySlotIssueRef } from "@paperclipai/shared";
-import { History, Loader2, RefreshCw, Wand2 } from "lucide-react";
+import { ChevronDown, History, Loader2, RefreshCw, Wand2 } from "lucide-react";
 
 import { statusCardsApi, type StatusCardDryRun } from "@/api/statusCards";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSummaryDraftStream } from "@/components/useSummaryDraftStream";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { IssueStatusBadge } from "@/components/StatusBadge";
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -40,18 +43,24 @@ export function StatusCardDetailDrawer({
   companyId,
   open,
   onOpenChange,
-  onOpenDebug,
+  initialTab = "summary",
 }: {
   card: StatusCardView | null;
   companyId: string | null | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onOpenDebug: () => void;
+  initialTab?: string;
 }) {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState("summary");
   const [settings, setSettings] = useState<StatusCardSettingsValue>(defaultSettingsValue());
+  // Rename + interest ("query") are edited in Settings alongside the policy.
+  const [title, setTitle] = useState("");
+  const [interest, setInterest] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  // A short confirmation after a build/refresh is queued (the state dot + badge
+  // also update, but a card that finishes fast can look like "nothing happened").
+  const [actionNote, setActionNote] = useState<string | null>(null);
   // null → show the latest summary; otherwise a historical update id.
   const [selectedRevisionId, setSelectedRevisionId] = useState<string | null>(null);
 
@@ -62,10 +71,19 @@ export function StatusCardDetailDrawer({
         instructions: card.instructions ?? "",
         refreshPolicy: card.refreshPolicy,
       });
+      setTitle(card.title ?? "");
+      setInterest(card.interestPrompt);
       setActionError(null);
+      setActionNote(null);
       setSelectedRevisionId(null);
     }
   }, [card]);
+
+  // Open to the requested tab (e.g. "Query debug" on the tile deep-links to
+  // Settings) whenever the drawer (re)opens.
+  useEffect(() => {
+    if (open) setTab(initialTab);
+  }, [open, initialTab]);
 
   const updatesQuery = useQuery({
     queryKey: card ? queryKeys.statusCards.updates(card.id) : ["status-cards", "detail", "none", "updates"],
@@ -93,37 +111,64 @@ export function StatusCardDetailDrawer({
   );
   const draftStream = useSummaryDraftStream(companyId, generatingIssue);
 
+  const invalidateCard = async () => {
+    if (!card) return;
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.statusCards.list(card.companyId, false) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.statusCards.detail(card.id) }),
+    ]);
+  };
+
   const refreshMutation = useMutation({
     mutationFn: () => statusCardsApi.refresh(card!.id),
-    onMutate: () => setActionError(null),
+    onMutate: () => {
+      setActionError(null);
+      setActionNote(null);
+    },
     onSuccess: async () => {
-      if (!card) return;
-      await queryClient.invalidateQueries({ queryKey: queryKeys.statusCards.list(card.companyId, false) });
+      await invalidateCard();
+      setActionNote("Refresh queued — the Summarizer is updating this card.");
     },
     onError: (err) => setActionError(err instanceof Error ? err.message : "Could not refresh the card."),
   });
 
   const recompileMutation = useMutation({
     mutationFn: () => statusCardsApi.recompile(card!.id),
-    onMutate: () => setActionError(null),
+    onMutate: () => {
+      setActionError(null);
+      setActionNote(null);
+    },
     onSuccess: async () => {
-      if (!card) return;
-      await queryClient.invalidateQueries({ queryKey: queryKeys.statusCards.list(card.companyId, false) });
+      await invalidateCard();
+      setActionNote("Query build queued — the Summarizer is rebuilding this card.");
     },
     onError: (err) => setActionError(err instanceof Error ? err.message : "Could not rebuild the query."),
   });
 
   const saveSettingsMutation = useMutation({
-    mutationFn: () =>
-      statusCardsApi.patch(card!.id, {
+    mutationFn: () => {
+      const trimmedTitle = title.trim();
+      const trimmedInterest = interest.trim();
+      const interestChanged = trimmedInterest.length > 0 && trimmedInterest !== card!.interestPrompt.trim();
+      return statusCardsApi.patch(card!.id, {
+        // An explicit name pins the title so a recompile won't overwrite it;
+        // clearing it hands naming back to the compiler.
+        title: trimmedTitle || null,
+        titlePinned: trimmedTitle.length > 0,
+        // Editing the interest text ("query") triggers a server-side recompile.
+        ...(interestChanged ? { interestPrompt: trimmedInterest } : {}),
         instructionsMode: settings.instructionsMode,
         instructions: settings.instructionsMode === "none" ? null : settings.instructions.trim() || null,
         refreshPolicy: settings.refreshPolicy,
-      }),
+      });
+    },
     onMutate: () => setActionError(null),
     onSuccess: async () => {
       if (!card) return;
-      await queryClient.invalidateQueries({ queryKey: queryKeys.statusCards.list(card.companyId, false) });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.statusCards.list(card.companyId, false) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.statusCards.detail(card.id) }),
+      ]);
     },
     onError: (err) => setActionError(err instanceof Error ? err.message : "Could not save settings."),
   });
@@ -157,7 +202,6 @@ export function StatusCardDetailDrawer({
   const displayedChanges = selectedRevision ? selectedRevision.changes : latestUpdate?.changes ?? [];
   const presentation = STATUS_CARD_LIFECYCLE_PRESENTATION[lifecycle];
   const hasSummary = Boolean(card.summaryBody && card.summaryBody.trim().length > 0);
-  const watchedCount = card.watchedIssueCount ?? null;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -175,7 +219,7 @@ export function StatusCardDetailDrawer({
                 disabled={recompileMutation.isPending}
               >
                 <Wand2 className={cn("h-3.5 w-3.5", recompileMutation.isPending && "animate-pulse")} />
-                Build query
+                {recompileMutation.isPending ? "Building…" : "Build query"}
               </Button>
             ) : (
               <Button
@@ -185,31 +229,31 @@ export function StatusCardDetailDrawer({
                 disabled={refreshMutation.isPending || lifecycle === "updating"}
               >
                 <RefreshCw className={cn("h-3.5 w-3.5", refreshMutation.isPending && "animate-spin")} />
-                Refresh
+                {refreshMutation.isPending ? "Refreshing…" : "Refresh"}
               </Button>
             )}
           </div>
           <p className="text-xs text-muted-foreground">
             {card.lastGeneratedAt ? `Updated ${relativeTime(card.lastGeneratedAt)}` : "No summary yet"} ·{" "}
             {describeRefreshPolicy(card.refreshPolicy)}
-            {watchedCount !== null ? ` · watching ${watchedCount} issues` : ""} ·{" "}
-            <button type="button" onClick={onOpenDebug} className="underline hover:text-foreground">
-              debug
-            </button>
           </p>
         </SheetHeader>
 
         <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col gap-0">
           <TabsList variant="line" className="w-full justify-start gap-4 border-b border-border px-4">
             <TabsTrigger value="summary">Summary</TabsTrigger>
-            <TabsTrigger value="history">History</TabsTrigger>
-            <TabsTrigger value="watched">Watched issues{watchedCount !== null ? ` (${watchedCount})` : ""}</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
+            <TabsTrigger value="watched">Watched issues</TabsTrigger>
+            <TabsTrigger value="history">History</TabsTrigger>
           </TabsList>
 
           {actionError ? (
             <div className="px-4 pt-3">
               <InlineBanner tone="warning" title="Heads up">{actionError}</InlineBanner>
+            </div>
+          ) : actionNote ? (
+            <div className="px-4 pt-3">
+              <InlineBanner tone="info" title="Working on it">{actionNote}</InlineBanner>
             </div>
           ) : null}
 
@@ -310,45 +354,40 @@ export function StatusCardDetailDrawer({
                 <p className="text-sm text-muted-foreground">No updates recorded yet.</p>
               ) : (
                 <>
-                  <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-foreground">
+                  <div className="text-xs text-muted-foreground">
                     Today: {todayRollup.updateCount}{" "}
                     {todayRollup.updateCount === 1 ? "update" : "updates"} ·{" "}
                     {formatTokens(todayRollup.totalTokens)} · {formatCents(todayRollup.totalCostCents)}
                     {card.refreshPolicy.dailyTokenCap ? ` · daily cap ${formatTokens(card.refreshPolicy.dailyTokenCap)}` : ""}
                   </div>
-                  {updates.map((update) => (
-                    <div key={update.id} className="rounded-md border border-border p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="flex items-center gap-2 text-sm font-medium">
-                          {updateKindLabel(update.kind)}
-                          <Badge variant={update.status === "failed" ? "destructive" : "secondary"}>
-                            {update.status === "ok" ? update.trigger : update.status}
-                          </Badge>
-                        </span>
-                        <span className="text-xs text-muted-foreground" title={formatDateTime(update.startedAt)}>
-                          {relativeTime(update.startedAt)}
-                        </span>
+                  <div className="divide-y divide-border">
+                    {updates.map((update) => (
+                      <div key={update.id} className="py-2.5 first:pt-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="flex items-center gap-2 text-sm font-medium">
+                            {updateKindLabel(update.kind)}
+                            <Badge variant={update.status === "failed" ? "destructive" : "secondary"}>
+                              {update.status === "ok" ? update.trigger : update.status}
+                            </Badge>
+                          </span>
+                          <span className="text-xs text-muted-foreground" title={formatDateTime(update.startedAt)}>
+                            {relativeTime(update.startedAt)}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {formatTokenSplit(update.inputTokens, update.outputTokens)} · {formatCents(update.costCents)}
+                          {update.model ? ` · ${update.model}` : ""}
+                          {update.changes.length > 0 ? ` · ${update.changes.length} changes` : ""}
+                        </p>
+                        {update.error ? <p className="mt-1 text-xs text-destructive">{update.error}</p> : null}
                       </div>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {formatTokenSplit(update.inputTokens, update.outputTokens)} · {formatCents(update.costCents)}
-                        {update.model ? ` · ${update.model}` : ""}
-                        {update.changes.length > 0 ? ` · ${update.changes.length} changes` : ""}
-                      </p>
-                      {update.error ? <p className="mt-1 text-xs text-destructive">{update.error}</p> : null}
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </>
               )}
             </TabsContent>
 
             <TabsContent value="watched" className="mt-0 space-y-3">
-              <p className="text-sm text-muted-foreground">
-                This card watches issues matched by its compiled query{watchedCount !== null ? ` (${watchedCount} right now)` : ""}. Open{" "}
-                <button type="button" onClick={onOpenDebug} className="underline hover:text-foreground">
-                  Query debug
-                </button>{" "}
-                to inspect or edit the query itself.
-              </p>
               {card.queries.length === 0 ? (
                 <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
                   The query has not compiled yet — matched issues appear here once compilation finishes.
@@ -366,8 +405,36 @@ export function StatusCardDetailDrawer({
               )}
             </TabsContent>
 
-            <TabsContent value="settings" className="mt-0 space-y-5">
+            <TabsContent value="settings" className="mt-0 space-y-6">
+              <section className="space-y-2">
+                <h3 className="text-sm font-semibold">Card name</h3>
+                <Input
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  placeholder="Auto-named from the query"
+                  className="text-sm"
+                  aria-label="Card name"
+                />
+              </section>
+
+              <section className="space-y-2">
+                <h3 className="text-sm font-semibold">What this card watches</h3>
+                <Textarea
+                  value={interest}
+                  onChange={(event) => setInterest(event.target.value)}
+                  rows={3}
+                  className="text-sm"
+                  aria-label="What this card watches"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Editing this rebuilds the query and refreshes the summary.
+                </p>
+              </section>
+
               <StatusCardSettingsForm value={settings} onChange={setSettings} />
+
+              <QueryDebugSection card={card} />
+
               <div className="flex justify-end border-t border-border pt-4">
                 <Button onClick={() => saveSettingsMutation.mutate()} disabled={saveSettingsMutation.isPending}>
                   {saveSettingsMutation.isPending ? <Loader2 className="animate-spin" /> : null}
@@ -379,6 +446,37 @@ export function StatusCardDetailDrawer({
         </Tabs>
       </SheetContent>
     </Sheet>
+  );
+}
+
+/**
+ * The compiled query is agent-maintained (the Summarizer writes it from its
+ * generation task) and normally hidden. Surfaced read-only here (moved out of
+ * the old standalone debug drawer, PAP-15223) so the raw query + version stay
+ * inspectable without leaving Settings.
+ */
+function QueryDebugSection({ card }: { card: StatusCardView }) {
+  const queryJson = JSON.stringify({ queries: card.queries, limit: 50 }, null, 2);
+  return (
+    <Collapsible className="rounded-md border border-border">
+      <CollapsibleTrigger className="group flex w-full items-center justify-between gap-2 px-3 py-2.5 text-sm font-semibold">
+        <span className="flex items-center gap-2">
+          Query debug
+          <Badge variant="secondary">v{card.queryVersion}</Badge>
+        </span>
+        <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="space-y-2 border-t border-border px-3 py-3">
+        <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 font-mono text-xs text-foreground">
+          {card.queries.length > 0 ? queryJson : "// query not compiled yet"}
+        </pre>
+        <p className="text-xs text-muted-foreground">
+          {card.queryCompiledAt
+            ? `Compiled by Summarizer ${relativeTime(card.queryCompiledAt)} · version ${card.queryVersion}. Edit “What this card watches” above to rebuild it.`
+            : "Not compiled yet. The query builds automatically once the card finishes setting up."}
+        </p>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

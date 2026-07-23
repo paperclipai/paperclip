@@ -235,7 +235,7 @@ export function Sidebar() {
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
           ) : null}
           {showStatusCards ? (
-            <SidebarNavItem to="/status-cards" label="Status cards" icon={LayoutGrid} textBadge="exp" />
+            <SidebarNavItem to="/status" label="Status cards" icon={LayoutGrid} textBadge="exp" />
           ) : null}
           {showGoalsLink ? (
             <SidebarNavItem to="/goals" label="Goals" icon={Target} />
