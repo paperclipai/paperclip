@@ -12,6 +12,7 @@ import {
 } from "../components/agent-config-primitives";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { ChevronDown } from "lucide-react";
+import { useCoarsePointer } from "@/hooks/useCoarsePointer";
 
 // ── Select field (extracted to keep hooks at component top level) ──────
 function SelectField({
@@ -75,11 +76,18 @@ function ComboboxField({
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const isCoarsePointer = useCoarsePointer();
 
   // Sync filter with external value when it changes (e.g. provider switch resets model)
   useEffect(() => {
     setFilter("");
   }, [value]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (isCoarsePointer) inputRef.current?.blur();
+    else inputRef.current?.focus();
+  }, [isCoarsePointer, open]);
 
   const filtered = options.filter((opt) => {
     if (!filter) return true;
@@ -136,9 +144,15 @@ function ComboboxField({
         <input
           ref={inputRef}
           type="text"
-          className="flex-1 rounded-l-md border border-r-0 border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40 focus:z-10"
+          className="paperclip-mobile-control-font-size flex-1 rounded-l-md border border-r-0 border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40 focus:z-10"
           value={displayValue}
           placeholder={placeholder ?? "Type or select..."}
+          readOnly={isCoarsePointer}
+          inputMode={isCoarsePointer ? "none" : undefined}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           onChange={(e) => {
             setFilter(e.target.value);
             if (!open) setOpen(true);
@@ -147,8 +161,10 @@ function ComboboxField({
             if (!open) setOpen(true);
           }}
           onBlur={() => {
-            // Delay close to allow click on option to register
-            setTimeout(() => setOpen(false), 150);
+            if (!isCoarsePointer) {
+              // Delay close to allow click on option to register
+              setTimeout(() => setOpen(false), 150);
+            }
           }}
           onKeyDown={handleKeyDown}
         />

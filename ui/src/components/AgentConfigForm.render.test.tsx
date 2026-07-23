@@ -188,6 +188,23 @@ function setInputValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function mockMatchMedia(isCoarsePointer: boolean) {
+  Object.defineProperty(window.navigator, "maxTouchPoints", {
+    configurable: true,
+    value: isCoarsePointer ? 5 : 0,
+  });
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches: query === "(pointer: coarse)" ? isCoarsePointer : query === "(hover: none)" ? isCoarsePointer : false,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+}
+
 async function renderForm(
   environments: Environment[],
   agentOverrides: Partial<Agent> = {},
@@ -271,10 +288,28 @@ async function renderCreateForm(
   return { container, root, onChange };
 }
 
+
+function defaultMatchMedia(query: string): MediaQueryList {
+  return {
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  } as unknown as MediaQueryList;
+}
+
 describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
+  let originalMatchMedia: typeof window.matchMedia;
+  let originalMaxTouchPoints: number;
 
   beforeEach(() => {
+    originalMatchMedia = window.matchMedia;
+    originalMaxTouchPoints = window.navigator.maxTouchPoints;
     mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
@@ -299,7 +334,70 @@ describe("AgentConfigForm environment selector", () => {
     }
     roots = [];
     document.body.innerHTML = "";
+    window.matchMedia = originalMatchMedia ?? defaultMatchMedia;
+    Object.defineProperty(window.navigator, "maxTouchPoints", {
+      configurable: true,
+      value: originalMaxTouchPoints,
+    });
     vi.clearAllMocks();
+  });
+
+  it("does not focus or raise the keyboard for the model search input on coarse pointers", async () => {
+    mockMatchMedia(true);
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: { model: "gpt-5.4" },
+    });
+    roots.push(result.root);
+
+    const modelButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "gpt-5.4",
+    );
+    expect(modelButton).toBeTruthy();
+
+    await act(async () => {
+      modelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const searchInput = document.body.querySelector<HTMLInputElement>('input[placeholder="Search models... (type to create)"]');
+    expect(searchInput).toBeTruthy();
+    expect(searchInput?.readOnly).toBe(true);
+    expect(searchInput?.inputMode).toBe("none");
+    expect(searchInput?.autocomplete).toBe("off");
+    expect(searchInput?.getAttribute("autocorrect")).toBe("off");
+    expect(searchInput?.getAttribute("autocapitalize")).toBe("off");
+    expect(searchInput?.getAttribute("spellcheck")).toBe("false");
+    expect(searchInput?.className).toContain("paperclip-mobile-control-font-size");
+    expect(document.activeElement).not.toBe(searchInput);
+  });
+
+  it("keeps the model search input typeable and focused on fine pointers", async () => {
+    mockMatchMedia(false);
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: { model: "gpt-5.4" },
+    });
+    roots.push(result.root);
+
+    const modelButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "gpt-5.4",
+    );
+    expect(modelButton).toBeTruthy();
+
+    await act(async () => {
+      modelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const searchInput = document.body.querySelector<HTMLInputElement>('input[placeholder="Search models... (type to create)"]');
+    expect(searchInput).toBeTruthy();
+    expect(searchInput?.readOnly).toBe(false);
+    expect(searchInput?.inputMode).toBe("");
+    expect(searchInput?.className).toContain("paperclip-mobile-control-font-size");
+    expect(document.activeElement).toBe(searchInput);
   });
 
   it("hides the environment override when Local is the only configured environment", async () => {
