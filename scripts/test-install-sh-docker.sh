@@ -64,7 +64,7 @@ echo "==> shellcheck"
 run_shellcheck
 
 echo "==> existing Node"
-run_with_node with-node bash /paperclip-scripts/install.sh --no-onboard
+run_with_node with-node bash /paperclip-scripts/install.sh --no-prompt --no-onboard
 assert_line "$RESULTS_DIR/with-node.args" "paperclipai@latest"
 assert_line "$RESULTS_DIR/with-node.args" "install"
 assert_line "$RESULTS_DIR/with-node.args" "--yes"
@@ -85,7 +85,7 @@ docker run --rm \
   -e PAPERCLIP_INSTALL_TEST_LOG=/results/hostile.args \
   -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
   node:22-bookworm-slim \
-  bash /paperclip-scripts/install.sh --no-onboard
+  bash /paperclip-scripts/install.sh --no-prompt --no-onboard
 assert_line "$RESULTS_DIR/hostile.args" "--registry=https://registry.npmjs.org"
 assert_line "$RESULTS_DIR/hostile.args" "NPM_CONFIG_REGISTRY=https://registry.npmjs.org"
 assert_line "$RESULTS_DIR/hostile.args" "npm_config_registry=https://registry.npmjs.org"
@@ -112,7 +112,7 @@ run_with_node piped bash -c 'cat /paperclip-scripts/install.sh | bash -s -- --no
 assert_line "$RESULTS_DIR/piped.args" "--yes"
 
 echo "==> dry run"
-run_with_node dry-run bash /paperclip-scripts/install.sh --dry-run --no-onboard
+run_with_node dry-run bash /paperclip-scripts/install.sh --no-prompt --dry-run --no-onboard
 [ ! -e "$RESULTS_DIR/dry-run.args" ] || {
   echo "Expected --dry-run to avoid invoking npx" >&2
   exit 1
@@ -126,6 +126,7 @@ docker run --rm \
   -e PAPERCLIP_INSTALL_VERSION=2026.722.0 \
   -e PAPERCLIP_INSTALL_INSTALL_SERVICE=1 \
   -e PAPERCLIP_INSTALL_NO_ONBOARD=1 \
+  -e PAPERCLIP_INSTALL_NO_PROMPT=1 \
   -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
   node:22-bookworm-slim \
   bash /paperclip-scripts/install.sh
