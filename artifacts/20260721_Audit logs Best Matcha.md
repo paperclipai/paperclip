@@ -57,7 +57,7 @@ Managed company skill:
 
 - ID: `aedea575-1dce-4a7c-b064-727dfcb0c955`
 - Key: `company/3000c724-cd0c-4ff0-b21c-d721a74c113f/site-log-audit`
-- Files: `SKILL.md`, `scripts/audit_logs.py`, `scripts/test_audit_logs.py`
+- Files: `SKILL.md`, `scripts/audit_logs.py`, `scripts/tests/test_audit_logs.py`
 - Compatibility: `compatible`
 - Trust: `scripts_executables`
 - Audit: warning-only (`script_trust`, `secret_reference`); no hard-stop finding. Secret references are redaction patterns and guidance, not embedded credentials.
@@ -71,7 +71,7 @@ python3 scripts/audit_logs.py \
 python3 scripts/audit_logs.py \
   --root /home/agents/workspaces/wordpress \
   > all-sites-audit.json
-python3 scripts/test_audit_logs.py
+python3 scripts/tests/test_audit_logs.py
 ```
 
 Verification:

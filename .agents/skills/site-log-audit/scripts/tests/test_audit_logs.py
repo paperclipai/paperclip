@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent.parent
 
 
 def write(path: Path, text: str) -> None:

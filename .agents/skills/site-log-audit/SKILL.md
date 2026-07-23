@@ -68,7 +68,7 @@ Completion: every grouped signature has one disposition, every new defect has on
 ## Verification
 
 ```bash
-python3 scripts/test_audit_logs.py
+python3 scripts/tests/test_audit_logs.py
 ```
 
 Pass requires multi-site discovery, signature grouping, HTTP status grouping, URL-userinfo redaction, encoded/semicolon query-secret redaction in access/error logs, and fail-closed handling of malformed request targets.
