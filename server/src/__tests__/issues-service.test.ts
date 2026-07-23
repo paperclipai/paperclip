@@ -1149,6 +1149,78 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([commentMatchId, descriptionMatchId]);
   });
 
+  it("keeps search match semantics when matching via the UNION of per-column id sets", async () => {
+    // The `q=` predicate is a UNION of per-column id sets rather than a flat OR, so
+    // each branch can use its own trigram index. This pins the three behaviors that
+    // rewrite could plausibly have broken: comment-only matches still surface, soft
+    // deleted comments still do not, and LIKE metacharacters are still literal.
+    const companyId = randomUUID();
+    const commentOnlyId = randomUUID();
+    const deletedCommentId = randomUUID();
+    const metacharacterId = randomUUID();
+    const wildcardDecoyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: commentOnlyId,
+        companyId,
+        title: "No keyword here",
+        description: "No keyword here either",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: deletedCommentId,
+        companyId,
+        title: "Also no keyword",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: metacharacterId,
+        companyId,
+        title: "Coverage is 90% complete",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: wildcardDecoyId,
+        companyId,
+        // Only matches "90%" if `%` is treated as a wildcard rather than a literal.
+        title: "Coverage is 90 percent complete",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId: commentOnlyId,
+        body: "The regression traces back to zephyrine handling",
+      },
+      {
+        companyId,
+        issueId: deletedCommentId,
+        body: "zephyrine was mentioned here before this comment was retracted",
+        deletedAt: new Date(),
+      },
+    ]);
+
+    const commentMatches = await svc.list(companyId, { q: "zephyrine" });
+    expect(commentMatches.map((issue) => issue.id)).toEqual([commentOnlyId]);
+
+    const literalMatches = await svc.list(companyId, { q: "90%" });
+    expect(literalMatches.map((issue) => issue.id)).toEqual([metacharacterId]);
+  });
+
   it("filters issue lists to the full descendant tree for a root issue", async () => {
     const companyId = randomUUID();
     const rootId = randomUUID();
