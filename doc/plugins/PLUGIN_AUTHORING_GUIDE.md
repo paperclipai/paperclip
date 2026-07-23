@@ -361,6 +361,8 @@ Mount surfaces currently wired in the host include:
 - `contextMenuItem`
 - `commentAnnotation`
 - `commentContextMenuItem`
+- `approvalCard`
+- `approvalPayloadField`
 
 ### `routeSidebar` and the app sidebar
 

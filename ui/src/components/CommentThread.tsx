@@ -76,6 +76,7 @@ interface CommentThreadProps {
   linkedRuns?: LinkedRunItem[];
   timelineEvents?: IssueTimelineEvent[];
   companyId?: string | null;
+  companyPrefix?: string | null;
   projectId?: string | null;
   onApproveApproval?: (approvalId: string) => Promise<void>;
   onRejectApproval?: (approvalId: string) => Promise<void>;
@@ -568,6 +569,7 @@ const TimelineList = memo(function TimelineList({
   agentMap,
   currentUserId,
   companyId,
+  companyPrefix,
   projectId,
   onApproveApproval,
   onRejectApproval,
@@ -584,6 +586,7 @@ const TimelineList = memo(function TimelineList({
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   companyId?: string | null;
+  companyPrefix?: string | null;
   projectId?: string | null;
   onApproveApproval?: (approvalId: string) => Promise<void>;
   onRejectApproval?: (approvalId: string) => Promise<void>;
@@ -634,6 +637,7 @@ const TimelineList = memo(function TimelineList({
                 detailLink={`/approvals/${approval.id}`}
                 isPending={isPending}
                 pendingAction={isPending ? pendingApprovalAction?.action ?? null : null}
+                companyPrefix={companyPrefix ?? null}
               />
             </div>
           );
@@ -741,6 +745,7 @@ export function CommentThread({
   linkedRuns = [],
   timelineEvents = [],
   companyId,
+  companyPrefix,
   projectId,
   onApproveApproval,
   onRejectApproval,
@@ -971,6 +976,7 @@ export function CommentThread({
         agentMap={agentMap}
         currentUserId={currentUserId}
         companyId={companyId}
+        companyPrefix={companyPrefix}
         projectId={projectId}
         onApproveApproval={onApproveApproval}
         onRejectApproval={onRejectApproval}

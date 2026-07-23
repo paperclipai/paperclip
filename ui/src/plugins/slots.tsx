@@ -94,6 +94,7 @@ export function resolveRouteSidebarSlot(
 type PluginSlotComponentProps = {
   slot: ResolvedPluginSlot;
   context: PluginSlotContext;
+  [key: string]: unknown;
 };
 
 export type RegisteredPluginComponent =
@@ -736,11 +737,13 @@ function PluginWebComponentMount({
   slot,
   context,
   className,
+  componentProps,
 }: {
   tagName: string;
   slot: ResolvedPluginSlot;
   context: PluginSlotContext;
   className?: string;
+  componentProps?: Record<string, unknown>;
 }) {
   const ref = useRef<HTMLElement | null>(null);
 
@@ -750,10 +753,12 @@ function PluginWebComponentMount({
     const el = ref.current as HTMLElement & {
       pluginSlot?: ResolvedPluginSlot;
       pluginContext?: PluginSlotContext;
+      pluginProps?: Record<string, unknown>;
     };
     el.pluginSlot = slot;
     el.pluginContext = context;
-  }, [context, slot]);
+    el.pluginProps = componentProps ?? {};
+  }, [componentProps, context, slot]);
 
   return createElement(tagName, { ref, className });
 }
@@ -763,6 +768,7 @@ type PluginSlotMountProps = {
   context: PluginSlotContext;
   className?: string;
   missingBehavior?: "hidden" | "placeholder";
+  componentProps?: Record<string, unknown>;
 };
 
 /**
@@ -822,6 +828,7 @@ export function PluginSlotMount({
   context,
   className,
   missingBehavior = "hidden",
+  componentProps,
 }: PluginSlotMountProps) {
   usePluginRegistrySubscription();
   const [, forceRerender] = useState(0);
@@ -854,7 +861,7 @@ export function PluginSlotMount({
   }
 
   if (component.kind === "react") {
-    const node = createElement(component.component, { slot, context });
+    const node = createElement(component.component, { slot, context, ...(componentProps ?? {}) });
     return (
       <PluginSlotErrorBoundary slot={slot} className={className}>
         <PluginBridgeScope pluginId={slot.pluginId} context={context}>
@@ -871,6 +878,7 @@ export function PluginSlotMount({
         slot={slot}
         context={context}
         className={className}
+        componentProps={componentProps}
       />
     </PluginSlotErrorBoundary>
   );
@@ -884,6 +892,7 @@ type PluginSlotOutletProps = {
   itemClassName?: string;
   errorClassName?: string;
   missingBehavior?: "hidden" | "placeholder";
+  componentProps?: Record<string, unknown>;
 };
 
 export function PluginSlotOutlet({
@@ -894,6 +903,7 @@ export function PluginSlotOutlet({
   itemClassName,
   errorClassName,
   missingBehavior = "hidden",
+  componentProps,
 }: PluginSlotOutletProps) {
   const { slots, errorMessage } = usePluginSlots({
     slotTypes,
@@ -920,6 +930,7 @@ export function PluginSlotOutlet({
           context={context}
           className={itemClassName}
           missingBehavior={missingBehavior}
+          componentProps={componentProps}
         />
       ))}
     </div>

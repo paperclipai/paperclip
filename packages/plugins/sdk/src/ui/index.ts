@@ -154,5 +154,7 @@ export type {
   PluginProjectSidebarItemProps,
   PluginCommentAnnotationProps,
   PluginCommentContextMenuItemProps,
+  PluginApprovalCardProps,
+  PluginApprovalPayloadFieldProps,
   PluginSettingsPageProps,
 } from "./types.js";

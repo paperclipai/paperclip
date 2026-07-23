@@ -167,6 +167,8 @@ const UI_SLOT_CAPABILITIES: Record<PluginUiSlotType, PluginCapability> = {
   contextMenuItem: "ui.action.register",
   commentAnnotation: "ui.commentAnnotation.register",
   commentContextMenuItem: "ui.action.register",
+  approvalCard: "ui.approval.register",
+  approvalPayloadField: "ui.approval.register",
   settingsPage: "instance.settings.register",
   companySettingsPage: "instance.settings.register",
   routeSidebar: "ui.sidebar.register",

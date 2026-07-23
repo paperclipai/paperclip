@@ -245,4 +245,22 @@ describe("plugin UI slot validators", () => {
     if (parsed.success) return;
     expect(parsed.error.issues.some((issue) => issue.message.includes("reserved by the host"))).toBe(true);
   });
+
+  it("accepts approval slots without entity targeting", () => {
+    const cardSlot = pluginUiSlotDeclarationSchema.parse({
+      type: "approvalCard",
+      id: "artifact-links-card",
+      displayName: "Artifact Links",
+      exportName: "ArtifactLinksCard",
+    });
+    const payloadSlot = pluginUiSlotDeclarationSchema.parse({
+      type: "approvalPayloadField",
+      id: "artifact-links-field",
+      displayName: "Artifact Links",
+      exportName: "ArtifactLinksField",
+    });
+
+    expect(cardSlot.type).toBe("approvalCard");
+    expect(payloadSlot.type).toBe("approvalPayloadField");
+  });
 });

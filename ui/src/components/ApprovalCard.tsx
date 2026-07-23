@@ -12,6 +12,7 @@ import {
 } from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
+import { PluginSlotOutlet } from "@/plugins/slots";
 import { cn } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 
@@ -32,6 +33,7 @@ export function ApprovalCard({
   detailLink,
   isPending = false,
   pendingAction = null,
+  companyPrefix = null,
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
@@ -41,8 +43,9 @@ export function ApprovalCard({
   detailLink?: string;
   isPending?: boolean;
   pendingAction?: "approve" | "reject" | null;
+  companyPrefix?: string | null;
 }) {
-  const payload = approval.payload as Record<string, unknown> | null;
+  const payload = approval.payload as Record<string, unknown>;
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
   const subject = approvalSubject(payload);
@@ -97,10 +100,22 @@ export function ApprovalCard({
       <div className="mt-4 border-t border-border/60 pt-4">
         <ApprovalPayloadRenderer
           type={approval.type}
-          payload={approval.payload}
+          payload={payload}
           hidePrimaryTitle={Boolean(subject)}
+          approval={approval}
+          companyPrefix={companyPrefix}
         />
       </div>
+
+      <PluginSlotOutlet
+        slotTypes={["approvalCard"]}
+        context={{
+          companyId: approval.companyId,
+          companyPrefix,
+        }}
+        componentProps={{ approval, payload }}
+        className="mt-4 space-y-3"
+      />
 
       {approval.decisionNote && (
         <div className="mt-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">

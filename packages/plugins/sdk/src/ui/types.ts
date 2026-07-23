@@ -19,6 +19,7 @@ import type {
   MouseEvent as ReactMouseEvent,
 } from "react";
 import type {
+  Approval,
   PluginBridgeErrorCode,
   PluginLauncherBounds,
   PluginLauncherRenderEnvironment,
@@ -377,6 +378,35 @@ export interface PluginCommentContextMenuItemProps {
 export interface PluginSettingsPageProps {
   /** The current host context. */
   context: PluginHostContext;
+}
+
+/**
+ * Props passed to a plugin approval card component.
+ *
+ * An approval card slot is rendered inside an approval decision card after the
+ * host-rendered payload summary.
+ */
+export interface PluginApprovalCardProps {
+  /** The current host context, including company id and prefix when available. */
+  context: PluginHostContext;
+  /** The approval rendered by the host card. */
+  approval: Approval;
+  /** Convenience reference to `approval.payload`. */
+  payload: Record<string, unknown>;
+}
+
+/**
+ * Props passed to a plugin approval payload field component.
+ *
+ * This smaller slot renders after the built-in approval payload fields.
+ */
+export interface PluginApprovalPayloadFieldProps {
+  /** The current host context, including company id and prefix when available. */
+  context: PluginHostContext;
+  /** The approval rendered by the host card or detail page. */
+  approval: Approval;
+  /** Convenience reference to `approval.payload`. */
+  payload: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------

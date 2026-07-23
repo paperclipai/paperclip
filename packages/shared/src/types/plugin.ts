@@ -383,7 +383,7 @@ export interface PluginManagedSkillResolution {
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
  */
 export interface PluginUiSlotDeclaration {
-  /** The type of UI mount point (page, detailTab, taskDetailView, toolbarButton, etc.). */
+  /** The type of UI mount point (page, detailTab, approvalCard, toolbarButton, etc.). */
   type: PluginUiSlotType;
   /** Unique slot identifier within the plugin. */
   id: string;
@@ -394,6 +394,7 @@ export interface PluginUiSlotDeclaration {
   /**
    * Entity targets for context-sensitive slots.
    * Required for `detailTab`, `taskDetailView`, and `contextMenuItem`.
+   * Approval slots receive approval-specific props instead of `entityTypes`.
    */
   entityTypes?: PluginUiSlotEntityType[];
   /**

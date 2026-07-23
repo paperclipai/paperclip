@@ -364,6 +364,8 @@ export interface PaperclipPluginManifestV1 {
         | "contextMenuItem"
         | "commentAnnotation"
         | "commentContextMenuItem"
+        | "approvalCard"
+        | "approvalPayloadField"
         | "settingsPage"
         | "companySettingsPage";
       id: string;
@@ -866,6 +868,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `ui.detailTab.register`
 - `ui.dashboardWidget.register`
 - `ui.commentAnnotation.register`
+- `ui.approval.register`
 - `ui.action.register`
 
 ## 15.2 Forbidden Capabilities
@@ -1129,6 +1132,15 @@ Recommended route pattern:
 ## 19.4 Dashboard Widgets
 
 Plugins may add cards or sections to the dashboard.
+
+## 19.4.1 Approval Slots
+
+Plugins may add rich, decision-local UI to approval cards:
+
+- `approvalCard` renders inside an approval decision card after the host-rendered payload summary.
+- `approvalPayloadField` renders after built-in approval payload fields for smaller payload-specific additions.
+
+Both slots receive `context.companyId` and `context.companyPrefix` when available, plus direct `approval` and `payload` props. Both require the `ui.approval.register` capability. These slots are render-only UI extension points; they do not grant approval-decision, budget-override, or auth-bypass authority.
 
 ## 19.5 Sidebar Entries
 
