@@ -145,6 +145,14 @@ export interface AdapterEnvironmentCheck {
   message: string;
   detail?: string | null;
   hint?: string | null;
+  /**
+   * True when this check specifically reflects the PROVIDER rejecting the
+   * credential just tested (invalid/expired/revoked key or token), as
+   * opposed to an infra/transient failure or a generic "not logged in yet"
+   * prompt. Callers (e.g. the onboarding credential-connect card) use this
+   * to decide whether to hard-block instead of staying permissive.
+   */
+  authFailure?: boolean;
 }
 
 export interface AdapterEnvironmentTestResult {
