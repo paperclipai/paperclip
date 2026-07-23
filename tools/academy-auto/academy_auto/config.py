@@ -53,9 +53,12 @@ class Config:
                 str(home / ".whitestag.env"), str(home / ".n8n"), str(home / ".paperclip"),
                 str(home / "Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC"),
                 str(home / ".netrc"), str(home / ".git-credentials"), str(home / ".npmrc"),
-                str(home / ".gnupg"), str(home / ".docker"), str(home / "Library/Keychains"),
+                str(home / ".gnupg"), str(home / ".docker"),
                 str(home / ".kube"), str(home / ".azure"), str(home / ".pypirc"),
                 str(home / ".cargo/credentials"),
+                # Hinweis: ~/Library/Keychains bewusst NICHT gesperrt — dort liegt Claudes
+                # eigenes OAuth-Token (Deny => 401, Lauf unmöglich). Keychain-Dateien sind
+                # verschlüsselt und securityd ist via (allow default) ohnehin erreichbar.
             ),
             sandbox_write_paths=(
                 "/private/tmp", "/private/var/folders",

@@ -137,8 +137,16 @@ def test_generated_profile_really_isolates(tmp_path):
 def test_config_secret_read_paths_include_common_credential_stores():
     cfg = Config.default()
     joined = " ".join(cfg.secret_read_paths)
-    for needle in [".netrc", ".git-credentials", ".npmrc", ".gnupg", "Keychains"]:
+    for needle in [".netrc", ".git-credentials", ".npmrc", ".gnupg"]:
         assert needle in joined
+
+
+def test_keychains_not_in_secret_read_paths():
+    # ~/Library/Keychains darf NICHT gesperrt sein: dort liegt Claudes eigenes
+    # OAuth-Token; ein Deny führt zu 401 und macht jeden Lauf unmöglich.
+    from academy_auto.config import Config
+    cfg = Config.default()
+    assert not any("Keychains" in p for p in cfg.secret_read_paths)
 
 
 def test_build_profile_denies_write_to_dangerous_claude_paths():

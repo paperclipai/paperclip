@@ -82,6 +82,21 @@ def test_implement_task_fail_soft_when_runner_raises():
     assert "kaputt" in outcome.output
 
 
+def test_implement_task_passes_timeout_and_devnull_stdin():
+    import subprocess as _sp
+    from academy_auto.runner import IMPLEMENT_TIMEOUT
+    cfg = Config.default()
+    captured = {}
+
+    def runner(cmd, **kwargs):
+        captured.update(kwargs)
+        return _ok_proc()
+
+    implement_task(cfg, "/tmp/wt", "x", runner=runner, **_deps())
+    assert captured.get("timeout") == IMPLEMENT_TIMEOUT
+    assert captured.get("stdin") == _sp.DEVNULL
+
+
 def test_implement_task_cleans_up_profile(tmp_path):
     cfg = Config.default()
     prof = tmp_path / "prof.sb"

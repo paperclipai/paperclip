@@ -10,6 +10,10 @@ from .config import Config
 # CLI-Flags ändern. acceptEdits erlaubt autonome Dateiänderungen im Worktree.
 CLAUDE_CMD = ["claude", "-p", "--permission-mode", "acceptEdits"]
 
+# Obergrenze für einen Implementierungslauf. Ein hängender claude darf den
+# Orchestrator nicht blockieren; TimeoutExpired wird unten fail-soft gefangen.
+IMPLEMENT_TIMEOUT = 1800
+
 
 @dataclass
 class RunOutcome:
@@ -46,7 +50,10 @@ def implement_task(
     try:
         profile = make_profile(cfg)
         cmd = wrap(cfg, CLAUDE_CMD + [task_prompt], str(profile))
-        proc = runner(cmd, cwd=str(cwd), capture_output=True, text=True, check=False)
+        proc = runner(
+            cmd, cwd=str(cwd), capture_output=True, text=True, check=False,
+            timeout=IMPLEMENT_TIMEOUT, stdin=subprocess.DEVNULL,
+        )
         output = (getattr(proc, "stdout", "") or "") + (getattr(proc, "stderr", "") or "")
         return RunOutcome(ok=(proc.returncode == 0), output=output.strip())
     except Exception as exc:
