@@ -24,6 +24,64 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
 
+## Anthropic-compatible providers
+
+Claude Code can be configured to call Anthropic-compatible providers. For
+example, Z.ai's [Claude Code setup](https://docs.z.ai/devpack/tool/claude)
+routes Claude Code requests to its GLM endpoint by setting `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_AUTH_TOKEN`, and default Claude Code model environment variables.
+
+For Paperclip, prefer scoping those variables to a single agent through
+`adapterConfig.env` instead of putting them in a global shell profile or global
+`~/.claude/settings.json`. Agent-scoped configuration lets selected Paperclip
+agents use GLM while normal Claude Code sessions on the same machine keep their
+usual Anthropic configuration.
+
+### Case 1: selected Paperclip agents use Z.ai GLM
+
+Use this when only some Paperclip agents should run through Z.ai:
+
+Use string values in `adapterConfig.env`, including for flag-like values.
+
+```json
+{
+  "adapterType": "claude_local",
+  "adapterConfig": {
+    "cwd": "/absolute/path/to/workspace",
+    "env": {
+      "ANTHROPIC_AUTH_TOKEN": "<zai-api-key>",
+      "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.7",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.2[1m]",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2[1m]",
+      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+      "API_TIMEOUT_MS": "3000000"
+    }
+  }
+}
+```
+
+Model names are provider-owned and may change. Check the current Z.ai Claude
+Code documentation before copying GLM model IDs into long-lived agent config.
+
+### Case 2: all Claude Code usage should use Z.ai
+
+If the whole machine is dedicated to Z.ai-backed Claude Code, follow Z.ai's
+Claude Code instructions directly. That path is simpler, but it changes normal
+Claude Code behavior for every session launched from that environment.
+
+### Current limitation and longer-term path
+
+This is not native Z.ai adapter support. Paperclip still runs the
+`claude_local` adapter and Claude Code still owns the provider compatibility
+layer. As a result, UI labels, run metadata, and diagnostics may still look like
+Claude/Anthropic even when the underlying Claude Code request is routed to GLM.
+
+The current workaround is agent-scoped `adapterConfig.env`. Possible follow-ups
+are clearer environment-test diagnostics, a UI preset for
+`claude_local` plus Z.ai GLM, or a separate native Z.ai adapter discussion.
+
 ## Prompt Templates
 
 Templates support `{{variable}}` substitution:
