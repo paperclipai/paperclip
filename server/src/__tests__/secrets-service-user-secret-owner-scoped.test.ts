@@ -243,6 +243,44 @@ describeEmbeddedPostgres("secretService resolveAdapterConfigForRuntime — userS
     });
   });
 
+  it("owner_scoped with an empty allowedBindingIds array is rejected too (an empty allowlist requests 'allow nothing', which owner_scoped cannot honor)", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionId: definition.id,
+      value: "ghp_owner_value",
+    });
+
+    const adapterConfig = {
+      env: {
+        GH_TOKEN: {
+          type: "user_secret_ref" as const,
+          key: "github_token",
+          version: "latest" as const,
+          required: true,
+        },
+      },
+    };
+
+    await expect(
+      svc.resolveAdapterConfigForRuntime(
+        companyId,
+        adapterConfig,
+        { ...ownerScopedConsumer, responsibleUserId: "user-1", allowedBindingIds: [] },
+        { adapterType: "hermes_gateway", userSecretMediation: "owner_scoped" },
+      ),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "owner_scoped_allowed_bindings_unsupported" },
+    });
+  });
+
   it("declared mode is unchanged (declared ref resolves; undeclared required ref → binding_missing)", async () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");

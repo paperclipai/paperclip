@@ -4557,7 +4557,11 @@ export function secretService(db: Db) {
       // allowedBindingIds allowlist has no declaration to enforce against.
       // Rejecting (rather than silently stripping) prevents a future low-trust
       // owner_scoped caller from bypassing an allowlist by choosing this mode.
-      if (ownerScoped && Array.isArray(context?.allowedBindingIds) && context.allowedBindingIds.length > 0) {
+      // Any supplied array — including an empty one, which requests "allow
+      // nothing" — is rejected: owner_scoped cannot honor either intent, and
+      // letting `[]` slip through would resolve every owner secret, the exact
+      // opposite of what an empty allowlist asks for.
+      if (ownerScoped && Array.isArray(context?.allowedBindingIds)) {
         throw unprocessable(
           "allowedBindingIds is not supported with owner_scoped user-secret mediation",
           { code: "owner_scoped_allowed_bindings_unsupported" },

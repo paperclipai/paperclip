@@ -112,7 +112,7 @@ const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const ENVIRONMENT_ID = "22222222-2222-4222-8222-222222222222";
 
 type TestActor = Express.Request["actor"];
-let currentActor: TestActor;
+let currentActor: TestActor | undefined;
 
 const testEnvironmentSpy = vi.fn();
 
@@ -156,6 +156,10 @@ describeEmbeddedPostgres("agents adapter-config user-secret resolution routes", 
   });
 
   beforeEach(() => {
+    // Reset the request actor so each test starts from an explicit, empty
+    // fixture state — a test that forgets to set an actor fails loudly rather
+    // than inheriting one leaked from a prior test.
+    currentActor = undefined;
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
