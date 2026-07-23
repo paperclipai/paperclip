@@ -409,6 +409,12 @@ describe("codex_local ACP lane", () => {
     });
   });
 
+  it("normalizes the legacy bare gpt-5.6 alias to gpt-5.6-sol", () => {
+    expect(buildCodexAcpConfig({ engine: "acp", model: "gpt-5.6" })).toMatchObject({
+      model: "gpt-5.6-sol",
+    });
+  });
+
   it("checks the Node version required by the ACPX runtime", () => {
     setNodeVersion("v22.12.0");
     expect(nodeVersionMeetsCodexAcpMinimum()).toBe(false);
