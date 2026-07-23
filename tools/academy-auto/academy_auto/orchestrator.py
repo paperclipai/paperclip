@@ -46,7 +46,13 @@ def _run_once_inner(cfg: Config, task_prompt, deps) -> RunReport:
 
     outcome = deps.implement_task(cfg, cwd, task_prompt)
     if not outcome.ok:
-        deps.send_digest(build_digest(task_prompt, outcome, None, committed=False, reason=reason, quarantined=quar, gate_note="Umsetzung fehlgeschlagen"))
+        # Fehlerausgabe mitschicken: bei einem Nachtlauf ist der Digest die
+        # einzige Spur, warum die Umsetzung scheiterte.
+        detail = (outcome.output or "").strip()[-600:] or "(keine Ausgabe)"
+        deps.send_digest(build_digest(
+            task_prompt, outcome, None, committed=False, reason=reason, quarantined=quar,
+            gate_note=f"Umsetzung fehlgeschlagen\nFehlerausgabe: {detail}",
+        ))
         return _finalize(deps, cfg, cwd, pick, "impl_failed")
 
     after = deps.measure_gate(cfg, cwd)

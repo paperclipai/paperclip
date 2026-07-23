@@ -303,3 +303,16 @@ def test_pause_flag_wins_over_dry_run(tmp_path):
     cfg = _cfg(tmp_path, pause_flag=pause, dry_run_flag=dry)
     assert run_once(cfg, None, base_deps()).status == "paused"
     assert sent == []
+
+
+def test_impl_failed_digest_contains_error_output(tmp_path):
+    """Bei einem Nachtlauf ist der Digest die einzige Spur — die Fehlerausgabe muss rein."""
+    global sent, recorded, resets
+    sent, recorded, resets = [], [], []
+    cfg = _cfg(tmp_path)
+    deps = base_deps(
+        implement_task=lambda cfg, cwd, prompt: RunOutcome(ok=False, output="claude: EPERM auf /irgendwo"),
+    )
+    report = run_once(cfg, "manuell", deps)
+    assert report.status == "impl_failed"
+    assert any("EPERM auf /irgendwo" in s for s in sent)
