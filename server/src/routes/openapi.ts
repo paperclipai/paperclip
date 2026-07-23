@@ -1465,6 +1465,7 @@ for (const route of [
   ["post", "/api/status-cards/{id}/recompile", "Recompile a status card query"],
   ["get", "/api/status-cards/{id}/dry-run", "Execute stored status card queries without an LLM"],
   ["get", "/api/status-cards/{id}/updates", "List status card updates"],
+  ["get", "/api/status-cards/{id}/summary-revisions", "List status card summary revisions"],
 ] as const) {
   registerCurrentRoute({ method: route[0], path: route[1], tags: ["status-cards"], summary: route[2] });
 }
