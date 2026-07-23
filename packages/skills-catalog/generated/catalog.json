@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-22T19:37:05.731Z",
+  "generatedAt": "2026-07-23T20:43:45.109Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -115,7 +115,7 @@
       "category": "paperclip-operations",
       "slug": "status-card-query",
       "name": "status-card-query",
-      "description": "Compile a prose Paperclip status-card interest prompt into narrow, bounded CompanySearchQuery objects, then write the query and first summary back from the assigned Summarizer run.",
+      "description": "Create and maintain agent-authored Paperclip status cards, or compile a prose interest prompt into bounded CompanySearchQuery objects and write the first summary from the assigned Summarizer run.",
       "path": "catalog/bundled/paperclip-operations/status-card-query",
       "entrypoint": "SKILL.md",
       "trustLevel": "markdown_only",
@@ -137,11 +137,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 3648,
-          "sha256": "90e1f29887a41b6b2cd2d6c2bc66025ba5672f433710043b3ff668382b56179a"
+          "sizeBytes": 6318,
+          "sha256": "c3a5a81bfab4647899d8735220e2075dccbed30aad221c97ba511427621f9b26"
         }
       ],
-      "contentHash": "sha256:7ea50bb125b047f43035f9e12222f00d396ca962916973bf9cc8d39ca4b317ec"
+      "contentHash": "sha256:10866419d69219e84d46558560fad92abb5dd17bd71ed2d645687d780ee94add"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:summarize-status",
