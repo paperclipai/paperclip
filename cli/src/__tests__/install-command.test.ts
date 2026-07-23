@@ -2,7 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installCommand, installGitPayload, resolveGitHubRef, resolveGitInstallRequest, resolveNpmInstallRequest } from "../commands/install.js";
+import {
+  installCommand,
+  installGitPayload,
+  resolveGitHubRef,
+  resolveGitInstallRequest,
+  resolveGitInstallWorkspacePackages,
+  resolveNpmInstallRequest,
+  runCommandWithDiagnostics,
+} from "../commands/install.js";
 import { uninstallCommand } from "../commands/uninstall.js";
 import { resolvePaperclipInstanceId } from "../config/home.js";
 import {
@@ -101,18 +109,35 @@ describe("managed install commands", () => {
     const runCommand = vi.fn(async (file: string, args: string[]) => {
       if (file === "curl" && !args.includes("--output")) return { stdout: JSON.stringify({ sha }), stderr: "" };
       if (file === "curl") { fs.writeFileSync(args[args.indexOf("--output") + 1], "archive"); return { stdout: "", stderr: "" }; }
-      if (file === "tar") { const checkout = args[args.indexOf("-C") + 1]; fs.mkdirSync(path.join(checkout, "cli"), { recursive: true }); fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1" })); return { stdout: "", stderr: "" }; }
+      if (file === "tar") {
+        const checkout = args[args.indexOf("-C") + 1];
+        const packages = [
+          { dir: "packages/shared", name: "@paperclipai/shared", packageJson: { name: "@paperclipai/shared", version: "0.3.1" } },
+          { dir: "packages/db", name: "@paperclipai/db", packageJson: { name: "@paperclipai/db", version: "0.3.1", dependencies: { "@paperclipai/shared": "workspace:*" }, bundleDependencies: ["embedded-postgres"] } },
+          { dir: "server", name: "@paperclipai/server", packageJson: { name: "@paperclipai/server", version: "0.3.1", dependencies: { "@paperclipai/db": "workspace:*" } } },
+        ];
+        fs.mkdirSync(path.join(checkout, "cli"), { recursive: true });
+        fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1" }));
+        fs.mkdirSync(path.join(checkout, "scripts"), { recursive: true });
+        fs.writeFileSync(path.join(checkout, "scripts", "release-package-manifest.json"), JSON.stringify(packages.map(({ dir, name }) => ({ dir, name }))));
+        for (const workspacePackage of packages) {
+          fs.mkdirSync(path.join(checkout, workspacePackage.dir), { recursive: true });
+          fs.writeFileSync(path.join(checkout, workspacePackage.dir, "package.json"), JSON.stringify(workspacePackage.packageJson));
+        }
+        return { stdout: "", stderr: "" };
+      }
       if (file === "corepack") {
         if (args.includes("pack")) {
           const destination = args[args.indexOf("--pack-destination") + 1];
-          const packageName = args.includes("packages/db") ? "paperclipai-db" : "paperclipai-server";
+          const packageDir = args[args.indexOf("--dir") + 1];
+          const packageName = packageDir === "server" ? "paperclipai-server" : "paperclipai-shared";
           fs.writeFileSync(path.join(destination, `${packageName}-0.3.1.tgz`), "package");
         }
         return { stdout: "", stderr: "" };
       }
       if (file === "bash") return { stdout: "", stderr: "" };
       if (file === "npm" && args[0] === "pack") {
-        const packageName = args[1]?.endsWith("db-package") ? "paperclipai-db" : "paperclipai";
+        const packageName = args[1]?.includes("workspace-package-") ? "paperclipai-db" : "paperclipai";
         fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], `${packageName}-0.3.1.tgz`), "package");
         return { stdout: "", stderr: "" };
       }
@@ -132,9 +157,37 @@ describe("managed install commands", () => {
     expect(manifest?.payloadPath).toContain(path.join("git", sha.slice(0, 12)));
     expect(runCommand.mock.calls.filter(([command, args]) => command === "curl" && args.includes("--output"))).toHaveLength(1);
     expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args[1] === "install")).toHaveLength(1);
-    expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args.includes("pack"))).toHaveLength(1);
+    expect(runCommand.mock.calls.filter(([command, args]) => command === "corepack" && args.includes("pack"))).toHaveLength(2);
     expect(runCommand.mock.calls.filter(([command, args]) => command === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs"))).toHaveLength(1);
     expect(runCommand.mock.calls.filter(([command, args]) => command === "npm" && args[0] === "pack")).toHaveLength(2);
+    const installCall = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "install");
+    expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
+  });
+
+  it("resolves the complete server workspace dependency closure in dependency order", () => {
+    const checkout = path.join(root, "checkout");
+    const packages = [
+      { dir: "packages/shared", name: "@paperclipai/shared", dependencies: {} },
+      { dir: "packages/db", name: "@paperclipai/db", dependencies: { "@paperclipai/shared": "workspace:*" } },
+      { dir: "server", name: "@paperclipai/server", dependencies: { "@paperclipai/db": "workspace:*" } },
+    ];
+    fs.mkdirSync(path.join(checkout, "scripts"), { recursive: true });
+    fs.writeFileSync(path.join(checkout, "scripts", "release-package-manifest.json"), JSON.stringify(packages.map(({ dir, name }) => ({ dir, name }))));
+    for (const workspacePackage of packages) {
+      fs.mkdirSync(path.join(checkout, workspacePackage.dir), { recursive: true });
+      fs.writeFileSync(path.join(checkout, workspacePackage.dir, "package.json"), JSON.stringify({ name: workspacePackage.name, dependencies: workspacePackage.dependencies }));
+    }
+
+    expect(resolveGitInstallWorkspacePackages(checkout).map(({ name }) => name)).toEqual([
+      "@paperclipai/shared",
+      "@paperclipai/db",
+      "@paperclipai/server",
+    ]);
+  });
+
+  it("includes child-process stderr in command failures", async () => {
+    await expect(runCommandWithDiagnostics(process.execPath, ["-e", "process.stderr.write('unsupported workspace dependency\\n'); process.exit(1)"]))
+      .rejects.toThrow("unsupported workspace dependency");
   });
 
   it("installs through the shim, reports provenance, and uninstalls without deleting user data", async () => {

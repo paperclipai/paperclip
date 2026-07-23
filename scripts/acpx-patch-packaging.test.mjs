@@ -30,6 +30,7 @@ const dbPackage = JSON.parse(
 );
 const releaseScript = await readFile(new URL("./release.sh", import.meta.url), "utf8");
 const releaseLib = await readFile(new URL("./release-lib.sh", import.meta.url), "utf8");
+const buildNpmScript = await readFile(new URL("./build-npm.sh", import.meta.url), "utf8");
 
 test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(
@@ -188,4 +189,9 @@ test("bundled package dry runs preview without querying published versions", () 
   assert.match(releaseLib, /"\$@" --loglevel verbose/);
   assert.match(releaseLib, /run_bundled_npm_publish publish --tag "\$dist_tag"/);
   assert.doesNotMatch(releaseLib, /run_bundled_npm_publish publish "\.\/\$tarball"/);
+});
+
+test("npm builds use corepack instead of requiring a global pnpm", () => {
+  assert.match(buildNpmScript, /corepack pnpm -r typecheck/);
+  assert.doesNotMatch(buildNpmScript, /^\s*pnpm -r typecheck/m);
 });

@@ -33,6 +33,55 @@ export type CommandRunner = (
   options?: Parameters<typeof execFileAsync>[2],
 ) => Promise<{ stdout: string; stderr: string }>;
 
+type ReleasePackageEntry = { dir: string; name: string };
+
+export async function runCommandWithDiagnostics(
+  file: string,
+  args: string[],
+  options?: Parameters<typeof execFileAsync>[2],
+): Promise<{ stdout: string; stderr: string }> {
+  try {
+    return await execFileAsync(file, args, { ...options, encoding: "utf8" });
+  } catch (error) {
+    const stderr = error && typeof error === "object" && "stderr" in error && typeof error.stderr === "string"
+      ? error.stderr.trim()
+      : "";
+    if (!stderr || (error instanceof Error && error.message.includes(stderr))) throw error;
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${stderr}`, { cause: error });
+  }
+}
+
+export function resolveGitInstallWorkspacePackages(checkoutPath: string): ReleasePackageEntry[] {
+  const manifestPath = path.join(checkoutPath, "scripts", "release-package-manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as ReleasePackageEntry[];
+  const packageByName = new Map(manifest.map((entry) => [entry.name, entry]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const ordered: ReleasePackageEntry[] = [];
+
+  const visit = (packageName: string): void => {
+    if (visited.has(packageName)) return;
+    if (visiting.has(packageName)) throw new Error(`Circular workspace dependency while staging ${packageName}.`);
+    const entry = packageByName.get(packageName);
+    if (!entry) throw new Error(`Git install cannot stage workspace dependency ${packageName}; it is missing from scripts/release-package-manifest.json.`);
+    visiting.add(packageName);
+    const packageJson = JSON.parse(fs.readFileSync(path.join(checkoutPath, entry.dir, "package.json"), "utf8")) as Record<string, unknown>;
+    for (const section of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
+      const dependencies = packageJson[section];
+      if (!dependencies || typeof dependencies !== "object") continue;
+      for (const dependencyName of Object.keys(dependencies)) {
+        if (dependencyName.startsWith("@paperclipai/")) visit(dependencyName);
+      }
+    }
+    visiting.delete(packageName);
+    visited.add(packageName);
+    ordered.push(entry);
+  };
+
+  visit("@paperclipai/server");
+  return ordered;
+}
+
 function assertSupportedNodeVersion(): void {
   const major = Number(process.versions.node.split(".")[0]);
   if (!Number.isFinite(major) || major < 20) {
@@ -191,21 +240,30 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     await runCommand("curl", ["--fail", "--silent", "--show-error", "--location", "--output", archivePath, `https://codeload.github.com/${repo}/tar.gz/${sha}`], { maxBuffer: 4 * 1024 * 1024 });
     await runCommand("tar", ["-xzf", archivePath, "--strip-components=1", "-C", checkoutPath], { maxBuffer: 4 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
-    await runCommand("bash", ["scripts/build-npm.sh", "--skip-checks"], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
-    await runCommand("corepack", ["pnpm", "--filter", "@paperclipai/db", "build"], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
-    await runCommand("corepack", ["pnpm", "--filter", "@paperclipai/server", "build"], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
+    await runCommand("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
+    await runCommand("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
-    const stagedDbPackage = path.join(stagingRoot, "db-package");
-    await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), path.join(checkoutPath, "packages", "db"), stagedDbPackage], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
-    await runCommand("npm", ["pack", stagedDbPackage, "--pack-destination", stagingRoot], { cwd: checkoutPath, maxBuffer: 16 * 1024 * 1024 });
-    await runCommand("corepack", ["pnpm", "--dir", "server", "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, env: { ...process.env, PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }, maxBuffer: 32 * 1024 * 1024 });
+    const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
+    for (const [index, workspacePackage] of workspacePackages.entries()) {
+      const packageDir = path.join(checkoutPath, workspacePackage.dir);
+      const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { bundleDependencies?: string[]; bundledDependencies?: string[] };
+      const bundledDependencies = packageJson.bundleDependencies ?? packageJson.bundledDependencies ?? [];
+      if (bundledDependencies.length > 0) {
+        const stagedPackage = path.join(stagingRoot, `workspace-package-${index}`);
+        await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), packageDir, stagedPackage], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
+        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot], { cwd: checkoutPath, maxBuffer: 16 * 1024 * 1024 });
+      } else {
+        await runCommand("corepack", ["pnpm", "--dir", workspacePackage.dir, "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, env: { ...process.env, PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }, maxBuffer: 32 * 1024 * 1024 });
+      }
+    }
     await runCommand("npm", ["pack", "--pack-destination", stagingRoot], { cwd: path.join(checkoutPath, "cli"), maxBuffer: 16 * 1024 * 1024 });
     const tarballs = fs.readdirSync(stagingRoot).filter((entry) => entry.endsWith(".tgz"));
-    const cliTarball = tarballs.find((entry) => /^paperclipai-(?!db-|server-)/.test(entry));
-    const dbTarball = tarballs.find((entry) => entry.startsWith("paperclipai-db-"));
-    const serverTarball = tarballs.find((entry) => entry.startsWith("paperclipai-server-"));
-    if (!cliTarball || !dbTarball || !serverTarball) throw new Error("Git install packaging did not produce paperclipai, @paperclipai/db, and @paperclipai/server tarballs.");
-    await runCommand("npm", ["install", "--prefix", stagedPayload, path.join(stagingRoot, cliTarball), path.join(stagingRoot, dbTarball), path.join(stagingRoot, serverTarball), "--no-audit", "--no-fund"], { cwd: stagingRoot, maxBuffer: 32 * 1024 * 1024 });
+    const cliTarball = tarballs.find((entry) => entry === `paperclipai-${metadata.version}.tgz`);
+    const workspaceTarballs = tarballs.filter((entry) => entry !== cliTarball);
+    if (!cliTarball || workspaceTarballs.length !== workspacePackages.length) {
+      throw new Error(`Git install packaging produced ${workspaceTarballs.length} workspace tarballs; expected ${workspacePackages.length}.`);
+    }
+    await runCommand("npm", ["install", "--prefix", stagedPayload, path.join(stagingRoot, cliTarball), ...workspaceTarballs.map((entry) => path.join(stagingRoot, entry)), "--no-audit", "--no-fund"], { cwd: stagingRoot, maxBuffer: 32 * 1024 * 1024 });
     await smokePayload(stagedPayload, metadata.version, runCommand);
     fs.renameSync(stagedPayload, payloadPath);
     return { payloadPath, reused: false, version: metadata.version };
@@ -266,7 +324,7 @@ export async function installCommand(
   dependencies: { runCommand?: CommandRunner; now?: () => Date } = {},
 ): Promise<void> {
   assertSupportedNodeVersion();
-  const runCommand = dependencies.runCommand ?? execFileAsync;
+  const runCommand = dependencies.runCommand ?? runCommandWithDiagnostics;
   const gitRequest = resolveGitInstallRequest(options);
   if (gitRequest) {
     await confirmGitInstall(options, gitRequest.repo, gitRequest.ref);
