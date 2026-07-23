@@ -1235,6 +1235,14 @@ export const PLUGIN_CAPABILITIES = [
   "issue.relations.read",
   "issue.subtree.read",
   "issue.comments.read",
+  // Read pending issue-thread interactions (decision cards) on an issue.
+  "issue.interactions.read",
+  // Read issue attachment metadata and, via the capability-scoped host
+  // bridge, attachment content bytes (bytes-only, company-scoped, audit-logged).
+  "issue.attachments.read",
+  // Read company approvals (list + get). The host redacts approval payloads to
+  // match the web app's own approval read surface.
+  "approvals.read",
   "issue.documents.read",
   "agents.read",
   "goals.read",
@@ -1258,6 +1266,16 @@ export const PLUGIN_CAPABILITIES = [
   "issue.comments.create",
   "issue.comments.create_human_attributed",
   "issue.interactions.create",
+  // Respond to (accept/reject) an issue-thread interaction on behalf of a
+  // paired board user. Impersonation surface: the host independently
+  // re-verifies the actor is an active human member of the company at apply
+  // time (never trusts plugin-supplied identity), matching the web app's
+  // board-only interaction resolve route.
+  "issue.interactions.respond",
+  // Decide (approve/reject) a company approval on behalf of a paired board
+  // user. Same apply-time active-human-member re-verification as above; the
+  // web app's approval decision routes are board-only.
+  "approvals.respond",
   "issue.documents.write",
   "projects.managed",
   "routines.managed",

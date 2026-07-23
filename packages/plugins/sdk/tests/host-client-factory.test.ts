@@ -306,3 +306,115 @@ describe("createHostClientHandlers invocation company scope", () => {
     expect(createComment).toHaveBeenCalled();
   });
 });
+
+describe("createHostClientHandlers capability gating for LOOA-641 methods", () => {
+  const context = { invocationScope: { companyId: "company-a" } };
+
+  it("denies issues.respondInteraction without issue.interactions.respond", async () => {
+    const respondInteraction = vi.fn(async () => ({ interaction: { id: "i" }, applied: true }));
+    const services = { issues: { respondInteraction } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      // A read grant must not confer the ability to respond.
+      capabilities: ["issue.interactions.read"],
+      services,
+    });
+    await expect(
+      handlers["issues.respondInteraction"]({
+        issueId: "issue-a", interactionId: "int-a", companyId: "company-a", action: "accept", actorUserId: "user-a",
+      }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(respondInteraction).not.toHaveBeenCalled();
+  });
+
+  it("allows issues.respondInteraction with issue.interactions.respond", async () => {
+    const respondInteraction = vi.fn(async () => ({ interaction: { id: "i" }, applied: true }));
+    const services = { issues: { respondInteraction } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.interactions.respond"],
+      services,
+    });
+    await expect(
+      handlers["issues.respondInteraction"]({
+        issueId: "issue-a", interactionId: "int-a", companyId: "company-a", action: "accept", actorUserId: "user-a",
+      }, context),
+    ).resolves.toEqual({ interaction: { id: "i" }, applied: true });
+    expect(respondInteraction).toHaveBeenCalledOnce();
+  });
+
+  it("denies approvals.decide without approvals.respond", async () => {
+    const decide = vi.fn(async () => ({ approval: { id: "a" }, applied: true }));
+    const services = { approvals: { decide } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      // A read grant must not confer the ability to decide.
+      capabilities: ["approvals.read"],
+      services,
+    });
+    await expect(
+      handlers["approvals.decide"]({
+        approvalId: "a", companyId: "company-a", action: "approve", actorUserId: "user-a",
+      }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(decide).not.toHaveBeenCalled();
+  });
+
+  it("allows approvals.decide with approvals.respond", async () => {
+    const decide = vi.fn(async () => ({ approval: { id: "a" }, applied: true }));
+    const services = { approvals: { decide } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["approvals.respond"],
+      services,
+    });
+    await expect(
+      handlers["approvals.decide"]({
+        approvalId: "a", companyId: "company-a", action: "approve", actorUserId: "user-a",
+      }, context),
+    ).resolves.toEqual({ approval: { id: "a" }, applied: true });
+    expect(decide).toHaveBeenCalledOnce();
+  });
+
+  it("denies read methods without their read capability", async () => {
+    const listInteractions = vi.fn(async () => []);
+    const list = vi.fn(async () => []);
+    const getAttachmentContent = vi.fn(async () => null);
+    const services = {
+      issues: { listInteractions, getAttachmentContent },
+      approvals: { list },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: [],
+      services,
+    });
+    await expect(
+      handlers["issues.listInteractions"]({ issueId: "i", companyId: "company-a" }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(
+      handlers["approvals.list"]({ companyId: "company-a" }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(
+      handlers["issues.getAttachmentContent"]({ attachmentId: "at", companyId: "company-a" }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(listInteractions).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    expect(getAttachmentContent).not.toHaveBeenCalled();
+  });
+
+  it("enforces invocation company scope on the new methods", async () => {
+    const list = vi.fn(async () => []);
+    const services = { approvals: { list } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["approvals.read"],
+      services,
+    });
+    // Requesting company-b while scoped to company-a must be denied.
+    await expect(
+      handlers["approvals.list"]({ companyId: "company-b" }, context),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(list).not.toHaveBeenCalled();
+  });
+});

@@ -203,6 +203,48 @@ describe("plugin SDK test harness", () => {
     ).rejects.toThrow('actorUserId "user-1" is not an active human member of this company');
   });
 
+  it("rejects a human-attributed comment when the actorUserId is a viewer-role (read-only) member", async () => {
+    // LOOA-648: the harness mirrors the host's viewer write-bar so a plugin's
+    // own test suite cannot pass an attribution production rejects. A viewer is
+    // an active member but read-only in the web app.
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-human-attributed-comment-viewer",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Human-Attributed Comment (viewer)",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["issue.comments.create", "issue.comments.create_human_attributed"],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [{
+        id: "issue-1",
+        companyId: "company-1",
+        title: "Human attribution",
+        status: "todo",
+        priority: "medium",
+      }],
+      accessMembers: [{
+        id: "member-viewer",
+        companyId: "company-1",
+        principalType: "user",
+        principalId: "user-1",
+        status: "active",
+        membershipRole: "viewer",
+        grants: [],
+        createdAt: new Date("2026-06-03T11:00:00.000Z"),
+        updatedAt: new Date("2026-06-03T11:00:00.000Z"),
+      }],
+    });
+
+    await expect(
+      harness.ctx.issues.createComment("issue-1", "relayed reply", "company-1", { actorUserId: "user-1" }),
+    ).rejects.toThrow("viewer (read-only) access");
+  });
+
   it("attributes a comment to an active human member for a verified actorUserId", async () => {
     const manifest: PaperclipPluginManifestV1 = {
       id: "paperclip.test-human-attributed-comment-verified",
