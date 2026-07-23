@@ -11,8 +11,9 @@ Telegram-Bot `@whitestag_jarvis_bot`: Sprachnachricht → lokales Whisper → Be
 ## Deploy / Update
 ```bash
 mkdir -p ~/.paperclip/scripts/voice-echo-bot ~/.paperclip/logs
-cp tools/voice-echo-bot/{config,telegram_api,transcribe,paperclip_client,bot}.py \
-   ~/.paperclip/scripts/voice-echo-bot/
+# Alle Module ausser den Tests — llm/tts/vault_client etc. gehoeren dazu.
+rsync -a --exclude 'test_*.py' --exclude '__pycache__' \
+   tools/voice-echo-bot/*.py ~/.paperclip/scripts/voice-echo-bot/
 sed "s|__HOME__|$HOME|g" tools/voice-echo-bot/de.whitestag.voice-echo-bot.plist \
    > ~/Library/LaunchAgents/de.whitestag.voice-echo-bot.plist
 launchctl bootout gui/$(id -u)/de.whitestag.voice-echo-bot 2>/dev/null || true
@@ -32,6 +33,8 @@ In Telegram an `@whitestag_jarvis_bot` eine Sprach- oder Textnachricht senden �
 ## Hinweise
 - **Nur EIN Long-Poll-Consumer je Bot-Token.** Nicht parallel woanders `getUpdates`/Webhook auf denselben Token laufen lassen (Luna ist ein anderer Bot/Token — kein Konflikt).
 - Whisper läuft on-demand (Modell wird pro Aufnahme geladen, RAM danach frei) — bewusst kein Dauer-Server wegen RAM-Contention mit LM Studio.
+- **Chat-Modell:** `google/gemma-4-12b` (klein, lokal auf der Studio resident), Fallback `gemma-4-31b-it-mlx`. Bewusst NICHT das grosse 31b als Primärmodell: es lag per LM Link auf dem MacBook und riss beim JIT-Kaltstart (33,8 GB) regelmässig den Timeout → HTTP 400 am RAM-Guardrail. Überschreibbar per `CHAT_MODEL` in der env.
+- **Kein Auftragsverlust:** Scheitert das LLM endgültig (2 Versuche Primärmodell + 1 Fallback), legt der Bot den Wortlaut trotzdem als Issue beim CEO an (`_file_unparsed`) und nennt dir die Nummer. Nur wenn auch die Issue-Anlage scheitert, meldet er „NICHT angekommen".
 
 ## Rückkanal + Mehrmandanten (Feature 2)
 

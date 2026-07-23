@@ -336,6 +336,38 @@ class TestChatFallback(unittest.TestCase):
         texts = [c.args[1] for c in tg.send_message.call_args_list]
         self.assertTrue(any("nicht erreichbar" in t for t in texts))
 
+    def test_llm_unreachable_still_files_raw_issue_with_ceo(self):
+        """Kein Auftragsverlust: fällt das LLM aus, geht der Rohtext trotzdem an den CEO."""
+        tg = mock.MagicMock(); app = make_app(tg)
+        with mock.patch.object(bot.llm, "chat", side_effect=bot.llm.LlmError("down")), \
+             mock.patch.object(bot, "create_issue", return_value={"identifier": "WHI-42"}) as ci:
+            app.handle_update(msg(8311805232, mid=3,
+                                  text="Such mir die Vergabenummer vom Lausitz Science Park raus."))
+        ci.assert_called_once()
+        args = ci.call_args.args
+        self.assertEqual(args[1], "comp-1")
+        self.assertEqual(args[2], "ceo-1")
+        self.assertIn("Lausitz Science Park", args[4])
+        texts = [c.args[1] for c in tg.send_message.call_args_list]
+        self.assertTrue(any("WHI-42" in t for t in texts))
+
+    def test_raw_issue_marked_as_unparsed(self):
+        """Der CEO muss erkennen, dass der Text ungeprüft durchgereicht wurde."""
+        tg = mock.MagicMock(); app = make_app(tg)
+        with mock.patch.object(bot.llm, "chat", side_effect=bot.llm.LlmError("down")), \
+             mock.patch.object(bot, "create_issue", return_value={"identifier": "WHI-42"}) as ci:
+            app.handle_update(msg(8311805232, mid=3, text="Bitte Angebot rausschicken"))
+        self.assertIn("unausgewertet", ci.call_args.args[4].lower())
+
+    def test_llm_and_issue_both_down_warns_user_explicitly(self):
+        """Geht auch die Issue-Anlage nicht, muss der Nutzer das unmissverständlich hören."""
+        tg = mock.MagicMock(); app = make_app(tg)
+        with mock.patch.object(bot.llm, "chat", side_effect=bot.llm.LlmError("down")), \
+             mock.patch.object(bot, "create_issue", side_effect=RuntimeError("api tot")):
+            app.handle_update(msg(8311805232, mid=3, text="Wichtiger Auftrag"))
+        texts = [c.args[1] for c in tg.send_message.call_args_list]
+        self.assertTrue(any("nicht angekommen" in t.lower() for t in texts))
+
     def test_vault_unreachable_still_answers(self):
         tg = mock.MagicMock(); app = make_app(tg)
         with mock.patch.object(bot.llm, "chat",

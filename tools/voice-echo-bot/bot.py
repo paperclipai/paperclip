@@ -228,8 +228,7 @@ class BotApp:
             raw = llm.chat(messages, model=self._chat_model())
         except llm.LlmError:
             traceback.print_exc()
-            self.tg.send_message(chat_id,
-                                 "⚠️ Mein Sprachmodell ist gerade nicht erreichbar, bitte gleich nochmal.")
+            self._file_unparsed(tenant, chat_id, text)
             return
         action = parse_control(raw)
         if action["kind"] == "lookup":
@@ -240,6 +239,35 @@ class BotApp:
             answer = action["text"]
         self._remember(chat_id, text, answer)
         self._reply(chat_id, answer, reply_to_message_id=msg["message_id"])
+
+    def _file_unparsed(self, tenant, chat_id, text):
+        """Notfall-Zustellung, wenn das LLM den Text nicht auswerten konnte.
+
+        Lieber ein rohes Issue beim CEO als eine verlorene Nachricht: der
+        Wortlaut geht unverändert durch, der CEO liest am Hinweis, dass keine
+        Auswertung stattgefunden hat.
+        """
+        description = (
+            "Von Walter per Telegram diktiert. Das Sprachmodell war nicht "
+            "erreichbar, der Text ist daher UNAUSGEWERTET durchgereicht — "
+            "bitte selbst interpretieren und, falls es keine Aufgabe ist, "
+            "schliessen.\n\nWortlaut:\n{}".format(text)
+        )
+        try:
+            issue = create_issue(self._token(), tenant["company_id"], tenant["ceo_agent_id"],
+                                 derive_title(text), description)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            self.tg.send_message(
+                chat_id,
+                "⚠️ Mein Sprachmodell ist nicht erreichbar und ich konnte auch keine "
+                "Aufgabe anlegen — dein Auftrag ist NICHT angekommen. Bitte nochmal senden.")
+            return
+        label = issue.get("identifier") or issue.get("id", "?")
+        self.tg.send_message(
+            chat_id,
+            "⚠️ Mein Sprachmodell ist gerade nicht erreichbar — ich habe deinen Auftrag "
+            "unausgewertet an den CEO weitergegeben: {}".format(label))
 
     def _do_lookup(self, tenant, messages, mode, query):
         """Eine (und nur eine) Vault-Runde: Treffer holen, LLM final formulieren lassen."""
