@@ -239,7 +239,6 @@ type ImportedSkillPersistValues = Pick<
 > & {
   fileInventory: Array<Record<string, unknown>>;
   metadata: Record<string, unknown>;
-  updatedAt: Date;
 };
 
 type PackageSkillConflictStrategy = "replace" | "rename" | "skip";
@@ -5580,7 +5579,6 @@ export function companySkillService(db: Db) {
         sharingScope: existing?.sharingScope ?? "company",
         installCount: existing?.installCount ?? 1,
         metadata,
-        updatedAt: new Date(),
       };
       if (existing && importedSkillPersistValuesMatchExisting(existing, values)) {
         out.push(existing);
@@ -5589,7 +5587,7 @@ export function companySkillService(db: Db) {
       const row = existing
         ? await db
           .update(companySkills)
-          .set(values)
+          .set({ ...values, updatedAt: new Date() })
           .where(eq(companySkills.id, existing.id))
           .returning()
           .then((rows) => rows[0] ?? null)
