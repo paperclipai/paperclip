@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   createChild: vi.fn(),
   addComment: vi.fn(),
+  listComments: vi.fn(),
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -176,6 +177,7 @@ describe("issue execution policy routes", () => {
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
@@ -294,6 +296,88 @@ describe("issue execution policy routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       expect.objectContaining({ status: "in_review" }),
+    );
+  });
+
+  it("auto-handoffs an engineer resubmission back to the latest rejecting reviewer", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1005",
+      title: "Return to QA after rework",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listComments.mockResolvedValue([
+      {
+        id: "comment-qa-1",
+        issueId: issue.id,
+        companyId: issue.companyId,
+        body: "## QA Review — REPROVADO, devolvendo para o Engineer",
+        authorType: "agent",
+        authorAgentId: "33333333-3333-4333-8333-333333333333",
+        authorUserId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-eng-1",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      body: "Correções aplicadas e devolvendo para nova validação.",
+      authorType: "agent",
+      authorAgentId: "22222222-2222-4222-8222-222222222222",
+      authorUserId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      runId: "run-2",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "in_review",
+        comment: "Correções aplicadas e devolvendo para nova validação.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+    });
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeUserId: null,
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "33333333-3333-4333-8333-333333333333",
+      expect.objectContaining({
+        reason: "issue_assigned",
+        payload: expect.objectContaining({
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          mutation: "update",
+        }),
+      }),
     );
   });
 
