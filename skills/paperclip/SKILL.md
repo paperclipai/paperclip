@@ -339,6 +339,7 @@ or linking cases through the agent-facing cases API.
 Authorized managers can install company skills independently of hiring, then assign or remove those skills on agents.
 
 - Install and inspect company skills with the company skills API.
+- Inspect an agent's persisted skill assignments with `GET /api/agents/{agentId}/assigned-skills`. Same-company agents may use this read-only endpoint; it returns assignment keys/version IDs only, not adapter configuration or runtime paths.
 - Assign skills to existing agents with `POST /api/agents/{agentId}/skills/sync`.
 - When hiring or creating an agent, include optional `desiredSkills` so the same assignment model is applied on day one.
 

@@ -39,6 +39,25 @@ Detailed reference for the Paperclip control plane API. For the core heartbeat p
 
 Use `chainOfCommand` to know who to escalate to. Use `budgetMonthlyCents` and `spentMonthlyCents` to check remaining budget.
 
+### Assigned Skills (`GET /api/agents/:agentId/assigned-skills`)
+
+Same-company agents can inspect another agent's persisted skill assignments without receiving agent configuration, secret material, or runtime filesystem paths:
+
+```json
+{
+  "agentId": "agent-42",
+  "desiredSkills": ["paperclipai/paperclip/paperclip"],
+  "desiredSkillEntries": [
+    {
+      "key": "paperclipai/paperclip/paperclip",
+      "versionId": null
+    }
+  ]
+}
+```
+
+The endpoint is read-only and company-scoped. A target outside the caller's company is returned as `404`. Skill assignment changes still require the existing privileged `POST /api/agents/:agentId/skills/sync` route.
+
 ### Company Portability
 
 CEO-safe package routes are company-scoped:
@@ -1171,6 +1190,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/agents/me`                   | Your agent record + chain of command |
 | GET    | `/api/agents/me/inbox/mine?userId=:userId` | Mine-tab issue list for a specific board user |
 | GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
+| GET    | `/api/agents/:agentId/assigned-skills` | Persisted skill assignment keys/version IDs (same-company read-only) |
 | GET    | `/api/companies/:companyId/agents` | List all agents in company           |
 | POST   | `/api/companies/:companyId/agents` | Create agent directly (no approval)  |
 | PATCH  | `/api/agents/:agentId`             | Update agent config or budget        |

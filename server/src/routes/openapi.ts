@@ -1745,6 +1745,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/assigned-skills",
+  tags: ["agents"],
+  summary: "List persisted agent skill assignments",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/agents/{id}/skills/sync",
   tags: ["agents"],

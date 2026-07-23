@@ -163,7 +163,16 @@ function createDb(requireBoardApprovalForNewAgents = false) {
   };
 }
 
-async function createApp(db: Record<string, unknown> = createDb()) {
+async function createApp(
+  db: Record<string, unknown> = createDb(),
+  actor: Record<string, unknown> = {
+    type: "board",
+    userId: "local-board",
+    companyIds: ["company-1"],
+    source: "local_implicit",
+    isInstanceAdmin: false,
+  },
+) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -171,13 +180,7 @@ async function createApp(db: Record<string, unknown> = createDb()) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", agentRoutes(db as any));
@@ -425,6 +428,119 @@ describe.sequential("agent skill routes", () => {
         }),
       }),
     );
+  });
+
+  it("lets a same-company agent list persisted skill assignments without configuration-read authority", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent("claude_local"),
+      adapterConfig: {
+        paperclipSkillSync: {
+          desiredSkills: [
+            "company/company-1/reflection-coach",
+            {
+              key: "paperclipai/paperclip/paperclip",
+              versionId: "22222222-2222-4222-8222-222222222222",
+            },
+          ],
+        },
+      },
+    });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_company_agent" : "deny_missing_grant",
+      explanation: input.action === "agent:read"
+        ? "Allowed by standard same-company agent visibility."
+        : "Missing privileged configuration grant.",
+    }));
+
+    const res = await requestApp(
+      await createApp(createDb(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        source: "agent_key",
+      }),
+      (baseUrl) => request(baseUrl)
+        .get("/api/agents/11111111-1111-4111-8111-111111111111/assigned-skills"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({
+      agentId: "11111111-1111-4111-8111-111111111111",
+      desiredSkills: [
+        "company/company-1/reflection-coach",
+        "paperclipai/paperclip/paperclip",
+      ],
+      desiredSkillEntries: [
+        { key: "company/company-1/reflection-coach", versionId: null },
+        {
+          key: "paperclipai/paperclip/paperclip",
+          versionId: "22222222-2222-4222-8222-222222222222",
+        },
+      ],
+    });
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agent:read",
+      resource: expect.objectContaining({
+        type: "agent",
+        companyId: "company-1",
+        agentId: "11111111-1111-4111-8111-111111111111",
+      }),
+    }));
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({
+      action: "agent_config:read",
+    }));
+    expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+    expect(mockAdapter.listSkills).not.toHaveBeenCalled();
+  });
+
+  it("hides assigned skills across company boundaries", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
+
+    const res = await requestApp(
+      await createApp(createDb(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-2",
+        source: "agent_key",
+      }),
+      (baseUrl) => request(baseUrl)
+        .get("/api/agents/11111111-1111-4111-8111-111111111111/assigned-skills"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body).toEqual({ error: "Agent not found" });
+    expect(mockAccessService.decide).not.toHaveBeenCalled();
+  });
+
+  it("does not let assigned-skill readers sync target skills", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_company_agent" : "deny_missing_grant",
+      explanation: input.action === "agent:read"
+        ? "Allowed by standard same-company agent visibility."
+        : "Missing privileged configuration grant.",
+    }));
+
+    const res = await requestApp(
+      await createApp(createDb(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        source: "agent_key",
+      }),
+      (baseUrl) => request(baseUrl)
+        .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync")
+        .send({ desiredSkills: ["paperclipai/paperclip/paperclip"] }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agent_config:update",
+    }));
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockAdapter.syncSkills).not.toHaveBeenCalled();
   });
 
   it("skips runtime materialization when listing Codex skills", async () => {
