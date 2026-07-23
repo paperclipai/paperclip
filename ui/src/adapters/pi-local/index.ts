@@ -1,7 +1,7 @@
 import type { UIAdapterModule } from "../types";
 import { parsePiStdoutLine } from "@paperclipai/adapter-pi-local/ui";
 import { PiLocalConfigFields } from "./config-fields";
-import { buildPiLocalConfig } from "@paperclipai/adapter-pi-local/ui";
+import { buildPiLocalConfig, piLocalCredentialSetup } from "@paperclipai/adapter-pi-local/ui";
 
 export const piLocalUIAdapter: UIAdapterModule = {
   type: "pi_local",
@@ -9,4 +9,5 @@ export const piLocalUIAdapter: UIAdapterModule = {
   parseStdoutLine: parsePiStdoutLine,
   ConfigFields: PiLocalConfigFields,
   buildAdapterConfig: buildPiLocalConfig,
+  credentialSetup: piLocalCredentialSetup,
 };

@@ -585,3 +585,41 @@ export interface CreateConfigValues {
   headersJson?: string;
   password?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Adapter credential setup — declarative UI descriptors for guided credential configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * A single credential option that an adapter accepts.
+ *
+ * Describes how to configure one environment variable (e.g., an API key or token),
+ * with hints and optional setup commands/URLs to help users obtain and configure it.
+ */
+export interface AdapterCredentialOption {
+  /** The environment variable name (e.g., "ANTHROPIC_API_KEY") */
+  envKey: string;
+  /** The kind of credential */
+  kind: "api_key" | "subscription_token";
+  /** Display label for the credential (e.g., "Anthropic API key") */
+  label: string;
+  /** Optional hint text explaining what the credential is for and how to use it */
+  hint?: string;
+  /** Optional command users can run to set up this credential (e.g., "claude setup-token") */
+  setupCommand?: string;
+  /** Optional URL where users can obtain/manage this credential (e.g., console URL) */
+  setupUrl?: string;
+  /** Optional placeholder text for the input field (e.g., "sk-ant-…") */
+  placeholder?: string;
+}
+
+/**
+ * A complete credential setup descriptor for an adapter.
+ *
+ * Declares all environment variables an adapter accepts and provides
+ * UI-friendly guidance for each one.
+ */
+export interface AdapterCredentialSetup {
+  /** The list of credential options this adapter accepts */
+  options: AdapterCredentialOption[];
+}

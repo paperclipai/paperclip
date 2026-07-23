@@ -44,6 +44,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
+import { AdapterCredentialConnect } from "./AdapterCredentialConnect";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
@@ -403,6 +404,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+  const credentialSetup = uiAdapter.credentialSetup;
   const supportedEnvironmentDrivers = useMemo(
     () => new Set(supportedEnvironmentDriversForAdapter(adapterType)),
     [adapterType],
@@ -411,6 +413,46 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const set = isCreate
     ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
     : null;
+
+  // Env editor state: single source of truth shared by the environment
+  // variables editor and the guided credential-connect card, so a bind from
+  // either surface persists through the same save path.
+  const currentEnv = isCreate
+    ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+    : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
+
+  function updateEnv(env: Record<string, EnvBinding> | undefined) {
+    if (isCreate) {
+      set!({ envBindings: env ?? {}, envVars: "" });
+    } else {
+      mark("adapterConfig", "env", env);
+    }
+  }
+
+  function isEnvValueBound(binding: EnvBinding | undefined): boolean {
+    if (binding === undefined) return false;
+    if (typeof binding === "string") return binding.trim().length > 0;
+    if (binding.type === "plain") return binding.value.trim().length > 0;
+    return binding.type === "secret_ref" || binding.type === "user_secret_ref";
+  }
+
+  const boundEnvKeys = useMemo(() => {
+    if (!credentialSetup) return [];
+    return credentialSetup.options
+      .map((option) => option.envKey)
+      .filter((envKey) => isEnvValueBound(currentEnv[envKey]));
+  }, [credentialSetup, currentEnv]);
+
+  function handleCredentialBind(envKey: string, secretId: string) {
+    updateEnv({ ...currentEnv, [envKey]: { type: "secret_ref", secretId } });
+    // The newly created secret isn't in the company secrets list query cache
+    // yet, so without invalidating, SecretPicker would render this env row
+    // as "Missing secret (…)" until something else happens to refetch.
+    if (selectedCompanyId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    }
+  }
+
   const rawCurrentDefaultEnvironmentId = isCreate
     ? val!.defaultEnvironmentId ?? ""
     : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
@@ -1384,26 +1426,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
+              {credentialSetup && selectedCompanyId && (
+                <AdapterCredentialConnect
+                  key={adapterType}
+                  companyId={selectedCompanyId}
+                  adapterType={adapterType}
+                  setup={credentialSetup}
+                  boundEnvKeys={boundEnvKeys}
+                  onBind={handleCredentialBind}
+                />
+              )}
+
               <Field label="Environment variables" hint={help.envVars}>
                 <EnvironmentVariablesEditor
                   ref={environmentVariablesEditorRef}
-                  value={
-                    isCreate
-                      ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-                      : ((eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
-                      )
-                  }
+                  value={currentEnv}
                   secrets={availableSecrets}
                   userSecretDefinitions={userSecretDefinitions}
                   onCreateSecret={async (name, value) => {
                     const created = await createSecret.mutateAsync({ name, value });
                     return created;
                   }}
-                  onChange={(env) =>
-                    isCreate
-                      ? set!({ envBindings: env ?? {}, envVars: "" })
-                      : mark("adapterConfig", "env", env)
-                  }
+                  onChange={updateEnv}
                 />
               </Field>
 

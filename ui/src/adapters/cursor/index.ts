@@ -1,7 +1,7 @@
 import type { UIAdapterModule } from "../types";
 import { parseCursorStdoutLine } from "@paperclipai/adapter-cursor-local/ui";
 import { CursorLocalConfigFields } from "./config-fields";
-import { buildCursorLocalConfig } from "@paperclipai/adapter-cursor-local/ui";
+import { buildCursorLocalConfig, cursorLocalCredentialSetup } from "@paperclipai/adapter-cursor-local/ui";
 
 export const cursorLocalUIAdapter: UIAdapterModule = {
   type: "cursor",
@@ -9,4 +9,5 @@ export const cursorLocalUIAdapter: UIAdapterModule = {
   parseStdoutLine: parseCursorStdoutLine,
   ConfigFields: CursorLocalConfigFields,
   buildAdapterConfig: buildCursorLocalConfig,
+  credentialSetup: cursorLocalCredentialSetup,
 };
