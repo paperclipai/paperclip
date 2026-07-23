@@ -12,6 +12,7 @@ import {
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
+  isSystemIssueDocumentKey,
   type BillingType,
   type CostStatus,
   type EnvironmentLeaseStatus,
@@ -44,11 +45,13 @@ import {
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
+  documents as documentsTable,
   issueDocuments,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueApprovals,
+  issueAttachments,
   issueComments,
   issuePlanDecompositions,
   issueRecoveryActions,
@@ -56,6 +59,7 @@ import {
   issueThreadInteractions,
   issues,
   issueWorkProducts,
+  assets as assetsTable,
   projects,
   projectWorkspaces,
   routineRevisions,
@@ -92,6 +96,7 @@ import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { ATTACHMENT_INLINE_MAX_BYTES, truncateUtf8ToByteLimit } from "../attachment-types.js";
 import {
   buildHeartbeatRunIssueComment,
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
@@ -4426,6 +4431,49 @@ export async function buildPaperclipWakePayload(input: {
       : null);
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
+  const [attachmentRows, userDocumentRows] = await Promise.all([
+    issueId
+      ? input.db
+          .select({
+            id: issueAttachments.id,
+            filename: assetsTable.originalFilename,
+            contentType: assetsTable.contentType,
+            byteSize: assetsTable.byteSize,
+          })
+          .from(issueAttachments)
+          .innerJoin(assetsTable, eq(assetsTable.id, issueAttachments.assetId))
+          .where(
+            and(
+              eq(issueAttachments.issueId, issueId),
+              eq(issueAttachments.companyId, input.companyId),
+              eq(assetsTable.companyId, input.companyId),
+            ),
+          )
+          .orderBy(asc(issueAttachments.createdAt))
+      : Promise.resolve([]),
+    issueId
+      ? input.db
+          .select({
+            key: issueDocuments.key,
+            title: documentsTable.title,
+            format: documentsTable.format,
+            body: documentsTable.latestBody,
+            updatedAt: documentsTable.updatedAt,
+          })
+          .from(issueDocuments)
+          .innerJoin(documentsTable, eq(documentsTable.id, issueDocuments.documentId))
+          .where(
+            and(
+              eq(issueDocuments.issueId, issueId),
+              eq(issueDocuments.companyId, input.companyId),
+              eq(documentsTable.companyId, input.companyId),
+            ),
+          )
+          .orderBy(asc(issueDocuments.key))
+          .then((rows) => rows.filter((r) => !isSystemIssueDocumentKey(r.key)))
+      : Promise.resolve([]),
+  ]);
+
   const commentRows =
     commentIds.length === 0
       ? []
@@ -4678,6 +4726,30 @@ export async function buildPaperclipWakePayload(input: {
           updatedAt: safeContinuationSummary.updatedAt.toISOString(),
         }
       : null,
+    attachments: attachmentRows.map((a) => ({
+      id: a.id,
+      filename: a.filename,
+      contentType: a.contentType,
+      byteSize: a.byteSize,
+      contentPath: `/api/attachments/${a.id}/content`,
+    })),
+    documents: userDocumentRows.map((d) => {
+      // Truncate on UTF-8 byte length against the configurable inline budget,
+      // matching the heartbeat-context path in routes/issues.ts. A hardcoded
+      // character count under-counts multi-byte text and ignores an operator's
+      // PAPERCLIP_ATTACHMENT_INLINE_MAX_BYTES override.
+      const truncatedBody = d.body
+        ? truncateUtf8ToByteLimit(d.body, ATTACHMENT_INLINE_MAX_BYTES)
+        : null;
+      return {
+        key: d.key,
+        title: d.title,
+        format: d.format,
+        body: truncatedBody ? truncatedBody.body : null,
+        bodyTruncated: truncatedBody ? truncatedBody.truncated : false,
+        updatedAt: d.updatedAt instanceof Date ? d.updatedAt.toISOString() : d.updatedAt,
+      };
+    }),
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
