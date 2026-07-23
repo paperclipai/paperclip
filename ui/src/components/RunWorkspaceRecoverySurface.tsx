@@ -16,6 +16,11 @@ import {
   canBoardManageRuntime,
   readRecoveryReconcileWorkspaceId,
 } from "../lib/recovery-reconcile";
+import {
+  readReconcileWorkspaceIdFromEvidence,
+  readRunWorkspaceValidationEvidence,
+  synthesizeRunWorkspaceValidationAction,
+} from "../lib/workspace-validation-evidence";
 
 /** The run errorCode Paperclip stamps when it declines a run over a git workspace it can't validate. */
 export const WORKSPACE_VALIDATION_RUN_ERROR_CODE = "workspace_validation_failed";
@@ -75,10 +80,20 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
 
   const recoveryAction = issue?.activeRecoveryAction ?? null;
   const canManageBoardRuntime = canBoardManageRuntime(run.companyId, boardAccess);
+  // The run's own workspace-validation evidence (stamped on `resultJson`). Renders the fallback
+  // diagnosis card when there is no live recovery action to render (PAP-13568 Phase 4b, plan
+  // point #1: never render nothing on a failed workspace-validation run).
+  const runEvidence = isWorkspaceValidationFailure
+    ? readRunWorkspaceValidationEvidence(run)
+    : null;
   // Prefer the workspace pinned by the recovery action's evidence (the workspace that actually
-  // diverged) over the page-level id, which can drift after a re-issue rebinds the issue.
+  // diverged) over the run evidence, then the page-level id, which can drift after a re-issue
+  // rebinds the issue.
   const reconcileWorkspaceId =
-    readRecoveryReconcileWorkspaceId(recoveryAction) ?? issue?.executionWorkspaceId ?? null;
+    readRecoveryReconcileWorkspaceId(recoveryAction) ??
+    readReconcileWorkspaceIdFromEvidence(runEvidence) ??
+    issue?.executionWorkspaceId ??
+    null;
 
   const invalidate = useCallback(() => {
     if (issueId) {
@@ -93,26 +108,33 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
       input:
         | { workspaceId: string; mode: "forward" }
         | { workspaceId: string; mode: "override"; reason: string }
-        | { workspaceId: string; mode: "quarantine_restore" },
+        | { workspaceId: string; mode: "quarantine_restore" }
+        | { workspaceId: string; mode: "restore" },
     ) => {
       const { workspaceId, ...body } = input;
       return executionWorkspacesApi.reconcile(workspaceId, body);
     },
     onSuccess: (_result, variables) => {
       invalidate();
-      pushToast(
-        variables.mode === "quarantine_restore"
-          ? {
-              title: "Workspace repaired",
-              body: "Dirty changes were quarantined onto a rescue branch and the recorded branch restored; the task will resume.",
-              tone: "success",
-            }
-          : {
-              title: "Workspace branch reconciled",
-              body: "The recorded branch now matches the live branch; the task will resume.",
-              tone: "success",
-            },
-      );
+      if (variables.mode === "quarantine_restore") {
+        pushToast({
+          title: "Workspace repaired",
+          body: "Dirty changes were quarantined onto a rescue branch and the recorded branch restored; the task will resume.",
+          tone: "success",
+        });
+      } else if (variables.mode === "restore") {
+        pushToast({
+          title: "Recorded branch restored",
+          body: "The workspace was checked back out onto its recorded branch (the parked branch keeps its commits); the task will resume.",
+          tone: "success",
+        });
+      } else {
+        pushToast({
+          title: "Workspace branch reconciled",
+          body: "The recorded branch now matches the live branch; the task will resume.",
+          tone: "success",
+        });
+      }
     },
     onError: (err) => {
       pushToast({
@@ -219,6 +241,11 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
     void reconcile.mutateAsync({ workspaceId: reconcileWorkspaceId, mode: "quarantine_restore" });
   }, [reconcile, reconcileWorkspaceId]);
 
+  const handleRestoreRecordedBranch = useCallback(() => {
+    if (!reconcileWorkspaceId) return;
+    void reconcile.mutateAsync({ workspaceId: reconcileWorkspaceId, mode: "restore" });
+  }, [reconcile, reconcileWorkspaceId]);
+
   const handleReissue = useCallback(
     (request: RecoveryReissueRequest) => {
       void reissue.mutateAsync(request);
@@ -250,10 +277,27 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
   );
 
   if (!isWorkspaceValidationFailure || !issueId) return null;
-  if (!recoveryAction || recoveryAction.kind !== "workspace_validation") return null;
+
+  const hasLiveRecoveryAction =
+    recoveryAction !== null && recoveryAction.kind === "workspace_validation";
+
+  // Fallback path: no live recovery action (e.g. the source issue is blocked / has a pending
+  // interaction, so no action was promoted — PAP-13568 L3), but the run stamped branch-incoherence
+  // evidence. Render the same card from the run's own evidence via a presentational synthetic action.
+  // No `onResolve` is wired — there is no persisted action to resolve; the repair CTAs target the
+  // evidence's workspace id.
+  const fallbackAction =
+    !hasLiveRecoveryAction && runEvidence
+      ? synthesizeRunWorkspaceValidationAction(run, runEvidence, issueId)
+      : null;
+
+  const cardAction = hasLiveRecoveryAction ? recoveryAction : fallbackAction;
+  if (!cardAction) return null;
+
+  const isFallback = !hasLiveRecoveryAction;
 
   return (
-    <div className="space-y-2" data-testid="run-workspace-recovery-surface">
+    <div className="space-y-2" data-testid="run-workspace-recovery-surface" data-fallback={isFallback ? "true" : undefined}>
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-muted-foreground">Workspace recovery</span>
         {issue?.identifier ? (
@@ -270,15 +314,20 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
         ) : null}
       </div>
       <IssueRecoveryActionCard
-        action={recoveryAction}
+        action={cardAction}
         variant="compact"
-        onResolve={handleResolve}
+        // The fallback card has no persisted action to resolve, so its resolve/false-positive menu
+        // is intentionally omitted; the live-action card keeps it.
+        onResolve={isFallback ? undefined : handleResolve}
+        forcedState={isFallback ? "needed" : undefined}
         onReissueIsolated={handleReissue}
         reissuePending={reissue.isPending}
         onReconcileForward={handleReconcileForward}
         onBreakGlassOverride={handleBreakGlass}
         onQuarantineRestore={handleQuarantineRestore}
         quarantineRestorePending={reconcile.isPending}
+        onRestoreRecordedBranch={handleRestoreRecordedBranch}
+        restorePending={reconcile.isPending}
         reconcilePending={reconcile.isPending}
         canBreakGlass={canManageBoardRuntime}
       />
