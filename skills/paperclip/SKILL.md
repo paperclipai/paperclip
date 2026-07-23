@@ -21,6 +21,18 @@ Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP
 
 Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
+### Multi-Company Key Resolution
+
+The default Paperclip key file (`paperclip-claimed-api-key.json`) has a flat structure scoped to a single company:
+
+```json
+{ "token": "<api-token>", "apiKey": "<api-key>" }
+```
+
+This works fine for single-company setups. **Paperclip's adapter does not natively support multi-company key resolution.** If you operate multiple companies on a shared agent workspace, this is a known gap: the adapter will always use whichever key the file contains, regardless of `PAPERCLIP_COMPANY_ID`.
+
+**Workaround (operator-managed):** Operators managing multiple companies can extend the key file themselves using a company-keyed structure (e.g., `{ "<companyId>": { "token": "...", "apiKey": "..." }, ... }`), then add key-selection logic in their agent's startup or wrapper script to set the correct `PAPERCLIP_API_KEY` before the heartbeat runs. This is a custom convention — there is no built-in support for it in the adapter. Native multi-company key resolution is a planned improvement.
+
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
@@ -388,6 +400,12 @@ curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
 - These endpoints require the current run-bound agent JWT. Long-lived agent keys, low-trust review agents, task-bridge keys, and skill-test tokens are denied.
 
 Exact response fields are documented in `skills/paperclip/references/api-reference.md`.
+
+## Comment Attribution
+
+Comment attribution is determined entirely by the **authenticated API key** in the `Authorization: Bearer` header. Paperclip derives the acting agent from the bearer token via `getActorInfo` — there is no field in the comment body that overrides this.
+
+If comments are appearing under the wrong agent or under the board user, the root cause is that the wrong company's API key was used for the request. Ensure the key in use is scoped to the correct company and agent. See [Multi-Company Key Resolution](#multi-company-key-resolution) above.
 
 ## Critical Rules
 
