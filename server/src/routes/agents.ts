@@ -652,17 +652,46 @@ export function agentRoutes(
     };
   }
 
+  function isLowTrustReviewAgent(agent: { permissions?: unknown }): boolean {
+    const permissions = agent.permissions as { trustPreset?: string } | null | undefined;
+    return permissions?.trustPreset === "low_trust_review";
+  }
+
+  function applyRedactedEnvelope(
+    agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    options?: { actorType?: string },
+  ) {
+    // BASA-29460 carve-out for low-trust review containment (PR #7530 / dbebf30):
+    // board admins reviewing a low-trust review agent need plaintext config to audit
+    // what secrets the suspect agent has access to. All other cross-actor reads
+    // (peer/CEO agents, non-board callers) still get redacted.
+    if (options?.actorType === "board" && isLowTrustReviewAgent(agent)) {
+      return agent;
+    }
+    return {
+      ...agent,
+      adapterConfig: redactEventPayload(agent.adapterConfig) ?? {},
+      runtimeConfig: redactEventPayload(agent.runtimeConfig) ?? {},
+    };
+  }
+
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
-    options?: { restricted?: boolean },
+    options?: { restricted?: boolean; redacted?: boolean; actorType?: string },
   ) {
     const [chainOfCommand, accessState] = await Promise.all([
       svc.getChainOfCommand(agent.id),
       buildAgentAccessState(agent),
     ]);
 
+    const body = options?.restricted
+      ? redactForRestrictedAgentView(agent)
+      : options?.redacted
+        ? applyRedactedEnvelope(agent, { actorType: options.actorType })
+        : agent;
+
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...body,
       chainOfCommand,
       access: accessState,
     };
@@ -1977,7 +2006,7 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => applyRedactedEnvelope(agent, { actorType: req.actor.type })));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -2208,6 +2237,10 @@ export function agentRoutes(
       : await actorCanReadConfigurationsForCompany(req, agent.companyId);
     if (!canReadSensitiveDetail) {
       res.json(await buildAgentDetail(agent, { restricted: true }));
+      return;
+    }
+    if (!isSelf) {
+      res.json(await buildAgentDetail(agent, { redacted: true, actorType: req.actor.type }));
       return;
     }
     res.json(await buildAgentDetail(agent));
