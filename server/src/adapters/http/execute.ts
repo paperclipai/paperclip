@@ -21,6 +21,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       headers: {
         "content-type": "application/json",
         ...headers,
+        "x-paperclip-run-id": runId,
       },
       body: JSON.stringify(body),
       ...(timer ? { signal: controller.signal } : {}),
