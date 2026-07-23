@@ -10,6 +10,14 @@ function readWorkflow(name) {
   return readFileSync(path.join(repoRoot, ".github/workflows", name), "utf8");
 }
 
+function readPrManifestPattern() {
+  const prWorkflow = readWorkflow("pr.yml");
+  const manifestPattern = prWorkflow.match(/^\s*manifest_pattern='([^']+)'$/m)?.[1];
+
+  assert.ok(manifestPattern, "expected a manifest_pattern definition in pr.yml");
+  return new RegExp(manifestPattern);
+}
+
 test("release workflow delegates stable and canary verification to the reusable workflow", () => {
   const releaseWorkflow = readWorkflow("release.yml");
 
@@ -49,4 +57,49 @@ test("release verify workflow covers the same split test surface as stable PR ve
 
   assert.match(verifyWorkflow, /pnpm test:run:general -- --group/);
   assert.match(verifyWorkflow, /pnpm test:run:serialized -- --shard-index/);
+});
+
+test("pr workflow regenerates the lockfile for dependency graph inputs", () => {
+  const manifestPattern = readPrManifestPattern();
+
+  const triggeringPaths = [
+    "package.json",
+    "packages/shared/package.json",
+    "pnpm-workspace.yaml",
+    ".npmrc",
+    "pnpmfile.cjs",
+    "pnpmfile.js",
+    "pnpmfile.mjs",
+    "patches/acpx@0.12.0.patch",
+    "patches/nested/fix.patch",
+  ];
+
+  for (const filePath of triggeringPaths) {
+    assert.equal(
+      manifestPattern.test(filePath),
+      true,
+      `${filePath} should trigger lockfile regeneration`,
+    );
+  }
+});
+
+test("pr workflow lockfile trigger stays scoped to root-level config and patches", () => {
+  const manifestPattern = readPrManifestPattern();
+
+  const ignoredPaths = [
+    "README.md",
+    "packages/shared/src/index.ts",
+    "packages/shared/.npmrc",
+    "packages/shared/pnpmfile.cjs",
+    "packages/shared/patches/acpx.patch",
+    "docs/patches/acpx.patch",
+  ];
+
+  for (const filePath of ignoredPaths) {
+    assert.equal(
+      manifestPattern.test(filePath),
+      false,
+      `${filePath} should not trigger lockfile regeneration`,
+    );
+  }
 });
