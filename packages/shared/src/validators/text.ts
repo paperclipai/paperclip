@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export function normalizeEscapedLineBreaks(value: string): string {
+  if (!value.includes("\\n") && !value.includes("\\r")) return value;
   return value
     .replace(/\\r\\n/g, "\n")
     .replace(/\\n/g, "\n")
