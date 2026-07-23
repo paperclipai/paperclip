@@ -5,11 +5,13 @@ import type {
   CostByAgentModel,
   CostByBiller,
   CostByProviderModel,
+  CostTimeAllocationAgentRow,
+  CostTimeAllocationRow,
   CostWindowSpendRow,
   FinanceEvent,
   QuotaWindow,
 } from "@paperclipai/shared";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Clock3, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
 import { BillerSpendCard } from "../components/BillerSpendCard";
@@ -42,6 +44,19 @@ function currentWeekRange(): { from: string; to: string } {
   const mon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diffToMon, 0, 0, 0, 0);
   const sun = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + 6, 23, 59, 59, 999);
   return { from: mon.toISOString(), to: sun.toISOString() };
+}
+
+export function timeAllocationQueryOptions(
+  companyId: string,
+  from?: string,
+  to?: string,
+  enabled = true,
+) {
+  return {
+    queryKey: queryKeys.timeAllocation(companyId, from, to),
+    queryFn: () => costsApi.timeAllocation(companyId, from, to),
+    enabled,
+  };
 }
 
 function ProviderTabLabel({ provider, rows }: { provider: string; rows: CostByProviderModel[] }) {
@@ -146,12 +161,71 @@ function FinanceSummaryCard({
   );
 }
 
+export function formatDuration(minutes: number) {
+  const wholeMinutes = Math.round(minutes);
+  if (wholeMinutes < 60) return `${wholeMinutes}m`;
+  const hours = Math.floor(wholeMinutes / 60);
+  const remainder = wholeMinutes % 60;
+  return remainder === 0 ? `${hours}h` : `${hours}h ${remainder}m`;
+}
+
+export function formatHours(hours: number) {
+  return `${Number(hours.toFixed(2))}h`;
+}
+
+export function timeAllocationAgentName(row: CostTimeAllocationAgentRow) {
+  return row.agentName ?? row.agentId ?? "Unattributed agent";
+}
+
+export function TimeAllocationTable<T extends CostTimeAllocationRow>({
+  title,
+  description,
+  rows,
+  nameForRow,
+  emptyMessage,
+}: {
+  title: string;
+  description: string;
+  rows: T[];
+  nameForRow: (row: T) => string;
+  emptyMessage: string;
+}) {
+  return (
+    <Card>
+      <CardHeader className="px-5 pt-5 pb-2">
+        <CardTitle className="text-base">{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 px-5 pb-5 pt-2">
+        {rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{emptyMessage}</p>
+        ) : (
+          rows.map((row, index) => (
+            <div key={`${nameForRow(row)}:${index}`} className="flex items-center justify-between gap-4 border border-border px-4 py-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium">{nameForRow(row)}</div>
+                <div className="text-xs text-muted-foreground">
+                  {row.eventCount} event{row.eventCount === 1 ? "" : "s"} · {formatCents(row.costCents)} display cost
+                </div>
+              </div>
+              <div className="text-right tabular-nums">
+                <div className="font-medium">{formatDuration(row.minutes)}</div>
+                <div className="text-xs text-muted-foreground">{formatHours(row.hours)}</div>
+              </div>
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function Costs() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
-  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
+  const [mainTab, setMainTab] = useState<"overview" | "time" | "budgets" | "providers" | "billers" | "finance">("overview");
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
 
@@ -242,6 +316,15 @@ export function Costs() {
     },
     enabled: !!selectedCompanyId && customReady,
   });
+
+  const { data: timeAllocationData, isLoading: timeLoading, error: timeError } = useQuery(
+    timeAllocationQueryOptions(
+      companyId,
+      from || undefined,
+      to || undefined,
+      !!selectedCompanyId && customReady && mainTab === "time",
+    ),
+  );
 
   const { data: financeData, isLoading: financeLoading, error: financeError } = useQuery({
     queryKey: [
@@ -543,7 +626,7 @@ export function Costs() {
             <div>
                 <h1 className="text-3xl font-semibold tracking-tight">Costs</h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Inference spend, platform fees, credits, and live quota windows.
+                  Inference spend, time allocation, platform fees, credits, and live quota windows.
                 </p>
             </div>
 
@@ -621,6 +704,7 @@ export function Costs() {
       <Tabs value={mainTab} onValueChange={(value) => setMainTab(value as typeof mainTab)}>
         <TabsList variant="line" className="justify-start">
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="time">Time</TabsTrigger>
           <TabsTrigger value="budgets">Budgets</TabsTrigger>
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="billers">Billers</TabsTrigger>
@@ -827,6 +911,70 @@ export function Costs() {
 
                   <FinanceTimelineCard rows={topFinanceEvents.slice(0, 6)} emptyMessage="No finance events yet. Add account-level charges once biller invoices or credits land." />
                 </div>
+              </div>
+            </>
+          )}
+        </TabsContent>
+
+        <TabsContent value="time" className="mt-4 space-y-4">
+          {showCustomPrompt ? (
+            <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
+          ) : timeLoading ? (
+            <PageSkeleton variant="costs" />
+          ) : timeError ? (
+            <p className="text-sm text-destructive">{(timeError as Error).message}</p>
+          ) : (
+            <>
+              <Card className="border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))]">
+                <CardHeader className="px-5 pt-5 pb-3">
+                  <CardTitle className="text-base">Time allocation</CardTitle>
+                  <CardDescription>
+                    Reviewed zero-cent <code>time:*</code> cost events, kept separate from inference tokens and invoice truth.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-3 px-5 pb-5 pt-0 sm:grid-cols-2 xl:grid-cols-4">
+                  <MetricTile
+                    label="Total time"
+                    value={formatDuration(timeAllocationData?.totalMinutes ?? 0)}
+                    subtitle={`${timeAllocationData?.eventCount ?? 0} reviewed time event${timeAllocationData?.eventCount === 1 ? "" : "s"}`}
+                    icon={Clock3}
+                  />
+                  <MetricTile
+                    label="Hours"
+                    value={formatHours(timeAllocationData?.totalHours ?? 0)}
+                    subtitle="Derived from minute-valued time events"
+                    icon={Clock3}
+                  />
+                  <MetricTile
+                    label="Projects"
+                    value={String(timeAllocationData?.byProject.length ?? 0)}
+                    subtitle="Project-attributed allocation groups"
+                    icon={ReceiptText}
+                  />
+                  <MetricTile
+                    label="Display cost"
+                    value={formatCents(timeAllocationData?.costCents ?? 0)}
+                    subtitle="Only zero-cent time markers appear here; nonzero time-coded events remain in normal cost accounting."
+                    icon={Coins}
+                  />
+                </CardContent>
+              </Card>
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                <TimeAllocationTable
+                  title="By project"
+                  description="Minutes and hours grouped by project-attributed time events."
+                  rows={timeAllocationData?.byProject ?? []}
+                  nameForRow={(row) => row.projectName ?? row.projectId ?? "Unattributed project"}
+                  emptyMessage="No project-attributed time allocation events yet."
+                />
+                <TimeAllocationTable
+                  title="By agent"
+                  description="Minutes and hours grouped by reporting agent."
+                  rows={timeAllocationData?.byAgent ?? []}
+                  nameForRow={timeAllocationAgentName}
+                  emptyMessage="No agent time allocation events yet."
+                />
               </div>
             </>
           )}

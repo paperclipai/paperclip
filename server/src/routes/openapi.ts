@@ -2887,7 +2887,7 @@ registry.registerPath({
 
 const costSummaryPaths = [
   "summary", "by-agent", "by-agent-model", "by-provider",
-  "by-biller", "by-project", "finance-summary", "finance-by-biller",
+  "by-biller", "by-project", "time-allocation", "finance-summary", "finance-by-biller",
   "finance-by-kind", "finance-events", "window-spend", "quota-windows",
 ] as const;
 
