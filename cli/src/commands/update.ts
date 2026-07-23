@@ -111,9 +111,9 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
     emit(options, { mode, action: "rollback", version: next.version, restarted }, pc.green(`Rolled back to paperclipai ${next.version}${restarted ? " and restarted the active service" : ""}. Database migrations are not reversed; restore the pre-update backup if needed.`));
     return;
   }
-  const request = resolveUpdateRequest(manifest, options);
   if (mode === "npx") { emit(options, { mode, action: "install" }, "This is an ephemeral npx install. Run `paperclipai install`, then use `paperclipai update` from the managed shim."); return; }
   if (mode === "source" || mode === "unknown") { emit(options, { mode, action: "manual" }, "This appears to be a source checkout. Update it with `git pull` followed by `pnpm install`; Paperclip will not mutate the repository."); return; }
+  const request = resolveUpdateRequest(mode === "managed" ? manifest : null, options);
   if (mode === "managed" && manifest?.source === "git") {
     if (!manifest.repo || !manifest.ref || !manifest.sha) throw new Error("Managed git install metadata is incomplete.");
     if (/^[0-9a-f]{7,40}$/i.test(manifest.ref)) { emit(options, { mode, source: "git", pinned: true, sha: manifest.sha }, `Git install is pinned at ${manifest.sha.slice(0, 12)}.`); return; }
@@ -128,7 +128,14 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
       try { writeInstallManifestAtomic(next, paths); } catch (error) { flipCurrentAtomic(path.resolve(paths.cliRoot, oldTarget), paths); throw error; }
       pruneInstallPayloads(next, paths); return payload;
     }, paths);
-    const restarted = await (overrides.restartActiveService ?? restartActiveManagedService)(installed.version);
+    let restarted: boolean;
+    try {
+      restarted = await (overrides.restartActiveService ?? restartActiveManagedService)(installed.version);
+    } catch (error) {
+      const rolledBack = await withInstallStoreLock(async () => rollbackManagedInstall(paths), paths);
+      await (overrides.restartActiveService ?? restartActiveManagedService)(rolledBack.version).catch(() => undefined);
+      throw new Error(`Updated git payload failed service validation and was rolled back to ${rolledBack.version}.`, { cause: error });
+    }
     emit(options, { mode, source: "git", changed: true, currentSha: manifest.sha, targetSha, reused: installed.reused, restarted }, pc.yellow(`Updated unreleased git payload ${manifest.sha.slice(0, 12)} → ${targetSha.slice(0, 12)} from ${manifest.repo}@${manifest.ref}${restarted ? " and restarted the active service" : ""}.`));
     return;
   }
@@ -172,6 +179,13 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
     try { writeInstallManifestAtomic(next, paths); } catch (error) { flipCurrentAtomic(path.resolve(paths.cliRoot, oldTarget), paths); throw error; }
     pruneInstallPayloads(next, paths); return payload;
   }, paths);
-  const restarted = await (overrides.restartActiveService ?? restartActiveManagedService)(targetVersion);
+  let restarted: boolean;
+  try {
+    restarted = await (overrides.restartActiveService ?? restartActiveManagedService)(targetVersion);
+  } catch (error) {
+    const rolledBack = await withInstallStoreLock(async () => rollbackManagedInstall(paths), paths);
+    await (overrides.restartActiveService ?? restartActiveManagedService)(rolledBack.version).catch(() => undefined);
+    throw new Error(`Updated payload failed service validation and was rolled back to ${rolledBack.version}.`, { cause: error });
+  }
   emit(options, { mode, currentVersion, targetVersion, changed: true, reused: installed.reused, restarted }, pc.green(`Updated paperclipai ${currentVersion} → ${targetVersion}${restarted ? " and restarted the active service" : ""}. Run \`paperclipai update --rollback\` for an instant payload rollback.`));
 }

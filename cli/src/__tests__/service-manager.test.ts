@@ -195,4 +195,14 @@ describe("single-writer guard", () => {
     process.env.PAPERCLIP_SERVICE_MANAGED = "1";
     await expect(assertForegroundRunAllowed("default", false, detector)).resolves.toBeUndefined();
   });
+
+  it("refuses to replace a symlinked service definition", async () => {
+    const userHome = await temporaryDirectory();
+    const manager = new SystemdServiceManager("default", async () => ({ stdout: "", stderr: "" }), path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome);
+    await fs.mkdir(path.dirname(manager.definitionPath), { recursive: true });
+    const target = path.join(userHome, "target.service"); await fs.writeFile(target, "preserve\n"); await fs.symlink(target, manager.definitionPath);
+    await expect(manager.install({ startNow: false, startOnLogin: false })).rejects.toThrow("unsafe service definition");
+    expect(await fs.readFile(target, "utf8")).toBe("preserve\n");
+  });
+
 });

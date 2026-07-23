@@ -148,4 +148,31 @@ describe("update command", () => {
     expect(rolledBack.version).toBe("1.0.0");
     expect(fs.realpathSync(paths.currentPath)).toBe(fs.realpathSync(oldPayload));
   });
+
+  it("does not inherit a managed pin for global npm updates", async () => {
+    const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
+    const managedPayload = payloadPathFor(paths, "npm", "1.2.3"); createPayload(managedPayload, "1.2.3");
+    writeInstallManifestAtomic({ schemaVersion: 1, ...record(managedPayload, "1.2.3"), channel: "pinned", previous: [] }, paths);
+    const executable = path.join(root, "lib", "node_modules", "paperclipai", "dist", "index.js");
+    const runCommand = vi.fn(async (_file: string, args: string[]) => args[0] === "view" ? { stdout: '"2.0.0"\n', stderr: "" } : { stdout: "", stderr: "" });
+    await updateCommand({ dryRun: true }, { paths, executablePath: executable, runCommand });
+    expect(runCommand).toHaveBeenCalledWith("npm", expect.arrayContaining(["view", "paperclipai@latest"]), expect.anything());
+  });
+
+  it("rolls back the active payload when restart validation fails", async () => {
+    const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
+    const oldPayload = payloadPathFor(paths, "npm", "1.0.0"); const executable = createPayload(oldPayload, "1.0.0"); flipCurrentAtomic(oldPayload, paths);
+    writeInstallManifestAtomic({ schemaVersion: 1, ...record(oldPayload, "1.0.0"), previous: [] }, paths);
+    const runCommand = vi.fn(async (file: string, args: string[]) => {
+      if (args[0] === "view") return { stdout: '"2.0.0"\n', stderr: "" };
+      if (file === "npm" && args[0] === "install") { createPayload(args[args.indexOf("--prefix") + 1], "2.0.0"); return { stdout: "", stderr: "" }; }
+      return { stdout: "2.0.0\n", stderr: "" };
+    });
+    const restartActiveService = vi.fn(async (version: string) => { if (version === "2.0.0") throw new Error("health timeout"); return true; });
+    await expect(updateCommand({}, { paths, executablePath: executable, runCommand, backup: async () => undefined, restartActiveService })).rejects.toThrow("rolled back to 1.0.0");
+    expect(readInstallManifest(paths)?.version).toBe("1.0.0");
+    expect(fs.realpathSync(paths.currentPath)).toBe(fs.realpathSync(oldPayload));
+    expect(restartActiveService).toHaveBeenLastCalledWith("1.0.0");
+  });
+
 });

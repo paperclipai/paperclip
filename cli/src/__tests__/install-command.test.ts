@@ -275,4 +275,14 @@ describe("managed install commands", () => {
     );
     expect(fs.existsSync(paths.lockPath)).toBe(false);
   });
+
+  it("refuses a symlinked git payload root before downloading", async () => {
+    const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
+    const outside = path.join(root, "outside-git"); fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(paths.installsRoot, "git"));
+    const runCommand = vi.fn(async () => ({ stdout: "", stderr: "" }));
+    await expect(installGitPayload("paperclipai/paperclip", "4".repeat(40), runCommand, paths)).rejects.toThrow("unsafe payload root");
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
 });

@@ -174,6 +174,13 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
   }
   const sourceRoot = path.dirname(payloadPath);
   fs.mkdirSync(sourceRoot, { recursive: true, mode: 0o700 });
+  const sourceStat = fs.lstatSync(sourceRoot);
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) {
+    throw new Error(`Refusing to install into unsafe payload root ${sourceRoot}.`);
+  }
+  fs.chmodSync(paths.cliRoot, 0o700);
+  fs.chmodSync(paths.installsRoot, 0o700);
+  fs.chmodSync(sourceRoot, 0o700);
   const stagingRoot = path.join(sourceRoot, `.${identifier}.tmp-${process.pid}-${Date.now()}`);
   const checkoutPath = path.join(stagingRoot, "source");
   const archivePath = path.join(stagingRoot, "source.tar.gz");
