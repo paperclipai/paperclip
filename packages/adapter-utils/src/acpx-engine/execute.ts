@@ -159,6 +159,14 @@ export interface AcpxEngineBillingIdentity {
  * (`useRemoteProcessSession`); when absent (custom agents, the shared-engine
  * tests) the engine stages the workspace with no home asset, byte-identical to
  * the PR-1 behavior and to the local / runner-less ACP→CLI fallback.
+ *
+ * This context is deliberately adapter-agnostic: it carries only generic inputs
+ * (the resolved run `env`, the target, the host workspace dir, the `stage`
+ * callback, …) so that nothing adapter-specific leaks across the boundary. A
+ * seam derives every adapter-specific path it needs — the Gemini skills dir, the
+ * Codex home, the Claude config dir — from `config`/`env` on its own side, the
+ * same way the adapter's CLI lane does. No field here is named after or scoped
+ * to a single adapter.
  */
 export interface AcpxRemoteManagedHomeContext {
   acpxAgent: string;
@@ -177,11 +185,6 @@ export interface AcpxRemoteManagedHomeContext {
    * notably `env.CODEX_HOME` is the host managed Codex home for the codex agent.
    */
   env: Record<string, string>;
-  /**
-   * Host managed Gemini skills dir the engine prepared this run (the dir the
-   * seam ships as the sandbox `skills` asset), or null for other agents.
-   */
-  geminiSkillsHome: string | null;
   onLog: AdapterExecutionContext["onLog"];
   onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
   /**
@@ -1252,10 +1255,6 @@ async function buildRuntime(input: {
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
   const skillCommandNotes: string[] = [];
   let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
-  // Host managed Gemini skills dir the engine prepared this run — the dir the
-  // remote managed-home seam ships as the sandbox `skills` asset. Only set for
-  // the gemini agent; other agents pass null.
-  let geminiSkillsHome: string | null = null;
   if (acpxAgent === "claude") {
     const preparedSkills = await prepareClaudeSkillRuntime({
       stateDir,
@@ -1295,7 +1294,6 @@ async function buildRuntime(input: {
     });
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
-    geminiSkillsHome = resolveGeminiSkillsHome(config);
   } else {
     const desired = resolvePaperclipDesiredSkillNames(
       config,
@@ -1372,7 +1370,6 @@ async function buildRuntime(input: {
         workspaceLocalDir: cwd,
         timeoutSec,
         env,
-        geminiSkillsHome,
         onLog: input.ctx.onLog,
         onRuntimeProgress: input.ctx.onRuntimeProgress,
         stage,

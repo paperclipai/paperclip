@@ -32,6 +32,7 @@ import {
   parseGeminiVersionParts,
   rewriteGeminiAcpFlagForVersion,
   summarizeAcpxTurnUsage,
+  type AcpxEngineExecutorOptions,
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
 
@@ -143,6 +144,7 @@ async function runExecutor(
     authToken?: string;
     executionTarget?: Record<string, unknown>;
     runtimeMcp?: AdapterRuntimeMcpAccess;
+    prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -151,6 +153,9 @@ async function runExecutor(
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
   const execute = createAcpxEngineExecutor({
+    ...(options.prepareRemoteManagedHome
+      ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
+      : {}),
     createRuntime: (options) => {
       runtimeOptions.push(options as unknown as Record<string, unknown>);
       return buildRuntime(
@@ -1825,5 +1830,154 @@ describe("ACPX engine remote sandbox staging seam (PR 1: workspace + cwd)", () =
     expect(vi.mocked(startAdapterExecutionTargetProcessSessionBridge)).not.toHaveBeenCalled();
     expect(sessionInputs[0]?.cwd).toBe(localCwd);
     expect(runtimeOptions[0]?.cwd).toBe(localCwd);
+  });
+});
+
+describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function setupRemoteSandbox() {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+    };
+    return { root, stateDir, localCwd, remoteCwd, executionTarget };
+  }
+
+  it("test_remote_seam_receives_adapter_agnostic_context", async () => {
+    const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    let captured: Record<string, unknown> | null = null;
+    const { sessionInputs } = await runExecutor(
+      {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        // A user/adapter-config env value proves the seam sees the resolved run env.
+        env: { SEAM_MARKER: "seam-marker-value" },
+      },
+      {
+        authToken: "real-run-jwt",
+        executionTarget,
+        prepareRemoteManagedHome: async (input) => {
+          captured = input as unknown as Record<string, unknown>;
+          const stagedRuntime = await input.stage([]);
+          return { stagedRuntime };
+        },
+      },
+    );
+
+    // The engine invoked the seam and used the runtime it staged (session/new
+    // binds to the in-sandbox workspace dir the seam returned).
+    expect(captured).not.toBeNull();
+    const context = captured as unknown as Record<string, unknown>;
+    // Only generic, adapter-agnostic inputs cross the boundary...
+    expect(context.acpxAgent).toBe("custom");
+    expect(context.companyId).toBe("company-1");
+    expect(context.runId).toBe("run-1");
+    expect(context.workspaceLocalDir).toBe(localCwd);
+    expect(context.executionTarget).toMatchObject({ kind: "remote", transport: "sandbox" });
+    expect(typeof context.stage).toBe("function");
+    expect(typeof context.timeoutSec).toBe("number");
+    // ...including the resolved run env (adapter config env folded in).
+    expect((context.env as Record<string, string>).SEAM_MARKER).toBe("seam-marker-value");
+    // ...and NOTHING scoped to a single adapter leaks across the seam. This locks
+    // the boundary: the engine must not hand a Gemini/Claude/Codex-specific field
+    // (e.g. the former `geminiSkillsHome`) to the generic seam context.
+    expect(context).not.toHaveProperty("geminiSkillsHome");
+    expect(Object.keys(context).some((key) => /gemini|claude|codex/i.test(key))).toBe(false);
+    expect(sessionInputs[0]?.cwd).toBe(remoteCwd);
+  });
+
+  it("test_remote_seam_stages_assets_and_env_remap_reaches_process", async () => {
+    const { root, stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    // A managed-home dir the seam ships as an asset (mirrors a per-adapter home).
+    const managedHomeDir = path.join(root, "managed-home");
+    await fs.mkdir(managedHomeDir, { recursive: true });
+    await fs.writeFile(path.join(managedHomeDir, "config.json"), "{}", "utf8");
+
+    const { meta } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      {
+        authToken: "real-run-jwt",
+        executionTarget,
+        prepareRemoteManagedHome: async (input) => {
+          const stagedRuntime = await input.stage([
+            { key: "home", localDir: managedHomeDir, followSymlinks: true },
+          ]);
+          // Repoint an adapter home env var onto the in-sandbox asset dir; the
+          // engine must forward this mutated run env to the spawned process.
+          input.env.MANAGED_HOME = stagedRuntime.assetDirs.home ?? "";
+          return { stagedRuntime };
+        },
+      },
+    );
+
+    // The seam's asset was threaded through the shared staging seam...
+    const stageArgs = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0];
+    expect(stageArgs.assets).toEqual([
+      { key: "home", localDir: managedHomeDir, followSymlinks: true },
+    ]);
+    // ...it really landed in the sandbox (local runner extracts to the asset dir)...
+    const remoteAssetDir = String((meta[0]?.env as Record<string, string>).MANAGED_HOME);
+    expect(remoteAssetDir).toBeTruthy();
+    await expect(fs.readFile(path.join(remoteAssetDir, "config.json"), "utf8")).resolves.toBe("{}");
+    // ...the staged asset dir resolves under the run's managed runtime root (an
+    // in-sandbox path), not the host managed-home dir.
+    expect(remoteAssetDir).toContain(".paperclip-runtime");
+    expect(remoteAssetDir).not.toBe(managedHomeDir);
+    expect(path.isAbsolute(remoteAssetDir)).toBe(true);
+  });
+
+  it("test_remote_seam_teardown_fires_once_on_exit", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    let teardownCalls = 0;
+    await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      {
+        authToken: "real-run-jwt",
+        executionTarget,
+        prepareRemoteManagedHome: async (input) => {
+          const stagedRuntime = await input.stage([]);
+          return {
+            stagedRuntime,
+            teardown: async () => {
+              teardownCalls += 1;
+            },
+          };
+        },
+      },
+    );
+
+    // The engine fires the seam's teardown exactly once on the exit/cleanup path
+    // (mirrors the codex auth copy-back + staged-temp cleanup finally).
+    expect(teardownCalls).toBe(1);
+  });
+
+  it("test_remote_seam_absent_stages_workspace_only", async () => {
+    // Without a seam (custom agents / adapters with no home seed), the remote lane
+    // stages the workspace with no home asset — byte-identical to PR-1 behavior.
+    const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    const { sessionInputs } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget },
+    );
+
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(1);
+    const stageArgs = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0];
+    expect(stageArgs.assets ?? []).toEqual([]);
+    expect(sessionInputs[0]?.cwd).toBe(remoteCwd);
   });
 });
