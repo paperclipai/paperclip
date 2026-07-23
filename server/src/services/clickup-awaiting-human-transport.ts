@@ -11,15 +11,18 @@ import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import type { AwaitingHumanBridgePollEvent } from "./awaiting-human-bridge-registry.js";
 import { normalizeClickUpAttachmentTaskId } from "./clickup-awaiting-human-settings-adapter.js";
 
-const CLICKUP_CHAT_MESSAGE_MAX_CHARS = 1_800;
-const CLICKUP_CHAT_REPLY_MESSAGE_MAX_CHARS = 39_000;
+// ClickUp's Chat API accepts message and reply content up to 40,000 characters.
+const CLICKUP_CHAT_MESSAGE_MAX_CHARS = 40_000;
+const CLICKUP_CHAT_REPLY_MESSAGE_MAX_CHARS = 40_000;
+// Reserve space for the reply title and required CTA instructions.
 const CLICKUP_CHAT_REPLY_BODY_MAX_CHARS = 38_000;
-const MAX_TITLE_LENGTH = 120;
-const MAX_SUMMARY_LENGTH = 280;
-const MAX_DETAIL_BULLETS = 5;
-const MAX_BULLET_LENGTH = 220;
+const MAX_TITLE_LENGTH = 40_000;
+const MAX_REVIEWER_DIRECT_MESSAGE_TITLE_LENGTH = 120;
+const MAX_SUMMARY_LENGTH = 40_000;
+const MAX_DETAIL_BULLETS = 10_000;
+const MAX_BULLET_LENGTH = 40_000;
 const DEFAULT_CLICKUP_TIMEOUT_SEC = 30;
-const MAX_CLICKUP_REPLY_PAGES = 20;
+const MAX_CLICKUP_REPLY_PAGES = 100;
 const CLICKUP_ATTACHMENT_FILE_FIELD = "attachment[0]";
 
 export interface ClickUpTransportTestNotification {
@@ -111,7 +114,7 @@ function formatBodySection(body: string | null | undefined) {
   const limited = lines
     .slice(0, MAX_DETAIL_BULLETS * 6)
     .map((line) => truncateText(line, MAX_BULLET_LENGTH));
-  return trimTotal(limited.join("\n"), 1_000);
+  return trimTotal(limited.join("\n"), CLICKUP_CHAT_MESSAGE_MAX_CHARS);
 }
 
 function formatFullBodySection(body: string | null | undefined) {
@@ -314,12 +317,16 @@ async function maybeSendClickUpReviewerDirectMessages(input: {
       const dmContent = [
         `Hi ${displayName},`,
         "",
-        `You were notified in ClickUp about ${truncateText(input.title, 120)}.`,
+        `You were notified in ClickUp about ${truncateText(input.title, MAX_REVIEWER_DIRECT_MESSAGE_TITLE_LENGTH)}.`,
       ];
       if (input.threadLink) {
         dmContent.push("", `Original approval thread: ${input.threadLink}`);
       }
-      await sendClickUpDirectMessage(input.config, dmChannel.channelId, dmContent.join("\n"));
+      await sendClickUpDirectMessage(
+        input.config,
+        dmChannel.channelId,
+        trimTotal(dmContent.join("\n"), CLICKUP_CHAT_MESSAGE_MAX_CHARS),
+      );
     } catch (error) {
       logger.warn({
         userId: reviewer.userId,
@@ -627,7 +634,7 @@ function renderClickUpMessage(
 
   if ((options?.includeCtaWithBody || !bodySection) && notification.cta.trim().length > 0) {
     lines.push("");
-    lines.push(truncateText(notification.cta, 180));
+    lines.push(truncateText(notification.cta, MAX_BULLET_LENGTH));
   }
 
   return trimTotal(lines.join("\n"), maxChars);
@@ -664,7 +671,7 @@ function renderClickUpTransportTestMessage(
 
   if (notification.cta?.trim()) {
     lines.push("");
-    lines.push(truncateText(notification.cta, 180));
+    lines.push(truncateText(notification.cta, MAX_BULLET_LENGTH));
   }
 
   lines.push(`Open in Bizbox: ${notification.link.trim()}`);

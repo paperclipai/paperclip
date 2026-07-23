@@ -419,6 +419,37 @@ describe("getClickUpChatMessageReplies", () => {
     );
   });
 
+  it("paginates through more than twenty reply pages", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const fetchMock = vi.fn();
+    for (let page = 0; page < 21; page += 1) {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{
+            id: `reply-${page + 1}`,
+            parent_message: "message-42",
+            content: `Reply ${page + 1}`,
+            date: page + 1,
+            links: { reactions: `https://example.test/reactions/${page + 1}` },
+          }],
+          next_cursor: page === 20 ? null : `cursor-${page + 1}`,
+        }),
+      });
+    }
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await getClickUpChatMessageReplies("message-42");
+
+    expect(result.status).toBe("sent");
+    expect(result.replies).toHaveLength(21);
+    expect(result.replies.at(-1)?.id).toBe("reply-21");
+    expect(fetchMock).toHaveBeenCalledTimes(21);
+  });
+
   it("aborts slow ClickUp reply polling requests", async () => {
     process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
     process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
@@ -561,6 +592,56 @@ describe("sendAwaitingHumanNotification review context", () => {
       "Original approval thread: https://app.clickup.com/workspace-1/chat/r/channel-9/t/message-review",
     );
     expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("caps reviewer DM titles separately from full handover titles", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ member: { user: { username: "Primary Lead" } } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        text: async () => JSON.stringify({ id: "message-review" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: "dm-channel-primary" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        text: async () => JSON.stringify({ id: "dm-message-primary" }),
+      });
+    globalThis.fetch = fetchMock as typeof fetch;
+    const title = "x".repeat(50_000);
+
+    await sendAwaitingHumanNotification({
+      companyId: "company-1",
+      issueId: "issue-1",
+      handoffKind: "request_confirmation",
+      notification: {
+        title,
+        summary: "Please review the approval item.",
+        link: "https://bizbox.example/issues/BIZ-35",
+        cta: "Reply in Bizbox.",
+        labels: ["awaiting_human", "request_confirmation"],
+        approvalContext: { approvalName: "Policy approval" },
+      },
+    }, {
+      personalToken: "token-123",
+      workspaceId: "workspace-1",
+      channelId: "channel-9",
+      primaryReviewerUserId: "primary-user-id",
+    });
+
+    const dm = JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body));
+    expect(dm.content).toContain(`${"x".repeat(119)}…`);
+    expect(dm.content).not.toContain(title);
+    expect(dm.content.length).toBeLessThanOrEqual(40_000);
   });
 
   it("keeps the primary reviewer label un-attributed when only a secondary reviewer is configured", async () => {
@@ -746,7 +827,7 @@ describe("sendAwaitingHumanNotificationReply", () => {
     const result = await sendAwaitingHumanNotificationReply("thread-root-1", {
       companyId: "company-1",
       issueId: "handoff-1",
-      handoffKind: "approval",
+      handoffKind: "request_confirmation",
       notification: {
         title: "Workflow approval required",
         summary: "Landing page approval required",
@@ -790,7 +871,7 @@ describe("sendAwaitingHumanNotificationReply", () => {
       "",
       "## Section Order",
       "",
-      ...Array.from({ length: 35 }, (_, index) =>
+      ...Array.from({ length: 100 }, (_, index) =>
         `- Section ${index + 1}: This line should remain visible in the ClickUp thread reply so the human can review the complete workflow approval context before replying.`,
       ),
       "",
@@ -809,7 +890,7 @@ describe("sendAwaitingHumanNotificationReply", () => {
     const result = await sendAwaitingHumanNotificationReply("thread-root-1", {
       companyId: "company-1",
       issueId: "handoff-1",
-      handoffKind: "approval",
+      handoffKind: "request_confirmation",
       notification: {
         title: "Workflow approval required",
         summary: "Landing page approval required",
@@ -822,11 +903,42 @@ describe("sendAwaitingHumanNotificationReply", () => {
 
     expect(result.status).toBe("sent");
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    expect(body.content.length).toBeGreaterThan(1_800);
-    expect(body.content).toContain("Section 35");
+    expect(body.content.length).toBeGreaterThan(10_000);
+    expect(body.content).toContain("Section 100");
     expect(body.content).toContain("Please approve or reject this landing page plan.");
     expect(body.content).toContain("Reply with: approve or reject");
     expect(body.content).not.toMatch(/…$/);
+  });
+
+  it("preserves reply CTA instructions when the body reaches its limit", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      text: async () => JSON.stringify({ id: "question-reply-2" }),
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+    const cta = "Reply with: approve or reject.";
+
+    await sendAwaitingHumanNotificationReply("thread-root-1", {
+      companyId: "company-1",
+      issueId: "handoff-1",
+      handoffKind: "request_confirmation",
+      notification: {
+        title: "Workflow approval required",
+        summary: "Landing page approval required",
+        body: "Detailed approval context. ".repeat(2_000),
+        link: "",
+        cta,
+        labels: ["workflow_handoff", "approval"],
+      },
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.content).toContain(`…\n\n${cta}`);
+    expect(body.content.length).toBeLessThanOrEqual(40_000);
   });
 });
 
