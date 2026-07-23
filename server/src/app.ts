@@ -61,7 +61,7 @@ import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gatew
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
-import { applyUiBranding } from "./ui-branding.js";
+import { applyUiBranding, BRAND_DIR_PUBLIC_PATH, getBrandDir } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import {
@@ -135,6 +135,32 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   if (VITE_DEV_STATIC_PATHS.has(pathname)) return false;
   if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return false;
   return req.accepts(["html"]) === "html";
+}
+
+/**
+ * Serves the deployer-mounted brand directory (PAPERCLIP_BRAND_DIR) under
+ * /branding — the stylesheet link applyUiBranding injects points here. Without
+ * this route the request falls through to the SPA fallback and comes back as
+ * text/html, which the browser refuses to apply as a stylesheet. A missing
+ * brand asset 404s for the same reason. No-op when no brand dir is configured,
+ * so the default build's routing is unchanged.
+ */
+export function registerBrandStaticRoute(app: express.Express, env: NodeJS.ProcessEnv = process.env): boolean {
+  const brandDir = getBrandDir(env);
+  if (!brandDir) return false;
+  // Surface misconfiguration at startup: express.static resolves per-request,
+  // so a bad path would otherwise just 404 every /branding/* asset silently.
+  // Warn (don't throw) — the directory may be a mount that appears later.
+  if (!fs.existsSync(brandDir) || !fs.statSync(brandDir).isDirectory()) {
+    console.warn(
+      `[paperclip] PAPERCLIP_BRAND_DIR is set to "${brandDir}" but it is not an existing directory — brand assets will 404`,
+    );
+  }
+  app.use(BRAND_DIR_PUBLIC_PATH, express.static(brandDir, { index: false, maxAge: "5m" }));
+  app.use(BRAND_DIR_PUBLIC_PATH, (_req, res) => {
+    res.status(404).end();
+  });
+  return true;
 }
 
 export function shouldEnablePrivateHostnameGuard(opts: {
@@ -408,6 +434,9 @@ export async function createApp(
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
+  // Deployer-mounted brand assets (must come before the SPA fallback / vite
+  // middleware so /branding/brand.css never resolves to the HTML shell).
+  registerBrandStaticRoute(app);
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
@@ -429,17 +458,29 @@ export async function createApp(
       );
       // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
       // short cache so operators who swap them out see the new version
-      // reasonably fast. Override for `index.html` specifically — it is
-      // served by this middleware for `/` and `/index.html`, and it must
-      // never outlive the asset hashes it points at.
+      // reasonably fast.
+      // The HTML shell MUST go through the branded fallback below, which
+      // injects runtime branding: the brand stylesheet link and the
+      // `paperclip-default-theme` meta the pre-paint theme script reads.
+      // Serving the RAW index.html here (Express's default `index:
+      // 'index.html'` for `/`, or an explicit `/index.html` file hit) bypasses
+      // that injection — no brand link on the landing route and a theme flash
+      // on first paint until a branded route loads. So disable directory-index
+      // serving AND route an explicit `/index.html` to the fallback.
+      app.get("/index.html", (_req, res) => {
+        res
+          .status(200)
+          .set("Content-Type", "text/html")
+          .set("Cache-Control", "no-cache")
+          .end(readBrandedStaticIndexHtml(uiDist));
+      });
+      // No index.html special-casing here: with `index: false` and the
+      // explicit `/index.html` route above, this middleware never serves the
+      // HTML shell — its no-cache headers are set by those handlers instead.
       app.use(
         express.static(uiDist, {
+          index: false,
           maxAge: "1h",
-          setHeaders(res, filePath) {
-            if (path.basename(filePath) === "index.html") {
-              res.set("Cache-Control", "no-cache");
-            }
-          },
         }),
       );
       // SPA fallback. Only for non-asset routes — if the browser asks for
