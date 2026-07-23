@@ -48,6 +48,8 @@ restore_publish_artifacts() {
 
   rm -f "$CLI_DIR/README.md"
   rm -rf "$REPO_ROOT/server/ui-dist"
+  # Remove the transient copy staged into skills/ during the build step.
+  rm -f "$REPO_ROOT/skills/paperclip/scripts/paperclip-issue-update.sh"
 
   for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
     rm -rf "$REPO_ROOT/$pkg_dir/skills"
@@ -228,6 +230,13 @@ cd "$REPO_ROOT"
 pnpm build
 node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"
 bash "$REPO_ROOT/scripts/prepare-server-ui-dist.sh"
+# Stage paperclip-issue-update.sh next to the committed upload-artifact helper so
+# both are present in the skills/paperclip/scripts/ tree before it is copied into
+# the package directories below.  The file is not committed in skills/ because the
+# canonical source lives in scripts/; this transient copy is cleaned up in
+# restore_publish_artifacts().
+cp "$REPO_ROOT/scripts/paperclip-issue-update.sh" \
+  "$REPO_ROOT/skills/paperclip/scripts/paperclip-issue-update.sh"
 for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
   rm -rf "$REPO_ROOT/$pkg_dir/skills"
   cp -r "$REPO_ROOT/skills" "$REPO_ROOT/$pkg_dir/skills"

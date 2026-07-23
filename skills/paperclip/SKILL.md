@@ -128,12 +128,27 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
 
 ```bash
-scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
+paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
 Done
 
 - Fixed the newline-preserving issue update path
 - Verified the raw stored comment body keeps paragraph breaks
 MD
+```
+
+`paperclip-issue-update.sh` is on your `PATH` — call it by bare name from any working directory. Do **not** prefix it with `scripts/`; your CWD is the project/agent workspace, not the skill directory, so a relative path will fail with `no such file or directory`. If the bare name ever fails to resolve, fall back to the `jq` pattern below rather than retrying with different paths:
+
+```bash
+jq -nc --arg body "$(cat <<'MD'
+Done
+
+- bullet a
+MD
+)" '{status:"done", comment:$body}' | curl -sS -X PATCH \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H 'Content-Type: application/json' --data @- \
+  "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID"
 ```
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
