@@ -261,7 +261,11 @@ function cleanResponse(raw: string): string {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
+export function parseHermesOutput(
+  stdout: string,
+  stderr: string,
+  processFailed = true,
+): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
 
@@ -306,8 +310,11 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
     result.costUsd = parseFloat(costMatch[1]);
   }
 
-  // Check for error patterns in stderr
-  if (stderr.trim()) {
+  // Hermes writes diagnostic logs (including the model's final narration) to
+  // stderr even when the child completed successfully. Only treat heuristic
+  // stderr text as an adapter error when the process itself failed. This
+  // keeps ordinary completion prose from becoming the heartbeat's error.
+  if (processFailed && stderr.trim()) {
     const errorLines = stderr
       .split("\n")
       .filter((line) => /error|exception|traceback|failed/i.test(line))
@@ -536,7 +543,11 @@ export async function execute(
   });
 
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const processFailed =
+    result.timedOut ||
+    result.signal !== null ||
+    (result.exitCode ?? 1) !== 0;
+  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "", processFailed);
 
   await ctx.onLog(
     "stdout",

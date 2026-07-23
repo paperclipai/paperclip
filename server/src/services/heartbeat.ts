@@ -5182,6 +5182,25 @@ export function normalizeSessionParams(params: Record<string, unknown> | null | 
 
 type RunSessionOutcome = "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
 
+export function resolveHeartbeatRunOutcome(input: {
+  latestStatus?: string | null;
+  timedOut: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  errorMessage?: string | null;
+}): RunSessionOutcome {
+  if (isHeartbeatRunTerminalStatus(input.latestStatus)) return input.latestStatus;
+  if (input.timedOut) return "timed_out";
+  if (
+    (input.exitCode ?? 1) === 0 &&
+    input.signal === null &&
+    !input.errorMessage
+  ) {
+    return "succeeded";
+  }
+  return "failed";
+}
+
 type SkillTestHeartbeatCompletion = {
   outcome: "failed" | "cancelled";
   error: string | null;
@@ -13708,17 +13727,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      let outcome: RunSessionOutcome;
       const latestRun = await getRun(run.id);
-      if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
-        outcome = latestRun.status;
-      } else if (adapterResult.timedOut) {
-        outcome = "timed_out";
-      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
-      } else {
-        outcome = "failed";
-      }
+      const outcome = resolveHeartbeatRunOutcome({
+        latestStatus: latestRun?.status,
+        timedOut: adapterResult.timedOut,
+        exitCode: adapterResult.exitCode,
+        signal: adapterResult.signal,
+        errorMessage: adapterResult.errorMessage,
+      });
 
       const nextSessionState = resolveNextSessionState({
         adapterType: agent.adapterType,
