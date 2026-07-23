@@ -665,15 +665,12 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
-    const baseAgent = options?.restricted ? redactForRestrictedAgentView(agent) : agent;
-    const adapterConfig =
-      baseAgent && typeof baseAgent === "object" && baseAgent.adapterConfig
-        ? redactAgentAdapterConfig(baseAgent.adapterConfig as Record<string, unknown>)
-        : baseAgent?.adapterConfig;
+    const baseAgent = redactAgentRowForResponse(
+      options?.restricted ? redactForRestrictedAgentView(agent) : agent,
+    );
 
     return {
       ...baseAgent,
-      adapterConfig,
       chainOfCommand,
       access: accessState,
     };
@@ -1646,6 +1643,21 @@ export function agentRoutes(
     };
   }
 
+  // Single presenter for every response that emits a raw agent row. Restricted
+  // views blank the config wholesale for authorization reasons; this runs for
+  // config-reading (board) callers too, so plaintext `adapterConfig.env` values
+  // never leave the API regardless of actor scope.
+  function redactAgentRowForResponse<T extends { adapterConfig?: unknown } | null | undefined>(
+    agent: T,
+  ): T {
+    if (!agent || typeof agent !== "object") return agent;
+    if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return agent;
+    return {
+      ...agent,
+      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig as Record<string, unknown>),
+    };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -2010,7 +2022,7 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => redactAgentRowForResponse(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -2672,7 +2684,7 @@ export function agentRoutes(
       );
     }
 
-    res.status(201).json(agent);
+    res.status(201).json(redactAgentRowForResponse(agent));
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -3115,7 +3127,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
@@ -3141,7 +3153,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
@@ -3172,7 +3184,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/clear-error", async (req, res) => {
@@ -3204,7 +3216,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/approve", async (req, res) => {
@@ -3258,7 +3270,7 @@ export function agentRoutes(
       details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
@@ -3328,7 +3340,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.delete("/agents/:id", async (req, res) => {

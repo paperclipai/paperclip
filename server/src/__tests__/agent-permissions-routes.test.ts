@@ -494,6 +494,89 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
   }, 20_000);
 
+  // TEC-7032 reported the leak against the company agent-list endpoint, which
+  // serialises rows directly instead of going through buildAgentDetail.
+  it("redacts env values in board GET /api/companies/:companyId/agents responses", async () => {
+    const plaintextValue = "listed-value-must-not-leak";
+    mockAgentService.list.mockResolvedValue([
+      {
+        ...baseAgent,
+        adapterConfig: {
+          command: "pnpm agent:run",
+          env: {
+            LEGACY_VALUE: plaintextValue,
+            PLAIN_VALUE: { type: "plain", value: plaintextValue },
+            SECRET_REFERENCE: {
+              type: "secret_ref",
+              secretId: "55555555-5555-4555-8555-555555555555",
+              version: "latest",
+            },
+          },
+        },
+      },
+    ]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agents`),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].adapterConfig).toMatchObject({
+      command: "pnpm agent:run",
+      env: {
+        LEGACY_VALUE: { type: "plain", value: "***REDACTED***" },
+        PLAIN_VALUE: { type: "plain", value: "***REDACTED***" },
+        SECRET_REFERENCE: {
+          type: "secret_ref",
+          secretId: "55555555-5555-4555-8555-555555555555",
+          version: "latest",
+        },
+      },
+    });
+    expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
+  }, 20_000);
+
+  // Mutation routes echo the stored row back, so they leak the same values the
+  // GET paths redact.
+  it("redacts env values in agent mutation responses", async () => {
+    const plaintextValue = "mutation-value-must-not-leak";
+    const storedAgent = {
+      ...baseAgent,
+      adapterConfig: {
+        env: { PLAIN_VALUE: { type: "plain", value: plaintextValue } },
+      },
+    };
+    mockAgentService.getById.mockResolvedValue(storedAgent);
+    mockAgentService.update.mockResolvedValue(storedAgent);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).patch(`/api/agents/${agentId}`).send({ title: "Renamed" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.env).toEqual({
+      PLAIN_VALUE: { type: "plain", value: "***REDACTED***" },
+    });
+    expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
+  }, 20_000);
+
   it("redacts env values in GET /api/agents/me responses", async () => {
     const plaintextValue = "self-value-must-not-leak";
     mockAgentService.getById.mockResolvedValue({
