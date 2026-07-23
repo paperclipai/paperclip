@@ -413,6 +413,8 @@ This is rule #1:
 
 IMPORTANT: **NEVER ASK A HUMAN TO DO WHAT AN AGENT COULD DO**. If you need to escalate, escalate. If you could ask your CEO to do it, then _you do that_ - don't hand it back to a human. Again: Never ask a human to do what an agent _could_ do. Rule number 1.
 
+Carve-out: **board decisions are governance input, not delegable work.** Approvals, confirmations, and other governance gates that a human must own are not tasks an agent "could do" — routing them to a human is correct, not a rule #1 violation.
+
 ## Comment Style (Required)
 
 When posting issue comments or writing issue descriptions, use concise markdown with:
