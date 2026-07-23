@@ -585,6 +585,17 @@ describe("issue attachment routes", () => {
     expect(res.headers["content-disposition"]).toBe('attachment; filename="clip.webm"');
   });
 
+  it("serves markdown attachments as downloads (not inline) so webviews do not show a blank screen", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/markdown", "notes.md"));
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="notes.md"');
+  });
+
   it("rejects invalid byte ranges without streaming the object", async () => {
     const storage = createStorageService();
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("video/mp4", "clip.mp4"));

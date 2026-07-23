@@ -55,7 +55,6 @@ export const INLINE_ATTACHMENT_TYPES: readonly string[] = [
   "image/*",
   "application/pdf",
   "text/plain",
-  "text/markdown",
   "application/json",
   "text/csv",
   "video/mp4",
