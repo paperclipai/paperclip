@@ -239,7 +239,7 @@ describeEmbeddedPostgres("summary slot service", () => {
         `PUT /api/companies/${companyId}/summary-slots/project/header`,
       );
       expect(issueRow.description).toContain(
-        "opens with the 1-3 specific, concrete, actionable items",
+        "opens with the 1–3 specific, concrete, actionable items",
       );
       expect(issueRow.description).toContain("unblock this work");
       expect(issueRow.description).toContain(
