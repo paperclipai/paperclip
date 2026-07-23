@@ -316,6 +316,8 @@ An ownership change selects who owns the issue after the comment is committed:
 
 A wake is the delivery path for a selected agent owner. If an interrupting update also assigns a non-terminal, non-backlog issue to an agent, Paperclip should enqueue one wake for the new assignee and include the interrupting comment and interrupted run id in the wake payload/context when available. Stale scheduled retries for the previous owner must not run after ownership changes away from that owner.
 
+Fresh assignment and execution-stage handoff wakes should include the issue id, identifier, title, description, and a bounded recent issue-comment thread in startup context. Historical thread comments are distinct from the new-comment delta that caused a wake: adapters may render the history for orientation, but must not describe it as pending feedback or require the agent to acknowledge it as new. Deleted comments stay excluded, quarantined low-trust bodies stay sanitized, and any omitted or truncated context should set the payload's fallback-fetch signal.
+
 If the committed update assigns the issue to a user, clears the agent assignee, or leaves the issue without an agent owner, Paperclip must not imply that an agent handoff happened. The issue is then waiting on the human owner or on a future explicit assignment, blocker, approval, interaction, monitor, or recovery action.
 
 Plain text is not assignment. Writing an agent's name, role, or team label in a comment does not change ownership and does not create an agent wake. Agent routing from comment text requires a structured agent mention that resolves inside the company, an explicit `assigneeAgentId` mutation, or an existing current agent assignee receiving normal issue-thread feedback.

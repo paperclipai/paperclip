@@ -11,7 +11,10 @@ import {
   issueReferenceMentions,
   issues,
 } from "@paperclipai/db";
-import { companySearchQuerySchema } from "@paperclipai/shared";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  companySearchQuerySchema,
+} from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -22,6 +25,7 @@ import { companySearchService } from "../services/company-search.js";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
 import { issueReferenceService } from "../services/issue-references.js";
 import { issueService } from "../services/issues.js";
+import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
 import type { StorageService } from "../storage/types.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -69,6 +73,7 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
       companyId,
       identifier: "RED-1",
       title: "Deleted comment redaction",
+      description: "Review the complete issue context without a manual API lookup.",
       status: "todo",
       priority: "medium",
     });
@@ -185,6 +190,211 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     ]);
     expect(JSON.stringify(wakePayload)).not.toContain("secret deleted body");
     expect(JSON.stringify(wakePayload)).not.toContain("secret metadata");
+  });
+
+  it.each([
+    "issue_assigned",
+    "issue_assignment_recovery",
+    "execution_review_requested",
+  ] as const)(
+    "includes bounded, sanitized issue context for %s handoffs",
+    async (wakeReason) => {
+      const { companyId, issueId } = await seedIssue();
+      const threadComments = Array.from({ length: 10 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorUserId: "board-user-1",
+        body: `historical comment ${String(index + 1).padStart(2, "0")}`,
+        metadata:
+          index === 9
+            ? { oversized: `historical-metadata-marker-${"x".repeat(100_000)}` }
+            : null,
+        createdAt: new Date(
+          `2026-07-01T00:${String(index + 1).padStart(2, "0")}:00.000Z`,
+        ),
+      }));
+      const quarantinedCommentId = randomUUID();
+      const deletedCommentId = randomUUID();
+
+      await db.insert(issueComments).values([
+        ...threadComments,
+        {
+          id: quarantinedCommentId,
+          companyId,
+          issueId,
+          authorUserId: "board-user-1",
+          body: "secret quarantined instructions",
+          sourceTrust: {
+            preset: LOW_TRUST_REVIEW_PRESET,
+            disposition: "quarantined",
+            sourceIssueId: issueId,
+          },
+          createdAt: new Date("2026-07-01T00:11:00.000Z"),
+        },
+        {
+          id: deletedCommentId,
+          companyId,
+          issueId,
+          authorUserId: "board-user-1",
+          body: "secret deleted handoff detail",
+          deletedAt: new Date("2026-07-01T00:13:00.000Z"),
+          deletedByType: "user",
+          deletedByUserId: "board-user-1",
+          createdAt: new Date("2026-07-01T00:12:00.000Z"),
+        },
+      ]);
+
+      const wakePayload = await buildPaperclipWakePayload({
+        db,
+        companyId,
+        contextSnapshot: {
+          issueId,
+          wakeReason,
+        },
+      });
+
+      expect(wakePayload?.reason).toBe(wakeReason);
+      expect(wakePayload?.issue).toMatchObject({
+        id: issueId,
+        identifier: "RED-1",
+        title: "Deleted comment redaction",
+        description: "Review the complete issue context without a manual API lookup.",
+        descriptionTruncated: false,
+      });
+      expect(wakePayload?.commentIds).toEqual([]);
+      expect(wakePayload?.comments).toEqual([]);
+      expect(wakePayload?.latestCommentId).toBeNull();
+      expect(wakePayload?.commentWindow).toEqual({
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      });
+
+      expect(wakePayload?.issueThread).toMatchObject({
+        totalCount: 11,
+        includedCount: 8,
+        omittedCount: 3,
+        truncated: true,
+      });
+      expect(
+        wakePayload?.issueThread?.comments.map((comment) => comment.id),
+      ).toEqual([
+        ...threadComments.slice(3).map((comment) => comment.id),
+        quarantinedCommentId,
+      ]);
+      expect(
+        wakePayload?.issueThread?.comments.map((comment) => comment.body),
+      ).toEqual([
+        ...threadComments.slice(3).map((comment) => comment.body),
+        LOW_TRUST_QUARANTINED_BODY,
+      ]);
+      expect(wakePayload?.truncated).toBe(true);
+      expect(wakePayload?.fallbackFetchNeeded).toBe(true);
+
+      const serializedPayload = JSON.stringify(wakePayload);
+      expect(serializedPayload).not.toContain("secret deleted handoff detail");
+      expect(serializedPayload).not.toContain("secret quarantined instructions");
+      expect(serializedPayload).not.toContain("historical-metadata-marker");
+      expect(serializedPayload).not.toContain(deletedCommentId);
+    },
+  );
+
+  it("provides a complete short assignment thread without requiring a fallback fetch", async () => {
+    const { companyId, issueId } = await seedIssue();
+    await db.insert(issueComments).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorUserId: "board-user-1",
+        body: "Initial acceptance criteria.",
+        createdAt: new Date("2026-07-01T00:01:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorUserId: "board-user-1",
+        body: "Review handoff details.",
+        createdAt: new Date("2026-07-01T00:02:00.000Z"),
+      },
+    ]);
+
+    const wakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    expect(wakePayload?.issueThread).toMatchObject({
+      totalCount: 2,
+      includedCount: 2,
+      omittedCount: 0,
+      truncated: false,
+    });
+    expect(
+      wakePayload?.issueThread?.comments.map((comment) => comment.body),
+    ).toEqual([
+      "Initial acceptance criteria.",
+      "Review handoff details.",
+    ]);
+    expect(wakePayload?.truncated).toBe(false);
+    expect(wakePayload?.fallbackFetchNeeded).toBe(false);
+  });
+
+  it("keeps the triggering comment delta separate from historical handoff context", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const historicalCommentId = randomUUID();
+    const wakeCommentId = randomUUID();
+    await db.insert(issueComments).values([
+      {
+        id: historicalCommentId,
+        companyId,
+        issueId,
+        authorUserId: "board-user-1",
+        body: "Existing implementation context.",
+        createdAt: new Date("2026-07-01T00:01:00.000Z"),
+      },
+      {
+        id: wakeCommentId,
+        companyId,
+        issueId,
+        authorUserId: "board-user-1",
+        body: "New feedback that caused this wake.",
+        createdAt: new Date("2026-07-01T00:02:00.000Z"),
+      },
+    ]);
+
+    const wakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+        wakeCommentIds: [wakeCommentId],
+      },
+    });
+
+    expect(wakePayload?.commentIds).toEqual([wakeCommentId]);
+    expect(wakePayload?.comments.map((comment) => comment.id)).toEqual([
+      wakeCommentId,
+    ]);
+    expect(wakePayload?.issueThread).toMatchObject({
+      totalCount: 1,
+      includedCount: 1,
+      omittedCount: 0,
+      truncated: false,
+    });
+    expect(wakePayload?.issueThread?.comments).toEqual([
+      expect.objectContaining({
+        id: historicalCommentId,
+        body: "Existing implementation context.",
+      }),
+    ]);
   });
 
   it("excludes deleted comment bodies from company search", async () => {

@@ -315,6 +315,7 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -349,6 +350,14 @@ const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
+const ISSUE_CONTEXT_HANDOFF_WAKE_REASONS = new Set([
+  "issue_assigned",
+  "issue_assignment_recovery",
+  "execution_review_requested",
+  EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+  "execution_approval_requested",
+  "execution_changes_requested",
+]);
 const GITHUB_PR_WORKFLOW_SKILL_KEY = "paperclipai/bundled/software-development/github-pr-workflow";
 const GITHUB_PR_WORKFLOW_SKILL_SLUG = "github-pr-workflow";
 const PUSH_CAPABILITY_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
@@ -4376,6 +4385,94 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
+type InlineWakeCommentRow = Pick<
+  typeof issueComments.$inferSelect,
+  | "id"
+  | "issueId"
+  | "body"
+  | "authorType"
+  | "authorAgentId"
+  | "authorUserId"
+  | "presentation"
+  | "metadata"
+  | "deletedAt"
+  | "deletedByType"
+  | "deletedByAgentId"
+  | "deletedByUserId"
+  | "deletedByRunId"
+  | "sourceTrust"
+  | "createdAt"
+>;
+
+function serializeInlineWakeComment(
+  row: InlineWakeCommentRow,
+  input: {
+    allowedBodyChars: number;
+    exposeLowTrustRaw: boolean;
+    includeExtendedFields: boolean;
+  },
+) {
+  if (input.allowedBodyChars <= 0) return null;
+
+  const deletedAt = row.deletedAt ?? null;
+  const safeRow =
+    deletedAt || input.exposeLowTrustRaw
+      ? row
+      : sanitizeQuarantinedCommentForHigherTrust(row);
+  const fullBody = deletedAt ? "" : safeRow.body;
+  const body =
+    fullBody.length > input.allowedBodyChars
+      ? fullBody.slice(0, input.allowedBodyChars)
+      : fullBody;
+  const bodyTruncated = body.length < fullBody.length;
+
+  return {
+    comment: {
+      id: row.id,
+      issueId: row.issueId,
+      authorType:
+        row.authorType ??
+        (row.authorAgentId ? "agent" : row.authorUserId ? "user" : "system"),
+      body,
+      bodyTruncated,
+      ...(input.includeExtendedFields
+        ? {
+            presentation: deletedAt ? null : safeRow.presentation ?? null,
+            metadata: deletedAt ? null : safeRow.metadata ?? null,
+            deletedAt: deletedAt ? deletedAt.toISOString() : null,
+            deletedByType: deletedAt ? row.deletedByType ?? null : null,
+            deletedByAgentId: deletedAt ? row.deletedByAgentId ?? null : null,
+            deletedByUserId: deletedAt ? row.deletedByUserId ?? null : null,
+            deletedByRunId: deletedAt ? row.deletedByRunId ?? null : null,
+            sourceTrust: row.sourceTrust ?? null,
+          }
+        : {}),
+      createdAt: row.createdAt.toISOString(),
+      author: row.authorAgentId
+        ? { type: "agent", id: row.authorAgentId }
+        : row.authorUserId
+          ? { type: "user", id: row.authorUserId }
+          : { type: "system", id: null },
+    },
+    consumedBodyChars: body.length,
+    bodyTruncated,
+  };
+}
+
+function shouldIncludeIssueThreadContext(
+  contextSnapshot: Record<string, unknown>,
+) {
+  const wakeReason = readNonEmptyString(contextSnapshot.wakeReason);
+  if (wakeReason && ISSUE_CONTEXT_HANDOFF_WAKE_REASONS.has(wakeReason)) {
+    return true;
+  }
+
+  const wakeRole = readNonEmptyString(
+    parseObject(contextSnapshot.executionStage).wakeRole,
+  );
+  return wakeRole === "reviewer" || wakeRole === "approver" || wakeRole === "executor";
+}
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
@@ -4394,6 +4491,7 @@ export async function buildPaperclipWakePayload(input: {
         id: string;
         identifier: string | null;
         title: string;
+        description?: string | null;
         status: string;
         priority: string;
         workMode: string;
@@ -4416,6 +4514,7 @@ export async function buildPaperclipWakePayload(input: {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            description: issues.description,
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
@@ -4426,8 +4525,47 @@ export async function buildPaperclipWakePayload(input: {
       : null);
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
+  const resolvedIssueId = issueSummary?.id ?? issueId;
+  const includeIssueThread =
+    Boolean(resolvedIssueId) &&
+    shouldIncludeIssueThreadContext(input.contextSnapshot);
+  let issueThreadIdsNewestFirst: string[] = [];
+  let issueThreadTotalCount = 0;
+  if (includeIssueThread && resolvedIssueId) {
+    const issueThreadWhere =
+      commentIds.length > 0
+        ? and(
+            eq(issueComments.companyId, input.companyId),
+            eq(issueComments.issueId, resolvedIssueId),
+            isNull(issueComments.deletedAt),
+            notInArray(issueComments.id, commentIds),
+          )
+        : and(
+            eq(issueComments.companyId, input.companyId),
+            eq(issueComments.issueId, resolvedIssueId),
+            isNull(issueComments.deletedAt),
+          );
+    const [issueThreadIdRows, issueThreadCountRows] = await Promise.all([
+      input.db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(issueThreadWhere)
+        .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+        .limit(MAX_INLINE_WAKE_COMMENTS),
+      input.db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueComments)
+        .where(issueThreadWhere),
+    ]);
+    issueThreadIdsNewestFirst = issueThreadIdRows.map((row) => row.id);
+    issueThreadTotalCount = Math.max(
+      issueThreadCountRows[0]?.count ?? 0,
+      issueThreadIdsNewestFirst.length,
+    );
+  }
+  const hydratedCommentIds = [...new Set([...commentIds, ...issueThreadIdsNewestFirst])];
   const commentRows =
-    commentIds.length === 0
+    hydratedCommentIds.length === 0
       ? []
       : await input.db
           .select({
@@ -4451,7 +4589,7 @@ export async function buildPaperclipWakePayload(input: {
           .where(
             and(
               eq(issueComments.companyId, input.companyId),
-              inArray(issueComments.id, commentIds),
+              inArray(issueComments.id, hydratedCommentIds),
             ),
           );
 
@@ -4477,42 +4615,65 @@ export async function buildPaperclipWakePayload(input: {
       break;
     }
 
-    const deletedAt = row.deletedAt ?? null;
-    const safeRow = deletedAt || input.exposeLowTrustRaw ? row : sanitizeQuarantinedCommentForHigherTrust(row);
-    const fullBody = deletedAt ? "" : safeRow.body;
     const allowedBodyChars = Math.min(MAX_INLINE_WAKE_COMMENT_BODY_CHARS, remainingBodyChars);
-    if (allowedBodyChars <= 0) {
+    const serialized = serializeInlineWakeComment(row, {
+      allowedBodyChars,
+      exposeLowTrustRaw: input.exposeLowTrustRaw === true,
+      includeExtendedFields: true,
+    });
+    if (!serialized) {
       truncated = true;
       break;
     }
-
-    const body = fullBody.length > allowedBodyChars ? fullBody.slice(0, allowedBodyChars) : fullBody;
-    const bodyTruncated = body.length < fullBody.length;
-    if (bodyTruncated) truncated = true;
-    remainingBodyChars -= body.length;
-
-    comments.push({
-      id: row.id,
-      issueId: row.issueId,
-      authorType: row.authorType ?? (row.authorAgentId ? "agent" : row.authorUserId ? "user" : "system"),
-      body,
-      bodyTruncated,
-      presentation: deletedAt ? null : safeRow.presentation ?? null,
-      metadata: deletedAt ? null : safeRow.metadata ?? null,
-      deletedAt: deletedAt ? deletedAt.toISOString() : null,
-      deletedByType: deletedAt ? row.deletedByType ?? null : null,
-      deletedByAgentId: deletedAt ? row.deletedByAgentId ?? null : null,
-      deletedByUserId: deletedAt ? row.deletedByUserId ?? null : null,
-      deletedByRunId: deletedAt ? row.deletedByRunId ?? null : null,
-      sourceTrust: row.sourceTrust ?? null,
-      createdAt: row.createdAt.toISOString(),
-      author: row.authorAgentId
-        ? { type: "agent", id: row.authorAgentId }
-        : row.authorUserId
-          ? { type: "user", id: row.authorUserId }
-          : { type: "system", id: null },
-    });
+    if (serialized.bodyTruncated) truncated = true;
+    remainingBodyChars -= serialized.consumedBodyChars;
+    comments.push(serialized.comment);
   }
+
+  const issueThreadCommentsNewestFirst: Array<Record<string, unknown>> = [];
+  let issueThreadRemainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
+  let issueThreadTruncated = false;
+  for (const commentId of issueThreadIdsNewestFirst) {
+    const row = commentsById.get(commentId);
+    if (!row) {
+      issueThreadTruncated = true;
+      continue;
+    }
+    const serialized = serializeInlineWakeComment(row, {
+      allowedBodyChars: Math.min(
+        MAX_INLINE_WAKE_COMMENT_BODY_CHARS,
+        issueThreadRemainingBodyChars,
+      ),
+      exposeLowTrustRaw: input.exposeLowTrustRaw === true,
+      includeExtendedFields: false,
+    });
+    if (!serialized) {
+      issueThreadTruncated = true;
+      break;
+    }
+    if (serialized.bodyTruncated) issueThreadTruncated = true;
+    issueThreadRemainingBodyChars -= serialized.consumedBodyChars;
+    issueThreadCommentsNewestFirst.push(serialized.comment);
+  }
+  const issueThreadComments = issueThreadCommentsNewestFirst.reverse();
+  const issueThreadOmittedCount = Math.max(
+    0,
+    issueThreadTotalCount - issueThreadComments.length,
+  );
+  if (issueThreadOmittedCount > 0) issueThreadTruncated = true;
+  const issueThread = includeIssueThread
+    ? {
+        comments: issueThreadComments,
+        totalCount: issueThreadTotalCount,
+        includedCount: issueThreadComments.length,
+        omittedCount: issueThreadOmittedCount,
+        truncated: issueThreadTruncated,
+      }
+    : null;
+  const issueDescription = issueSummary?.description ?? null;
+  const issueDescriptionTruncated =
+    typeof issueDescription === "string" &&
+    issueDescription.length > MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS;
 
   const annotationDeltas = annotationCommentId && issueId
     ? await input.db
@@ -4582,7 +4743,11 @@ export async function buildPaperclipWakePayload(input: {
       interactionId,
     })
     : null;
-  const payloadTruncated = truncated || planReviewContext?.truncated === true;
+  const payloadTruncated =
+    truncated ||
+    issueDescriptionTruncated ||
+    issueThread?.truncated === true ||
+    planReviewContext?.truncated === true;
   const recoveryActionId = readNonEmptyString(input.contextSnapshot.recoveryActionId);
   const recoveryCause = readNonEmptyString(input.contextSnapshot.recoveryCause);
   const recoveryAction = recoveryActionId
@@ -4627,6 +4792,11 @@ export async function buildPaperclipWakePayload(input: {
           id: issueSummary.id,
           identifier: issueSummary.identifier,
           title: issueSummary.title,
+          description:
+            typeof issueDescription === "string"
+              ? issueDescription.slice(0, MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS)
+              : null,
+          descriptionTruncated: issueDescriptionTruncated,
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
@@ -4681,6 +4851,7 @@ export async function buildPaperclipWakePayload(input: {
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
+    issueThread,
     annotationDeltas,
     planReviewContext,
     commentWindow: {
@@ -12075,6 +12246,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: issueRef.id,
             identifier: issueRef.identifier,
             title: issueRef.title,
+            description: issueRef.description,
             status: issueRef.status,
             priority: issueRef.priority,
             workMode: issueRef.workMode,

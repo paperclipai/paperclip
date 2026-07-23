@@ -906,6 +906,94 @@ describe("renderPaperclipWakePrompt", () => {
     expect(fallbackPrompt).toContain("- fallback fetch needed: yes");
   });
 
+  it("preserves and renders historical issue context without treating it as a new comment batch", () => {
+    const payload = {
+      reason: "execution_review_requested",
+      issue: {
+        id: "issue-1",
+        identifier: "TEST-1581",
+        title: "Review the implementation",
+        description: "Acceptance criteria and implementation details.",
+        descriptionTruncated: false,
+        status: "in_review",
+      },
+      issueThread: {
+        comments: [
+          {
+            id: "comment-oldest",
+            issueId: "issue-1",
+            body: "Original implementation notes.",
+            createdAt: "2026-07-21T10:00:00.000Z",
+            author: { type: "agent", id: "engineering-lead" },
+          },
+          {
+            id: "comment-newest",
+            issueId: "issue-1",
+            body: "Board audit checklist.",
+            createdAt: "2026-07-22T10:00:00.000Z",
+            author: { type: "user", id: "board-member" },
+          },
+        ],
+        totalCount: 4,
+        includedCount: 2,
+        omittedCount: 2,
+        truncated: true,
+      },
+      commentIds: [],
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const serialized = JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}");
+    expect(serialized).toMatchObject({
+      issue: {
+        id: "issue-1",
+        identifier: "TEST-1581",
+        title: "Review the implementation",
+        description: "Acceptance criteria and implementation details.",
+        descriptionTruncated: false,
+      },
+      issueThread: {
+        comments: [
+          {
+            id: "comment-oldest",
+            body: "Original implementation notes.",
+            authorType: "agent",
+            authorId: "engineering-lead",
+          },
+          {
+            id: "comment-newest",
+            body: "Board audit checklist.",
+            authorType: "user",
+            authorId: "board-member",
+          },
+        ],
+        totalCount: 4,
+        includedCount: 2,
+        omittedCount: 2,
+        truncated: true,
+      },
+    });
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- existing issue comments: 2/4");
+    expect(prompt).toContain("- fallback fetch needed: yes");
+    expect(prompt).toContain("Existing issue comment thread (historical context, oldest to newest):");
+    expect(prompt.indexOf("Original implementation notes.")).toBeLessThan(
+      prompt.indexOf("Board audit checklist."),
+    );
+    expect(prompt).toContain("[2 issue comments omitted from inline history]");
+    expect(prompt).not.toContain("acknowledge the latest comment");
+    expect(prompt).not.toContain("- pending comments:");
+    expect(prompt).not.toContain("- latest comment id:");
+    expect(prompt).not.toContain("New comments in order:");
+  });
+
   it("renders the execution workspace branch guard only on non-resumed sessions", () => {
     const payload = {
       reason: "issue_assigned",

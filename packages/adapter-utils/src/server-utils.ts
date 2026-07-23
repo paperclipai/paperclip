@@ -438,6 +438,8 @@ type PaperclipWakeIssue = {
   id: string | null;
   identifier: string | null;
   title: string | null;
+  description: string | null;
+  descriptionTruncated: boolean;
   status: string | null;
   workMode: string | null;
   priority: string | null;
@@ -470,6 +472,14 @@ type PaperclipWakeComment = {
   createdAt: string | null;
   authorType: string | null;
   authorId: string | null;
+};
+
+type PaperclipWakeIssueThread = {
+  comments: PaperclipWakeComment[];
+  totalCount: number;
+  includedCount: number;
+  omittedCount: number;
+  truncated: boolean;
 };
 
 type PaperclipWakePlanReviewAuthor = {
@@ -670,6 +680,7 @@ type PaperclipWakePayload = {
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
+  issueThread: PaperclipWakeIssueThread | null;
   requestedCount: number;
   includedCount: number;
   missingCount: number;
@@ -702,6 +713,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   const id = asString(issue.id, "").trim() || null;
   const identifier = asString(issue.identifier, "").trim() || null;
   const title = asString(issue.title, "").trim() || null;
+  const description = asString(issue.description, "") || null;
   const status = asString(issue.status, "").trim() || null;
   const workMode = asString(issue.workMode, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
@@ -710,6 +722,8 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
     id,
     identifier,
     title,
+    description,
+    descriptionTruncated: asBoolean(issue.descriptionTruncated, false),
     status,
     workMode,
     priority,
@@ -729,6 +743,39 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeIssueThread(value: unknown): PaperclipWakeIssueThread | null {
+  const thread = parseObject(value);
+  const comments = Array.isArray(thread.comments)
+    ? thread.comments
+        .map((entry) => normalizePaperclipWakeComment(entry))
+        .filter((entry): entry is PaperclipWakeComment => Boolean(entry))
+    : [];
+  const reportedTotalCount = Math.max(0, Math.trunc(asNumber(thread.totalCount, comments.length)));
+  const totalCount = Math.max(reportedTotalCount, comments.length);
+  const includedCount = comments.length;
+  const reportedOmittedCount = Math.max(0, Math.trunc(asNumber(thread.omittedCount, 0)));
+  const omittedCount = Math.max(reportedOmittedCount, totalCount - includedCount);
+  const truncated =
+    asBoolean(thread.truncated, false) ||
+    omittedCount > 0 ||
+    comments.some((comment) => comment.bodyTruncated);
+  if (
+    comments.length === 0 &&
+    totalCount === 0 &&
+    !Array.isArray(thread.comments) &&
+    Object.keys(thread).length === 0
+  ) {
+    return null;
+  }
+  return {
+    comments,
+    totalCount,
+    includedCount,
+    omittedCount,
+    truncated,
   };
 }
 
@@ -1221,11 +1268,13 @@ function markdownInlineCode(value: string): string {
 
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
+  const issue = normalizePaperclipWakeIssue(payload.issue);
   const comments = Array.isArray(payload.comments)
     ? payload.comments
         .map((entry) => normalizePaperclipWakeComment(entry))
         .filter((entry): entry is PaperclipWakeComment => Boolean(entry))
     : [];
+  const issueThread = normalizePaperclipWakeIssueThread(payload.issueThread);
   const commentWindow = parseObject(payload.commentWindow);
   const commentIds = Array.isArray(payload.commentIds)
     ? payload.commentIds
@@ -1262,14 +1311,14 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && !issueThread && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !recovery && !issue) {
     return null;
   }
 
   return {
     reason: asString(payload.reason, "").trim() || null,
     recovery,
-    issue: normalizePaperclipWakeIssue(payload.issue),
+    issue,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
@@ -1291,11 +1340,18 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
     comments,
+    issueThread,
     requestedCount: asNumber(commentWindow.requestedCount, comments.length || commentIds.length),
     includedCount: asNumber(commentWindow.includedCount, comments.length),
     missingCount: asNumber(commentWindow.missingCount, 0),
-    truncated: asBoolean(payload.truncated, false),
-    fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
+    truncated:
+      asBoolean(payload.truncated, false) ||
+      issue?.descriptionTruncated === true ||
+      issueThread?.truncated === true,
+    fallbackFetchNeeded:
+      asBoolean(payload.fallbackFetchNeeded, false) ||
+      issue?.descriptionTruncated === true ||
+      issueThread?.truncated === true,
   };
 }
 
@@ -1396,6 +1452,11 @@ export function renderPaperclipWakePrompt(
   const wakeSummaryLines = [
     `- reason: ${normalized.reason ?? "unknown"}`,
     `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+    ...(normalized.issueThread
+      ? [
+          `- existing issue comments: ${normalized.issueThread.includedCount}/${normalized.issueThread.totalCount}`,
+        ]
+      : []),
     ...(hasWakeCommentBatch
       ? [
           `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
@@ -1763,6 +1824,29 @@ export function renderPaperclipWakePrompt(
       "Do not call `/api/issues/{id}/checkout` again unless you intentionally switch to a different task.",
       "",
     );
+  }
+
+  if (normalized.issueThread && normalized.issueThread.comments.length > 0) {
+    lines.push("Existing issue comment thread (historical context, oldest to newest):");
+    for (const [index, comment] of normalized.issueThread.comments.entries()) {
+      const authorLabel = comment.authorId
+        ? `${comment.authorType ?? "unknown"} ${comment.authorId}`
+        : comment.authorType ?? "unknown";
+      lines.push(
+        `${index + 1}. historical comment ${comment.id ?? "unknown"} at ${comment.createdAt ?? "unknown"} by ${authorLabel}`,
+        comment.body,
+      );
+      if (comment.bodyTruncated) {
+        lines.push("[historical comment body truncated]");
+      }
+      lines.push("");
+    }
+    if (normalized.issueThread.omittedCount > 0) {
+      lines.push(
+        `[${normalized.issueThread.omittedCount} issue comments omitted from inline history]`,
+        "",
+      );
+    }
   }
 
   if (normalized.comments.length > 0) {

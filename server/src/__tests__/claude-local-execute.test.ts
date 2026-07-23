@@ -11,6 +11,25 @@ import {
   resetClaudeCliCapabilitiesCacheForTests,
 } from "@paperclipai/adapter-claude-local/server";
 
+function fakeClaudeCommandPath(directory: string): string {
+  return path.join(directory, process.platform === "win32" ? "claude.cmd" : "claude");
+}
+
+async function writeNodeCommand(commandPath: string, script: string): Promise<void> {
+  if (process.platform === "win32") {
+    const scriptPath = `${commandPath}.cjs`;
+    await fs.writeFile(scriptPath, script, "utf8");
+    await fs.writeFile(
+      commandPath,
+      `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`,
+      "utf8",
+    );
+    return;
+  }
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 async function writeFailingClaudeCommand(
   commandPath: string,
   options: { resultEvent: Record<string, unknown>; exitCode?: number },
@@ -21,8 +40,7 @@ async function writeFailingClaudeCommand(
 console.log(${JSON.stringify(payload)});
 process.exit(${exit});
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeNodeCommand(commandPath, script);
 }
 
 async function writeTextFailingClaudeCommand(
@@ -39,8 +57,7 @@ if (${JSON.stringify(options.stderr ?? "")}) {
 }
 process.exit(${exit});
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeNodeCommand(commandPath, script);
 }
 
 async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
@@ -72,6 +89,7 @@ const payload = {
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
   paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
+  paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -80,8 +98,7 @@ console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "11111
 console.log(JSON.stringify({ type: "assistant", session_id: "11111111-1111-4111-8111-111111111111", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "11111111-1111-4111-8111-111111111111", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeNodeCommand(commandPath, script);
 }
 
 async function writeHelpWithoutEffortClaudeCommand(commandPath: string): Promise<void> {
@@ -118,8 +135,7 @@ console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "33333
 console.log(JSON.stringify({ type: "assistant", session_id: "33333333-3333-4333-8333-333333333333", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "33333333-3333-4333-8333-333333333333", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeNodeCommand(commandPath, script);
 }
 
 async function writeHelpWithEffortClaudeCommand(commandPath: string): Promise<void> {
@@ -157,8 +173,7 @@ console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "44444
 console.log(JSON.stringify({ type: "assistant", session_id: "44444444-4444-4444-8444-444444444444", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "44444444-4444-4444-8444-444444444444", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeNodeCommand(commandPath, script);
 }
 
 type CapturePayload = {
@@ -173,6 +188,7 @@ type CapturePayload = {
   paperclipApiUrl?: string | null;
   paperclipApiKey?: string | null;
   paperclipApiBridgeMode?: string | null;
+  paperclipWakePayloadJson?: string | null;
   appendedSystemPromptFilePath?: string | null;
   appendedSystemPromptFileContents?: string | null;
 };
@@ -213,8 +229,7 @@ console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "bbbbb
 console.log(JSON.stringify({ type: "assistant", session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeNodeCommand(commandPath, script);
 }
 
 async function writeAlwaysPoisonedMessageIdClaudeCommand(commandPath: string): Promise<void> {
@@ -243,8 +258,7 @@ console.log(JSON.stringify({
 }));
 process.exit(1);
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeNodeCommand(commandPath, script);
 }
 
 async function writeRetryThenSucceedClaudeCommand(commandPath: string): Promise<void> {
@@ -284,8 +298,7 @@ console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "22222
 console.log(JSON.stringify({ type: "assistant", session_id: "22222222-2222-4222-8222-222222222222", message: { content: [{ type: "text", text: "hello" }] } }));
 console.log(JSON.stringify({ type: "result", session_id: "22222222-2222-4222-8222-222222222222", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
+  await writeNodeCommand(commandPath, script);
 }
 
 async function setupExecuteEnv(
@@ -294,7 +307,7 @@ async function setupExecuteEnv(
 ) {
   const workspace = path.join(root, "workspace");
   const binDir = path.join(root, "bin");
-  const commandPath = path.join(binDir, "claude");
+  const commandPath = fakeClaudeCommandPath(binDir);
   const capturePath = path.join(root, "capture.json");
   const statePath = path.join(root, "state.txt");
   await fs.mkdir(workspace, { recursive: true });
@@ -350,6 +363,132 @@ function createLocalSandboxRunner() {
 }
 
 describe("claude execute", () => {
+  it("injects assigned issue context and historical comments into the CLI startup context", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-wake-context-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const taskMarkdown = [
+      "# Assigned Paperclip Issue",
+      "",
+      "- ID: ISSUE-42",
+      "- Title: Deliver reviewer handoff context",
+      "",
+      "## Description",
+      "",
+      "Reviewers must receive the complete handoff without an API lookup.",
+    ].join("\n");
+    const paperclipWake = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-context-42",
+        identifier: "ISSUE-42",
+        title: "Deliver reviewer handoff context",
+        description: "Reviewers must receive the complete handoff without an API lookup.",
+        descriptionTruncated: false,
+        status: "in_progress",
+        workMode: "standard",
+        priority: "high",
+      },
+      commentIds: [],
+      latestCommentId: null,
+      comments: [],
+      issueThread: {
+        comments: [
+          {
+            id: "comment-oldest",
+            issueId: "issue-context-42",
+            body: "Board requested an independent review.",
+            bodyTruncated: false,
+            createdAt: "2026-07-23T07:28:00.000Z",
+            author: { type: "user", id: "board-user" },
+          },
+          {
+            id: "comment-newest",
+            issueId: "issue-context-42",
+            body: "Engineering completed the implementation handoff.",
+            bodyTruncated: false,
+            createdAt: "2026-07-23T08:15:00.000Z",
+            author: { type: "agent", id: "engineering-lead" },
+          },
+        ],
+        totalCount: 2,
+        includedCount: 2,
+        omittedCount: 0,
+        truncated: false,
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      truncated: false,
+      fallbackFetchNeeded: false,
+    };
+
+    try {
+      const result = await execute({
+        runId: "run-wake-context",
+        agent: {
+          id: "review-agent",
+          companyId: "company-1",
+          name: "Review Agent",
+          adapterType: "claude_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "ISSUE-42" },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Review the assigned issue.",
+        },
+        context: {
+          issueId: "issue-context-42",
+          taskId: "issue-context-42",
+          wakeReason: "issue_assigned",
+          paperclipTaskMarkdown: taskMarkdown,
+          paperclipWake,
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("- Title: Deliver reviewer handoff context");
+      expect(capture.prompt).toContain(
+        "Reviewers must receive the complete handoff without an API lookup.",
+      );
+      expect(capture.prompt).toContain(
+        "Existing issue comment thread (historical context, oldest to newest):",
+      );
+      expect(capture.prompt).toContain("Board requested an independent review.");
+      expect(capture.prompt).toContain("Engineering completed the implementation handoff.");
+      expect(capture.prompt.indexOf("Board requested an independent review.")).toBeLessThan(
+        capture.prompt.indexOf("Engineering completed the implementation handoff."),
+      );
+
+      expect(capture.paperclipWakePayloadJson).toBeTruthy();
+      const structuredWake = JSON.parse(capture.paperclipWakePayloadJson!) as {
+        issue: { id: string; identifier: string; title: string; description: string };
+        issueThread: { comments: Array<{ id: string; body: string }> };
+      };
+      expect(structuredWake.issue).toMatchObject({
+        id: "issue-context-42",
+        identifier: "ISSUE-42",
+        title: "Deliver reviewer handoff context",
+        description: "Reviewers must receive the complete handoff without an API lookup.",
+      });
+      expect(structuredWake.issueThread.comments.map((comment) => [comment.id, comment.body])).toEqual([
+        ["comment-oldest", "Board requested an independent review."],
+        ["comment-newest", "Engineering completed the implementation handoff."],
+      ]);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a strict per-agent MCP config only when managed servers are present", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-mcp-config-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
@@ -725,7 +864,7 @@ describe("claude execute", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-meta-"));
     const workspace = path.join(root, "workspace");
     const binDir = path.join(root, "bin");
-    const commandPath = path.join(binDir, "claude");
+    const commandPath = fakeClaudeCommandPath(binDir);
     const capturePath = path.join(root, "capture.json");
     const claudeConfigDir = path.join(root, "claude-config");
     await fs.mkdir(workspace, { recursive: true });
@@ -801,7 +940,7 @@ describe("claude execute", () => {
     const localWorkspace = path.join(root, "workspace");
     const remoteWorkspace = path.join(root, "sandbox-$HOME");
     const binDir = path.join(root, "bin");
-    const commandPath = path.join(binDir, "claude");
+    const commandPath = fakeClaudeCommandPath(binDir);
     const capturePath1 = path.join(remoteWorkspace, "capture-1.json");
     const claudeRoot = path.join(root, ".claude");
     const previousHome = process.env.HOME;
@@ -1079,7 +1218,7 @@ describe("claude execute", () => {
   it("reuses a stable Paperclip-managed Claude prompt bundle across equivalent runs", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-bundle-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = fakeClaudeCommandPath(root);
     const capturePath1 = path.join(root, "capture-1.json");
     const capturePath2 = path.join(root, "capture-2.json");
     const instructionsPath = path.join(root, "AGENTS.md");
@@ -1245,7 +1384,7 @@ describe("claude execute", () => {
   it("starts a fresh Claude session when the stable prompt bundle changes", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-reset-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = fakeClaudeCommandPath(root);
     const capturePath1 = path.join(root, "capture-before.json");
     const capturePath2 = path.join(root, "capture-after.json");
     const instructionsPath = path.join(root, "AGENTS.md");
@@ -1352,7 +1491,7 @@ describe("claude execute", () => {
   it("classifies Claude 'out of extra usage' failures as provider quota errors", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-transient-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = fakeClaudeCommandPath(root);
     await fs.mkdir(workspace, { recursive: true });
     await writeFailingClaudeCommand(commandPath, {
       resultEvent: {
@@ -1419,7 +1558,7 @@ describe("claude execute", () => {
   it("treats subtype=success results as successful even when the process exits nonzero", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-success-subtype-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = fakeClaudeCommandPath(root);
     await fs.mkdir(workspace, { recursive: true });
     await writeFailingClaudeCommand(commandPath, {
       exitCode: 1,
@@ -1477,7 +1616,7 @@ describe("claude execute", () => {
   it("classifies rate-limit / overloaded failures without reset metadata as transient", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = fakeClaudeCommandPath(root);
     await fs.mkdir(workspace, { recursive: true });
     await writeFailingClaudeCommand(commandPath, {
       resultEvent: {
@@ -1536,7 +1675,7 @@ describe("claude execute", () => {
   it("does not reclassify deterministic Claude failures (auth, max turns) as transient", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-max-turns-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
+    const commandPath = fakeClaudeCommandPath(root);
     await fs.mkdir(workspace, { recursive: true });
     await writeFailingClaudeCommand(commandPath, {
       resultEvent: {

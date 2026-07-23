@@ -86,6 +86,7 @@ class FakeRuntime {
     mode: "persistent" | "oneshot";
     cwd?: string;
     resumeSessionId?: string;
+    sessionOptions?: { env?: Record<string, string> };
   }> = [];
   startInputs: Array<{ handle: FakeRuntimeHandle; text: string; requestId: string; timeoutMs?: number }> = [];
   closeInputs: Array<{ handle: FakeRuntimeHandle; reason: string; discardPersistentState?: boolean }> = [];
@@ -106,6 +107,7 @@ class FakeRuntime {
     mode: "persistent" | "oneshot";
     cwd?: string;
     resumeSessionId?: string;
+    sessionOptions?: { env?: Record<string, string> };
   }): Promise<FakeRuntimeHandle> {
     this.ensureInputs.push(input);
     this.ensureCount += 1;
@@ -553,6 +555,130 @@ describe("claude_local ACP lane", () => {
       explicit: false,
       fallbackReason: expect.stringContaining("bidirectional remote process"),
     });
+  });
+
+  it("injects reviewer issue context and historical comments into the ACP startup prompt", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-wake-context-");
+    const runtimes: FakeRuntime[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+    const taskMarkdown = [
+      "# Paperclip Review Issue",
+      "",
+      "- ID: ISSUE-42",
+      "- Title: Deliver reviewer handoff context",
+      "",
+      "## Description",
+      "",
+      "Reviewers must receive the linked issue context in the same heartbeat.",
+    ].join("\n");
+
+    const result = await execute(buildContext(root, {
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: "ISSUE-42",
+      },
+      context: {
+        issueId: "issue-context-42",
+        taskId: "issue-context-42",
+        wakeReason: "execution_review_requested",
+        paperclipTaskMarkdown: taskMarkdown,
+        paperclipWorkspace: {
+          cwd: root,
+          source: "project_workspace",
+          workspaceId: "workspace-1",
+        },
+        paperclipWake: {
+          reason: "execution_review_requested",
+          issue: {
+            id: "issue-context-42",
+            identifier: "ISSUE-42",
+            title: "Deliver reviewer handoff context",
+            description: "Reviewers must receive the linked issue context in the same heartbeat.",
+            descriptionTruncated: false,
+            status: "in_review",
+            workMode: "standard",
+            priority: "high",
+          },
+          executionStage: {
+            stage: "review",
+            wakeRole: "reviewer",
+          },
+          commentIds: [],
+          latestCommentId: null,
+          comments: [],
+          issueThread: {
+            comments: [
+              {
+                id: "comment-review-request",
+                issueId: "issue-context-42",
+                body: "Please verify the automatic handoff end to end.",
+                bodyTruncated: false,
+                createdAt: "2026-07-23T08:10:00.000Z",
+                author: { type: "agent", id: "engineering-lead" },
+              },
+              {
+                id: "comment-review-criteria",
+                issueId: "issue-context-42",
+                body: "Confirm that no manual Paperclip API lookup was required.",
+                bodyTruncated: false,
+                createdAt: "2026-07-23T08:12:00.000Z",
+                author: { type: "user", id: "board-user" },
+              },
+            ],
+            totalCount: 2,
+            includedCount: 2,
+            omittedCount: 0,
+            truncated: false,
+          },
+          commentWindow: {
+            requestedCount: 0,
+            includedCount: 0,
+            missingCount: 0,
+          },
+          truncated: false,
+          fallbackFetchNeeded: false,
+        },
+      },
+    }));
+
+    expect(result.exitCode).toBe(0);
+    const prompt = runtimes[0]?.startInputs[0]?.text;
+    expect(prompt).toContain("- Title: Deliver reviewer handoff context");
+    expect(prompt).toContain(
+      "Reviewers must receive the linked issue context in the same heartbeat.",
+    );
+    expect(prompt).toContain(
+      "Existing issue comment thread (historical context, oldest to newest):",
+    );
+    expect(prompt).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+    expect(prompt).toContain("Please verify the automatic handoff end to end.");
+    expect(prompt).toContain("Confirm that no manual Paperclip API lookup was required.");
+    expect(prompt!.indexOf("Please verify the automatic handoff end to end.")).toBeLessThan(
+      prompt!.indexOf("Confirm that no manual Paperclip API lookup was required."),
+    );
+
+    const runtimeWakePayload =
+      runtimes[0]?.ensureInputs[0]?.sessionOptions?.env?.PAPERCLIP_WAKE_PAYLOAD_JSON;
+    expect(runtimeWakePayload).toBeTruthy();
+    const structuredWake = JSON.parse(runtimeWakePayload!) as {
+      issue: { description: string };
+      issueThread: { comments: Array<{ body: string }> };
+    };
+    expect(structuredWake.issue.description).toBe(
+      "Reviewers must receive the linked issue context in the same heartbeat.",
+    );
+    expect(structuredWake.issueThread.comments.map((comment) => comment.body)).toEqual([
+      "Please verify the automatic handoff end to end.",
+      "Confirm that no manual Paperclip API lookup was required.",
+    ]);
   });
 
   it("resumes compatible ACP sessions on later Claude ACP runs", async () => {
