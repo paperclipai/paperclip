@@ -514,6 +514,55 @@ describe("worker configChanged cross-tenant guard", () => {
     }
   });
 
+  it("serializes concurrent deliveries so the tenant transition is atomic", async () => {
+    // The commit-after-callback ordering means the binding is read before the
+    // plugin callback resolves and written after. Without worker-side
+    // serialization, two concurrent initial deliveries for different
+    // companies both observe an unbound worker, both dispatch, and commit a
+    // torn binding (bound to one company, currentConfig from the other). The
+    // second delivery must instead queue behind the first and then fail
+    // closed as cross-tenant.
+    const applied: Array<string | null> = [];
+    let releaseFirst!: () => void;
+    const firstInFlight = new Promise<void>((r) => (releaseFirst = r));
+    let deliveries = 0;
+    const plugin = definePlugin({
+      async setup() {},
+      async onConfigChanged(_newConfig, context) {
+        deliveries += 1;
+        if (deliveries === 1) await firstInFlight;
+        applied.push(context?.companyId ?? null);
+      },
+    });
+    const { callWorker, initialize, stop } = makeWorker(plugin);
+
+    try {
+      await initialize();
+
+      const first = callWorker("configChanged", {
+        config: { slackBotToken: "xoxb-A" },
+        companyId: "company-a",
+      });
+      const second = callWorker("configChanged", {
+        config: { slackBotToken: "xoxb-B" },
+        companyId: "company-b",
+      });
+
+      // Let the first delivery enter the plugin callback, then release it.
+      await new Promise((r) => setImmediate(r));
+      releaseFirst();
+
+      await expect(first).resolves.toBeNull();
+      await expect(second).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG,
+      });
+      // Only company A's config ever reached the plugin.
+      expect(applied).toEqual(["company-a"]);
+    } finally {
+      stop();
+    }
+  });
+
   it("keeps the applied config when a later delivery for the bound company fails", async () => {
     // Pre-fix, a failed update still overwrote currentConfig, so the guard's
     // idempotency comparison ran against a config that was never applied: an

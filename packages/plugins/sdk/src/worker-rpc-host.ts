@@ -1616,7 +1616,26 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     return plugin.definition.onValidateConfig(params.config);
   }
 
-  async function handleConfigChanged(params: ConfigChangedParams): Promise<void> {
+  // configChanged deliveries are applied strictly one at a time. The
+  // guard/dispatch/commit sequence in applyConfigChanged awaits the plugin
+  // callback between reading and writing the tenant-binding state, so two
+  // concurrent deliveries for different companies could otherwise both
+  // observe an unbound worker (configCompanyId === null), both dispatch, and
+  // commit a torn binding (bound to one company, currentConfig from the
+  // other). The host serializes its sends too, but the worker must not rely
+  // on host discipline for tenant isolation.
+  let configChangedChain: Promise<void> = Promise.resolve();
+
+  function handleConfigChanged(params: ConfigChangedParams): Promise<void> {
+    const run = configChangedChain.then(() => applyConfigChanged(params));
+    configChangedChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  async function applyConfigChanged(params: ConfigChangedParams): Promise<void> {
     const incomingCompanyId = params.companyId ?? null;
 
     // Fail-closed cross-tenant guard.
