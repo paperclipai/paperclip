@@ -35,4 +35,15 @@ describe("pause durability: continuation retry classification", () => {
     expect(classifyContinuationFailure(run(null)).kind).toBe("default");
     expect(classifyContinuationFailure(run("some_adapter_error")).kind).toBe("default");
   });
+
+  it("workspace_validation_failed is non-retryable so recovery stops re-dispatching a doomed wake (LOOA-700)", () => {
+    // A workspace-validation failure happens before the adapter launches: the persisted
+    // execution-workspace link / project workspace cwd / git checkout is structurally
+    // wrong, so every requeued continuation dies identically. Classifying it as
+    // non_retryable makes the stranded-issue recovery escalate to blocked once instead
+    // of tight-looping a ~30s requeue storm that never self-heals.
+    const c = classifyContinuationFailure(run("workspace_validation_failed"));
+    expect(c.kind).toBe("non_retryable");
+    expect(c.maxAttempts).toBe(0);
+  });
 });
