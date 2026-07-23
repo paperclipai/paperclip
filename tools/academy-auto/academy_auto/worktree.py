@@ -36,4 +36,26 @@ def prepare_worktree(cfg: Config, runner=subprocess.run) -> Path:
         text=True,
         timeout=WORKTREE_TIMEOUT,
     )
+    _link_node_modules(cfg)
     return cfg.worktree_path
+
+
+def _link_node_modules(cfg: Config) -> bool:
+    """node_modules aus dem Haupt-Repo in den Worktree verlinken.
+
+    Ein frischer Worktree hat keine node_modules (gitignored) — ohne sie
+    koennen jest/tsc/lint nicht laufen und das Gate misst nichts.
+    Symlink statt Installation: der Worktree wird jeden Lauf neu erzeugt.
+    Fail-soft: fehlt die Quelle, laeuft der Lauf trotzdem weiter.
+    """
+    src = Path(cfg.academy_repo) / "node_modules"
+    dst = Path(cfg.worktree_path) / "node_modules"
+    try:
+        if not src.is_dir():
+            return False
+        if dst.is_symlink() or dst.exists():
+            return True
+        dst.symlink_to(src, target_is_directory=True)
+        return True
+    except OSError:
+        return False

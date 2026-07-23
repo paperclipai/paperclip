@@ -77,3 +77,32 @@ def test_prepare_worktree_passes_timeout():
 
     prepare_worktree(cfg, runner=runner)
     assert seen == [WORKTREE_TIMEOUT, WORKTREE_TIMEOUT]  # beide Git-Aufrufe mit Timeout
+
+
+def test_link_node_modules_creates_symlink(tmp_path):
+    from academy_auto.worktree import _link_node_modules
+    repo = tmp_path / "repo"; (repo / "node_modules").mkdir(parents=True)
+    (repo / "node_modules" / "marker.txt").write_text("x")
+    wt = tmp_path / "wt"; wt.mkdir()
+    cfg = Config(**{**Config.default().__dict__, "academy_repo": repo, "worktree_path": wt})
+    assert _link_node_modules(cfg) is True
+    assert (wt / "node_modules").is_symlink()
+    assert (wt / "node_modules" / "marker.txt").read_text() == "x"   # wirklich nutzbar
+
+
+def test_link_node_modules_fail_soft_without_source(tmp_path):
+    from academy_auto.worktree import _link_node_modules
+    repo = tmp_path / "repo"; repo.mkdir()
+    wt = tmp_path / "wt"; wt.mkdir()
+    cfg = Config(**{**Config.default().__dict__, "academy_repo": repo, "worktree_path": wt})
+    assert _link_node_modules(cfg) is False        # keine Quelle -> False
+    assert not (wt / "node_modules").exists()      # aber kein Crash
+
+
+def test_prepare_worktree_links_node_modules(tmp_path, monkeypatch):
+    from academy_auto import worktree as wtmod
+    repo = tmp_path / "repo"; (repo / "node_modules").mkdir(parents=True)
+    wt = tmp_path / "wt"; wt.mkdir()
+    cfg = Config(**{**Config.default().__dict__, "academy_repo": repo, "worktree_path": wt})
+    wtmod.prepare_worktree(cfg, runner=lambda *a, **k: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+    assert (wt / "node_modules").is_symlink()
