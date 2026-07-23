@@ -8,12 +8,53 @@ RANK_CMD = ["claude", "-p", "--tools", "", "--strict-mcp-config"]
 MAX_CANDIDATES = 30
 RANK_TIMEOUT = 180
 
+# Quellen, die NIE verdraengt werden duerfen: Issues sind Walters expliziter
+# Steuerhebel — er legt sie bewusst an, sie muessen den Ranker immer erreichen.
+PRIORITY_SOURCES = ("issue",)
+# Mindestplaetze je uebriger Quelle, damit nicht eine einzelne Fehlerklasse
+# (z.B. 657 tsc-Fehler) die gesamte Liste fuellt.
+SOURCE_QUOTA = 3
+
 
 @dataclass
 class Pick:
     chosen_key: str
     task_prompt: str
     reason: str
+
+
+def _select_candidates(candidates, limit: int = MAX_CANDIDATES):
+    """Kandidaten fuer den Ranker auswaehlen, ohne dass eine Quelle alles verdraengt."""
+    chosen: list = []
+    seen: set = set()
+
+    def take(c):
+        if c.key not in seen:
+            seen.add(c.key)
+            chosen.append(c)
+
+    ordered = sorted(candidates, key=lambda c: (-c.raw_priority, c.key))
+
+    # 1) Steuerhebel zuerst: alle Issues
+    for c in ordered:
+        if c.source in PRIORITY_SOURCES and len(chosen) < limit:
+            take(c)
+    # 2) Mindestquote je uebriger Quelle
+    per_source: dict = {}
+    for c in ordered:
+        if c.source in PRIORITY_SOURCES or len(chosen) >= limit:
+            continue
+        n = per_source.get(c.source, 0)
+        if n < SOURCE_QUOTA:
+            per_source[c.source] = n + 1
+            take(c)
+    # 3) Rest nach Prioritaet auffuellen
+    for c in ordered:
+        if len(chosen) >= limit:
+            break
+        take(c)
+
+    return sorted(chosen, key=lambda c: (-c.raw_priority, c.key))
 
 
 def _build_prompt(candidates, baseline_red: bool) -> str:
@@ -26,7 +67,7 @@ def _build_prompt(candidates, baseline_red: bool) -> str:
     if baseline_red:
         lines.append("HINWEIS: Die Baseline ist ROT (tsc/lint-Fehler). Bevorzuge eine Aufgabe, die das Gate grün macht.")
     lines.append("Kandidaten:")
-    for c in candidates[:MAX_CANDIDATES]:
+    for c in _select_candidates(candidates):
         loc = f"{c.file}:{c.line}" if c.file else c.key
         lines.append(f"- {c.key} [{c.source}] {loc} — {c.text}")
     return "\n".join(lines)
