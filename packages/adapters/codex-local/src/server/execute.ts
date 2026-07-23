@@ -172,11 +172,53 @@ async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
   return hasWorkspace && hasPackageJson && hasServerDir && hasAdapterUtilsDir;
 }
 
+const MANAGED_INSTANCE_SKILL_CONTAINER_DIRS = new Set(["__catalog__", "__runtime__"]);
+
+async function isLikelyManagedInstanceSkillPath(
+  candidate: string,
+  skillName: string,
+  options: { requireSkillMarkdown?: boolean } = {},
+): Promise<boolean> {
+  const normalized = path.resolve(candidate);
+  const base = path.basename(normalized);
+  const segments = normalized.split(path.sep);
+  const skillsIdx = segments.lastIndexOf("skills");
+  if (skillsIdx < 0) return false;
+
+  // Company-owned corpus: .../companies/<companyId>/skills/<slug>
+  const companiesIdx = skillsIdx - 2;
+  if (
+    companiesIdx >= 0 &&
+    segments[companiesIdx] === "companies" &&
+    segments[skillsIdx - 1]?.length > 0
+  ) {
+    if (options.requireSkillMarkdown !== false && !(await pathExists(path.join(normalized, "SKILL.md")))) {
+      return false;
+    }
+    return true;
+  }
+
+  if (base !== skillName) return false;
+
+  const containerDir = path.basename(path.dirname(normalized));
+  if (!MANAGED_INSTANCE_SKILL_CONTAINER_DIRS.has(containerDir)) return false;
+  if (skillsIdx + 3 >= segments.length) return false;
+  if (segments[skillsIdx + 2] !== containerDir) return false;
+  if (segments[skillsIdx + 3] !== skillName) return false;
+  if (options.requireSkillMarkdown !== false && !(await pathExists(path.join(normalized, "SKILL.md")))) {
+    return false;
+  }
+
+  return segments[skillsIdx + 1].length > 0;
+}
+
 async function isLikelyPaperclipRuntimeSkillPath(
   candidate: string,
   skillName: string,
   options: { requireSkillMarkdown?: boolean } = {},
 ): Promise<boolean> {
+  if (await isLikelyManagedInstanceSkillPath(candidate, skillName, options)) return true;
+
   if (path.basename(candidate) !== skillName) return false;
   const skillsRoot = path.dirname(candidate);
   if (path.basename(skillsRoot) !== "skills") return false;
