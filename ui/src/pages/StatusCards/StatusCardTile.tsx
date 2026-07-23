@@ -186,7 +186,7 @@ export function StatusCardTile({
       {/* Summary body — kept visible for stale/error/updating/paused (never blank) */}
       <div className="min-h-0 flex-1 overflow-hidden px-4 pt-2">
         {lifecycle === "error" && card.summaryBody ? (
-          <p className="mb-1 text-[11px] text-muted-foreground">Showing last good summary:</p>
+          <p className="mb-1 text-(length:--text-micro) text-muted-foreground">Showing last good summary:</p>
         ) : null}
         {hasSummary ? (
           <MarkdownBody className="text-xs leading-6 text-foreground [&_p]:my-0.5">{card.summaryBody!}</MarkdownBody>
@@ -203,7 +203,7 @@ export function StatusCardTile({
 
       {/* Footer */}
       <div className="mt-auto flex items-center justify-between gap-2 border-t border-border px-4 py-2.5">
-        <span className="truncate text-[11px] text-muted-foreground">
+        <span className="truncate text-(length:--text-micro) text-muted-foreground">
           {lifecycle === "compiling" ? (
             "setting up · first summary pending"
           ) : (

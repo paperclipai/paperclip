@@ -169,7 +169,7 @@ export function CreateStatusCardDialog({
               <p className="mt-1 text-muted-foreground">“{createdCard?.interestPrompt}”</p>
             </div>
 
-            <div className="max-h-[60vh] overflow-y-auto pr-1">
+            <div className="max-h-(--sz-60vh) overflow-y-auto pr-1">
               <StatusCardSettingsForm value={settings} onChange={setSettings} />
             </div>
 

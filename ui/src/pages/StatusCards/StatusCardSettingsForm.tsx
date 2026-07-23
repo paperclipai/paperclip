@@ -174,7 +174,7 @@ export function StatusCardSettingsForm({
             selected={policy.mode === "manual"}
             title="Manual only — updates when I press refresh"
             badge={
-              <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
                 Default
               </span>
             }
@@ -327,7 +327,7 @@ export function StatusCardSettingsForm({
           {costEstimate.note ? (
             <p className="mt-1 text-xs text-muted-foreground">{costEstimate.note}</p>
           ) : null}
-          <p className="mt-1.5 text-[11px] text-muted-foreground/70">
+          <p className="mt-1.5 text-(length:--text-micro) text-muted-foreground/70">
             Rough estimate from typical update sizes; actual cost is tracked per update.
           </p>
         </div>
