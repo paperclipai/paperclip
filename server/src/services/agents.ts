@@ -10,6 +10,7 @@ import {
   agentWakeupRequests,
   activityLog,
   costEvents,
+  financeEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueExecutionDecisions,
@@ -746,6 +747,15 @@ export function agentService(db: Db) {
           .update(issues)
           .set({ assigneeAgentId: null, createdByAgentId: null })
           .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
+        // Finance/billing ledger rows must outlive the agent that generated them —
+        // detach the references rather than deleting, so deleting an agent never
+        // silently destroys real cost/billing history. Must run before the
+        // heartbeatRuns delete below, since financeEvents.heartbeatRunId also
+        // references heartbeatRuns.id.
+        await tx
+          .update(financeEvents)
+          .set({ agentId: null, heartbeatRunId: null })
+          .where(eq(financeEvents.agentId, id));
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
         await tx.delete(activityLog).where(
