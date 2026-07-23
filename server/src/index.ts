@@ -62,6 +62,7 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { registerSmtpInviteEmailTransportFromEnv } from "./services/invite-email-smtp.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -617,6 +618,13 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
+  try {
+    if (registerSmtpInviteEmailTransportFromEnv()) {
+      logger.info("Invite email delivery enabled (SMTP transport configured)");
+    }
+  } catch (err) {
+    logger.error({ err }, "Invalid SMTP configuration; invite email delivery disabled");
+  }
   const storageService = createStorageServiceFromConfig(config);
   const feedback = feedbackService(db as any, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),

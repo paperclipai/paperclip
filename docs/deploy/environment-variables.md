@@ -28,6 +28,22 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | `~/.paperclip/.../secrets/master.key` | Path to key file |
 | `PAPERCLIP_SECRETS_STRICT_MODE` | `false` | Require secret refs for sensitive env vars |
 
+## Email (invite delivery)
+
+Optional. When configured, company invites that include a recipient email are
+delivered via SMTP; otherwise invites remain copyable links. Requires
+`PAPERCLIP_SMTP_FROM` plus either `PAPERCLIP_SMTP_URL` or `PAPERCLIP_SMTP_HOST`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAPERCLIP_SMTP_URL` | (unset) | Full SMTP connection URL, e.g. `smtps://user:pass@mail.example.com:465`. Takes precedence over the discrete variables below. |
+| `PAPERCLIP_SMTP_HOST` | (unset) | SMTP server hostname |
+| `PAPERCLIP_SMTP_PORT` | `587` | SMTP server port |
+| `PAPERCLIP_SMTP_SECURE` | `false` (`true` when port is `465`) | Use implicit TLS |
+| `PAPERCLIP_SMTP_USER` | (unset) | SMTP username; auth is only sent when set |
+| `PAPERCLIP_SMTP_PASSWORD` | (unset) | SMTP password |
+| `PAPERCLIP_SMTP_FROM` | (unset) | From address, e.g. `Paperclip <no-reply@example.com>`. Required to enable delivery. |
+
 ## Agent Runtime (Injected into agent processes)
 
 These are set automatically by the server when invoking agents:

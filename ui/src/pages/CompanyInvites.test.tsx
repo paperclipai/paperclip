@@ -199,6 +199,7 @@ describe("CompanyInvites", () => {
       allowedJoinTypes: "human",
       humanRole: "viewer",
       agentMessage: null,
+      email: null,
     });
     expect(clipboardWriteTextMock).toHaveBeenCalledWith("https://paperclip.local/invite/new-token");
     expect(container.textContent).toContain("Latest invite link");
