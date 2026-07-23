@@ -14,11 +14,11 @@ export interface StatusCardView extends StatusCard {
   /** Latest summary markdown (from the card's summary document). */
   summaryBody?: string | null;
   /** Number of issues currently matched by the compiled query. */
-  watchedIssueCount?: number | null;
+  watchedIssueCount?: number;
   /** Tokens spent by this card so far today. */
-  todayTokens?: number | null;
+  todayTokens?: number;
   /** Cost in cents spent by this card so far today. */
-  todayCostCents?: number | null;
+  todayCostCents?: number;
 }
 
 export type { StatusCard, StatusCardUpdate };
