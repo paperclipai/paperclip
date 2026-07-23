@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
+import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -23,6 +24,7 @@ import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
+import { NeedsAttentionPanel } from "../components/NeedsAttentionPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Card } from "@/components/ui/card";
@@ -31,6 +33,7 @@ import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
+const DASHBOARD_ATTENTION_ISSUE_LIMIT = 1000;
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
@@ -51,6 +54,12 @@ export function Dashboard() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
@@ -86,7 +95,9 @@ export function Dashboard() {
 
   const { data: issues } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryFn: () => issuesApi.list(selectedCompanyId!, {
+      limit: DASHBOARD_ATTENTION_ISSUE_LIMIT,
+    }),
     enabled: !!selectedCompanyId,
   });
 
@@ -234,6 +245,14 @@ export function Dashboard() {
       )}
 
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
+
+      {issues && issues.length > 0 && (
+        <NeedsAttentionPanel
+          issues={issues}
+          currentUserId={currentUserId}
+          agentMap={agentMap}
+        />
+      )}
 
       {data && (
         <>
