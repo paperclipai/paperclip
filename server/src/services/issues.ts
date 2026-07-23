@@ -6153,11 +6153,10 @@ export function issueService(db: Db) {
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
-      if (!isolatedWorkspacesEnabled) {
-        delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
-        delete issueData.executionWorkspaceSettings;
-      }
+      // CAR-299: persistence of executionWorkspaceId / preference / settings is
+      // decoupled from enableIsolatedWorkspaces so closure-gate smoke (CAR-270)
+      // can demonstrate a positive round-trip. Inheritance (below) and
+      // assignee-environment promotion still gate on the flag.
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -6489,12 +6488,7 @@ export function issueService(db: Db) {
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
-      if (!isolatedWorkspacesEnabled) {
-        delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
-        delete issueData.executionWorkspaceSettings;
-      }
-
+      // CAR-299: persistence decoupled from enableIsolatedWorkspaces; see create().
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
       }
