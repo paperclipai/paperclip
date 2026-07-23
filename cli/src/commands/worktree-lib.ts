@@ -197,7 +197,7 @@ export function buildWorktreeConfig(input: {
       embeddedPostgresDataDir: paths.embeddedPostgresDataDir,
       embeddedPostgresPort: databasePort,
       backup: {
-        enabled: source?.database.backup.enabled ?? true,
+        enabled: false,
         intervalMinutes: source?.database.backup.intervalMinutes ?? 60,
         retentionDays: source?.database.backup.retentionDays ?? 30,
         dir: paths.backupDir,
@@ -258,6 +258,7 @@ export function buildWorktreeEnvEntries(
     PAPERCLIP_CONFIG: paths.configPath,
     PAPERCLIP_CONTEXT: paths.contextPath,
     PAPERCLIP_IN_WORKTREE: "true",
+    PAPERCLIP_DB_BACKUP_ENABLED: "false",
     ...(branding?.name ? { PAPERCLIP_WORKTREE_NAME: branding.name } : {}),
     ...(branding?.color ? { PAPERCLIP_WORKTREE_COLOR: branding.color } : {}),
   };

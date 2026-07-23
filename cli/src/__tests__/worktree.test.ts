@@ -276,6 +276,7 @@ describe("worktree helpers", () => {
       path.resolve("/tmp/paperclip-worktrees", "instances", "feature-worktree-support", "db"),
     );
     expect(config.database.embeddedPostgresPort).toBe(54339);
+    expect(config.database.backup.enabled).toBe(false);
     expect(config.server.port).toBe(3110);
     expect(config.auth.publicBaseUrl).toBe("http://127.0.0.1:3110/");
     expect(config.storage.localDisk.baseDir).toBe(
@@ -289,6 +290,7 @@ describe("worktree helpers", () => {
     expect(env.PAPERCLIP_HOME).toBe(path.resolve("/tmp/paperclip-worktrees"));
     expect(env.PAPERCLIP_INSTANCE_ID).toBe("feature-worktree-support");
     expect(env.PAPERCLIP_IN_WORKTREE).toBe("true");
+    expect(env.PAPERCLIP_DB_BACKUP_ENABLED).toBe("false");
     expect(env.PAPERCLIP_WORKTREE_NAME).toBe("feature-worktree-support");
     expect(env.PAPERCLIP_WORKTREE_COLOR).toBe("#3abf7a");
     expect(formatShellExports(env)).toContain("export PAPERCLIP_INSTANCE_ID='feature-worktree-support'");

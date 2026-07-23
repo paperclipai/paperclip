@@ -355,6 +355,7 @@ function buildIsolatedWorktreeConfig(
             embeddedPostgresPort: databasePort ?? config.database.embeddedPostgresPort,
             backup: {
               ...config.database.backup,
+              enabled: false,
               dir: context.backupDir,
             },
           }
@@ -399,6 +400,9 @@ function needsWorktreeConfigRepair(
   context: WorktreeRuntimeContext,
 ): boolean {
   if (config.database.mode === "embedded-postgres") {
+    if (config.database.backup.enabled) {
+      return true;
+    }
     if (!isPathInside(config.database.embeddedPostgresDataDir, context.instanceRoot)) {
       return true;
     }
@@ -569,8 +573,11 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
     PAPERCLIP_CONFIG: context.configPath,
     PAPERCLIP_CONTEXT: context.contextPath,
     PAPERCLIP_IN_WORKTREE: "true",
+    PAPERCLIP_DB_BACKUP_ENABLED: "false",
     PAPERCLIP_WORKTREE_NAME: context.worktreeName,
   };
+
+  process.env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
 
   const repairedEnv = Object.entries(desiredEnvEntries).some(
     ([key, value]) => existingEnvEntries[key] !== value,
