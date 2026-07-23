@@ -108,7 +108,14 @@ export type {
   AuthorizationResource,
 } from "./authorization.js";
 export { boardAuthService } from "./board-auth.js";
-export { instanceSettingsService } from "./instance-settings.js";
+export { instanceSettingsService, applyManagedExperimentalOverlay } from "./instance-settings.js";
+export {
+  getManagedInstanceConfig,
+  managedFeatureKeySet,
+  parseManagedConfigEnv,
+  MANAGED_CONFIG_ENV_KEY,
+  type ManagedInstanceConfig,
+} from "./managed-config.js";
 export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js";
 export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";
 export { companyPortabilityService } from "./company-portability.js";
