@@ -138,6 +138,20 @@ def scan_lint(root, runner=subprocess.run, repo_root=None) -> list[Candidate]:
     return cands
 
 
+ISSUE_BODY_CHARS = 400
+
+
+def _issue_text(issue) -> str:
+    """Titel + Kurzfassung des Bodys.
+
+    Der Body traegt die eigentliche Anweisung — nur der Titel waere zu duenn,
+    damit der Ranker den Auftrag versteht.
+    """
+    title = (issue.get("title") or "").strip()
+    body = " ".join((issue.get("body") or "").split())[:ISSUE_BODY_CHARS]
+    return f"{title} — {body}" if body else title
+
+
 def scan_issues(runner=subprocess.run) -> list[Candidate]:
     try:
         proc = runner(
@@ -160,7 +174,7 @@ def scan_issues(runner=subprocess.run) -> list[Candidate]:
             continue
         cands.append(Candidate(
             source="issue", key=f"issue:{number}", file="", line=0,
-            text=(issue.get("title") or "").strip(), raw_priority=20,
+            text=_issue_text(issue), raw_priority=20,
         ))
     return cands
 

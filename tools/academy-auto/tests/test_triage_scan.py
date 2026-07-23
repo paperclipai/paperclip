@@ -220,3 +220,27 @@ def test_scan_tsc_passes_timeout():
     scan_tsc(None, runner=runner)
     from academy_auto.triage.scan import SCAN_TIMEOUT
     assert captured.get("timeout") == SCAN_TIMEOUT
+
+
+def test_scan_issues_includes_body_not_just_title():
+    """Der Body traegt die eigentliche Anweisung — er muss den Ranker erreichen."""
+    gh_json = ('[{"number":42,"title":"Onboarding-Screen","labels":[],'
+               '"body":"Nutzer sollen nach dem Login einen dreistufigen Onboarding-Flow sehen."}]')
+    cands = scan_issues(runner=lambda *a, **k: _proc(stdout=gh_json, returncode=0))
+    assert len(cands) == 1
+    assert "Onboarding-Screen" in cands[0].text
+    assert "dreistufigen Onboarding-Flow" in cands[0].text
+
+
+def test_scan_issues_body_is_truncated_and_whitespace_normalised():
+    from academy_auto.triage.scan import ISSUE_BODY_CHARS
+    long_body = "x" * (ISSUE_BODY_CHARS + 500)
+    gh_json = '[{"number":7,"title":"T","labels":[],"body":"%s"}]' % long_body
+    c = scan_issues(runner=lambda *a, **k: _proc(stdout=gh_json, returncode=0))[0]
+    assert len(c.text) <= len("T — ") + ISSUE_BODY_CHARS
+
+
+def test_scan_issues_without_body_falls_back_to_title():
+    gh_json = '[{"number":9,"title":"Nur Titel","labels":[],"body":""}]'
+    c = scan_issues(runner=lambda *a, **k: _proc(stdout=gh_json, returncode=0))[0]
+    assert c.text == "Nur Titel"
