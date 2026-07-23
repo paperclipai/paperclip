@@ -126,7 +126,10 @@ describe("gemini remote execution", () => {
       },
       config: {
         command: "gemini",
-        env: { GEMINI_API_KEY: "test-key" },
+        env: {
+          GEMINI_API_KEY: "test-key",
+          NO_COLOR: "1",
+        },
       },
       context: {
         paperclipWorkspace: {
@@ -218,6 +221,10 @@ describe("gemini remote execution", () => {
     expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
     expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
     expect(call?.[3].env.GEMINI_CLI_TRUST_WORKSPACE).toBe("true");
+    expect(call?.[3].env.TERM).toBe("xterm-256color");
+    expect(call?.[3].env.COLORTERM).toBe("truecolor");
+    expect(call?.[3].env.NO_BROWSER).toBe("1");
+    expect(call?.[3].env).not.toHaveProperty("NO_COLOR");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
@@ -265,6 +272,9 @@ describe("gemini remote execution", () => {
         taskKey: null,
       },
       config: {
+        // Pin the CLI lane: sandbox targets with a runner now default to ACP,
+        // and this test covers the CLI lane's managed-HOME auth flow.
+        engine: "cli",
         command: "gemini",
         env: { GEMINI_API_KEY: "test-key" },
       },

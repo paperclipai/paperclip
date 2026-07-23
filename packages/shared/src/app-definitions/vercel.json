@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "slug": "vercel",
+  "name": "Vercel",
+  "description": "Inspect projects, deployments, and runtime logs.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=vercel.com&sz=128"
+  },
+  "urlPatterns": [
+    "https://mcp.vercel.com/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer",
+        "dcr"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {
+        "serverUrl": "https://mcp.vercel.com/mcp"
+      },
+      "guidanceMd": "Connect the Vercel team and projects agents should operate.",
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "team",
+        "project",
+        "environment"
+      ]
+    }
+  ]
+}

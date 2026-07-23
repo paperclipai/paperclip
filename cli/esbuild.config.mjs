@@ -8,6 +8,7 @@
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bundledCliNpmDependencies } from "../scripts/cli-bundled-npm-dependencies.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -21,6 +22,8 @@ const workspacePaths = [
   "packages/adapter-utils",
   "packages/adapters/claude-local",
   "packages/adapters/codex-local",
+  "packages/adapters/hermes-gateway",
+  "packages/adapters/hermes",
   "packages/adapters/openclaw-gateway",
 ];
 
@@ -37,7 +40,7 @@ for (const p of workspacePaths) {
   for (const name of Object.keys(pkg.dependencies || {})) {
     if (externalWorkspacePackages.has(name)) {
       externals.add(name);
-    } else if (!name.startsWith("@paperclipai/")) {
+    } else if (!name.startsWith("@paperclipai/") && !bundledCliNpmDependencies.has(name)) {
       externals.add(name);
     }
   }

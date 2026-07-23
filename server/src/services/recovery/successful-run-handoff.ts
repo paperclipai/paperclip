@@ -77,6 +77,7 @@ export function noticeMetadataReferencesRecoveryAction(
 export type SuccessfulRunHandoffDecision =
   | {
       kind: "enqueue";
+      targetAgentId: string;
       idempotencyKey: string;
       payload: Record<string, unknown>;
       contextSnapshot: Record<string, unknown>;
@@ -86,6 +87,25 @@ export type SuccessfulRunHandoffDecision =
       kind: "skip";
       reason: string;
     };
+
+const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS = new Set([
+  "issue has execution policy state",
+  "active routine continuation owns the next action",
+  "issue already has an active execution path",
+  "issue already has a queued or deferred wake",
+  "pending interaction or approval owns the next action",
+  "persisted issue monitor owns the next action",
+  "explicit blocker path owns the next action",
+  "open recovery issue owns the ambiguity",
+  "issue is under an active pause hold",
+  "corrective handoff wake already exists for this source run",
+]);
+
+export function isSuccessfulRunHandoffValidPathSkip(
+  decision: SuccessfulRunHandoffDecision,
+): decision is Extract<SuccessfulRunHandoffDecision, { kind: "skip" }> {
+  return decision.kind === "skip" && SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS.has(decision.reason);
+}
 
 function metadataText(value: unknown, fallback = "unknown") {
   const text = typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
@@ -319,6 +339,8 @@ export function buildSuccessfulRunHandoffInstruction(input: {
   return [
     `Your previous run on ${issueLabel} succeeded, but the issue is still in \`in_progress\` and Paperclip cannot identify a valid issue disposition.`,
     "",
+    "This is a status-only retry to the original agent. Record a disposition; do not start new work.",
+    "",
     "Resolve the missing disposition before creating or revising any new artifacts. Choose **exactly one** outcome and perform the matching Paperclip action:",
     "",
     "**Is the issue finished?**",
@@ -347,9 +369,11 @@ export function decideSuccessfulRunHandoff(input: {
   hasActiveExecutionPath: boolean;
   hasQueuedWake: boolean;
   hasPendingInteractionOrApproval: boolean;
+  hasPersistedMonitor: boolean;
   hasExplicitBlockerPath: boolean;
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
+  hasActiveRoutineContinuation: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
 }): SuccessfulRunHandoffDecision {
@@ -376,6 +400,9 @@ export function decideSuccessfulRunHandoff(input: {
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
   }
+  if (input.hasActiveRoutineContinuation) {
+    return { kind: "skip", reason: "active routine continuation owns the next action" };
+  }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
   }
@@ -384,6 +411,7 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.hasPendingInteractionOrApproval) {
     return { kind: "skip", reason: "pending interaction or approval owns the next action" };
   }
+  if (input.hasPersistedMonitor) return { kind: "skip", reason: "persisted issue monitor owns the next action" };
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };
@@ -417,6 +445,7 @@ export function decideSuccessfulRunHandoff(input: {
 
   return {
     kind: "enqueue",
+    targetAgentId: run.agentId,
     idempotencyKey: buildFinishSuccessfulRunHandoffIdempotencyKey({
       issueId: issue.id,
       sourceRunId: run.id,

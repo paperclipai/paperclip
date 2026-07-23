@@ -39,7 +39,7 @@ function item(relativePath: string, minutesAgo: number, overrides: Partial<Works
     byteSize: 2048,
     modifiedAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
     previewKind: "text",
-    capabilities: { preview: true, download: false, listChildren: false },
+    capabilities: { preview: true, download: true, listChildren: false },
     ...overrides,
   };
 }

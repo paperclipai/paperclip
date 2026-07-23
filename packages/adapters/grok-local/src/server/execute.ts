@@ -33,6 +33,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   renderTemplate,
   renderPaperclipWakePrompt,
+  isPaperclipRecoveryWakePayload,
   resolvePaperclipDesiredSkillNames,
   stringifyPaperclipWakePayload,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -241,8 +242,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const envConfig = parseObject(config.env);
-    const hasExplicitApiKey =
-      typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
     const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =
@@ -291,7 +290,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       executionTargetIsRemote,
       executionCwd: effectiveExecutionCwd,
     });
-    if (!hasExplicitApiKey && authToken) {
+    if (authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
 
@@ -325,8 +324,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timeoutSec,
         installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
         detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? command,
+        onProgress: (line) => onLog("stdout", line),
+        onRuntimeProgress: ctx.onRuntimeProgress,
       });
-      restoreRemoteWorkspace = () => preparedExecutionTargetRuntime.restoreWorkspace();
+      restoreRemoteWorkspace = () =>
+        preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
       refreshPaperclipWorkspaceEnvForExecution({
         env,
@@ -409,7 +411,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
     const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-    const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
+    const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+      ? ""
+      : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const paperclipEnvNote = renderPaperclipEnvNote(env);
     const apiAccessNote = renderApiAccessNote(env);
@@ -472,6 +476,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timeoutSec,
         graceSec,
         onSpawn,
+        onRuntimeProgress: ctx.onRuntimeProgress,
         onLog,
       });
       return {

@@ -80,6 +80,84 @@ paperclipai_command_available() {
   return 1
 }
 
+existing_worktree_config_is_usable() {
+  WORKTREE_CONFIG_PATH="$worktree_config_path" \
+  WORKTREE_ENV_PATH="$worktree_env_path" \
+  node <<'EOF'
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+function expandHomePrefix(value) {
+  if (!value) return value;
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));
+  return value;
+}
+
+function parseEnvFile(contents) {
+  const entries = {};
+  for (const rawLine of contents.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = rawLine.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    const value = rawValue.trim();
+    if (
+      (value.startsWith("\"") && value.endsWith("\"")) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      entries[key] = value.slice(1, -1);
+      continue;
+    }
+    entries[key] = value.replace(/\s+#.*$/, "").trim();
+  }
+  return entries;
+}
+
+function fail(reason) {
+  console.error(reason);
+  process.exit(1);
+}
+
+const configPath = path.resolve(process.env.WORKTREE_CONFIG_PATH);
+const envPath = path.resolve(process.env.WORKTREE_ENV_PATH);
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+const env = parseEnvFile(fs.readFileSync(envPath, "utf8"));
+const envConfigPath = expandHomePrefix(env.PAPERCLIP_CONFIG);
+if (envConfigPath && path.resolve(envConfigPath) !== configPath) {
+  fail(`existing worktree env points at ${envConfigPath}, not ${configPath}`);
+}
+
+const homeDir = expandHomePrefix(env.PAPERCLIP_HOME);
+const instanceId = env.PAPERCLIP_INSTANCE_ID;
+if (!homeDir || !instanceId) {
+  fail("existing worktree env is missing PAPERCLIP_HOME or PAPERCLIP_INSTANCE_ID");
+}
+if (!fs.existsSync(homeDir)) {
+  fail(`existing worktree home does not exist on this host: ${homeDir}`);
+}
+
+const instanceRoot = path.resolve(homeDir, "instances", instanceId);
+const runtimePaths = [
+  config.database?.embeddedPostgresDataDir,
+  config.database?.backup?.dir,
+  config.logging?.logDir,
+  config.storage?.localDisk?.baseDir,
+  config.secrets?.localEncrypted?.keyFilePath,
+].filter((value) => typeof value === "string" && value.length > 0);
+
+for (const rawValue of runtimePaths) {
+  const resolved = path.resolve(expandHomePrefix(rawValue));
+  const relative = path.relative(instanceRoot, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    fail(`existing worktree config path is outside ${instanceRoot}: ${resolved}`);
+  }
+}
+EOF
+}
+
 write_fallback_worktree_config() {
   WORKTREE_NAME="$worktree_name" \
   BASE_CWD="$base_cwd" \
@@ -317,9 +395,21 @@ async function main() {
     "PAPERCLIP_WORKTREE_NAME=" + JSON.stringify(worktreeName),
   ];
 
-  const agentJwtSecret = nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET);
-  if (agentJwtSecret) {
-    envLines.push("PAPERCLIP_AGENT_JWT_SECRET=" + JSON.stringify(agentJwtSecret));
+  // Secrets that must be carried over from the source instance so the worktree's
+  // dev server behaves like the real one. PAPERCLIP_TOOL_ACTION_SIGNING_SECRET is
+  // required for signed tool-gateway approvals (ask-first MCP policies); without
+  // it the first gated POST /tool-gateway/tools/call returns Internal server error.
+  // BETTER_AUTH_SECRET keeps auth tokens compatible across the source/worktree pair.
+  const propagatedSecretKeys = [
+    "PAPERCLIP_AGENT_JWT_SECRET",
+    "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET",
+    "BETTER_AUTH_SECRET",
+  ];
+  for (const key of propagatedSecretKeys) {
+    const value = nonEmpty(sourceEnvEntries[key]);
+    if (value) {
+      envLines.push(key + "=" + JSON.stringify(value));
+    }
   }
 
   fs.writeFileSync(envPath, `${envLines.join("\n")}\n`, { mode: 0o600 });
@@ -332,9 +422,12 @@ main().catch((error) => {
 EOF
 }
 
-if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]]; then
+if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]] && existing_worktree_config_is_usable; then
   echo "Reusing existing isolated Paperclip worktree config at $worktree_config_path" >&2
 else
+  if [[ -e "$worktree_config_path" || -e "$worktree_env_path" ]]; then
+    echo "Existing isolated Paperclip worktree config is stale for this host; regenerating." >&2
+  fi
   if paperclipai_command_available; then
     run_isolated_worktree_init
   else
@@ -354,8 +447,60 @@ list_base_node_modules_paths() {
       ! -path './.paperclip/*' \
       | sed 's#^\./##'
 }
+
+compute_pnpm_install_fingerprint() {
+  WORKTREE_CWD="$worktree_cwd" node <<'EOF'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = process.env.WORKTREE_CWD;
+const ignoredDirs = new Set([".git", ".paperclip", "node_modules", "dist", "storybook-static"]);
+const files = [];
+
+function walk(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (ignoredDirs.has(entry.name)) continue;
+
+    const absolutePath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walk(absolutePath);
+      continue;
+    }
+
+    if (
+      entry.isFile()
+      && (entry.name === "package.json" || entry.name === "pnpm-lock.yaml" || entry.name === "pnpm-workspace.yaml")
+    ) {
+      files.push(absolutePath);
+    }
+  }
+}
+
+walk(root);
+files.sort((left, right) => path.relative(root, left).localeCompare(path.relative(root, right)));
+
+const hash = crypto.createHash("sha256");
+for (const file of files) {
+  const relativePath = path.relative(root, file).replaceAll(path.sep, "/");
+  hash.update(relativePath);
+  hash.update("\0");
+  hash.update(fs.readFileSync(file));
+  hash.update("\0");
+}
+
+process.stdout.write(hash.digest("hex"));
+EOF
+}
+
 if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; then
   needs_install=0
+  install_fingerprint_path="$paperclip_dir/pnpm-install-fingerprint"
+  current_install_fingerprint="$(compute_pnpm_install_fingerprint)"
+  previous_install_fingerprint=""
+  if [[ -f "$install_fingerprint_path" ]]; then
+    previous_install_fingerprint="$(cat "$install_fingerprint_path")"
+  fi
 
   while IFS= read -r relative_path; do
     [[ -n "$relative_path" ]] || continue
@@ -366,6 +511,10 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
       break
     fi
   done < <(list_base_node_modules_paths)
+
+  if [[ "$needs_install" -eq 0 && "$current_install_fingerprint" != "$previous_install_fingerprint" ]]; then
+    needs_install=1
+  fi
 
   if [[ "$needs_install" -eq 1 ]]; then
     backup_suffix=".paperclip-backup-${BASHPID:-$$}"
@@ -411,7 +560,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
       if (
         cd "$worktree_cwd"
-        pnpm install "$@"
+        pnpm install --prod=false "$@"
       ) >"$stdout_path" 2>"$stderr_path"; then
         cat "$stdout_path"
         cat "$stderr_path" >&2
@@ -448,6 +597,8 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
     fi
 
     cleanup_moved_symlinks
+    current_install_fingerprint="$(compute_pnpm_install_fingerprint)"
+    printf '%s\n' "$current_install_fingerprint" >"$install_fingerprint_path"
   fi
 
   exit 0

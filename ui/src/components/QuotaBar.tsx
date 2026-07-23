@@ -12,9 +12,9 @@ interface QuotaBarProps {
 }
 
 function fillColor(pct: number): string {
-  if (pct > 90) return "bg-red-400";
-  if (pct > 70) return "bg-yellow-400";
-  return "bg-green-400";
+  if (pct > 90) return "bg-(--status-task-blocked)";
+  if (pct > 70) return "bg-(--status-task-todo)";
+  return "bg-(--status-task-done)";
 }
 
 export function QuotaBar({
@@ -46,8 +46,13 @@ export function QuotaBar({
       <div className="relative h-2 w-full border border-border overflow-hidden">
         {/* fill */}
         <div
+          role="progressbar"
+          aria-valuenow={Math.round(clampedPct)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${label}: ${Math.round(clampedPct)}%`}
           className={cn(
-            "absolute inset-y-0 left-0 transition-[width,background-color] duration-150",
+            "absolute inset-y-0 left-0 transition-(--tp-width-background-color) duration-150",
             fillColor(clampedPct),
           )}
           style={{ width: `${clampedPct}%` }}
@@ -55,7 +60,7 @@ export function QuotaBar({
         {/* deficit notch — 2px wide, sits at the fill tip */}
         {showDeficitNotch && clampedPct > 0 && (
           <div
-            className="absolute inset-y-0 w-[2px] bg-destructive z-10"
+            className="absolute inset-y-0 w-(--sz-2px) bg-destructive z-10"
             style={{ left: `${notchLeft}%` }}
           />
         )}

@@ -51,6 +51,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
 const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+  syncEnvBindingsForTarget: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -84,6 +85,7 @@ vi.mock("../services/index.js", () => ({
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => mockApprovalService,
+  builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
   companySkillService: () => mockCompanySkillService,
   budgetService: () => mockBudgetService,
   environmentService: () => mockEnvironmentService,
@@ -94,6 +96,10 @@ vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
   workspaceOperationService: () => mockWorkspaceOperationService,
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
 }));
 
 vi.mock("../adapters/index.js", () => ({
@@ -118,6 +124,7 @@ function registerModuleMocks() {
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
+    builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
     companySkillService: () => mockCompanySkillService,
     budgetService: () => mockBudgetService,
     heartbeatService: () => mockHeartbeatService,
@@ -127,6 +134,10 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => mockWorkspaceOperationService,
+  }));
+
+  vi.doMock("../services/secrets.js", () => ({
+    secretService: () => mockSecretService,
   }));
 
   vi.doMock("../adapters/index.js", () => ({
@@ -249,13 +260,12 @@ describe.sequential("agent skill routes", () => {
       agent: makeAgent("claude_local"),
     });
     mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: { env: {} } });
+    mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
         key: "paperclipai/paperclip/paperclip",
         runtimeName: "paperclip",
         source: "/tmp/paperclip",
-        required: true,
-        requiredReason: "required",
       },
     ]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
@@ -267,11 +277,13 @@ describe.sequential("agent skill routes", () => {
         ),
     );
     mockCompanySkillService.resolveRequestedSkillEntries.mockImplementation(
-      async (_companyId: string, requested: Array<{ key: string; versionId?: string | null }>) =>
-        requested.map((entry) => ({
+      async (_companyId: string, requested: Array<{ key: string; versionId?: string | null }>) => ({
+        resolved: requested.map((entry) => ({
           key: entry.key === "paperclip" ? "paperclipai/paperclip/paperclip" : entry.key,
           versionId: entry.versionId ?? null,
         })),
+        unresolved: [],
+      }),
     );
     mockAdapter.listSkills.mockResolvedValue({
       adapterType: "claude_local",
@@ -366,6 +378,54 @@ describe.sequential("agent skill routes", () => {
       }),
     );
   }, 10_000);
+
+  it("lists skills without resolving required user-secret env bindings", async () => {
+    const adapterConfig = {
+      env: {
+        HOME: "/home/agent",
+        GH_TOKEN: {
+          type: "user_secret_ref" as const,
+          key: "github_pat_read_only",
+          version: "latest" as const,
+          required: true,
+        },
+      },
+    };
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent("claude_local"),
+      adapterConfig,
+    });
+    mockSecretService.resolveAdapterConfigForRuntime.mockImplementationOnce(
+      async (
+        _companyId: string,
+        config: Record<string, unknown>,
+        context?: unknown,
+        opts?: { skipUserSecrets?: boolean },
+      ) => {
+        expect(config).toBe(adapterConfig);
+        expect(context).toBeUndefined();
+        expect(opts).toEqual({ adapterType: "claude_local", skipUserSecrets: true });
+        return { config: { env: { HOME: "/home/agent" } } };
+      },
+    );
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAdapter.listSkills).toHaveBeenCalledWith(
+      expect.objectContaining({
+        adapterType: "claude_local",
+        config: expect.objectContaining({
+          env: { HOME: "/home/agent" },
+          paperclipRuntimeSkills: expect.any(Array),
+        }),
+      }),
+    );
+  });
 
   it("skips runtime materialization when listing Codex skills", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("codex_local"));
@@ -485,6 +545,61 @@ describe.sequential("agent skill routes", () => {
     );
   });
 
+  it("preserves stale desired keys instead of 422-ing when syncing (PAP-13222)", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("acpx_local"));
+    // The agent already carries a stale desired key that no longer resolves to a
+    // company-library skill. Toggling a resolvable skill must still succeed and
+    // keep the stale key so it stays visible/removable in the UI.
+    mockCompanySkillService.resolveRequestedSkillEntries.mockImplementationOnce(
+      async (
+        _companyId: string,
+        requested: Array<{ key: string; versionId?: string | null }>,
+        options?: { tolerateUnknownReferences?: boolean },
+      ) => {
+        expect(options?.tolerateUnknownReferences).toBe(true);
+        const resolved: Array<{ key: string; versionId: string | null }> = [];
+        const unresolved: string[] = [];
+        for (const entry of requested) {
+          if (entry.key === "stale/removed/skill") {
+            unresolved.push(entry.key);
+          } else {
+            resolved.push({
+              key: entry.key === "paperclip" ? "paperclipai/paperclip/paperclip" : entry.key,
+              versionId: entry.versionId ?? null,
+            });
+          }
+        }
+        return { resolved, unresolved };
+      },
+    );
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: ["paperclip", "stale/removed/skill"] }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // Stale key preserved in the persisted config alongside the resolved skill.
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: ["paperclipai/paperclip/paperclip", "stale/removed/skill"],
+          }),
+        }),
+      }),
+      expect.any(Object),
+    );
+    // Runtime version selection only considers resolvable keys.
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ versionSelections: expect.any(Map) }),
+    );
+    const versionSelections = mockCompanySkillService.listRuntimeSkillEntries.mock.calls.at(-1)?.[1]
+      ?.versionSelections as Map<string, unknown> | undefined;
+    expect(versionSelections?.has("stale/removed/skill")).toBe(false);
+  });
+
   it("skips runtime materialization when listing persistent skill adapters", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("cursor"));
     mockAdapter.listSkills.mockResolvedValue({
@@ -518,6 +633,61 @@ describe.sequential("agent skill routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAdapter.syncSkills).toHaveBeenCalled();
+  });
+
+  it("syncs skills without resolving required user-secret env bindings", async () => {
+    const adapterConfig = {
+      env: {
+        HOME: "/home/agent",
+        GH_TOKEN: {
+          type: "user_secret_ref" as const,
+          key: "github_pat_read_only",
+          version: "latest" as const,
+          required: true,
+        },
+      },
+    };
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent("claude_local"),
+      adapterConfig,
+    });
+    mockSecretService.resolveAdapterConfigForRuntime.mockImplementationOnce(
+      async (
+        _companyId: string,
+        config: Record<string, unknown>,
+        context?: unknown,
+        opts?: { skipUserSecrets?: boolean },
+      ) => {
+        expect((config.env as Record<string, unknown>).GH_TOKEN).toMatchObject({
+          type: "user_secret_ref",
+          key: "github_pat_read_only",
+        });
+        expect(context).toBeUndefined();
+        expect(opts).toEqual({ adapterType: "claude_local", skipUserSecrets: true });
+        return {
+          config: {
+            ...config,
+            env: { HOME: "/home/agent" },
+          },
+        };
+      },
+    );
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: ["paperclipai/paperclip/paperclip"] }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAdapter.syncSkills).toHaveBeenCalledWith(
+      expect.objectContaining({
+        adapterType: "claude_local",
+        config: expect.objectContaining({
+          env: { HOME: "/home/agent" },
+          paperclipRuntimeSkills: expect.any(Array),
+        }),
+      }),
+      ["paperclipai/paperclip/paperclip"],
+    );
   });
 
   it("canonicalizes desired skill references before syncing", async () => {
@@ -630,6 +800,7 @@ describe.sequential("agent skill routes", () => {
           instructionsFilePath: `/tmp/${createdAgentId}/instructions/AGENTS.md`,
         }),
       }),
+      expect.objectContaining({ allowPendingApprovalConfigUpdate: true }),
     );
     expect(mockAgentService.update.mock.calls.at(-1)?.[1]).not.toMatchObject({
       adapterConfig: expect.objectContaining({

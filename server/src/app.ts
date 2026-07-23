@@ -5,6 +5,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
@@ -14,22 +15,33 @@ import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
+import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
+import { inboxAgentPolicyRoutes } from "./routes/inbox-agent-policy.js";
+import { builtInAgentRoutes } from "./routes/built-in-agents.js";
+import { folderRoutes } from "./routes/folders.js";
+import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
+import { caseRoutes } from "./routes/cases.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
+import { pipelineRoutes } from "./routes/pipelines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { toolAccessRoutes } from "./routes/tool-access.js";
+import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { attentionRoutes } from "./routes/attention.js";
+import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
@@ -46,16 +58,24 @@ import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
+import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gateway.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
+import {
+  SELF_HOSTED_AUTO_INSTALL_KEYS,
+  ensureBundledPlugins,
+  resolveBundledCatalogRoot,
+  resolveBundledPluginInstalls,
+} from "./services/bundled-plugins.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { createToolGatewayService } from "./services/tool-gateway.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
@@ -69,6 +89,7 @@ import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
+import { apiCompression } from "./middleware/api-compression.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -156,6 +177,7 @@ export async function createApp(
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
+    databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -169,9 +191,19 @@ export async function createApp(
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    /**
+     * `plugins.autoInstall` from the managed config (PAPERCLIP_MANAGED_CONFIG).
+     * `null`/absent ⇒ self-hosted: only the built-in kubernetes bundle is
+     * ensured, exactly as before. A managed list is resolved against the
+     * bundled catalog fail-to-start (see services/bundled-plugins.ts).
+     */
+    managedPluginAutoInstall?: readonly string[] | null;
+    /** Test override for the bundled plugin catalog root. */
+    bundledPluginCatalogRoot?: string;
   },
 ) {
   const app = express();
+  app.locals.paperclipDb = db;
   const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
     (req as unknown as { rawBody: Buffer }).rawBody = buf;
   };
@@ -196,6 +228,7 @@ export async function createApp(
     limit: DEFAULT_JSON_BODY_LIMIT,
     verify: captureRawBody,
   }));
+  app.use("/api", apiCompression());
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
@@ -237,32 +270,42 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      databaseBackupHealth: opts.databaseBackupHealth,
     }),
   );
   api.use(openApiRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
+  api.use(folderRoutes(db));
   api.use(companySkillRoutes(db));
+  api.use(companySkillPolicyRoutes(db));
+  api.use(inboxAgentPolicyRoutes(db));
+  api.use(builtInAgentRoutes(db));
+  api.use(summarySlotRoutes(db));
   api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
-  api.use(issueRoutes(db, opts.storageService, {
-    feedbackExportService: opts.feedbackExportService,
-    pluginWorkerManager: workerManager,
-  }));
+  api.use(caseRoutes(db, opts.storageService));
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(pipelineRoutes(db));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(executionWorkspaceRoutes(db));
+  api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
+  const trustedLocalStdioRuntimeHost =
+    process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
+    ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
+    ?? null;
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
+  api.use(attentionRoutes(db));
+  api.use(decisionTrainingRoutes(db));
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
@@ -287,6 +330,31 @@ export async function createApp(
     lifecycleManager: lifecycle,
     db,
   });
+  const toolGateway = createToolGatewayService(db, {
+    pluginToolDispatcher: toolDispatcher,
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+  });
+  // Issue routes are intentionally mounted after the gateway is constructed because
+  // issue approval endpoints delegate to it. The intervening routers use distinct
+  // route prefixes, so this dependency does not change issue-route precedence.
+  api.use(issueRoutes(db, opts.storageService, {
+    feedbackExportService: opts.feedbackExportService,
+    pluginWorkerManager: workerManager,
+    approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
+  }));
+  app.use(mcpGatewayProtocolRoutes(toolGateway));
+  api.use(toolAccessRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+    toolGateway,
+  }));
+  api.use(smokeLabRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+  }));
   const jobCoordinator = createPluginJobCoordinator({
     db,
     lifecycle,
@@ -333,6 +401,9 @@ export async function createApp(
     },
   );
   api.use(
+    toolGatewayRoutes(db, toolGateway),
+  );
+  api.use(
     pluginRoutes(
       db,
       loader,
@@ -340,6 +411,7 @@ export async function createApp(
       { workerManager },
       { toolDispatcher },
       { workerManager },
+      { toolGateway },
     ),
   );
   api.use(adapterRoutes());
@@ -501,65 +573,51 @@ export async function createApp(
     lifecycle,
     async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
   );
-  // Auto-install the bundled kubernetes sandbox-provider plugin so the
-  // "kubernetes" sandbox provider is registered for agent runs. The plugin is
-  // excluded from the pnpm workspace and built standalone into the image (see
-  // Dockerfile), then installed here from its local path. This runs BEFORE
-  // loadAll() so loadAll() can activate it in the same startup pass.
+  // Auto-provision bundled plugins so their providers are registered for
+  // agent runs. Bundles are excluded from the pnpm
+  // workspace and built standalone into the image (see Dockerfile), then
+  // installed here from their local paths. This runs BEFORE loadAll() so
+  // loadAll() can activate them in the same startup pass.
   //
-  // SAFETY (invariant B): this is fully fail-safe. Any failure (missing path,
-  // install error, load error) is caught, logged, and swallowed so the server
-  // ALWAYS finishes booting. A degraded boot (no kubernetes provider, agents
-  // cannot run) is strictly preferable to a crash loop.
-  const ensureBundledKubernetesPlugin = async (): Promise<void> => {
-    const KUBERNETES_PLUGIN_KEY = "paperclip.kubernetes-sandbox-provider";
-    const pluginPath =
-      process.env["PAPERCLIP_KUBERNETES_PLUGIN_PATH"] ??
-      "/app/packages/plugins/sandbox-providers/kubernetes";
-    try {
-      // Idempotent: skip if already installed (any non-uninstalled status).
-      const existing = await pluginRegistry.getByKey(KUBERNETES_PLUGIN_KEY);
-      if (existing) {
-        logger.info(
-          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing.status },
-          "kubernetes sandbox plugin already installed; skipping auto-install",
-        );
-        return;
-      }
-      // Skip silently when the bundle is absent (e.g. local dev or an image
-      // built without the plugin). Not an error condition.
-      if (!fs.existsSync(path.join(pluginPath, "dist", "manifest.js"))) {
-        logger.info(
-          { pluginPath },
-          "kubernetes sandbox plugin bundle not present; skipping auto-install",
-        );
-        return;
-      }
-      logger.info({ pluginPath }, "auto-installing bundled kubernetes sandbox plugin");
-      const discovered = await loader.installPlugin({ localPath: pluginPath });
-      if (!discovered.manifest) {
-        logger.error("kubernetes sandbox plugin installed but manifest is missing");
-        return;
-      }
-      // Transition installed -> ready and activate the worker.
-      const installed = await pluginRegistry.getByKey(discovered.manifest.id);
-      if (installed) {
-        await lifecycle.load(installed.id);
-        logger.info(
-          { pluginId: installed.id, pluginKey: installed.pluginKey },
-          "kubernetes sandbox plugin auto-installed and loaded",
-        );
-      } else {
-        logger.error("kubernetes sandbox plugin installed but not found in registry");
-      }
-    } catch (err) {
-      logger.error(
-        { err },
-        "Failed to auto-install the kubernetes sandbox plugin; continuing boot (degraded: kubernetes provider unavailable)",
-      );
-    }
-  };
-  void ensureBundledKubernetesPlugin()
+  // Workers are started exactly once, by loadAll(): the `lifecycle` manager
+  // above is constructed without a runtime-capable loader
+  // (pluginLifecycleManager(db, { workerManager }) — no `loader` option), so
+  // the lifecycle.load() that ensureBundledPlugins performs per newly
+  // installed bundle only records the `ready` status and does not spawn a
+  // worker (see activateReadyPlugin in services/plugin-lifecycle.ts).
+  //
+  // Managed instances (`plugins.autoInstall` from PAPERCLIP_MANAGED_CONFIG)
+  // drive the key list from the control plane; self-hosted instances keep
+  // the pre-existing behavior of ensuring only the kubernetes bundle.
+  //
+  // Resolution below is deliberately synchronous and NOT fail-safe: an
+  // unknown key or a path escaping the bundled catalog root throws out of
+  // createApp so a managed instance refuses to start (positive allowlist,
+  // fail closed).
+  const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
+  const bundledCatalogRoot =
+    opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
+  const bundledPluginInstalls = resolveBundledPluginInstalls(
+    managedAutoInstallKeys ?? SELF_HOSTED_AUTO_INSTALL_KEYS,
+    {
+      catalogRoot: bundledCatalogRoot,
+      env: process.env,
+      enforceCatalogRoot: managedAutoInstallKeys !== null,
+    },
+  );
+  // SAFETY: installation is fully fail-safe. Any failure
+  // (missing bundle, install error, load error) is caught, logged, and
+  // swallowed per plugin so the server ALWAYS finishes booting. A degraded
+  // boot (a provider unavailable, some agents cannot run) is strictly
+  // preferable to a crash loop.
+  void ensureBundledPlugins(
+    bundledPluginInstalls,
+    { registry: pluginRegistry, loader, lifecycle, logger },
+    // Managed mode reinstalls soft-uninstalled bundles (the control plane
+    // owns provisioning); self-hosted leaves an operator's uninstall alone.
+    // Operator-DISABLED plugins are never touched in either mode.
+    { reinstallUninstalled: managedAutoInstallKeys !== null },
+  )
     .then(() => loader.loadAll())
     .then((result) => {
     if (!result) return;

@@ -2,16 +2,22 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
+import {
+  runAdapterExecutionTargetShellCommand,
+  type AdapterExecutionTarget,
+  type AdapterExecutionTargetShellOptions,
+} from "@paperclipai/adapter-utils/execution-target";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 
-const SEEDED_SHARED_FILES = [
-  ".credentials.json",
-  "credentials.json",
-  "settings.json",
-  "settings.local.json",
-  "CLAUDE.md",
-] as const;
+const SEEDED_SHARED_FILES = ["settings.json", "CLAUDE.md"] as const;
+
+interface SeedFile {
+  name: string;
+  sourcePath: string;
+  contents: Buffer;
+}
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -27,23 +33,48 @@ function isAlreadyExistsError(error: unknown): boolean {
   return code === "EEXIST" || code === "ENOTEMPTY";
 }
 
-async function collectSeedFiles(sourceDir: string): Promise<Array<{ name: string; sourcePath: string }>> {
-  const files: Array<{ name: string; sourcePath: string }> = [];
+function sanitizeRemoteClaudeSettings(raw: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return JSON.stringify({ permissions: { defaultMode: "default" } });
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return JSON.stringify({ permissions: { defaultMode: "default" } });
+  }
+
+  const settings = { ...(parsed as Record<string, unknown>) };
+  settings.permissions = { defaultMode: "default" };
+  delete settings.hooks;
+  delete settings.mcpServers;
+  delete settings.permissionMode;
+  delete settings.skipDangerousModePermissionPrompt;
+  return JSON.stringify(settings);
+}
+
+async function collectSeedFiles(sourceDir: string): Promise<SeedFile[]> {
+  const files: SeedFile[] = [];
   for (const name of SEEDED_SHARED_FILES) {
     const sourcePath = path.join(sourceDir, name);
     if (!(await pathExists(sourcePath))) continue;
-    files.push({ name, sourcePath });
+    const rawContents = await fs.readFile(sourcePath);
+    const contents = name === "settings.json"
+      ? Buffer.from(sanitizeRemoteClaudeSettings(rawContents.toString("utf8")), "utf8")
+      : rawContents;
+    files.push({ name, sourcePath, contents });
   }
   return files;
 }
 
-async function buildSeedSnapshotKey(files: Array<{ name: string; sourcePath: string }>): Promise<string> {
+async function buildSeedSnapshotKey(files: SeedFile[]): Promise<string> {
   if (files.length === 0) return "empty";
   const hash = createHash("sha256");
   for (const file of files) {
     hash.update(file.name);
     hash.update("\0");
-    hash.update(await fs.readFile(file.sourcePath));
+    hash.update(file.contents);
     hash.update("\0");
   }
   return hash.digest("hex").slice(0, 16);
@@ -52,7 +83,7 @@ async function buildSeedSnapshotKey(files: Array<{ name: string; sourcePath: str
 async function materializeSeedSnapshot(input: {
   rootDir: string;
   snapshotKey: string;
-  files: Array<{ name: string; sourcePath: string }>;
+  files: SeedFile[];
 }): Promise<string> {
   const targetDir = path.join(input.rootDir, input.snapshotKey);
   if (await pathExists(targetDir)) {
@@ -63,7 +94,7 @@ async function materializeSeedSnapshot(input: {
   const stagingDir = await fs.mkdtemp(path.join(input.rootDir, ".tmp-"));
   try {
     for (const file of input.files) {
-      await fs.copyFile(file.sourcePath, path.join(stagingDir, file.name));
+      await fs.writeFile(path.join(stagingDir, file.name), file.contents);
     }
     try {
       await fs.rename(stagingDir, targetDir);
@@ -102,6 +133,48 @@ export function resolveManagedClaudeConfigSeedDir(
     : path.resolve(instanceRoot, "claude-config-seed");
 }
 
+export function resolveManagedClaudeRuntimeStateDir(
+  env: NodeJS.ProcessEnv,
+  companyId: string,
+  agentId: string,
+): string {
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  return path.join(instanceRoot, "companies", companyId, "agents", agentId, "claude-runtime");
+}
+
+export async function writePaperclipClaudeMcpConfig(input: {
+  stateDir: string;
+  runId: string;
+  servers: AdapterRuntimeMcpServer[];
+}): Promise<string> {
+  const configDir = path.join(input.stateDir, "runs", input.runId, "mcp");
+  const configPath = path.join(configDir, "mcp-config.json");
+  const usedNames = new Set<string>();
+  const mcpServers: Record<string, unknown> = {};
+  for (const server of input.servers) {
+    let name = server.name;
+    if (usedNames.has(name)) name = `${name}-${server.connectionId.slice(0, 8)}`;
+    let suffix = 2;
+    while (usedNames.has(name)) {
+      name = `${server.name}-${server.connectionId.slice(0, 8)}-${suffix}`;
+      suffix += 1;
+    }
+    usedNames.add(name);
+    mcpServers[name] = {
+      type: "http",
+      url: server.url,
+      headers: { Authorization: `Bearer ${server.token}` },
+    };
+  }
+  await fs.mkdir(configDir, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify({ mcpServers }), { mode: 0o600 });
+  return configPath;
+}
+
 export async function prepareClaudeConfigSeed(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
@@ -135,4 +208,37 @@ export async function prepareClaudeConfigSeed(
   }
 
   return targetDir;
+}
+
+export function buildRemoteClaudeConfigMaterializationCommand(input: {
+  remoteClaudeConfigDir: string;
+  remoteClaudeConfigSeedDir: string;
+}): string {
+  return `mkdir -p ${shellQuote(input.remoteClaudeConfigDir)} && ` +
+    `if [ -d ${shellQuote(input.remoteClaudeConfigSeedDir)} ]; then ` +
+    `cp -R ${shellQuote(`${input.remoteClaudeConfigSeedDir}/.`)} ${shellQuote(input.remoteClaudeConfigDir)}/; ` +
+    `fi; ` +
+    `for file in .credentials.json credentials.json; do ` +
+    `if [ -n "\${HOME:-}" ] && [ -f "\${HOME}/.claude/\${file}" ] && [ ! -f ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}" ]; then ` +
+    `cp "\${HOME}/.claude/\${file}" ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}"; ` +
+    `fi; ` +
+    `done`;
+}
+
+export async function materializeRemoteClaudeConfig(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  remoteClaudeConfigDir: string;
+  remoteClaudeConfigSeedDir: string;
+  options: AdapterExecutionTargetShellOptions;
+}): Promise<void> {
+  await runAdapterExecutionTargetShellCommand(
+    input.runId,
+    input.target,
+    buildRemoteClaudeConfigMaterializationCommand({
+      remoteClaudeConfigDir: input.remoteClaudeConfigDir,
+      remoteClaudeConfigSeedDir: input.remoteClaudeConfigSeedDir,
+    }),
+    input.options,
+  );
 }

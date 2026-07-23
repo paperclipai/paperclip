@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="304" viewBox="0 0 1280 304"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Flow — the three surfaces that show the same monitor state -->
+  <rect x="0" y="0" width="1280" height="304" />
+  <text x="48" y="40" font-size="14" font-weight="600" stroke="none" fill="#000">One monitor state, three surfaces — banner (top), strip (composer), row (properties) — all fed by the same copy rules (04).</text>
+
+  <!-- 01 thumbnail: page top with banner -->
+  <g transform="translate(48,72)">
+    <rect width="240" height="160" rx="4" />
+    <line x1="0" y1="24" x2="240" y2="24" />
+    <rect x="16" y="40" width="144" height="8" fill="#e6e6e6" stroke="none" />
+    <rect x="16" y="60" width="208" height="32" rx="4" fill="#e6e6e6" stroke="none" />
+    <circle cx="32" cy="76" r="8" fill="#fff" />
+    <line x1="16" y1="112" x2="224" y2="112" stroke="#666" />
+    <line x1="16" y1="128" x2="224" y2="128" stroke="#666" />
+    <line x1="16" y1="144" x2="160" y2="144" stroke="#666" />
+  </g>
+  <text x="168" y="264" font-size="12" text-anchor="middle" stroke="none" fill="#000">01 · Task page top — banner</text>
+
+  <line x1="296" y1="152" x2="336" y2="152" />
+  <polygon points="336,152 326,146 326,158" fill="#000" stroke="none" />
+
+  <!-- 02 thumbnail: strip + composer -->
+  <g transform="translate(344,72)">
+    <rect width="240" height="160" rx="4" />
+    <line x1="16" y1="24" x2="224" y2="24" stroke="#666" />
+    <line x1="16" y1="40" x2="224" y2="40" stroke="#666" />
+    <line x1="16" y1="56" x2="160" y2="56" stroke="#666" />
+    <rect x="16" y="80" width="208" height="24" rx="4" fill="#e6e6e6" stroke="none" />
+    <circle cx="30" cy="92" r="6" fill="#fff" />
+    <rect x="16" y="112" width="208" height="32" rx="4" />
+  </g>
+  <text x="464" y="264" font-size="12" text-anchor="middle" stroke="none" fill="#000">02 · Above the composer — strip</text>
+
+  <line x1="592" y1="152" x2="632" y2="152" />
+  <polygon points="632,152 622,146 622,158" fill="#000" stroke="none" />
+
+  <!-- 03 thumbnail: properties row + tooltip -->
+  <g transform="translate(640,72)">
+    <rect width="240" height="160" rx="4" />
+    <rect x="16" y="16" width="64" height="8" fill="#e6e6e6" stroke="none" />
+    <rect x="120" y="16" width="104" height="8" fill="#e6e6e6" stroke="none" />
+    <rect x="16" y="40" width="64" height="8" fill="#e6e6e6" stroke="none" />
+    <rect x="120" y="36" width="80" height="8" fill="#000" stroke="none" />
+    <rect x="120" y="50" width="104" height="6" fill="#e6e6e6" stroke="none" />
+    <rect x="120" y="72" width="104" height="72" rx="4" />
+    <rect x="132" y="84" width="80" height="6" fill="#e6e6e6" stroke="none" />
+    <rect x="132" y="98" width="80" height="6" fill="#e6e6e6" stroke="none" />
+    <rect x="132" y="112" width="56" height="6" fill="#e6e6e6" stroke="none" />
+  </g>
+  <text x="760" y="264" font-size="12" text-anchor="middle" stroke="none" fill="#000">03 · Properties row + tooltip</text>
+
+  <line x1="888" y1="152" x2="928" y2="152" />
+  <polygon points="928,152 918,146 918,158" fill="#000" stroke="none" />
+
+  <!-- 04 thumbnail: states grid -->
+  <g transform="translate(936,72)">
+    <rect width="240" height="160" rx="4" />
+    <rect x="16" y="16" width="96" height="56" rx="4" />
+    <rect x="128" y="16" width="96" height="56" rx="4" />
+    <rect x="16" y="88" width="96" height="56" rx="4" />
+    <rect x="128" y="88" width="96" height="56" rx="4" />
+  </g>
+  <text x="1056" y="264" font-size="12" text-anchor="middle" stroke="none" fill="#000">04 · State matrix + copy rules</text>
+</svg>

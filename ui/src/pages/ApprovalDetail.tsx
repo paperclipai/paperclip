@@ -255,7 +255,7 @@ export function ApprovalDetail() {
                 </Link>
               ))}
             </div>
-            <p className="text-[11px] text-muted-foreground mt-2">
+            <p className="text-(length:--text-micro) text-muted-foreground mt-2">
               Linked tasks remain open until the requesting agent follows up and closes them.
             </p>
           </div>

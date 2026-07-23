@@ -50,6 +50,9 @@ vi.mock("../services/index.js", () => ({
       agent: { id: raw },
     })),
   }),
+  companySkillService: () => ({
+    completeTestRunForIssue: vi.fn(async () => null),
+  }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
@@ -118,6 +121,9 @@ function registerModuleMocks() {
         ambiguous: false,
         agent: { id: raw },
       })),
+    }),
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),

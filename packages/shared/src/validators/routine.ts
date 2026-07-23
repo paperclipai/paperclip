@@ -13,6 +13,7 @@ import {
   issueExecutionWorkspaceSettingsSchema,
 } from "./issue.js";
 import { envConfigSchema } from "./secret.js";
+import { isValidRoutineDateString } from "../routine-variables.js";
 
 const routineVariableValueSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
 
@@ -47,10 +48,20 @@ export const routineVariableSchema = z.object({
       });
     }
   }
+  if (value.type === "date" && value.defaultValue != null) {
+    if (typeof value.defaultValue !== "string" || !isValidRoutineDateString(value.defaultValue)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["defaultValue"],
+        message: "Date variable defaults must be valid YYYY-MM-DD calendar dates",
+      });
+    }
+  }
 });
 
 export const createRoutineSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
+  folderId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentIssueId: z.string().uuid().optional().nullable(),
   title: z.string().trim().min(1).max(200),
@@ -75,6 +86,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   id: z.string().uuid(),
   companyId: z.string().uuid(),
   projectId: z.string().uuid().nullable(),
+  folderId: z.string().uuid().nullable().optional(),
   goalId: z.string().uuid().nullable(),
   parentIssueId: z.string().uuid().nullable(),
   title: z.string().trim().min(1).max(200),
@@ -86,6 +98,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES),
   variables: z.array(routineVariableSchema),
   env: envConfigSchema.nullable().default(null),
+  responsibleUserId: z.string().nullable().default(null),
 }).strict();
 
 export const routineRevisionSnapshotTriggerV1Schema = z.object({
@@ -149,6 +162,7 @@ export const runRoutineSchema = z.object({
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   variables: z.record(z.string(), routineVariableValueSchema).optional().nullable(),
   projectId: z.string().uuid().optional().nullable(),
+  projectWorkspaceId: z.string().uuid().optional().nullable(),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   idempotencyKey: z.string().trim().max(255).optional().nullable(),
   source: z.enum(["manual", "api"]).optional().default("manual"),

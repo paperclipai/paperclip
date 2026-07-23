@@ -160,6 +160,7 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).not.toContain("Cloud upstream");
     expect(container.textContent).toContain("Invites");
     expect(container.textContent).toContain("Secrets");
+    expect(container.textContent).not.toContain("Tools & Access");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings",
@@ -169,7 +170,7 @@ describe("CompanySettingsSidebar", () => {
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        to: "/company/settings/environments",
+        to: "/company/settings/instance/environments",
         label: "Environments",
         end: true,
       }),
@@ -220,6 +221,11 @@ describe("CompanySettingsSidebar", () => {
       expect.objectContaining({
         to: "/company/settings/instance/adapters",
         label: "Adapters",
+      }),
+    );
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/tools",
       }),
     );
 

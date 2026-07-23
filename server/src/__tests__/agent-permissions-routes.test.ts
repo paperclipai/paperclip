@@ -44,10 +44,15 @@ const mockAgentService = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
+  terminate: vi.fn(),
   update: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
+}));
+
+const mockBuiltInAgentService = vi.hoisted(() => ({
+  ensureCompanyDefaultAgentGrants: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -63,6 +68,9 @@ const mockAccessService = vi.hoisted(() => ({
 const mockApprovalService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
+  findOpenHireApprovalForAgent: vi.fn(),
+  approve: vi.fn(),
+  reject: vi.fn(),
 }));
 
 const mockBudgetService = vi.hoisted(() => ({
@@ -74,6 +82,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
+  cancelInvocationsForAgents: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -190,6 +199,7 @@ function registerModuleMocks() {
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
+    builtInAgentService: () => mockBuiltInAgentService,
     companySkillService: () => mockCompanySkillService,
     budgetService: () => mockBudgetService,
     heartbeatService: () => mockHeartbeatService,
@@ -299,10 +309,12 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.list.mockReset();
     mockAgentService.create.mockReset();
     mockAgentService.activatePendingApproval.mockReset();
+    mockAgentService.terminate.mockReset();
     mockAgentService.update.mockReset();
     mockAgentService.updatePermissions.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
+    mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockReset();
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
     mockAccessService.hasPermission.mockReset();
@@ -312,11 +324,15 @@ describe.sequential("agent permission routes", () => {
     mockAccessService.setPrincipalPermission.mockReset();
     mockApprovalService.create.mockReset();
     mockApprovalService.getById.mockReset();
+    mockApprovalService.findOpenHireApprovalForAgent.mockReset();
+    mockApprovalService.approve.mockReset();
+    mockApprovalService.reject.mockReset();
     mockBudgetService.upsertPolicy.mockReset();
     mockHeartbeatService.listTaskSessions.mockReset();
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.cancelInvocationsForAgents.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
@@ -344,6 +360,7 @@ describe.sequential("agent permission routes", () => {
     });
     mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
+    mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockResolvedValue(0);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
       const allowed = Boolean(await mockAccessService.canUser());
@@ -699,7 +716,7 @@ describe.sequential("agent permission routes", () => {
         model: "gpt-5.3-codex-spark",
         env: expect.any(Object),
       }),
-      { strictMode: false },
+      { strictMode: false, adapterType: "codex_local" },
     );
     expect(mockAgentService.update).toHaveBeenCalledWith(
       agentId,
@@ -856,6 +873,7 @@ describe.sequential("agent permission routes", () => {
       true,
       "agent-admin-user",
     );
+    expect(mockBuiltInAgentService.ensureCompanyDefaultAgentGrants).toHaveBeenCalledWith(companyId);
   });
 
   it("rejects direct agent creation when new agents require board approval", async () => {
@@ -1117,6 +1135,7 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith(agentId);
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       companyId,
       actorType: "user",
@@ -1124,8 +1143,134 @@ describe.sequential("agent permission routes", () => {
       action: "agent.approved",
       entityType: "agent",
       entityId: agentId,
-      details: { source: "agent_detail" },
+      details: { source: "agent_detail", approvalId: null },
     }));
+  });
+
+  it("resolves the linked hire approval when approving from the agent detail page", async () => {
+    const pendingAgent = {
+      ...baseAgent,
+      status: "pending_approval",
+    };
+    const approvedAgent = {
+      ...baseAgent,
+      status: "idle",
+    };
+    // First getById (getAccessibleAgent) sees the pending agent; the second
+    // (after the approval resolves) sees the activated agent.
+    mockAgentService.getById
+      .mockResolvedValueOnce(pendingAgent)
+      .mockResolvedValue(approvedAgent);
+    mockApprovalService.findOpenHireApprovalForAgent.mockResolvedValue({
+      id: "approval-1",
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      payload: { agentId },
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: { id: "approval-1", status: "approved" },
+      applied: true,
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/approve`)
+      .send({}));
+
+    expect(res.status).toBe(200);
+    // The shared approval flow handles activation; we must not double-activate.
+    expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-1", "board-user");
+    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "agent.approved",
+      details: { source: "agent_detail", approvalId: "approval-1" },
+    }));
+  });
+
+  it("rejects the linked hire approval when terminating a still-pending agent without double-terminating", async () => {
+    const pendingAgent = {
+      ...baseAgent,
+      status: "pending_approval",
+    };
+    const terminatedAgent = {
+      ...baseAgent,
+      status: "terminated",
+    };
+    // getAccessibleAgent sees the pending agent; after the rejection resolves
+    // (which terminates internally) the route re-reads the terminated agent.
+    mockAgentService.getById
+      .mockResolvedValueOnce(pendingAgent)
+      .mockResolvedValue(terminatedAgent);
+    mockApprovalService.findOpenHireApprovalForAgent.mockResolvedValue({
+      id: "approval-1",
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      payload: { agentId },
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: { id: "approval-1", status: "rejected" },
+      applied: true,
+    });
+    mockHeartbeatService.cancelInvocationsForAgents.mockResolvedValue({
+      agentIds: [agentId],
+      runsCancelled: 0,
+      wakeupsCancelled: 0,
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/terminate`)
+      .send({}));
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-1", "board-user");
+    // reject() terminates the agent internally; the route must not terminate again.
+    expect(mockAgentService.terminate).not.toHaveBeenCalled();
+  });
+
+  it("terminates directly when no open hire approval is linked", async () => {
+    const idleAgent = { ...baseAgent, status: "idle" };
+    const terminatedAgent = { ...baseAgent, status: "terminated" };
+    mockAgentService.getById.mockResolvedValue(idleAgent);
+    mockAgentService.terminate.mockResolvedValue(terminatedAgent);
+    mockHeartbeatService.cancelInvocationsForAgents.mockResolvedValue({
+      agentIds: [agentId],
+      runsCancelled: 0,
+      wakeupsCancelled: 0,
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/terminate`)
+      .send({}));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.terminate).toHaveBeenCalledWith(agentId);
+    expect(mockApprovalService.findOpenHireApprovalForAgent).not.toHaveBeenCalled();
+    expect(mockApprovalService.reject).not.toHaveBeenCalled();
   });
 
   it("rejects direct approval for agents that are not pending approval", async () => {
@@ -1148,7 +1293,7 @@ describe.sequential("agent permission routes", () => {
     }));
   });
 
-  it("rejects creating an agent with an environment from another company", async () => {
+  it("allows creating an agent with an instance-scoped environment referenced from another company", async () => {
     const environmentId = "33333333-3333-4333-8333-333333333333";
     mockEnvironmentService.getById.mockResolvedValue({
       id: environmentId,
@@ -1175,9 +1320,13 @@ describe.sequential("agent permission routes", () => {
         defaultEnvironmentId: environmentId,
       }));
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toContain("Environment not found");
-    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        defaultEnvironmentId: environmentId,
+      }),
+    );
   });
 
   it("rejects creating an agent with an unsupported default environment driver", async () => {
@@ -1453,6 +1602,53 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
   });
 
+  it("preserves disabled skill creation when unrelated permission updates omit that field", async () => {
+    mockAgentService.updatePermissions.mockResolvedValue({
+      ...baseAgent,
+      permissions: { canCreateAgents: false, canCreateSkills: false },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: true }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, {
+      canCreateAgents: false,
+      canAssignTasks: true,
+    });
+    expect(res.body.permissions.canCreateSkills).toBe(false);
+  });
+
+  it("rejects CEO permission updates outside the caller company scope", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "ceo-agent",
+      companyId: "33333333-3333-4333-8333-333333333333",
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: true, canAssignTasks: true }));
+
+    // Cross-tenant requests return 404 (not 403) so the status code cannot be
+    // used as an existence oracle for other tenants' agent ids.
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
+    expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
+    expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
+  });
+
   it("exposes a dedicated agent route for the inbox mine view", async () => {
     mockIssueService.list.mockResolvedValue([
       {
@@ -1513,11 +1709,10 @@ describe.sequential("agent permission routes", () => {
       expect(res.status).toBe(200);
     });
 
-    it("denies an agent actor without agents:create when reading peer config", async () => {
-      // Agent actors must still pass the agents:create gate (explicit
-      // grant OR canCreateAgents permission on the agent record). A peer
-      // agent in the same company without that permission must not be
-      // able to read another agent's configuration.
+    it("denies an agent actor without configure or suggest grants when reading peer config", async () => {
+      // Agent actors must pass the agent configuration read ladder. A peer
+      // agent in the same company without agents:configure or
+      // agents:suggest-changes must not read another agent's configuration.
       const peerAgentId = "33333333-3333-4333-8333-333333333333";
       const peerAgent = { ...baseAgent, id: peerAgentId };
       mockAgentService.getById.mockImplementation(async (id: string) => {
@@ -1527,7 +1722,11 @@ describe.sequential("agent permission routes", () => {
         }
         return null;
       });
-      mockAccessService.hasPermission.mockResolvedValue(false);
+      mockAccessService.decide.mockResolvedValue({
+        allowed: false,
+        reason: "deny_no_grant",
+        explanation: "Missing permission: agents:configure or agents:suggest-changes.",
+      });
 
       const app = await createApp({
         type: "agent",
@@ -1540,11 +1739,15 @@ describe.sequential("agent permission routes", () => {
       const res = await request(app).get(`/api/agents/${peerAgentId}/configuration`);
 
       expect(res.status).toBe(403);
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "agent_config:read",
+        resource: { type: "company", companyId },
+      }));
     });
 
-    it("allows an agent actor with agents:create grant to read peer config", async () => {
-      // When an agent actor has an explicit agents:create grant in the
-      // access service, the read gate must let them through.
+    it("allows an agent actor with agents:suggest-changes grant to read peer config", async () => {
+      // Suggest-tier authority implies read access so the agent can prepare a
+      // consented diff without receiving direct change authority.
       const peerAgentId = "44444444-4444-4444-8444-444444444444";
       const peerAgent = { ...baseAgent, id: peerAgentId };
       mockAgentService.getById.mockImplementation(async (id: string) => {
@@ -1554,11 +1757,17 @@ describe.sequential("agent permission routes", () => {
         }
         return null;
       });
-      mockAccessService.hasPermission.mockImplementation(
-        async (_companyId: string, _principalType: string, principalId: string, key: string) => {
-          return principalId === agentId && key === "agents:create";
+      mockAccessService.decide.mockResolvedValue({
+        allowed: true,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by explicit grant agents:suggest-changes.",
+        grant: {
+          principalType: "agent",
+          principalId: agentId,
+          permissionKey: "agents:suggest-changes",
+          scope: null,
         },
-      );
+      });
 
       const app = await createApp({
         type: "agent",
@@ -1571,6 +1780,10 @@ describe.sequential("agent permission routes", () => {
       const res = await request(app).get(`/api/agents/${peerAgentId}/configuration`);
 
       expect(res.status).toBe(200);
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "agent_config:read",
+        resource: { type: "company", companyId },
+      }));
     });
   });
 
@@ -1592,7 +1805,8 @@ describe.sequential("agent permission routes", () => {
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl).post("/api/heartbeat-runs/run-1/cancel").send({}));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Heartbeat run not found");
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 });

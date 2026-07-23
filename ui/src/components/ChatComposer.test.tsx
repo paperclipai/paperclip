@@ -160,7 +160,7 @@ describe("ChatComposer", () => {
     const el = input();
     expect(el.getAttribute("wrap")).toBe("soft");
     expect(el.className).toContain("overflow-y-auto");
-    expect(el.className).toContain("max-h-[200px]");
+    expect(el.className).toContain("max-h-(--sz-200px)");
     expect(el.className).not.toContain("whitespace-nowrap");
     expect(el.className).not.toContain("overflow-x-auto");
     act(() => root.unmount());
@@ -174,7 +174,7 @@ describe("ChatComposer", () => {
     const el = input();
     expect(el.getAttribute("wrap")).toBe("off");
     expect(el.className).toContain("whitespace-nowrap");
-    expect(el.className).toContain("max-h-[22px]");
+    expect(el.className).toContain("max-h-(--sz-22px)");
     act(() => root.unmount());
   });
 
@@ -185,6 +185,17 @@ describe("ChatComposer", () => {
     });
     const box = container.querySelector('[data-testid="chat-composer"]');
     expect(box?.getAttribute("data-tone")).toBe("planning");
+    act(() => root.unmount());
+  });
+
+  it('tone="ask" is reflected on the container', () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<Harness tone="ask" />);
+    });
+    const box = container.querySelector('[data-testid="chat-composer"]');
+    expect(box?.getAttribute("data-tone")).toBe("ask");
+    expect(box?.className).toContain("sky");
     act(() => root.unmount());
   });
 
@@ -214,8 +225,8 @@ describe("ChatComposer", () => {
     expect(box.className).toContain("bg-background/95");
     expect(box.className).toContain("supports-[backdrop-filter]:bg-background/85");
     expect(box.className).toContain("backdrop-blur");
-    expect(box.className).toContain("shadow-[0_-12px_28px_rgba(15,23,42,0.08)]");
-    expect(box.className).toContain("dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]");
+    expect(box.className).toContain("shadow-(--shadow-extract-4)");
+    expect(box.className).toContain("dark:shadow-(--shadow-extract-5)");
     expect(box.className).not.toContain("bg-card");
     // Shared chrome survives: rounded-xl corners + neutral focus darkening.
     expect(box.className).toContain("rounded-xl");

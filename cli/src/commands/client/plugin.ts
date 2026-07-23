@@ -31,6 +31,22 @@ interface PluginRecord {
   updatedAt: string;
 }
 
+/** Subset of `GET /api/health` we surface as install/target diagnostics. */
+interface TargetHealth {
+  status?: string;
+  version?: string;
+  deploymentMode?: string;
+  deploymentExposure?: string;
+}
+
+/** Result of probing the Paperclip instance the CLI is about to talk to. */
+interface TargetDiagnostics {
+  apiBase: string;
+  reachable: boolean;
+  health?: TargetHealth;
+  error?: string;
+}
+
 
 // ---------------------------------------------------------------------------
 // Option types
@@ -43,6 +59,8 @@ interface PluginListOptions extends BaseClientOptions {
 interface PluginInstallOptions extends BaseClientOptions {
   local?: boolean;
   version?: string;
+  /** When false, skip the pre-install target-host health probe. Defaults true. */
+  verifyTarget?: boolean;
 }
 
 interface PluginInstallRequest {
@@ -75,6 +93,15 @@ interface PluginStreamOptions extends BaseClientOptions {
 
 interface PluginCompanyOptions extends PluginJsonOptions {
   companyId?: string;
+}
+
+function requireCompanyId(ctx: { companyId?: string }): string {
+  if (!ctx.companyId) {
+    throw new Error(
+      "Company ID is required. Pass --company-id, set PAPERCLIP_COMPANY_ID, or set context profile companyId via `paperclipai context set`.",
+    );
+  }
+  return ctx.companyId;
 }
 
 interface PluginInitResult {
@@ -152,6 +179,63 @@ export function renderLocalPluginInstallHint(packagePath: string): string {
     pc.dim("Local plugin installs run trusted local code from your machine."),
     pc.dim(`Keep ${pc.cyan("pnpm dev")} running in ${packagePath}; Paperclip watches rebuilt dist output and reloads the plugin worker.`),
   ].join("\n");
+}
+
+/**
+ * Probe `GET /api/health` on the instance the CLI is configured to talk to so a
+ * developer can confirm *which* Paperclip they are about to install into. This
+ * exists because a local-path plugin can otherwise be silently installed into a
+ * stale control-plane host that does not serve the branch's routes; surfacing
+ * the API URL plus the server version/status catches that mismatch before the
+ * plugin is exercised against the wrong runtime.
+ */
+export async function probeTargetDiagnostics(
+  api: { apiBase: string; get(path: string): Promise<TargetHealth | null> },
+): Promise<TargetDiagnostics> {
+  try {
+    const health = await api.get("/api/health");
+    return {
+      apiBase: api.apiBase,
+      reachable: true,
+      health: health ?? undefined,
+    };
+  } catch (err) {
+    return {
+      apiBase: api.apiBase,
+      reachable: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Render the target-host diagnostics as human-readable lines. Pure so it can be
+ * unit-tested without a live server.
+ */
+export function formatTargetDiagnostics(diag: TargetDiagnostics): string {
+  const lines = [pc.dim(`Target Paperclip: ${pc.cyan(diag.apiBase)}`)];
+
+  if (!diag.reachable) {
+    lines.push(pc.yellow(`  health: unreachable${diag.error ? ` (${diag.error.split("\n")[0]})` : ""}`));
+    lines.push(
+      pc.dim(
+        `  Verify the right instance is running, then pass ${pc.cyan("--api-base <url>")} or set ${pc.cyan("PAPERCLIP_API_URL")} if it lives elsewhere.`,
+      ),
+    );
+    return lines.join("\n");
+  }
+
+  const health = diag.health ?? {};
+  const detailParts: string[] = [];
+  if (health.status) detailParts.push(`status=${health.status}`);
+  if (health.version) detailParts.push(`version=${health.version}`);
+  if (health.deploymentMode) detailParts.push(`mode=${health.deploymentMode}`);
+  if (health.deploymentExposure) detailParts.push(`exposure=${health.deploymentExposure}`);
+
+  lines.push(
+    pc.dim(`  health: ${detailParts.length > 0 ? detailParts.join("  ") : "ok (no details exposed)"}`),
+  );
+  return lines.join("\n");
 }
 
 function formatPlugin(p: PluginRecord): string {
@@ -323,11 +407,27 @@ export function registerPluginCommands(program: Command): void {
       )
       .option("-l, --local", "Treat <package> as a local filesystem path", false)
       .option("--version <version>", "Specific npm version to install (npm packages only)")
+      .option(
+        "--no-verify-target",
+        "Skip the pre-install probe that reports which Paperclip instance the plugin installs into",
+      )
       .action(async (packageArg: string, opts: PluginInstallOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
 
           const installRequest = buildPluginInstallRequest(packageArg, opts);
+
+          // Make the install target explicit before sending the plugin to it. A
+          // local-path plugin can otherwise be silently installed into a stale
+          // control-plane host that lacks this branch's routes; printing the API
+          // URL + server version/health lets the developer catch that mismatch.
+          let target: TargetDiagnostics | undefined;
+          if (opts.verifyTarget !== false) {
+            target = await probeTargetDiagnostics(ctx.api);
+            if (!ctx.json) {
+              console.log(formatTargetDiagnostics(target));
+            }
+          }
 
           if (!ctx.json) {
             console.log(
@@ -342,7 +442,10 @@ export function registerPluginCommands(program: Command): void {
           const installedPlugin = await ctx.api.post<PluginRecord>("/api/plugins/install", installRequest);
 
           if (ctx.json) {
-            printOutput(installedPlugin, { json: true });
+            // Preserve the original flat PluginRecord shape so existing
+            // automation reading top-level fields (id/pluginKey/version/status)
+            // keeps working; attach target diagnostics as an additive field.
+            printOutput({ ...installedPlugin, ...(target ? { target } : {}) }, { json: true });
             return;
           }
 
@@ -364,6 +467,35 @@ export function registerPluginCommands(program: Command): void {
           if (installRequest.isLocalPath) {
             console.log(renderLocalPluginInstallHint(installRequest.packageName));
           }
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  // -------------------------------------------------------------------------
+  // plugin target
+  // -------------------------------------------------------------------------
+  addCommonClientOptions(
+    plugin
+      .command("target")
+      .description(
+        "Show which Paperclip instance plugin commands will talk to.\n" +
+          "  Reports the resolved API URL plus the server status/version/mode from\n" +
+          "  GET /api/health so you can confirm you are installing into the branch\n" +
+          "  runtime and not a stale control-plane host.",
+      )
+      .action(async (opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const diag = await probeTargetDiagnostics(ctx.api);
+
+          if (ctx.json) {
+            printOutput(diag, { json: true });
+            return;
+          }
+
+          console.log(formatTargetDiagnostics(diag));
         } catch (err) {
           handleCommandError(err);
         }
@@ -550,9 +682,9 @@ export function registerPluginCommands(program: Command): void {
   addPluginSubGet(plugin, "health", "Get plugin health", "health");
   addPluginSubGet(plugin, "logs", "Get plugin logs", "logs");
   addPluginSubPost(plugin, "upgrade", "Upgrade a plugin", "upgrade");
-  addPluginSubGet(plugin, "config", "Get plugin config", "config");
-  addPluginSubPost(plugin, "config:set", "Set plugin config", "config");
-  addPluginSubPost(plugin, "config:test", "Test plugin config", "config/test");
+  addPluginConfigGet(plugin, "config", "Get company-scoped plugin config");
+  addPluginConfigPost(plugin, "config:set", "Set company-scoped plugin config", "config");
+  addPluginConfigPost(plugin, "config:test", "Test company-scoped plugin config", "config/test");
   addPluginSubGet(plugin, "jobs", "List plugin jobs", "jobs");
   addPluginJobGet(plugin, "job:runs", "List plugin job runs", "runs");
   addPluginJobPost(plugin, "job:trigger", "Trigger a plugin job", "trigger");
@@ -626,6 +758,56 @@ function addPluginSubPost(parent: Command, name: string, description: string, su
       handleCommandError(err);
     }
   }));
+}
+
+function addPluginConfigGet(parent: Command, name: string, description: string): void {
+  addCommonClientOptions(
+    parent
+      .command(name)
+      .description(description)
+      .argument("<pluginId>", "Plugin ID or key")
+      .option("-C, --company-id <id>", "Company ID")
+      .action(async (pluginId: string, opts: PluginCompanyOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const companyId = requireCompanyId(ctx);
+          printOutput(
+            await ctx.api.get(`/api/plugins/${encodeURIComponent(pluginId)}/config?companyId=${encodeURIComponent(companyId)}`),
+            { json: ctx.json },
+          );
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+}
+
+function addPluginConfigPost(parent: Command, name: string, description: string, suffix: string): void {
+  addCommonClientOptions(
+    parent
+      .command(name)
+      .description(description)
+      .argument("<pluginId>", "Plugin ID or key")
+      .option("-C, --company-id <id>", "Company ID")
+      .option("--payload-json <json>", "JSON payload", "{}")
+      .action(async (pluginId: string, opts: PluginCompanyOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const payload = parseJson(opts.payloadJson ?? "{}") as Record<string, unknown>;
+          printOutput(
+            await ctx.api.post(`/api/plugins/${encodeURIComponent(pluginId)}/${suffix}`, {
+              ...payload,
+              companyId: ctx.companyId,
+            }),
+            { json: ctx.json },
+          );
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
 }
 
 function addPluginJobGet(parent: Command, name: string, description: string, suffix: string): void {

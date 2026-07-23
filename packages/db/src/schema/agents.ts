@@ -32,6 +32,7 @@ export const agents = pgTable(
     spentMonthlyCents: numeric("spent_monthly_cents", { precision: 20, scale: 6, mode: "number" }).notNull().default(0),
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
+    errorReason: text("error_reason"),
     permissions: jsonb("permissions").$type<Record<string, unknown>>().notNull().default({}),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),

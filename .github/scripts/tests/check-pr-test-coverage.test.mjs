@@ -15,6 +15,14 @@ test('passes when .spec.js file is changed', () => {
   assert.equal(checkTestCoverage(makeFiles(['src/bar.spec.js']), 'fix: bug').passed, true);
 });
 
+test('passes when .test.mjs file is changed', () => {
+  assert.equal(checkTestCoverage(makeFiles(['scripts/foo.test.mjs', 'scripts/foo.mjs']), 'fix: bug').passed, true);
+});
+
+test('passes when .test.cjs file is changed', () => {
+  assert.equal(checkTestCoverage(makeFiles(['scripts/bar.test.cjs']), 'fix: bug').passed, true);
+});
+
 test('passes when file under tests/ is changed', () => {
   assert.equal(checkTestCoverage(makeFiles(['tests/unit/baz.ts']), 'fix: bug').passed, true);
 });

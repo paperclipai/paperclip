@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -10,6 +11,7 @@ import type {
   CatalogSkillSource,
 } from "@paperclipai/shared";
 import { HttpError, conflict, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { ghFetch, resolveRawGitHubUrl } from "./github-fetch.js";
 import { normalizePortablePath } from "./portable-path.js";
 
@@ -21,30 +23,122 @@ interface CatalogManifestFile {
 
 const serviceDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(serviceDir, "../../..");
-const catalogPackageRoot = path.join(repoRoot, "packages/skills-catalog");
-const catalogManifestPath = path.join(catalogPackageRoot, "generated/catalog.json");
+const require = createRequire(import.meta.url);
+const catalogPackageName = "@paperclipai/skills-catalog";
+const catalogPackageJsonSpecifier = `${catalogPackageName}/package.json`;
+const catalogManifestSpecifier = `${catalogPackageName}/catalog.json`;
+const devCatalogPackageRoot = path.join(repoRoot, "packages/skills-catalog");
+const devCatalogManifestPath = path.join(devCatalogPackageRoot, "generated/catalog.json");
 let cachedCatalogManifest: {
   manifest: CatalogManifestFile;
   mtimeMs: number;
   size: number;
 } | null = null;
+let cachedCatalogPaths:
+  | {
+  packageRoot: string;
+  manifestPath: string;
+}
+  | false
+  | null = null;
+let cachedCatalogPathsError: CatalogManifestUnavailableError | null = null;
+let loggedCatalogUnavailableWarning = false;
 
-function loadCatalogManifest(): CatalogManifestFile {
-  if (!existsSync(catalogManifestPath)) {
-    throw new Error(
-      `Skills catalog manifest not found at ${catalogManifestPath}. Run pnpm --filter @paperclipai/skills-catalog build:manifest.`,
-    );
+export class CatalogManifestUnavailableError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message);
+    this.name = "CatalogManifestUnavailableError";
+    if (options && "cause" in options) {
+      Object.defineProperty(this, "cause", {
+        value: options.cause,
+        enumerable: false,
+        configurable: true,
+        writable: true,
+      });
+    }
   }
-  return JSON.parse(readFileSync(catalogManifestPath, "utf8")) as CatalogManifestFile;
+}
+
+export function isCatalogManifestUnavailableError(error: unknown): error is CatalogManifestUnavailableError {
+  return error instanceof CatalogManifestUnavailableError;
+}
+
+function manifestUnavailableMessage(manifestPath: string) {
+  return `Skills catalog manifest not found at ${manifestPath}. Run pnpm --filter @paperclipai/skills-catalog build:manifest.`;
+}
+
+function packageResolutionFailureMessage() {
+  return `Skills catalog package could not be resolved from ${catalogPackageJsonSpecifier} and ${catalogManifestSpecifier}.`;
+}
+
+function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function resolvePublishedCatalogPaths() {
+  return {
+    packageRoot: path.dirname(require.resolve(catalogPackageJsonSpecifier)),
+    manifestPath: require.resolve(catalogManifestSpecifier),
+  };
+}
+
+function resolveDevCatalogPaths() {
+  if (!existsSync(devCatalogManifestPath)) return null;
+  return {
+    packageRoot: devCatalogPackageRoot,
+    manifestPath: devCatalogManifestPath,
+  };
+}
+
+function resolveCatalogPaths() {
+  if (cachedCatalogPaths === false && cachedCatalogPathsError) {
+    throw cachedCatalogPathsError;
+  }
+  if (cachedCatalogPaths) {
+    return cachedCatalogPaths;
+  }
+  try {
+    cachedCatalogPaths = resolvePublishedCatalogPaths();
+    cachedCatalogPathsError = null;
+    return cachedCatalogPaths;
+  } catch (publishedError) {
+    const devPaths = resolveDevCatalogPaths();
+    if (devPaths) {
+      cachedCatalogPaths = devPaths;
+      cachedCatalogPathsError = null;
+      return cachedCatalogPaths;
+    }
+    cachedCatalogPathsError = new CatalogManifestUnavailableError(packageResolutionFailureMessage(), { cause: publishedError });
+    cachedCatalogPaths = false;
+    throw cachedCatalogPathsError;
+  }
+}
+
+function loadCatalogManifest(manifestPath: string): CatalogManifestFile {
+  try {
+    return JSON.parse(readFileSync(manifestPath, "utf8")) as CatalogManifestFile;
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      throw new CatalogManifestUnavailableError(manifestUnavailableMessage(manifestPath), { cause: error });
+    }
+    throw error;
+  }
 }
 
 function getCatalogManifest() {
-  if (!existsSync(catalogManifestPath)) {
-    throw new Error(
-      `Skills catalog manifest not found at ${catalogManifestPath}. Run pnpm --filter @paperclipai/skills-catalog build:manifest.`,
-    );
+  const { manifestPath } = resolveCatalogPaths();
+  if (!existsSync(manifestPath)) {
+    throw new CatalogManifestUnavailableError(manifestUnavailableMessage(manifestPath));
   }
-  const stats = statSync(catalogManifestPath);
+  let stats: ReturnType<typeof statSync>;
+  try {
+    stats = statSync(manifestPath);
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      throw new CatalogManifestUnavailableError(manifestUnavailableMessage(manifestPath), { cause: error });
+    }
+    throw error;
+  }
   if (
     cachedCatalogManifest &&
     cachedCatalogManifest.mtimeMs === stats.mtimeMs &&
@@ -53,7 +147,7 @@ function getCatalogManifest() {
     return cachedCatalogManifest.manifest;
   }
 
-  const manifest = loadCatalogManifest();
+  const manifest = loadCatalogManifest(manifestPath);
   cachedCatalogManifest = {
     manifest,
     mtimeMs: stats.mtimeMs,
@@ -93,7 +187,7 @@ function inferLanguageFromPath(filePath: string) {
 }
 
 function resolveCatalogPackageRoot() {
-  return catalogPackageRoot;
+  return resolveCatalogPaths().packageRoot;
 }
 
 function sourceRootPath(source: CatalogSkillSource) {
@@ -171,6 +265,23 @@ export function listCatalogSkills(query: CatalogSkillListQuery = {}): CatalogSki
     .filter((skill) => !query.category || skill.category === query.category)
     .filter((skill) => !normalizedQuery || searchText(skill).includes(normalizedQuery))
     .sort((left, right) => left.name.localeCompare(right.name) || left.key.localeCompare(right.key));
+}
+
+export function listCatalogSkillsOrEmpty(query: CatalogSkillListQuery = {}): CatalogSkill[] {
+  try {
+    const skills = listCatalogSkills(query);
+    loggedCatalogUnavailableWarning = false;
+    return skills;
+  } catch (error) {
+    if (!isCatalogManifestUnavailableError(error)) {
+      throw error;
+    }
+    if (!loggedCatalogUnavailableWarning) {
+      logger.warn({ err: error }, "skills catalog manifest unavailable; returning empty catalog");
+      loggedCatalogUnavailableWarning = true;
+    }
+    return [];
+  }
 }
 
 export function resolveCatalogSkillReference(reference: string): { skill: CatalogSkill | null; ambiguous: boolean } {

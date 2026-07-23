@@ -3,7 +3,62 @@ title: Secrets
 summary: Secrets CRUD
 ---
 
-Manage encrypted secrets that agents reference in their environment configuration.
+Manage encrypted secrets that agents receive through environment bindings or fetch on demand.
+
+## Agent List and Fetch
+
+These routes require the current run-bound agent JWT. They are not available to
+long-lived agent keys, low-trust review agents, task-bridge keys, or skill-test
+tokens.
+
+List the secrets accessible to the current run without materializing values:
+
+```
+GET /api/agents/me/secrets
+```
+
+```json
+{
+  "secrets": [
+    {
+      "key": "github_token",
+      "name": "GitHub token",
+      "description": null,
+      "delivery": "env",
+      "projectionClass": "unclassified",
+      "latestVersion": 2,
+      "versionSelector": "latest",
+      "resolvedVersion": 2
+    }
+  ]
+}
+```
+
+`delivery` is `env`, `api`, or `both`. The list never returns values, secret
+IDs, binding IDs, or config paths. An `env.*` binding implies read access through
+this API; an `access.*` binding grants API access without environment injection.
+
+Fetch a value only when it is needed. The request has no body and the response
+uses `Cache-Control: no-store`:
+
+```
+POST /api/agents/me/secrets/github_token/value
+```
+
+```json
+{
+  "key": "github_token",
+  "value": "decrypted-secret-value",
+  "version": 2
+}
+```
+
+Prefer env injection when the adapter or its child processes need the value on
+every run. Prefer on-demand fetch for values used only on some runs, large or
+structured values, or skills and tools that do not inherit adapter env. Every
+successful or failed value fetch is audited in both `secret_access_events` and
+`activity_log`; agents must not log or paste fetched values into issues,
+comments, or documents.
 
 ## List Secrets
 
@@ -398,6 +453,30 @@ real value into the agent process environment. Paperclip's custody guarantees
 end at injection: the agent process can read, log, or forward the value, so
 treat any secret bound to an agent as exposed to that agent. See the custody
 boundaries note in the [secrets deploy guide](/deploy/secrets#custody-boundaries).
+
+User-specific env bindings use a definition key instead of a concrete
+`secretId`. The concrete value is resolved for the run's responsible user:
+
+```json
+{
+  "env": {
+    "GITHUB_TOKEN": {
+      "type": "user_secret_ref",
+      "key": "github_api_token",
+      "version": "latest",
+      "required": true,
+      "allowMissingOverride": false
+    }
+  }
+}
+```
+
+`required` defaults to `true` and `allowMissingOverride` defaults to `false`.
+Missing required user-secret values must fail closed before adapter dispatch.
+Optional missing values omit the environment variable; they must not inject an
+empty string or another user's value. Paperclip records value-free access
+events with `secretScope`, `responsibleUserId`, `credentialOwnerUserId`, and
+`userSecretDefinitionId`.
 
 ## Portability
 

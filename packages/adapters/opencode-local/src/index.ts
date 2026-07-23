@@ -1,7 +1,7 @@
 import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 
 export const type = "opencode_local";
-export const label = "OpenCode (local)";
+export const label = "OpenCode";
 
 // Use OpenCode's official installer instead of `npm install -g opencode-ai`.
 // The npm package reifies four large Linux x64 prebuilt-binary subpackages
@@ -55,7 +55,9 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
+  { id: "openai/gpt-5.5", label: "openai/gpt-5.5" },
   { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
+  { id: "openai/gpt-5.4-mini", label: "openai/gpt-5.4-mini" },
   { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
   { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },

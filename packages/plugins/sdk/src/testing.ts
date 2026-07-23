@@ -17,9 +17,11 @@ import type {
   IssueComment,
   IssueThreadInteraction,
   CreateIssueThreadInteraction,
+  IssueAttachment,
   IssueDocument,
   Agent,
   Goal,
+  Approval,
 } from "@paperclipai/shared";
 import type {
   EventFilter,
@@ -57,6 +59,15 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentInteractiveSetupSession,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCaptureTemplateResult,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentCancelInteractiveSetupResult,
+  PluginEnvironmentDeleteTemplateParams,
+  PluginEnvironmentDeleteTemplateResult,
   PluginPerformActionActorContext,
   PluginPerformActionContext,
 } from "./protocol.js";
@@ -66,7 +77,7 @@ export interface TestHarnessOptions {
   manifest: PaperclipPluginManifestV1;
   /** Optional capability override. Defaults to `manifest.capabilities`. */
   capabilities?: PluginCapability[];
-  /** Initial config returned by `ctx.config.get()`. */
+  /** Initial config returned by `ctx.config.get(companyId)`. */
   config?: Record<string, unknown>;
 }
 
@@ -99,6 +110,9 @@ export interface TestHarness {
     projects?: Project[];
     issues?: Issue[];
     issueComments?: IssueComment[];
+    issueInteractions?: IssueThreadInteraction[];
+    issueAttachments?: Array<IssueAttachment & { contentBase64?: string }>;
+    approvals?: Approval[];
     agents?: Agent[];
     goals?: Goal[];
     projectWorkspaces?: PluginWorkspace[];
@@ -147,7 +161,12 @@ export interface EnvironmentEventRecord {
     | "releaseLease"
     | "destroyLease"
     | "realizeWorkspace"
-    | "execute";
+    | "execute"
+    | "startInteractiveSetup"
+    | "getInteractiveSetup"
+    | "captureTemplate"
+    | "cancelInteractiveSetup"
+    | "deleteTemplate";
   driverKey: string;
   environmentId: string;
   timestamp: string;
@@ -169,6 +188,11 @@ export interface EnvironmentTestHarnessOptions extends TestHarnessOptions {
     onDestroyLease?: (params: PluginEnvironmentDestroyLeaseParams) => Promise<void>;
     onRealizeWorkspace?: (params: PluginEnvironmentRealizeWorkspaceParams) => Promise<PluginEnvironmentRealizeWorkspaceResult>;
     onExecute?: (params: PluginEnvironmentExecuteParams) => Promise<PluginEnvironmentExecuteResult>;
+    onStartInteractiveSetup?: (params: PluginEnvironmentStartInteractiveSetupParams) => Promise<PluginEnvironmentInteractiveSetupSession>;
+    onGetInteractiveSetup?: (params: PluginEnvironmentGetInteractiveSetupParams) => Promise<PluginEnvironmentInteractiveSetupSession>;
+    onCaptureTemplate?: (params: PluginEnvironmentCaptureTemplateParams) => Promise<PluginEnvironmentCaptureTemplateResult>;
+    onCancelInteractiveSetup?: (params: PluginEnvironmentCancelInteractiveSetupParams) => Promise<PluginEnvironmentCancelInteractiveSetupResult>;
+    onDeleteTemplate?: (params: PluginEnvironmentDeleteTemplateParams) => Promise<PluginEnvironmentDeleteTemplateResult>;
   };
 }
 
@@ -192,6 +216,16 @@ export interface EnvironmentTestHarness extends TestHarness {
   realizeWorkspace(params: PluginEnvironmentRealizeWorkspaceParams): Promise<PluginEnvironmentRealizeWorkspaceResult>;
   /** Invoke the environment driver's execute hook. */
   execute(params: PluginEnvironmentExecuteParams): Promise<PluginEnvironmentExecuteResult>;
+  /** Invoke the environment driver's interactive setup start hook. */
+  startInteractiveSetup(params: PluginEnvironmentStartInteractiveSetupParams): Promise<PluginEnvironmentInteractiveSetupSession>;
+  /** Invoke the environment driver's interactive setup status hook. */
+  getInteractiveSetup(params: PluginEnvironmentGetInteractiveSetupParams): Promise<PluginEnvironmentInteractiveSetupSession>;
+  /** Invoke the environment driver's template capture hook. */
+  captureTemplate(params: PluginEnvironmentCaptureTemplateParams): Promise<PluginEnvironmentCaptureTemplateResult>;
+  /** Invoke the environment driver's interactive setup cancel hook. */
+  cancelInteractiveSetup(params: PluginEnvironmentCancelInteractiveSetupParams): Promise<PluginEnvironmentCancelInteractiveSetupResult>;
+  /** Invoke the environment driver's optional template delete hook. */
+  deleteTemplate(params: PluginEnvironmentDeleteTemplateParams): Promise<PluginEnvironmentDeleteTemplateResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +497,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const blockedByIssueIds = new Map<string, string[]>();
   const issueComments = new Map<string, IssueComment[]>();
   const issueInteractions = new Map<string, IssueThreadInteraction[]>();
+  const issueAttachments = new Map<string, IssueAttachment[]>();
+  const attachmentContentById = new Map<string, string>();
+  const approvals = new Map<string, Approval>();
   const issueDocuments = new Map<string, IssueDocument>();
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
@@ -498,6 +535,31 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       accessMembers.set(member.id, { ...member, grants: stamped, updatedAt: new Date().toISOString() });
     }
     return stamped;
+  }
+
+  /**
+   * Mirror the host's `requireActiveHumanMember` write bar so the harness
+   * rejects the same forged/over-privileged attributions production does: the
+   * actor must be an active `user` member of the company whose `membershipRole`
+   * is not the read-only `viewer` role (the web app 403s viewers on these same
+   * board write-routes). Keeps the harness a faithful mirror so a plugin test
+   * cannot pass an attribution production would reject. Seed members via
+   * `createTestPluginHost({ accessMembers: [...] })`.
+   */
+  function assertActiveHumanMemberCanWrite(companyId: string, actorUserId: string) {
+    const member = [...accessMembers.values()].find(
+      (entry) =>
+        entry.companyId === companyId
+        && entry.principalType === "user"
+        && entry.principalId === actorUserId
+        && entry.status === "active",
+    );
+    if (!member) {
+      throw new Error(`actorUserId "${actorUserId}" is not an active human member of this company`);
+    }
+    if (member.membershipRole === "viewer") {
+      throw new Error(`actorUserId "${actorUserId}" has viewer (read-only) access and cannot take this write action`);
+    }
   }
   const projectWorkspaces = new Map<string, PluginWorkspace[]>();
   const executionWorkspaces = new Map<string, PluginExecutionWorkspaceMetadata>();
@@ -1177,6 +1239,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             parentIssueId: null,
             title: declaration.title,
             description: declaration.description ?? null,
+            responsibleUserId: null,
             assigneeAgentId,
             priority: declaration.priority ?? "medium",
             status: declaration.status ?? (assigneeAgentId ? "active" : "paused"),
@@ -1545,6 +1608,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           executionLockedAt: null,
           createdByAgentId: null,
           createdByUserId: null,
+          responsibleUserId: null,
           issueNumber: null,
           identifier: null,
           originKind,
@@ -1642,18 +1706,24 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async createComment(issueId, body, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.comments.create");
+        if (options?.actorUserId) {
+          requireCapability(manifest, capabilitySet, "issue.comments.create_human_attributed");
+        }
         const parentIssue = issues.get(issueId);
         if (!isInCompany(parentIssue, companyId)) {
           throw new Error(`Issue not found: ${issueId}`);
+        }
+        if (options?.actorUserId) {
+          assertActiveHumanMemberCanWrite(companyId, options.actorUserId);
         }
         const now = new Date();
         const comment: IssueComment = {
           id: randomUUID(),
           companyId: parentIssue.companyId,
           issueId,
-          authorType: options?.authorAgentId ? "agent" : "system",
-          authorAgentId: options?.authorAgentId ?? null,
-          authorUserId: null,
+          authorType: options?.actorUserId ? "user" : options?.authorAgentId ? "agent" : "system",
+          authorAgentId: options?.actorUserId ? null : options?.authorAgentId ?? null,
+          authorUserId: options?.actorUserId ?? null,
           body,
           presentation: null,
           metadata: null,
@@ -1711,6 +1781,66 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async requestCheckboxConfirmation(issueId, interaction, companyId, options) {
         return this.createInteraction(issueId, { ...interaction, kind: "request_checkbox_confirmation" }, companyId, options) as Promise<any>;
+      },
+      async listInteractions(issueId, companyId) {
+        requireCapability(manifest, capabilitySet, "issue.interactions.read");
+        if (!isInCompany(issues.get(issueId), companyId)) return [];
+        return issueInteractions.get(issueId) ?? [];
+      },
+      async respondInteraction(issueId, interactionId, input, companyId) {
+        requireCapability(manifest, capabilitySet, "issue.interactions.respond");
+        const parentIssue = issues.get(issueId);
+        if (!isInCompany(parentIssue, companyId)) {
+          throw new Error(`Issue not found: ${issueId}`);
+        }
+        if (!input.actorUserId) {
+          throw new Error("actorUserId is required to respond to an interaction on behalf of a board user");
+        }
+        const actorUserId = input.actorUserId;
+        // Mirror the host's active-human-member write re-verification.
+        assertActiveHumanMemberCanWrite(companyId, actorUserId);
+        const list = issueInteractions.get(issueId) ?? [];
+        const current = list.find((entry) => entry.id === interactionId);
+        if (!current) {
+          throw new Error(`Interaction not found: ${interactionId}`);
+        }
+        if (current.status !== "pending") {
+          return { interaction: current, applied: false };
+        }
+        const resolved: IssueThreadInteraction = {
+          ...current,
+          status: input.action === "accept" ? "accepted" : "rejected",
+          updatedAt: new Date(),
+        } as IssueThreadInteraction;
+        const index = list.indexOf(current);
+        list[index] = resolved;
+        issueInteractions.set(issueId, list);
+        return { interaction: resolved, applied: true };
+      },
+      async listAttachments(issueId, companyId) {
+        requireCapability(manifest, capabilitySet, "issue.attachments.read");
+        if (!isInCompany(issues.get(issueId), companyId)) return [];
+        return issueAttachments.get(issueId) ?? [];
+      },
+      async getAttachmentContent(attachmentId, companyId, options) {
+        requireCapability(manifest, capabilitySet, "issue.attachments.read");
+        const attachment = [...issueAttachments.values()]
+          .flat()
+          .find((entry) => entry.id === attachmentId);
+        if (!attachment || attachment.companyId !== companyId) return null;
+        const maxBytes = typeof options?.maxBytes === "number" && options.maxBytes > 0 ? options.maxBytes : null;
+        if (maxBytes !== null && attachment.byteSize > maxBytes) {
+          throw new Error(`attachment ${attachment.id} is ${attachment.byteSize} bytes, over the ${maxBytes}-byte cap`);
+        }
+        const contentBase64 = attachmentContentById.get(attachment.id) ?? "";
+        return {
+          attachmentId: attachment.id,
+          contentType: attachment.contentType,
+          byteSize: attachment.byteSize,
+          sha256: attachment.sha256,
+          originalFilename: attachment.originalFilename ?? null,
+          contentBase64,
+        };
       },
       documents: {
         async list(issueId, companyId) {
@@ -1863,6 +1993,47 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
       },
     },
+    approvals: {
+      async list(input) {
+        requireCapability(manifest, capabilitySet, "approvals.read");
+        return [...approvals.values()].filter(
+          (approval) =>
+            approval.companyId === input.companyId
+            && (!input.status || approval.status === input.status),
+        );
+      },
+      async get(approvalId, companyId) {
+        requireCapability(manifest, capabilitySet, "approvals.read");
+        const approval = approvals.get(approvalId);
+        if (!approval || approval.companyId !== companyId) return null;
+        return approval;
+      },
+      async decide(approvalId, input, companyId) {
+        requireCapability(manifest, capabilitySet, "approvals.respond");
+        const approval = approvals.get(approvalId);
+        if (!approval || approval.companyId !== companyId) {
+          throw new Error(`Approval not found: ${approvalId}`);
+        }
+        if (!input.actorUserId) {
+          throw new Error("actorUserId is required to decide an approval on behalf of a board user");
+        }
+        const actorUserId = input.actorUserId;
+        assertActiveHumanMemberCanWrite(companyId, actorUserId);
+        if (approval.status !== "pending") {
+          return { approval, applied: false };
+        }
+        const decided: Approval = {
+          ...approval,
+          status: input.action === "approve" ? "approved" : "rejected",
+          decisionNote: input.decisionNote ?? null,
+          decidedByUserId: actorUserId,
+          decidedAt: new Date(),
+          updatedAt: new Date(),
+        };
+        approvals.set(approvalId, decided);
+        return { approval: decided, applied: true };
+      },
+    },
     agents: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "agents.read");
@@ -1956,7 +2127,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             spentMonthlyCents: 0,
             pauseReason: null,
             pausedAt: null,
-            permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+            permissions: {
+              canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+              canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+            },
             lastHeartbeatAt: null,
             metadata: managedAgentMetadata(agentKey),
             createdAt: now,
@@ -1994,7 +2168,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
               spentMonthlyCents: 0,
               pauseReason: null,
               pausedAt: null,
-              permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+              permissions: {
+                canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+                canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+              },
               lastHeartbeatAt: null,
               metadata: managedAgentMetadata(agentKey),
               createdAt: now,
@@ -2015,7 +2192,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             adapterConfig: declaration.adapterConfig ?? {},
             runtimeConfig: declaration.runtimeConfig ?? {},
             budgetMonthlyCents: declaration.budgetMonthlyCents ?? 0,
-            permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+            permissions: {
+              canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+              canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+            },
             metadata: managedAgentMetadata(agentKey, resolved.agent.metadata),
             updatedAt: new Date(),
           };
@@ -2338,6 +2518,19 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         list.push(row);
         issueComments.set(row.issueId, list);
       }
+      for (const row of input.issueInteractions ?? []) {
+        const list = issueInteractions.get(row.issueId) ?? [];
+        list.push(row);
+        issueInteractions.set(row.issueId, list);
+      }
+      for (const row of input.issueAttachments ?? []) {
+        const { contentBase64, ...attachment } = row;
+        const list = issueAttachments.get(attachment.issueId) ?? [];
+        list.push(attachment);
+        issueAttachments.set(attachment.issueId, list);
+        attachmentContentById.set(attachment.id, contentBase64 ?? "");
+      }
+      for (const row of input.approvals ?? []) approvals.set(row.id, row);
       for (const row of input.agents ?? []) agents.set(row.id, row);
       for (const row of input.goals ?? []) goals.set(row.id, row);
       for (const row of input.projectWorkspaces ?? []) {
@@ -2514,6 +2707,46 @@ export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOpti
     },
     async execute(params) {
       return callHook("execute", driver.onExecute, params, "onExecute");
+    },
+    async startInteractiveSetup(params) {
+      return callHook(
+        "startInteractiveSetup",
+        driver.onStartInteractiveSetup,
+        params,
+        "onStartInteractiveSetup",
+      );
+    },
+    async getInteractiveSetup(params) {
+      return callHook(
+        "getInteractiveSetup",
+        driver.onGetInteractiveSetup,
+        params,
+        "onGetInteractiveSetup",
+      );
+    },
+    async captureTemplate(params) {
+      return callHook(
+        "captureTemplate",
+        driver.onCaptureTemplate,
+        params,
+        "onCaptureTemplate",
+      );
+    },
+    async cancelInteractiveSetup(params) {
+      return callHook(
+        "cancelInteractiveSetup",
+        driver.onCancelInteractiveSetup,
+        params,
+        "onCancelInteractiveSetup",
+      );
+    },
+    async deleteTemplate(params) {
+      return callHook(
+        "deleteTemplate",
+        driver.onDeleteTemplate,
+        params,
+        "onDeleteTemplate",
+      );
     },
   };
 

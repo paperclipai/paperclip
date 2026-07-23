@@ -130,8 +130,11 @@ describe("pi_local execute", () => {
           model: "google/gemini-3-flash-preview",
           promptTemplate: "Keep working.",
           paperclipRuntimeSkills: [
-            { key: "demo-skill", runtimeName: "demo-skill", source: skillDir, required: true },
+            { key: "demo-skill", runtimeName: "demo-skill", source: skillDir },
           ],
+          paperclipSkillSync: {
+            desiredSkills: ["demo-skill"],
+          },
         },
         context: {},
         authToken: "run-jwt-token",
@@ -185,10 +188,10 @@ describe("pi_local execute", () => {
           cwd: workspace,
           model: "google/gemini-3-flash-preview",
           promptTemplate: "Keep working.",
-          // required:false with no explicit paperclipSkillSync preference →
+          // No explicit paperclipSkillSync preference →
           // resolvePaperclipDesiredSkillNames returns [] → skill is not injected.
           paperclipRuntimeSkills: [
-            { key: "not-injected", runtimeName: "not-injected", source: nonInjectedSkillDir, required: false },
+            { key: "not-injected", runtimeName: "not-injected", source: nonInjectedSkillDir },
           ],
         },
         context: {},

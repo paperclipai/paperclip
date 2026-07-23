@@ -41,6 +41,7 @@ import {
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   renderPaperclipWakePrompt,
+  isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
@@ -263,8 +264,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // Build environment
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
 
@@ -315,7 +314,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
-  if (!hasExplicitApiKey && authToken) {
+  if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
   // Materialize custom Pi providers (PAPERCLIP_PI_PROVIDERS) into a managed
@@ -417,6 +416,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           workspaceLocalDir: cwd,
           installCommand: SANDBOX_INSTALL_COMMAND,
           detectCommand: command,
+          onProgress: (line) => onLog("stdout", line),
+          onRuntimeProgress: ctx.onRuntimeProgress,
           assets: [
             {
               key: "skills",
@@ -431,7 +432,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               : []),
           ],
         });
-        restoreRemoteWorkspace = () => preparedRemoteRuntime.restoreWorkspace();
+        restoreRemoteWorkspace = () =>
+          preparedRemoteRuntime.restoreWorkspace((line) => onLog("stdout", line));
         effectiveExecutionCwd = preparedRemoteRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
         refreshPaperclipWorkspaceEnvForExecution({
           env,
@@ -603,7 +605,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : "";
     const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canResumeSession });
     const shouldUseResumeDeltaPrompt = canResumeSession && wakePrompt.length > 0;
-    const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
+    const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+      ? ""
+      : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const userPrompt = joinPromptSections([
       renderedBootstrapPrompt,
@@ -707,7 +711,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timeoutSec,
         graceSec,
         onSpawn,
+        onRuntimeProgress: ctx.onRuntimeProgress,
         onLog: bufferedOnLog,
+        runLogTail: paperclipBridge?.runLogTail,
       });
 
       // Flush any remaining buffer content

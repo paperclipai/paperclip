@@ -502,7 +502,7 @@ function registerAgentSkillCommands(skills: Command): void {
   addCommonClientOptions(
     agent
       .command("sync")
-      .description("Replace an agent's non-required desired company skills and sync runtime state")
+      .description("Replace an agent's desired company skills and sync runtime state")
       .argument("<agentRef>", "Agent ID or shortname/url-key")
       .option("--skill <skillRef>", "Desired company skill ID, key, or slug; may be repeated", collectOptionValue, [] as string[])
       .action(async (agentRef: string, opts: AgentSkillSyncOptions) => {
@@ -535,7 +535,7 @@ function registerAgentSkillCommands(skills: Command): void {
   addCommonClientOptions(
     agent
       .command("clear")
-      .description("Clear an agent's non-required desired company skills and sync runtime state")
+      .description("Clear an agent's desired company skills and sync runtime state")
       .argument("<agentRef>", "Agent ID or shortname/url-key")
       .option("--yes", "Confirm clear without prompting", false)
       .action(async (agentRef: string, opts: ConfirmedSkillOptions) => {
@@ -544,7 +544,7 @@ function registerAgentSkillCommands(skills: Command): void {
           const agentRow = await resolveAgent(ctx, agentRef);
           await confirmDangerousAction(
             opts.yes,
-            `Clear non-required desired company skills for "${agentRow.name}" (${agentRow.id})?`,
+            `Clear desired company skills for "${agentRow.name}" (${agentRow.id})?`,
           );
           const snapshot = await ctx.api.post<AgentSkillSnapshot>(
             `/api/agents/${encodeURIComponent(agentRow.id)}/skills/sync`,
@@ -555,7 +555,7 @@ function registerAgentSkillCommands(skills: Command): void {
             return;
           }
           console.log(
-            `Desired company skills cleared for ${agentRow.name} (${agentRow.id}); required Paperclip skills remain server-enforced.`,
+            `Desired company skills cleared for ${agentRow.name} (${agentRow.id}).`,
           );
           printAgentSkillSnapshot(snapshot, agentRow);
         } catch (err) {
@@ -911,7 +911,6 @@ function printAgentSkillSnapshot(snapshot: AgentSkillSnapshot | null, agent: Age
         runtimeName: entry.runtimeName,
         desired: entry.desired,
         managed: entry.managed,
-        required: entry.required ?? false,
         state: entry.state,
         origin: entry.origin,
         detail: entry.detail,

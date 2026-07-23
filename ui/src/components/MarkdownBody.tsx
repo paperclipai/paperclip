@@ -1,20 +1,60 @@
-import { isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { isValidElement, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, Github, WrapText } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
-import { Link } from "@/lib/router";
+import { Link, useCaseHref } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
+import { remarkLinkCaseReferences } from "../lib/case-reference";
+
+const CASE_HREF_RE = /^\/cases\/([A-Z][A-Z0-9]*-C\d+)$/i;
+
+/** Recover the case identifier from a `/cases/PAP-C7` href produced by the plugin. */
+function caseIdentifierFromHref(href: string | undefined): string | null {
+  if (!href) return null;
+  const match = decodeURIComponent(href.trim()).match(CASE_HREF_RE);
+  return match ? match[1]!.toUpperCase() : null;
+}
 import { parseWorkspaceFileHref, remarkWorkspaceFileRefs, WORKSPACE_FILE_HREF_PREFIX } from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
 import { WorkspaceFileLink } from "./WorkspaceFileLink";
+import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
+import {
+  externalObjectCategoryLabel,
+  externalObjectLivenessLabel,
+  externalObjectProviderLabel,
+} from "../lib/external-objects";
+import { normalizeExternalObjectHref } from "../lib/external-object-href";
+import type {
+  ExternalObjectLivenessState,
+  ExternalObjectStatusCategory,
+} from "@paperclipai/shared";
+
+/**
+ * Host-resolved external-object metadata for inline markdown decoration.
+ * The renderer only consumes the host normalized fields here — plugin React
+ * is never mounted inline (Phase 1B security review).
+ */
+export interface MarkdownExternalReference {
+  providerKey: string | null;
+  objectType: string | null;
+  displayKey?: string | null;
+  iconKey?: string | null;
+  statusCategory: ExternalObjectStatusCategory;
+  liveness: ExternalObjectLivenessState;
+  statusLabel?: string | null;
+  statusIconKey?: string | null;
+  displayTitle?: string | null;
+}
+
+export type MarkdownExternalReferenceMap = Record<string, MarkdownExternalReference>;
 
 interface MarkdownBodyProps {
   children: string;
@@ -22,12 +62,23 @@ interface MarkdownBodyProps {
   style?: React.CSSProperties;
   softBreaks?: boolean;
   linkIssueReferences?: boolean;
+  /**
+   * Linkify bare case identifiers (`PAP-C7`) to the case detail page. Off by
+   * default; enabled on surfaces behind the experimental Cases flag (PAP-12969).
+   */
+  linkCaseReferences?: boolean;
   /** Opt into Obsidian-style [[target]] / [[target|label]] wikilinks. */
   enableWikiLinks?: boolean;
   /** Base href used for wikilinks when no resolver is supplied. */
   wikiLinkRoot?: string;
   /** Optional href resolver for wikilinks. Return null to leave a token as plain text. */
   resolveWikiLinkHref?: (target: string, label: string) => string | null | undefined;
+  /**
+   * Optional map of `normalizeExternalObjectHref(href)` → host-resolved metadata.
+   * Hrefs in the markdown that resolve to one of these keys get the inline
+   * status icon prefix used by §2 of the UX spec.
+   */
+  externalReferences?: MarkdownExternalReferenceMap;
   /** Optional resolver for relative image paths (e.g. within export packages) */
   resolveImageSrc?: (src: string) => string | null;
   /** Called when a user clicks an inline image */
@@ -60,15 +111,84 @@ function MarkdownIssueLink({
     <Link
       to={`/issues/${identifier}`}
       data-mention-kind="issue"
-      className="paperclip-markdown-issue-ref"
+      // Boxless inline mention: the unified status glyph + a regular-weight
+      // underlined link, optically centered with the body text.
+      className={cn("paperclip-markdown-issue-ref", "font-normal underline")}
       title={title}
       aria-label={issueLabel}
     >
       {status ? (
-        <StatusIcon status={status} className="mr-1 h-3 w-3 align-[-0.125em]" />
+        <StatusIcon status={status} size="lg" className="relative -top-px mr-1 inline-block h-5 w-5 align-middle" />
       ) : null}
       {children}
     </Link>
+  );
+}
+
+function MarkdownCaseLink({
+  identifier,
+  children,
+}: {
+  identifier: string;
+  children: ReactNode;
+}) {
+  // Cases resolve via the get-by-identifier route; navigate there on click.
+  // Kept boxless/underlined to match the issue mention treatment.
+  const caseHref = useCaseHref();
+  return (
+    <Link
+      to={caseHref(identifier)}
+      data-mention-kind="case"
+      className={cn("paperclip-markdown-case-ref", "font-normal underline")}
+      aria-label={`Case ${identifier}`}
+    >
+      {children}
+    </Link>
+  );
+}
+
+function MarkdownExternalLink({
+  href,
+  reference,
+  children,
+}: {
+  href: string;
+  reference: MarkdownExternalReference;
+  children: ReactNode;
+}) {
+  const provider = externalObjectProviderLabel(reference.providerKey);
+  const displayKey = reference.displayKey?.trim() || provider;
+  const statusLabel = reference.statusLabel ?? externalObjectCategoryLabel(reference.statusCategory);
+  const livenessLabel = externalObjectLivenessLabel(reference.liveness);
+  const livenessSuffix = reference.liveness === "fresh" || reference.liveness === "unknown"
+    ? ""
+    : ` (${livenessLabel})`;
+  const titleParts = [
+    reference.displayTitle ?? `${displayKey} ${statusLabel}`,
+    `${displayKey} — ${statusLabel}${livenessSuffix}`,
+  ];
+  const title = titleParts.filter(Boolean).join(" · ");
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      data-external-link="resolved"
+      data-external-status={reference.statusCategory}
+      data-external-liveness={reference.liveness}
+      title={title}
+      aria-label={`${displayKey} ${statusLabel}${livenessSuffix}: ${reference.displayTitle ?? href}`}
+      className="paperclip-markdown-external-ref"
+    >
+      <ExternalObjectStatusIcon
+        category={reference.statusCategory}
+        liveness={reference.liveness}
+        statusIconKey={reference.statusIconKey}
+        label={`${displayKey}: ${statusLabel}`}
+        inline
+      />
+      {children}
+    </a>
   );
 }
 
@@ -111,7 +231,7 @@ const codeBlockActionStyle: React.CSSProperties = {
   border: "1px solid color-mix(in oklab, var(--foreground) 14%, transparent)",
   backgroundColor: "color-mix(in oklab, var(--muted) 92%, var(--background) 8%)",
   color: "var(--muted-foreground)",
-  fontSize: "0.7rem",
+  fontSize: "var(--text-micro)",
   lineHeight: 1,
   cursor: "pointer",
 };
@@ -126,6 +246,30 @@ const tableCellWrapStyle: React.CSSProperties = {
   overflowWrap: "anywhere",
   wordBreak: "normal",
 };
+
+function isHtmlCommentNode(node: MarkdownAstNode) {
+  return node.type === "html" && typeof node.value === "string" && /^<!--[\s\S]*-->$/.test(node.value.trim());
+}
+
+function isEscapedHtmlCommentPlaceholder(node: MarkdownAstNode) {
+  if (node.type !== "text" || typeof node.value !== "string") return false;
+  const value = node.value.trim();
+  return /^\\?<!--(?:\s*-{0,2}>?)?$/.test(value) || /^&lt;!--(?:\s*-{0,2}(?:&gt;)?)?$/.test(value);
+}
+
+function remarkDropHtmlComments() {
+  return (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode) => {
+      const children = node.children;
+      if (!children) return;
+      node.children = children.filter((child) => !isHtmlCommentNode(child) && !isEscapedHtmlCommentPlaceholder(child));
+      for (const child of node.children) {
+        visit(child);
+      }
+    };
+    visit(tree);
+  };
+}
 
 function mergeWrapStyle(style?: React.CSSProperties): React.CSSProperties {
   return {
@@ -563,15 +707,17 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({
+function MarkdownBodyImpl({
   children,
   className,
   style,
   softBreaks = true,
   linkIssueReferences = true,
+  linkCaseReferences = false,
   enableWikiLinks = false,
   wikiLinkRoot,
   resolveWikiLinkHref,
+  externalReferences,
   resolveImageSrc,
   onImageClick,
   linkWorkspaceFileRefs = false,
@@ -581,23 +727,49 @@ export function MarkdownBody({
   // may lack a CompanyProvider. A null context (or no companies yet) leaves
   // knownPrefixes undefined, which keeps issue auto-linking permissive.
   const company = useOptionalCompany();
-  const knownPrefixes = company?.companies.length
-    ? company.companies.map((c) => c.issuePrefix)
-    : undefined;
-  const remarkPlugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
-  if (enableWikiLinks) {
-    remarkPlugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
-  }
-  if (linkWorkspaceFileRefs) {
-    remarkPlugins.push(remarkWorkspaceFileRefs);
-  }
-  if (linkIssueReferences) {
-    remarkPlugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
-  }
-  if (softBreaks) {
-    remarkPlugins.push(remarkSoftBreaks);
-  }
-  const components: Components = {
+  const companies = company?.companies;
+  // Stable identity so it can feed the memoized remark plugins without
+  // re-creating them (and forcing a full markdown re-parse) every render.
+  const knownPrefixes = useMemo(
+    () => (companies?.length ? companies.map((c) => c.issuePrefix) : undefined),
+    [companies],
+  );
+  const externalReferenceLookup = useMemo<MarkdownExternalReferenceMap | null>(() => {
+    if (!externalReferences) return null;
+    const lookup: MarkdownExternalReferenceMap = {};
+    for (const [key, value] of Object.entries(externalReferences)) {
+      const normalized = normalizeExternalObjectHref(key) ?? key;
+      lookup[normalized] = value;
+    }
+    return lookup;
+  }, [externalReferences]);
+  // react-markdown treats the values of `components` as component *types* and
+  // the `remarkPlugins` array by identity. Rebuilding either on every render
+  // forces react-markdown to unmount/remount the rendered tree, which discards
+  // scroll position and text selection and causes visible flashing when a
+  // parent re-renders frequently (see PAP-10767). Memoize both so re-renders
+  // that don't change the inputs are cheap and non-destructive.
+  const remarkPlugins = useMemo<NonNullable<Options["remarkPlugins"]>>(() => {
+    const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm, remarkDropHtmlComments];
+    if (enableWikiLinks) {
+      plugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
+    }
+    if (linkWorkspaceFileRefs) {
+      plugins.push(remarkWorkspaceFileRefs);
+    }
+    if (linkIssueReferences) {
+      plugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
+    }
+    if (linkCaseReferences) {
+      plugins.push([remarkLinkCaseReferences, { knownPrefixes }]);
+    }
+    if (softBreaks) {
+      plugins.push(remarkSoftBreaks);
+    }
+    return plugins;
+  }, [enableWikiLinks, wikiLinkRoot, resolveWikiLinkHref, linkWorkspaceFileRefs, linkIssueReferences, linkCaseReferences, knownPrefixes, softBreaks]);
+  const components = useMemo<Components>(() => {
+    const map: Components = {
     p: ({ node: _node, style: paragraphStyle, children: paragraphChildren, ...paragraphProps }) => (
       <p {...paragraphProps} style={mergeWrapStyle(paragraphStyle as React.CSSProperties | undefined)}>
         {paragraphChildren}
@@ -678,6 +850,11 @@ export function MarkdownBody({
         );
       }
 
+      const caseIdentifier = linkCaseReferences ? caseIdentifierFromHref(href) : null;
+      if (caseIdentifier) {
+        return <MarkdownCaseLink identifier={caseIdentifier}>{linkChildren}</MarkdownCaseLink>;
+      }
+
       const parsed = href ? parseMentionChipHref(href) : null;
       if (parsed) {
         const targetHref = parsed.kind === "project"
@@ -706,13 +883,24 @@ export function MarkdownBody({
           </a>
         );
       }
+      const externalReference = href && externalReferenceLookup
+        ? externalReferenceLookup[normalizeExternalObjectHref(href) ?? ""] ?? null
+        : null;
+      if (externalReference && href) {
+        return (
+          <MarkdownExternalLink href={href} reference={externalReference}>
+            {linkChildren}
+          </MarkdownExternalLink>
+        );
+      }
+
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
       const leadingIcon = isGitHubLink ? (
-        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-0.125em]" />
+        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" />
       ) : null;
       const trailingIcon = isExternal && !isGitHubLink ? (
-        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-[-0.125em]" />
+        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-(--va-0_125em)" />
       ) : null;
       return (
         <a
@@ -726,22 +914,24 @@ export function MarkdownBody({
         </a>
       );
     },
-  };
-  if (resolveImageSrc || onImageClick) {
-    components.img = ({ node: _node, src, alt, ...imgProps }) => {
-      const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
-      const finalSrc = resolved ?? src;
-      return (
-        <img
-          {...imgProps}
-          src={finalSrc}
-          alt={alt ?? ""}
-          onClick={onImageClick && finalSrc ? (e) => { e.preventDefault(); onImageClick(finalSrc); } : undefined}
-          style={onImageClick ? { cursor: "pointer", ...(imgProps.style as React.CSSProperties | undefined) } : imgProps.style as React.CSSProperties | undefined}
-        />
-      );
     };
-  }
+    if (resolveImageSrc || onImageClick) {
+      map.img = ({ node: _node, src, alt, ...imgProps }) => {
+        const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
+        const finalSrc = resolved ?? src;
+        return (
+          <img
+            {...imgProps}
+            src={finalSrc}
+            alt={alt ?? ""}
+            onClick={onImageClick && finalSrc ? (e) => { e.preventDefault(); onImageClick(finalSrc); } : undefined}
+            style={onImageClick ? { cursor: "pointer", ...(imgProps.style as React.CSSProperties | undefined) } : imgProps.style as React.CSSProperties | undefined}
+          />
+        );
+      };
+    }
+    return map;
+  }, [theme, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, onImageClick]);
 
   return (
     <div
@@ -762,3 +952,5 @@ export function MarkdownBody({
     </div>
   );
 }
+
+export const MarkdownBody = memo(MarkdownBodyImpl);

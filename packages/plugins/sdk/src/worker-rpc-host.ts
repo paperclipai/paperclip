@@ -82,14 +82,24 @@ import type {
   PluginPerformActionActorContext,
   PluginPerformActionContext,
   ExecuteToolParams,
+  DetectExternalObjectsParams,
+  ResolveExternalObjectParams,
+  RefreshExternalObjectsParams,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentProbeParams,
+  PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentDeleteTemplateParams,
   PluginInvocationContext,
   WorkerToHostMethodName,
   WorkerToHostMethods,
@@ -414,8 +424,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       config: {
-        async get() {
-          return callHost("config.get", {} as Record<string, never>);
+        async get(companyId?: string) {
+          return callHost("config.get", companyId ? { companyId } : {});
         },
       },
 
@@ -565,8 +575,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       secrets: {
-        async resolve(secretRef: string): Promise<string> {
-          return callHost("secrets.resolve", { secretRef });
+        async resolve(secretRef, options = {}): Promise<string> {
+          return callHost("secrets.resolve", {
+            secretRef,
+            companyId: options.companyId,
+            configPath: options.configPath,
+          });
         },
       },
 
@@ -850,8 +864,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("issues.listComments", { issueId, companyId });
         },
 
-        async createComment(issueId: string, body: string, companyId: string, options?: { authorAgentId?: string }) {
-          return callHost("issues.createComment", { issueId, body, companyId, authorAgentId: options?.authorAgentId });
+        async createComment(
+          issueId: string,
+          body: string,
+          companyId: string,
+          options?: { authorAgentId?: string; actorUserId?: string },
+        ) {
+          return callHost("issues.createComment", {
+            issueId,
+            body,
+            companyId,
+            authorAgentId: options?.authorAgentId,
+            actorUserId: options?.actorUserId,
+          });
         },
 
         async createInteraction(issueId: string, interaction, companyId: string, options?: { authorAgentId?: string }) {
@@ -931,6 +956,42 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           }) as Promise<RequestCheckboxConfirmationInteraction>;
         },
 
+        async listInteractions(issueId: string, companyId: string) {
+          return callHost("issues.listInteractions", { issueId, companyId });
+        },
+
+        async respondInteraction(
+          issueId: string,
+          interactionId: string,
+          input: { action: "accept" | "reject"; actorUserId?: string; reason?: string | null },
+          companyId: string,
+        ) {
+          return callHost("issues.respondInteraction", {
+            issueId,
+            interactionId,
+            companyId,
+            action: input.action,
+            actorUserId: input.actorUserId,
+            reason: input.reason,
+          });
+        },
+
+        async listAttachments(issueId: string, companyId: string) {
+          return callHost("issues.listAttachments", { issueId, companyId });
+        },
+
+        async getAttachmentContent(
+          attachmentId: string,
+          companyId: string,
+          options?: { maxBytes?: number | null },
+        ) {
+          return callHost("issues.getAttachmentContent", {
+            attachmentId,
+            companyId,
+            maxBytes: options?.maxBytes ?? null,
+          });
+        },
+
         documents: {
           async list(issueId: string, companyId: string) {
             return callHost("issues.documents.list", { issueId, companyId });
@@ -1000,6 +1061,33 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           async getOrchestration(input) {
             return callHost("issues.summaries.getOrchestration", input);
           },
+        },
+      },
+
+      approvals: {
+        async list(input: { companyId: string; status?: string | null }) {
+          return callHost("approvals.list", {
+            companyId: input.companyId,
+            status: input.status,
+          });
+        },
+
+        async get(approvalId: string, companyId: string) {
+          return callHost("approvals.get", { approvalId, companyId });
+        },
+
+        async decide(
+          approvalId: string,
+          input: { action: "approve" | "reject"; actorUserId?: string; decisionNote?: string | null },
+          companyId: string,
+        ) {
+          return callHost("approvals.decide", {
+            approvalId,
+            companyId,
+            action: input.action,
+            actorUserId: input.actorUserId,
+            decisionNote: input.decisionNote,
+          });
         },
       },
 
@@ -1351,6 +1439,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "executeTool":
         return handleExecuteTool(params as ExecuteToolParams);
+      case "detectExternalObjects":
+        return handleDetectExternalObjects(params as DetectExternalObjectsParams);
+      case "resolveExternalObject":
+        return handleResolveExternalObject(params as ResolveExternalObjectParams);
+      case "refreshExternalObjects":
+        return handleRefreshExternalObjects(params as RefreshExternalObjectsParams);
 
       case "environmentValidateConfig":
         return handleEnvironmentValidateConfig(params as PluginEnvironmentValidateConfigParams);
@@ -1375,6 +1469,27 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
+
+      case "environmentSyncIn":
+        return handleEnvironmentSyncIn(params as PluginEnvironmentSyncInParams);
+
+      case "environmentSyncOut":
+        return handleEnvironmentSyncOut(params as PluginEnvironmentSyncOutParams);
+
+      case "environmentStartInteractiveSetup":
+        return handleEnvironmentStartInteractiveSetup(params as PluginEnvironmentStartInteractiveSetupParams);
+
+      case "environmentGetInteractiveSetup":
+        return handleEnvironmentGetInteractiveSetup(params as PluginEnvironmentGetInteractiveSetupParams);
+
+      case "environmentCaptureTemplate":
+        return handleEnvironmentCaptureTemplate(params as PluginEnvironmentCaptureTemplateParams);
+
+      case "environmentCancelInteractiveSetup":
+        return handleEnvironmentCancelInteractiveSetup(params as PluginEnvironmentCancelInteractiveSetupParams);
+
+      case "environmentDeleteTemplate":
+        return handleEnvironmentDeleteTemplate(params as PluginEnvironmentDeleteTemplateParams);
 
       default:
         throw Object.assign(
@@ -1409,6 +1524,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onHealth) supportedMethods.push("health");
     if (plugin.definition.onShutdown) supportedMethods.push("shutdown");
     if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
+    if (plugin.definition.onDetectExternalObjects) supportedMethods.push("detectExternalObjects");
+    if (plugin.definition.onResolveExternalObject) supportedMethods.push("resolveExternalObject");
+    if (plugin.definition.onRefreshExternalObjects) supportedMethods.push("refreshExternalObjects");
     if (plugin.definition.onEnvironmentValidateConfig) supportedMethods.push("environmentValidateConfig");
     if (plugin.definition.onEnvironmentProbe) supportedMethods.push("environmentProbe");
     if (plugin.definition.onEnvironmentAcquireLease) supportedMethods.push("environmentAcquireLease");
@@ -1417,6 +1535,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onEnvironmentSyncIn) supportedMethods.push("environmentSyncIn");
+    if (plugin.definition.onEnvironmentSyncOut) supportedMethods.push("environmentSyncOut");
+    if (plugin.definition.onEnvironmentStartInteractiveSetup) supportedMethods.push("environmentStartInteractiveSetup");
+    if (plugin.definition.onEnvironmentGetInteractiveSetup) supportedMethods.push("environmentGetInteractiveSetup");
+    if (plugin.definition.onEnvironmentCaptureTemplate) supportedMethods.push("environmentCaptureTemplate");
+    if (plugin.definition.onEnvironmentCancelInteractiveSetup) supportedMethods.push("environmentCancelInteractiveSetup");
+    if (plugin.definition.onEnvironmentDeleteTemplate) supportedMethods.push("environmentDeleteTemplate");
 
     return { ok: true, supportedMethods };
   }
@@ -1588,6 +1713,27 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     return entry.fn(params.parameters, params.runContext);
   }
 
+  async function handleDetectExternalObjects(params: DetectExternalObjectsParams) {
+    if (!plugin.definition.onDetectExternalObjects) {
+      throw methodNotImplemented("detectExternalObjects");
+    }
+    return plugin.definition.onDetectExternalObjects(params);
+  }
+
+  async function handleResolveExternalObject(params: ResolveExternalObjectParams) {
+    if (!plugin.definition.onResolveExternalObject) {
+      throw methodNotImplemented("resolveExternalObject");
+    }
+    return plugin.definition.onResolveExternalObject(params);
+  }
+
+  async function handleRefreshExternalObjects(params: RefreshExternalObjectsParams) {
+    if (!plugin.definition.onRefreshExternalObjects) {
+      throw methodNotImplemented("refreshExternalObjects");
+    }
+    return plugin.definition.onRefreshExternalObjects(params);
+  }
+
   function methodNotImplemented(method: string): Error & { code: number } {
     return Object.assign(
       new Error(`${method} is not implemented by this plugin`),
@@ -1651,6 +1797,55 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentExecute");
     }
     return plugin.definition.onEnvironmentExecute(params);
+  }
+
+  async function handleEnvironmentSyncIn(params: PluginEnvironmentSyncInParams) {
+    if (!plugin.definition.onEnvironmentSyncIn) {
+      throw methodNotImplemented("environmentSyncIn");
+    }
+    return plugin.definition.onEnvironmentSyncIn(params);
+  }
+
+  async function handleEnvironmentSyncOut(params: PluginEnvironmentSyncOutParams) {
+    if (!plugin.definition.onEnvironmentSyncOut) {
+      throw methodNotImplemented("environmentSyncOut");
+    }
+    return plugin.definition.onEnvironmentSyncOut(params);
+  }
+
+  async function handleEnvironmentStartInteractiveSetup(params: PluginEnvironmentStartInteractiveSetupParams) {
+    if (!plugin.definition.onEnvironmentStartInteractiveSetup) {
+      throw methodNotImplemented("environmentStartInteractiveSetup");
+    }
+    return plugin.definition.onEnvironmentStartInteractiveSetup(params);
+  }
+
+  async function handleEnvironmentGetInteractiveSetup(params: PluginEnvironmentGetInteractiveSetupParams) {
+    if (!plugin.definition.onEnvironmentGetInteractiveSetup) {
+      throw methodNotImplemented("environmentGetInteractiveSetup");
+    }
+    return plugin.definition.onEnvironmentGetInteractiveSetup(params);
+  }
+
+  async function handleEnvironmentCaptureTemplate(params: PluginEnvironmentCaptureTemplateParams) {
+    if (!plugin.definition.onEnvironmentCaptureTemplate) {
+      throw methodNotImplemented("environmentCaptureTemplate");
+    }
+    return plugin.definition.onEnvironmentCaptureTemplate(params);
+  }
+
+  async function handleEnvironmentCancelInteractiveSetup(params: PluginEnvironmentCancelInteractiveSetupParams) {
+    if (!plugin.definition.onEnvironmentCancelInteractiveSetup) {
+      throw methodNotImplemented("environmentCancelInteractiveSetup");
+    }
+    return plugin.definition.onEnvironmentCancelInteractiveSetup(params);
+  }
+
+  async function handleEnvironmentDeleteTemplate(params: PluginEnvironmentDeleteTemplateParams) {
+    if (!plugin.definition.onEnvironmentDeleteTemplate) {
+      throw methodNotImplemented("environmentDeleteTemplate");
+    }
+    return plugin.definition.onEnvironmentDeleteTemplate(params);
   }
 
   // -----------------------------------------------------------------------

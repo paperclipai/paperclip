@@ -4,6 +4,7 @@ import {
   parseSkillRoute,
   resolveSkillRouteToken,
   skillRoute,
+  skillStudioNewRoute,
   type CompanySkillRouteSubject,
 } from "./company-skill-routes";
 
@@ -68,7 +69,26 @@ describe("company skill routes", () => {
     expect(parseSkillRoute("paperclip/deep-research/files/references/setup%20guide.md")).toEqual({
       skillToken: "paperclip/deep-research",
       filePath: "references/setup guide.md",
+      hasExplicitFilePath: true,
     });
-    expect(parseSkillRoute(undefined)).toEqual({ skillToken: null, filePath: "SKILL.md" });
+    expect(parseSkillRoute("diataxis/files/SKILL.md")).toEqual({
+      skillToken: "diataxis",
+      filePath: "SKILL.md",
+      hasExplicitFilePath: true,
+    });
+    expect(parseSkillRoute(undefined)).toEqual({ skillToken: null, filePath: "SKILL.md", hasExplicitFilePath: false });
+  });
+
+  it("builds Studio create targets for blank and forked skills", () => {
+    expect(skillStudioNewRoute()).toBe("/skills/studio/new");
+    expect(skillStudioNewRoute("skill/with spaces")).toBe(
+      "/skills/studio/new?forkFrom=skill%2Fwith%20spaces",
+    );
+    expect(skillStudioNewRoute(null, "folder/with spaces")).toBe(
+      "/skills/studio/new?folderId=folder%2Fwith%20spaces",
+    );
+    expect(skillStudioNewRoute("skill 1", "folder 1")).toBe(
+      "/skills/studio/new?forkFrom=skill%201&folderId=folder%201",
+    );
   });
 });

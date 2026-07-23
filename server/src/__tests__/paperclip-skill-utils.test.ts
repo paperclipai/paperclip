@@ -68,43 +68,18 @@ describe("paperclip skill utils", () => {
     const skillPath = path.resolve(".agents/skills/create-issue-interaction-ui/SKILL.md");
     const skillBody = await fs.readFile(skillPath, "utf8");
     const normalizedSkillBody = skillBody.replace(/\s+/g, " ");
+    const normalizedLowerSkillBody = normalizedSkillBody.toLowerCase();
 
     expect(skillBody).toContain("name: create-issue-interaction-ui");
-    expect(skillBody).toContain("Developer/maintainer skill");
-    expect(normalizedSkillBody).toContain("Do NOT install this on production Paperclip agents");
+    expect(normalizedLowerSkillBody).toContain("developer/maintainer skill");
+    expect(normalizedLowerSkillBody).toContain(
+      "not the operational agents that run inside a deployed paperclip company",
+    );
     expect(skillBody).toContain("packages/shared/src/constants.ts");
     expect(skillBody).toContain("server/src/services/issue-thread-interactions.ts");
     expect(skillBody).toContain("ui/src/components/IssueThreadInteractionCard.tsx");
     expect(skillBody).toContain("packages/plugins/sdk/src/testing.ts");
     await expect(fs.access(path.resolve("skills/create-issue-interaction-ui/SKILL.md"))).rejects.toThrow();
-  });
-
-  it("marks skills with required: false in SKILL.md frontmatter as optional", async () => {
-    const root = await makeTempDir("paperclip-skill-optional-");
-    cleanupDirs.add(root);
-
-    const moduleDir = path.join(root, "a", "b", "c", "d", "e");
-    await fs.mkdir(moduleDir, { recursive: true });
-
-    // Required skill (no frontmatter flag)
-    const requiredDir = path.join(root, "skills", "paperclip");
-    await fs.mkdir(requiredDir, { recursive: true });
-    await fs.writeFile(path.join(requiredDir, "SKILL.md"), "---\nname: paperclip\n---\n\n# Paperclip\n");
-
-    // Optional skill (required: false)
-    const optionalDir = path.join(root, "skills", "paperclip-dev");
-    await fs.mkdir(optionalDir, { recursive: true });
-    await fs.writeFile(path.join(optionalDir, "SKILL.md"), "---\nname: paperclip-dev\nrequired: false\n---\n\n# Dev\n");
-
-    const entries = await listPaperclipSkillEntries(moduleDir);
-    entries.sort((a, b) => a.runtimeName.localeCompare(b.runtimeName));
-
-    expect(entries).toHaveLength(2);
-    expect(entries[0]?.runtimeName).toBe("paperclip");
-    expect(entries[0]?.required).toBe(true);
-    expect(entries[1]?.runtimeName).toBe("paperclip-dev");
-    expect(entries[1]?.required).toBe(false);
-    expect(entries[1]?.requiredReason).toBeNull();
   });
 
   it("removes stale maintainer-only symlinks from a shared skills home", async () => {

@@ -160,7 +160,6 @@ function AwaitingJoinApprovalPanel({
   claimApiKeyPath = null,
   onboardingTextUrl = null,
 }: AwaitingJoinApprovalPanelProps) {
-  const approvalUrl = `${window.location.origin}/company/settings/members`;
   const approverLabel = invitedByUserName ?? "A company admin";
 
   return (
@@ -181,15 +180,10 @@ function AwaitingJoinApprovalPanel({
           </p>
           <div className="border border-zinc-800 p-3">
             <p className="text-xs text-zinc-500 mb-1">Approval page</p>
-            <a
-              href={approvalUrl}
-              className="text-sm text-zinc-200 underline underline-offset-2 hover:text-zinc-100"
-            >
-              Company Settings → Members
-            </a>
+            <p className="text-sm text-zinc-200">Company Settings → Members</p>
           </div>
           <p className="text-sm text-zinc-400">
-            Ask them to visit <a href={approvalUrl} className="text-zinc-200 underline underline-offset-2 hover:text-zinc-100">Company Settings → Members</a> to approve your request.
+            Ask them to visit <span className="text-zinc-200">Company Settings → Members</span> to approve your request.
           </p>
           <p className="text-xs text-zinc-500">
             Refresh this page after you've been approved — you'll be redirected automatically.
@@ -374,6 +368,7 @@ export function InviteLandingPage() {
       setAuthFeedback(null);
       rememberPendingInviteToken(token);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
       const { companies: freshCompanies } = await queryClient.fetchQuery(companiesListQueryOptions);
 
@@ -537,7 +532,7 @@ export function InviteLandingPage() {
   return (
     <div className="min-h-screen bg-zinc-950 px-6 py-12 text-zinc-100">
       <div className="mx-auto max-w-5xl">
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+        <div className="grid gap-6 lg:grid-cols-(--gtc-36)">
           <section className={`${panelClassName} space-y-6`}>
             <div className="flex items-start gap-4">
               <InviteCompanyLogo
@@ -547,7 +542,7 @@ export function InviteLandingPage() {
                 className="h-16 w-16 rounded-none border border-zinc-800"
               />
               <div className="min-w-0">
-                <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">
+                <p className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">
                   You&apos;ve been invited to join Paperclip
                 </p>
                 <h1 className="mt-2 text-2xl font-semibold">
@@ -565,28 +560,28 @@ export function InviteLandingPage() {
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Company</div>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Company</div>
                 <div className="mt-1 text-sm text-zinc-100">{companyDisplayName}</div>
               </div>
               <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Invited by</div>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Invited by</div>
                 <div className="mt-1 text-sm text-zinc-100">{invitedByUserName ?? "Paperclip board"}</div>
               </div>
               <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Requested access</div>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Requested access</div>
                 <div className="mt-1 text-sm text-zinc-100">
                   {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Company access"}
                 </div>
               </div>
               <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Invite expires</div>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Invite expires</div>
                 <div className="mt-1 text-sm text-zinc-100">{formatDate(invite.expiresAt)}</div>
               </div>
             </div>
 
             {inviteMessage ? (
               <div className="border border-amber-500/40 bg-amber-500/10 p-4">
-                <div className="text-xs uppercase tracking-[0.2em] text-amber-200/80">Message from inviter</div>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-amber-200/80">Message from inviter</div>
                 <p className="mt-2 text-sm leading-6 text-amber-50">{inviteMessage}</p>
               </div>
             ) : null}

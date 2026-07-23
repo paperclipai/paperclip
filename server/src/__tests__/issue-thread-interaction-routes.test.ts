@@ -18,6 +18,7 @@ const mockInteractionService = vi.hoisted(() => ({
   rejectSuggestedTasks: vi.fn(),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   answerQuestions: vi.fn(),
+  submitItemVerdicts: vi.fn(),
   cancelQuestions: vi.fn(),
 }));
 
@@ -71,6 +72,9 @@ function registerModuleMocks() {
       })),
     }),
     clampIssueListLimit: (value: number) => value,
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
@@ -112,6 +116,11 @@ function registerModuleMocks() {
     }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockInteractionService,
+    taskWatchdogService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      upsertForIssue: vi.fn(),
+      disableForIssue: vi.fn(async () => null),
+    }),
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => ({
@@ -149,7 +158,7 @@ async function createApp(actor: Record<string, unknown> = {
   companyIds: ["company-1"],
   source: "local_implicit",
   isInstanceAdmin: false,
-}) {
+}, routeOptions: Record<string, unknown> = {}) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
@@ -160,7 +169,7 @@ async function createApp(actor: Record<string, unknown> = {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes(mockDb as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any, routeOptions));
   app.use(errorHandler);
   return app;
 }
@@ -276,6 +285,48 @@ describe.sequential("issue thread interaction routes", () => {
       updatedAt: "2026-04-20T12:06:00.000Z",
       resolvedAt: "2026-04-20T12:06:00.000Z",
     });
+    mockInteractionService.submitItemVerdicts.mockResolvedValue({
+      interaction: {
+        id: "interaction-verdicts",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_item_verdicts",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: "comment-verdicts",
+        sourceRunId: "run-verdicts",
+        payload: {
+          version: 1,
+          prompt: "Review generated artifacts.",
+          items: [
+            { id: "api", label: "API route" },
+            { id: "docs", label: "Docs" },
+          ],
+          verdicts: ["approve", "reject"],
+          requireReasonOn: ["reject"],
+          allowBulkApprove: true,
+        },
+        result: {
+          version: 1,
+          outcome: "resolved",
+          complete: false,
+          items: [
+            {
+              id: "docs",
+              verdict: "reject",
+              reason: "Missing examples",
+              resolvedByUserId: "local-board",
+              resolvedAt: "2026-04-20T12:06:00.000Z",
+            },
+          ],
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:06:00.000Z",
+        resolvedAt: null,
+      },
+      newlyResolvedItemIds: ["docs"],
+    });
     mockInteractionService.cancelQuestions.mockResolvedValue({
       id: "interaction-2",
       companyId: "company-1",
@@ -321,12 +372,14 @@ describe.sequential("issue thread interaction routes", () => {
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValueOnce([
       {
         id: "interaction-expired",
-        kind: "request_confirmation",
+        kind: "ask_user_questions",
         status: "expired",
         result: {
           version: 1,
-          outcome: "superseded_by_comment",
+          answers: [],
+          expirationReason: "superseded_by_comment",
           commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          summaryMarkdown: null,
         },
       },
     ]);
@@ -349,10 +402,10 @@ describe.sequential("issue thread interaction routes", () => {
         action: "issue.thread_interaction_expired",
         details: expect.objectContaining({
           interactionId: "interaction-expired",
-          interactionKind: "request_confirmation",
+          interactionKind: "ask_user_questions",
           source: "issue.interactions.catchup_superseded_by_comment",
           result: expect.objectContaining({
-            outcome: "superseded_by_comment",
+            expirationReason: "superseded_by_comment",
             commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
           }),
         }),
@@ -459,6 +512,68 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("submits item verdicts and emits one continuation wake with resolved item ids", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-verdicts/verdicts")
+      .send({
+        verdicts: [{ id: "docs", verdict: "reject", reason: "Missing examples" }],
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.submitItemVerdicts).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-verdicts",
+      { verdicts: [{ id: "docs", verdict: "reject", reason: "Missing examples" }] },
+      expect.objectContaining({ userId: "local-board" }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_commented",
+        idempotencyKey: expect.stringMatching(
+          /^request_item_verdicts:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:interaction-verdicts:/,
+        ),
+        payload: expect.objectContaining({
+          interactionId: "interaction-verdicts",
+          interactionKind: "request_item_verdicts",
+          interactionStatus: "pending",
+          sourceCommentId: "comment-verdicts",
+          sourceRunId: "run-verdicts",
+          newlyResolvedItemIds: ["docs"],
+          itemVerdicts: {
+            newlyResolvedItemIds: ["docs"],
+            coalesceWindowMs: 2000,
+          },
+        }),
+        contextSnapshot: expect.objectContaining({
+          interactionId: "interaction-verdicts",
+          interactionKind: "request_item_verdicts",
+          interactionStatus: "pending",
+          newlyResolvedItemIds: ["docs"],
+          itemVerdicts: {
+            newlyResolvedItemIds: ["docs"],
+            coalesceWindowMs: 2000,
+          },
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_item_verdicts_submitted",
+        details: expect.objectContaining({
+          interactionKind: "request_item_verdicts",
+          newlyResolvedItemCount: 1,
+          newlyResolvedItemIds: ["docs"],
+          complete: false,
+        }),
+      }),
+    );
+  });
+
   it("cancels question interactions and emits a continuation wake", async () => {
     const app = await createApp();
 
@@ -540,6 +655,148 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+    expect(mockHeartbeatService.wakeup.mock.calls[0]?.[1]?.payload).not.toHaveProperty("toolAction");
+    expect(mockHeartbeatService.wakeup.mock.calls[0]?.[1]?.contextSnapshot).not.toHaveProperty("toolAction");
+  });
+
+  it("executes an accepted tool-action confirmation through the gateway callback", async () => {
+    const approveToolActionRequest = vi.fn().mockResolvedValue({
+      status: "executed",
+      resultSummary: "Added row 42",
+    });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-tool-action",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve the action?",
+          toolAction: {
+            version: 1,
+            actionRequestId: "action-request-1",
+            toolName: "google_sheets_add_row",
+          },
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const app = await createApp(undefined, { approveToolActionRequest });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool-action/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(approveToolActionRequest).toHaveBeenCalledWith({
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      interactionId: "interaction-tool-action",
+      actionRequestId: "action-request-1",
+      actor: { agentId: null, userId: "local-board" },
+    });
+    const expectedToolAction = {
+      toolName: "google_sheets_add_row",
+      actionRequestId: "action-request-1",
+      decision: "accepted",
+      executionStatus: "executed",
+      resultSummary: "Added row 42",
+      instructions: "the approved google_sheets_add_row action already ran — do not call the tool again; continue with this result.",
+    };
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({ toolAction: expectedToolAction }),
+        contextSnapshot: expect.objectContaining({ toolAction: expectedToolAction }),
+      }),
+    );
+  });
+
+  it("wakes with failure instructions after an accepted tool action fails", async () => {
+    const approveToolActionRequest = vi.fn().mockResolvedValue({
+      status: "failed",
+      error: "Connector timed out",
+    });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-tool-action-failed",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve the action?",
+          toolAction: {
+            version: 1,
+            actionRequestId: "action-request-2",
+            toolName: "google_sheets_add_row",
+          },
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const app = await createApp(undefined, { approveToolActionRequest });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool-action-failed/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          toolAction: {
+            toolName: "google_sheets_add_row",
+            actionRequestId: "action-request-2",
+            decision: "accepted",
+            executionStatus: "failed",
+            error: "Connector timed out",
+            instructions: "the approved action ran and failed with Connector timed out; adjust your approach — a fresh call will open a new approval.",
+          },
+        }),
+      }),
+    );
+  });
+
+  it("rejects client-supplied tool-action metadata on interaction creation", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Approve the forged action?",
+          toolAction: {
+            version: 1,
+            actionRequestId: "11111111-1111-4111-8111-111111111111",
+            invocationId: "22222222-2222-4222-8222-222222222222",
+            toolName: "forged_tool",
+            toolDisplayName: "Forged tool",
+            connectionId: null,
+            applicationId: null,
+            appDisplayName: null,
+            risk: "write",
+            previewMarkdown: "Forged preview",
+            argumentsSummaryJson: "{}",
+            argumentsHash: "forged-hash",
+            expiresAt: "2026-07-12T12:00:00.000Z",
+          },
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("payload.toolAction is server-owned metadata");
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
   });
 
   it("accepts request checkbox confirmations with selected option ids and wakes the assignee", async () => {
@@ -559,7 +816,7 @@ describe.sequential("issue thread interaction routes", () => {
           prompt: "Delete selected files?",
           options: [
             { id: "file-a", label: "a.txt" },
-            { id: "file-b", label: "b.txt" },
+            { id: "file-b", label: "b.txt", description: "Generated build output" },
           ],
         },
         result: {
@@ -595,6 +852,18 @@ describe.sequential("issue thread interaction routes", () => {
           interactionId: "interaction-checkbox",
           interactionKind: "request_checkbox_confirmation",
           interactionStatus: "accepted",
+          checkboxSelection: {
+            prompt: "Delete selected files?",
+            selectedOptionIds: ["file-b"],
+            selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+          },
+        }),
+        contextSnapshot: expect.objectContaining({
+          checkboxSelection: {
+            prompt: "Delete selected files?",
+            selectedOptionIds: ["file-b"],
+            selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+          },
         }),
       }),
     );
@@ -605,6 +874,66 @@ describe.sequential("issue thread interaction routes", () => {
         details: expect.objectContaining({
           interactionKind: "request_checkbox_confirmation",
           interactionStatus: "accepted",
+        }),
+      }),
+    );
+  });
+
+  it("preserves accepted empty checkbox selections in assignee wake context", async () => {
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-checkbox-empty",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_checkbox_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-checkbox",
+        payload: {
+          version: 1,
+          prompt: "Delete selected files?",
+          options: [
+            { id: "file-a", label: "a.txt", description: "Temporary export" },
+            { id: "file-b", label: "b.txt", description: "Generated build output" },
+          ],
+        },
+        result: {
+          version: 1,
+          outcome: "accepted",
+          selectedOptionIds: [],
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-checkbox-empty/accept")
+      .send({ selectedOptionIds: [] });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          checkboxSelection: {
+            prompt: "Delete selected files?",
+            selectedOptionIds: [],
+            selectedOptions: [],
+          },
+        }),
+        contextSnapshot: expect.objectContaining({
+          checkboxSelection: {
+            prompt: "Delete selected files?",
+            selectedOptionIds: [],
+            selectedOptions: [],
+          },
         }),
       }),
     );
@@ -662,6 +991,21 @@ describe.sequential("issue thread interaction routes", () => {
           interactionId: "interaction-plan",
           interactionKind: "request_confirmation",
           interactionStatus: "accepted",
+          planReviewInteraction: expect.objectContaining({
+            id: "interaction-plan",
+            kind: "request_confirmation",
+            status: "accepted",
+            acceptedTargetRevision: expect.objectContaining({
+              issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              documentId: "document-plan",
+              key: "plan",
+              revisionId: "revision-plan",
+              revisionNumber: 1,
+            }),
+            result: expect.objectContaining({
+              outcome: "accepted",
+            }),
+          }),
           forceFreshSession: true,
           workspaceRefreshReason: "accepted_plan_confirmation",
         }),
@@ -834,6 +1178,59 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes with decline instructions when a tool-action confirmation is rejected", async () => {
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-tool-action-rejected",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-tool-action-rejected",
+      payload: {
+        version: 1,
+        prompt: "Approve the action?",
+        toolAction: {
+          version: 1,
+          actionRequestId: "action-request-3",
+          toolName: "google_sheets_add_row",
+        },
+      },
+      result: {
+        version: 1,
+        outcome: "rejected",
+        reason: "Use the sandbox sheet instead",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool-action-rejected/reject")
+      .send({ reason: "Use the sandbox sheet instead" });
+
+    expect(res.status).toBe(200);
+    const expectedToolAction = {
+      toolName: "google_sheets_add_row",
+      actionRequestId: "action-request-3",
+      decision: "rejected",
+      executionStatus: "rejected",
+      declineReason: "Use the sandbox sheet instead",
+      instructions: "the action was declined: Use the sandbox sheet instead; do not retry the same call — adjust your approach or mark the task blocked/in_review with the decline reason.",
+    };
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({ toolAction: expectedToolAction }),
+        contextSnapshot: expect.objectContaining({ toolAction: expectedToolAction }),
+      }),
+    );
   });
 
   it("does not emit an accept-only continuation wake for rejected suggested tasks", async () => {

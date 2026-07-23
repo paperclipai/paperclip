@@ -5,11 +5,6 @@
     "publishFromCi": true
   },
   {
-    "dir": "packages/adapters/acpx-local",
-    "name": "@paperclipai/adapter-acpx-local",
-    "publishFromCi": true
-  },
-  {
     "dir": "packages/adapters/claude-local",
     "name": "@paperclipai/adapter-claude-local",
     "publishFromCi": true
@@ -40,6 +35,16 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/hermes",
+    "name": "@paperclipai/hermes-paperclip-adapter",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/hermes-gateway",
+    "name": "@paperclipai/adapter-hermes-gateway",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true
@@ -62,12 +67,12 @@
   {
     "dir": "packages/skills-catalog",
     "name": "@paperclipai/skills-catalog",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "packages/teams-catalog",
     "name": "@paperclipai/teams-catalog",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "packages/db",
@@ -82,7 +87,7 @@
   {
     "dir": "packages/plugins/plugin-workspace-diff",
     "name": "@paperclipai/plugin-workspace-diff",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "server",
@@ -98,6 +103,16 @@
     "dir": "packages/mcp-server",
     "name": "@paperclipai/mcp-server",
     "publishFromCi": true
+  },
+  {
+    "dir": "packages/google-sheets-mcp-server",
+    "name": "@paperclipai/google-sheets-mcp-server",
+    "publishFromCi": false
+  },
+  {
+    "dir": "packages/kv-demo-mcp-server",
+    "name": "@paperclipai/kv-demo-mcp-server",
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/create-paperclip-plugin",
@@ -132,12 +147,12 @@
   {
     "dir": "packages/plugins/sandbox-providers/kubernetes",
     "name": "@paperclipai/plugin-kubernetes",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "packages/plugins/sandbox-providers/novita",
     "name": "@paperclipai/plugin-novita-sandbox",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "ui",

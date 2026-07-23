@@ -1,7 +1,7 @@
 import { redactHomePathUserSegments, redactTranscriptEntryPaths } from "@paperclipai/adapter-utils";
 import type { TranscriptEntry, StdoutLineParser, TranscriptParserSource } from "./types";
 
-export type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
+export type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string; seq?: number };
 type TranscriptBuildOptions = { censorUsernameInLogs?: boolean };
 type RedactionOptions = { enabled: boolean };
 

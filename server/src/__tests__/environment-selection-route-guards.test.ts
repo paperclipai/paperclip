@@ -67,6 +67,9 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(),
   }),
+  companySkillService: () => ({
+    completeTestRunForIssue: vi.fn(async () => null),
+  }),
   executionWorkspaceService: () => ({}),
   goalService: () => ({
     getById: vi.fn(),
