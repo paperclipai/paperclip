@@ -11,7 +11,17 @@ export type BackupRetentionPolicy = {
   dailyDays: number;
   weeklyWeeks: number;
   monthlyMonths: number;
+  /**
+   * Recent-window in hours during which every backup is kept (no coalescing).
+   * Sits in front of the daily tier so operators retain hourly granularity for
+   * fast recovery after a recent failure. Defaults to {@link DEFAULT_HOURLY_HOURS}
+   * when omitted, which makes the field forward-compatible with the existing
+   * shared `BackupRetentionPolicy` shape that only carries the day/week/month presets.
+   */
+  hourlyHours?: number;
 };
+
+const DEFAULT_HOURLY_HOURS = 24;
 
 export type RunDatabaseBackupOptions = {
   connectionString: string;
@@ -34,6 +44,7 @@ export type RunDatabaseBackupResult = {
   backupFile: string;
   sizeBytes: number;
   prunedCount: number;
+  keptCount: number;
 };
 
 export type RunDatabaseRestoreOptions = {
@@ -107,17 +118,40 @@ function monthKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function dayKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+export type BackupPruneResult = { kept: number; pruned: number };
+
+export type ListBackupsClock = () => number;
+
 /**
  * Tiered backup pruning:
- * - Daily tier: keep ALL backups from the last `dailyDays` days
- * - Weekly tier: keep the NEWEST backup per calendar week for `weeklyWeeks` weeks
- * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
- * - Everything else is deleted
+ * - Hourly tier: keep ALL backups within the last `hourlyHours` hours (default 24).
+ * - Daily tier:  keep the NEWEST backup per calendar day for `dailyDays` days.
+ *                (Prior to this change the daily tier kept *every* backup in the
+ *                window, which let hourly backups pile up unbounded and fill the
+ *                disk — see HFT-163 / paperclip ENOSPC reports.)
+ * - Weekly tier: keep the NEWEST backup per calendar week for `weeklyWeeks` weeks.
+ * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months.
+ * - Everything else is deleted.
+ *
+ * Exported for unit testing; callers in this module remain the only production
+ * users. Pass a `clock` (returning ms since epoch) to make pruning deterministic
+ * in tests.
  */
-function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
-  if (!existsSync(backupDir)) return 0;
+export function pruneOldBackups(
+  backupDir: string,
+  retention: BackupRetentionPolicy,
+  filenamePrefix: string,
+  clock: ListBackupsClock = Date.now,
+): BackupPruneResult {
+  if (!existsSync(backupDir)) return { kept: 0, pruned: 0 };
 
-  const now = Date.now();
+  const now = clock();
+  const hourlyHours = Math.max(0, retention.hourlyHours ?? DEFAULT_HOURLY_HOURS);
+  const hourlyCutoff = now - hourlyHours * 60 * 60 * 1000;
   const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
   const monthlyCutoff = now - Math.max(1, retention.monthlyMonths) * 30 * 24 * 60 * 60 * 1000;
@@ -133,50 +167,76 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
     entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
   }
 
-  // Sort newest first so the first entry per week/month bucket is the one we keep
+  // Sort newest first so the first entry per day/week/month bucket is the one we keep
   entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
+  const keepDayBuckets = new Set<string>();
   const keepWeekBuckets = new Set<string>();
   const keepMonthBuckets = new Set<string>();
   const toDelete: string[] = [];
+  let keptCount = 0;
 
   for (const entry of entries) {
-    // Daily tier — keep everything within dailyDays
-    if (entry.mtimeMs >= dailyCutoff) continue;
-
     const date = new Date(entry.mtimeMs);
-    const week = isoWeekKey(date);
-    const month = monthKey(date);
 
-    // Weekly tier — keep newest per calendar week
+    // Hourly tier — keep ALL backups within the last `hourlyHours` hours.
+    if (entry.mtimeMs >= hourlyCutoff) {
+      keptCount += 1;
+      continue;
+    }
+
+    // Daily tier — keep the NEWEST backup per calendar day within `dailyDays`.
+    if (entry.mtimeMs >= dailyCutoff) {
+      const day = dayKey(date);
+      if (keepDayBuckets.has(day)) {
+        toDelete.push(entry.fullPath);
+      } else {
+        keepDayBuckets.add(day);
+        keptCount += 1;
+      }
+      continue;
+    }
+
+    // Weekly tier — keep the NEWEST backup per calendar week.
     if (entry.mtimeMs >= weeklyCutoff) {
+      const week = isoWeekKey(date);
       if (keepWeekBuckets.has(week)) {
         toDelete.push(entry.fullPath);
       } else {
         keepWeekBuckets.add(week);
+        keptCount += 1;
       }
       continue;
     }
 
-    // Monthly tier — keep newest per calendar month
+    // Monthly tier — keep the NEWEST backup per calendar month.
     if (entry.mtimeMs >= monthlyCutoff) {
+      const month = monthKey(date);
       if (keepMonthBuckets.has(month)) {
         toDelete.push(entry.fullPath);
       } else {
         keepMonthBuckets.add(month);
+        keptCount += 1;
       }
       continue;
     }
 
-    // Beyond all retention tiers — delete
+    // Beyond all retention tiers — delete.
     toDelete.push(entry.fullPath);
   }
 
+  let prunedCount = 0;
   for (const filePath of toDelete) {
-    unlinkSync(filePath);
+    try {
+      unlinkSync(filePath);
+      prunedCount += 1;
+    } catch {
+      // Best-effort prune; failures are not counted so kept+pruned reflect
+      // ground truth rather than scheduled intent.
+    }
   }
 
-  return toDelete.length;
+  return { kept: keptCount, pruned: prunedCount };
 }
 
 function formatBackupSize(sizeBytes: number): string {
@@ -443,7 +503,10 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
   let bufferedBytes = 0;
   let firstChunk = true;
   let closed = false;
-  let pendingWrite = Promise.resolve();
+  // Funnel any openFile rejection (e.g. ENOSPC, EACCES at open time) into the
+  // pendingWrite chain so it surfaces via drain/close/writeRaw/abort rather
+  // than escaping as an unhandledRejection that kills the host process.
+  let pendingWrite: Promise<void> = filePromise.then(() => undefined);
 
   const writeChunk = async (chunk: string | Buffer): Promise<void> => {
     const file = await filePromise;
@@ -550,11 +613,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        const prune = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
           backupFile,
           sizeBytes,
-          prunedCount,
+          prunedCount: prune.pruned,
+          keptCount: prune.kept,
         };
       } catch (error) {
         if (existsSync(backupFile)) {
@@ -962,12 +1026,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+    const prune = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
       backupFile,
       sizeBytes,
-      prunedCount,
+      prunedCount: prune.pruned,
+      keptCount: prune.kept,
     };
   } catch (error) {
     await writer.abort();
