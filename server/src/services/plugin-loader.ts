@@ -2189,6 +2189,19 @@ export function pluginLoader(
       // for well-behaved plugins, so replaying an unchanged config is safe.
       try {
         const configRows = await registry.listConfigs(pluginId);
+
+        // Authorize the worker to act on each configured company from its
+        // proactive loops (LOOA-629). A proactive plugin (e.g. the chat
+        // gateway's notifier drain) makes company-scoped worker→host calls
+        // outside any host-issued invocation; without this the governed-access
+        // gate rejects them with "company context is required". The authorized
+        // set is exactly the plugin's configured companies — proactive access
+        // never reaches an unconfigured company.
+        workerManager.setProactiveCompanyScopes(
+          pluginId,
+          configRows.map((row) => row.companyId),
+        );
+
         for (const row of configRows) {
           try {
             await workerManager.call(pluginId, "configChanged", {
