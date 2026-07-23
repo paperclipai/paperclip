@@ -473,7 +473,6 @@ async function handleEvent(
   if (eventName === "message.delta" && delta) {
     const sanitizedDelta = redactText(delta);
     state.outputChunks.push(sanitizedDelta);
-    await ctx.onLog("stdout", sanitizedDelta);
   }
 
   const status = extractStatus(parsed) ?? (eventName?.startsWith("run.") ? eventName.slice(4) : null);
