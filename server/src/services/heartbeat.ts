@@ -522,6 +522,43 @@ function mergeAdapterRecoveryMetadata(input: {
       : {}),
   };
 }
+const ISSUE_QUOTA_FALLBACK_REASSIGNED_ACTION = "issue.quota_fallback_reassigned";
+const ADAPTER_FALLBACK_TRIGGERS = ["provider_quota", "max_turns"] as const;
+type AdapterFallbackTrigger = (typeof ADAPTER_FALLBACK_TRIGGERS)[number];
+
+interface ParsedAdapterFallbackConfig {
+  enabled: boolean;
+  agentId: string | null;
+  on: AdapterFallbackTrigger[];
+  when: "immediate" | "retries_exhausted";
+}
+
+function parseAdapterFallbackConfig(
+  agent: Pick<typeof agents.$inferSelect, "adapterConfig">,
+): ParsedAdapterFallbackConfig | null {
+  const adapterConfig = parseObject(agent.adapterConfig);
+  if (adapterConfig.fallback == null || typeof adapterConfig.fallback !== "object") return null;
+  const raw = parseObject(adapterConfig.fallback);
+  const on = Array.isArray(raw.on)
+    ? raw.on.filter((value): value is AdapterFallbackTrigger =>
+        (ADAPTER_FALLBACK_TRIGGERS as readonly string[]).includes(value as string),
+      )
+    : (["provider_quota"] as AdapterFallbackTrigger[]);
+  return {
+    enabled: raw.enabled === true,
+    agentId: readNonEmptyString(raw.agentId),
+    on,
+    when: raw.when === "retries_exhausted" ? "retries_exhausted" : "immediate",
+  };
+}
+
+function readAdapterFallbackTriggerFromRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+): AdapterFallbackTrigger | null {
+  if (isMaxTurnExhaustionRun(run)) return "max_turns";
+  return readHeartbeatRunErrorFamily(run) === "provider_quota" ? "provider_quota" : null;
+}
+
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
@@ -10203,6 +10240,208 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
+  /**
+   * Quota fallback (issue #2014): when a failed run's error family matches the
+   * agent's configured adapterConfig.fallback triggers, reassign the issue to
+   * the configured fallback agent instead of parking the original agent until
+   * quota reset. The fallback agent has a different adapterType/session, so the
+   * handoff gets a fresh session by construction. When the fallback fires, the
+   * original agent's same-adapter retry is suppressed by the caller.
+   */
+  async function maybeFallbackReassign(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    opts?: { maxAttempts?: number; now?: Date },
+  ) {
+    const fallback = parseAdapterFallbackConfig(agent);
+    if (!fallback?.enabled) {
+      return { outcome: "not_applicable" as const, reason: "fallback_not_enabled" };
+    }
+
+    const trigger = readAdapterFallbackTriggerFromRun(run);
+    if (!trigger || !fallback.on.includes(trigger)) {
+      return { outcome: "not_applicable" as const, reason: "trigger_not_configured" };
+    }
+
+    if (fallback.when === "retries_exhausted") {
+      const maxAttempts = Math.max(
+        0,
+        Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+      );
+      if ((run.scheduledRetryAttempt ?? 0) < maxAttempts) {
+        return { outcome: "not_applicable" as const, reason: "retries_not_exhausted" };
+      }
+    }
+
+    const notApplied = async (reason: string, details: Record<string, unknown>) => {
+      logger.warn(
+        { runId: run.id, agentId: agent.id, fallbackAgentId: fallback.agentId, reason, ...details },
+        "quota fallback reassignment suppressed; falling back to existing retry behavior",
+      );
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `Quota fallback reassignment suppressed (${reason}); existing retry behavior applies`,
+        payload: {
+          trigger,
+          fallbackAgentId: fallback.agentId,
+          reason,
+          ...details,
+        },
+      });
+      return { outcome: "not_applied" as const, reason };
+    };
+
+    if (!fallback.agentId) {
+      return notApplied("fallback_agent_not_configured", {});
+    }
+    if (fallback.agentId === agent.id) {
+      return notApplied("fallback_agent_is_same_agent", {});
+    }
+
+    const fallbackAgent = await getAgent(fallback.agentId);
+    if (!fallbackAgent || fallbackAgent.companyId !== agent.companyId) {
+      return notApplied("fallback_agent_not_found_in_company", {});
+    }
+
+    const invokability = await getAgentInvokability(fallbackAgent);
+    if (!invokability.invokable) {
+      return notApplied("fallback_agent_not_invokable", {
+        invokabilityReason: invokability.reason,
+        ...invokability.details,
+      });
+    }
+
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (!issueId) {
+      return notApplied("run_has_no_issue", {});
+    }
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        identifier: issues.identifier,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) {
+      return notApplied("issue_not_found", { issueId });
+    }
+    if (issue.assigneeAgentId !== agent.id) {
+      return notApplied("issue_not_assigned_to_agent", {
+        issueId,
+        currentAssigneeAgentId: issue.assigneeAgentId,
+      });
+    }
+    if (issue.status === "done" || issue.status === "cancelled") {
+      return notApplied("issue_terminal_status", { issueId, currentStatus: issue.status });
+    }
+
+    const now = opts?.now ?? new Date();
+    const errorFamily = readHeartbeatRunErrorFamily(run) ?? trigger;
+
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: fallbackAgent.id,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+
+    // Persist an auditable marker on the failed run's resultJson.
+    const currentRun = await getRun(run.id, { unsafeFullResultJson: true });
+    const mergedResultJson = {
+      ...parseObject(currentRun?.resultJson ?? run.resultJson),
+      fallback: {
+        fromAgentId: agent.id,
+        toAgentId: fallbackAgent.id,
+        trigger,
+        at: now.toISOString(),
+      },
+    };
+    await db
+      .update(heartbeatRuns)
+      .set({ resultJson: mergedResultJson, updatedAt: now })
+      .where(eq(heartbeatRuns.id, run.id));
+
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "heartbeat_quota_fallback",
+      agentId: agent.id,
+      runId: run.id,
+      action: ISSUE_QUOTA_FALLBACK_REASSIGNED_ACTION,
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        fromAgentId: agent.id,
+        toAgentId: fallbackAgent.id,
+        errorFamily,
+        runId: run.id,
+      },
+    });
+
+    try {
+      await issuesSvc.addComment(
+        issueId,
+        `Reassigned to **${fallbackAgent.name}** via quota fallback: run by **${agent.name}** failed with \`${errorFamily}\`. The fallback agent now owns this issue; the original agent's retry was suppressed.`,
+        { agentId: agent.id, runId: run.id },
+      );
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id, issueId },
+        "failed to post quota fallback handoff comment",
+      );
+    }
+
+    await appendRunEvent(run, await nextRunEventSeq(run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: `Quota fallback reassigned issue to agent ${fallbackAgent.name}`,
+      payload: {
+        issueId,
+        trigger,
+        errorFamily,
+        fromAgentId: agent.id,
+        toAgentId: fallbackAgent.id,
+      },
+    });
+
+    await enqueueWakeup(fallbackAgent.id, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {
+        issueId,
+        mutation: "quota_fallback_reassigned",
+        fromAgentId: agent.id,
+        sourceRunId: run.id,
+      },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+        source: "heartbeat.quota_fallback",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat_quota_fallback",
+    });
+
+    return {
+      outcome: "reassigned" as const,
+      toAgentId: fallbackAgent.id,
+      issueId,
+    };
+  }
+
   async function promoteDueScheduledRetries(now = new Date()) {
     const cutoff = await getWorktreeExecutionCutoff();
     const dueRuns = await db
@@ -13921,27 +14160,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
           const policy = parseMaxTurnContinuationPolicy(agent);
-          if (policy.enabled && policy.maxAttempts > 0) {
-            await scheduleBoundedRetryForRun(livenessRun, agent, {
-              retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-              wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
-              maxAttempts: policy.maxAttempts,
-              delayMs: policy.delayMs,
-            });
-          } else {
-            await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
-              eventType: "lifecycle",
-              stream: "system",
-              level: "warn",
-              message: "Max-turn continuation suppressed because the policy is disabled",
-              payload: {
+          const fallbackResult = await maybeFallbackReassign(livenessRun, agent, {
+            maxAttempts: policy.enabled ? policy.maxAttempts : 0,
+          });
+          if (fallbackResult.outcome !== "reassigned") {
+            if (policy.enabled && policy.maxAttempts > 0) {
+              await scheduleBoundedRetryForRun(livenessRun, agent, {
                 retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-                policy,
-              },
-            });
+                wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+                maxAttempts: policy.maxAttempts,
+                delayMs: policy.delayMs,
+              });
+            } else {
+              await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: "Max-turn continuation suppressed because the policy is disabled",
+                payload: {
+                  retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+                  policy,
+                },
+              });
+            }
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
-          await scheduleBoundedRetryForRun(livenessRun, agent);
+          const fallbackResult = await maybeFallbackReassign(livenessRun, agent);
+          if (fallbackResult.outcome !== "reassigned") {
+            await scheduleBoundedRetryForRun(livenessRun, agent);
+          }
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
@@ -16962,6 +17209,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const agent = await getAgent(run.agentId);
       if (!agent) return { outcome: "missing_agent" as const };
       return scheduleBoundedRetryForRun(run, agent, opts);
+    },
+
+    maybeFallbackReassign: async (
+      runId: string,
+      opts?: { maxAttempts?: number; now?: Date },
+    ) => {
+      const run = await getRun(runId, { unsafeFullResultJson: true });
+      if (!run) return { outcome: "missing_run" as const };
+      const agent = await getAgent(run.agentId);
+      if (!agent) return { outcome: "missing_agent" as const };
+      return maybeFallbackReassign(run, agent, opts);
     },
 
     reconcileStrandedAssignedIssues,
