@@ -820,6 +820,27 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       const response = await forbiddenWrite;
       expect(response.status, JSON.stringify(response.body)).toBe(403);
     }
+
+    for (const closedParent of [
+      { assigneeAgentId: null, intent: { reopen: true } },
+      { assigneeAgentId: fixture.agents.standard.id, intent: { resume: true } },
+    ]) {
+      await db
+        .update(issues)
+        .set({ status: "done", assigneeAgentId: closedParent.assigneeAgentId })
+        .where(eq(issues.id, fixture.issues.reviewRoot.id));
+
+      const closedParentComment = await request(standardApp)
+        .post(`/api/issues/${fixture.issues.reviewRoot.id}/comments`)
+        .send({ body: "Comment only on closed parent", ...closedParent.intent });
+      expect(closedParentComment.status, JSON.stringify(closedParentComment.body)).toBe(201);
+
+      const [persistedParent] = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, fixture.issues.reviewRoot.id));
+      expect(persistedParent?.status).toBe("done");
+    }
   });
 
   it("relays blocked and cancelled stops once without laundering child prose", async () => {

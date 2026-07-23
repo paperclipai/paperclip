@@ -9790,12 +9790,13 @@ export function issueRoutes(
     const isBlocked = issue.status === "blocked";
     const crossIssueCommentOnlyGrant =
       isClosed &&
-      req.actor.type === "agent" &&
-      issue.assigneeAgentId !== null &&
-      issue.assigneeAgentId !== req.actor.agentId &&
-      !reopenRequested &&
-      !resumeRequested &&
-      (isIssueMentionGrantDecision(commentAccessDecision) || isDirectParentReportDecision(commentAccessDecision));
+      (isDirectParentReportDecision(commentAccessDecision) ||
+        (req.actor.type === "agent" &&
+          issue.assigneeAgentId !== null &&
+          issue.assigneeAgentId !== req.actor.agentId &&
+          !reopenRequested &&
+          !resumeRequested &&
+          isIssueMentionGrantDecision(commentAccessDecision)));
     const effectiveReopenRequested = crossIssueCommentOnlyGrant ? false : reopenRequested;
     const effectiveResumeRequested = crossIssueCommentOnlyGrant ? false : resumeRequested;
     if (
