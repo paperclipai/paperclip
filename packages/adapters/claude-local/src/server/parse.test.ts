@@ -390,6 +390,7 @@ describe("claudeModelUsageTotals", () => {
       inputTokens: 4_650,
       outputTokens: 77_000,
       cachedInputTokens: 260_000,
+      cacheWriteInputTokens: 4_500,
     });
   });
 
@@ -428,6 +429,7 @@ describe("parseClaudeStreamJson usage extraction", () => {
       inputTokens: 2_090,
       outputTokens: 77_000,
       cachedInputTokens: 300_000,
+      cacheWriteInputTokens: 2_000,
     });
     expect(parsed.usageBasis).toBe("per_run");
     expect(parsed.costUsd).toBeCloseTo(1.25);
@@ -439,6 +441,31 @@ describe("parseClaudeStreamJson usage extraction", () => {
       inputTokens: 10,
       outputTokens: 1_800,
       cachedInputTokens: 20,
+    });
+    expect(parsed.usageBasis).toBe("per_run");
+  });
+
+  it("captures cache_creation_input_tokens from the fallback usage block", () => {
+    const parsed = parseClaudeStreamJson(
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        session_id: "sess-2",
+        result: "done",
+        total_cost_usd: 0.5,
+        usage: {
+          input_tokens: 500,
+          output_tokens: 1_000,
+          cache_read_input_tokens: 10_000,
+          cache_creation_input_tokens: 2_500,
+        },
+      }) + "\n",
+    );
+    expect(parsed.usage).toEqual({
+      inputTokens: 3_000,
+      outputTokens: 1_000,
+      cachedInputTokens: 10_000,
+      cacheWriteInputTokens: 2_500,
     });
     expect(parsed.usageBasis).toBe("per_run");
   });
