@@ -873,12 +873,22 @@ export function issueThreadInteractionService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function assertIssueWorkspaceFinalizedForAccept(args: {
+  // LAR-547: A confirmation-card accept records an operator DECISION and must
+  // never be refused because of the creating run's worktree state. Worktree
+  // state is an execution concern, not a decision concern. This resolver
+  // reports whether the creating run's execution workspace has NOT finished
+  // syncing (finalize pending/failed) so the caller can queue the resulting
+  // execution onto a fresh isolated worktree instead of bouncing the accept —
+  // mirroring the re-issue-on-isolated-workspace recovery flow. It replaces the
+  // hard workspace_finalize gate that previously threw a 409 here (PAPA-430),
+  // which could bounce accepts indefinitely when the creating run moved on to
+  // its next queued issue before its sync-back completed.
+  async function creatingRunWorkspaceNeedsFreshWorktree(args: {
     db: Pick<Db, "select">;
     issue: { id: string; companyId: string };
     sourceRunId: string | null;
-  }) {
-    if (!args.sourceRunId) return;
+  }): Promise<boolean> {
+    if (!args.sourceRunId) return false;
 
     const executionWorkspaceId = await args.db
       .select({ executionWorkspaceId: issues.executionWorkspaceId })
@@ -886,7 +896,7 @@ export function issueThreadInteractionService(db: Db) {
       .where(eq(issues.id, args.issue.id))
       .then((rows: Array<{ executionWorkspaceId: string | null }>) => rows[0]?.executionWorkspaceId ?? null);
 
-    if (!executionWorkspaceId) return;
+    if (!executionWorkspaceId) return false;
 
     const isFinalized = await runWorkspaceIsFinalized(
       args.db,
@@ -894,13 +904,33 @@ export function issueThreadInteractionService(db: Db) {
       executionWorkspaceId,
       args.sourceRunId,
     );
-    if (isFinalized) return;
+    return !isFinalized;
+  }
 
-    throw conflict(
-      "Cannot accept interaction: the run that created this interaction has not finished syncing its workspace. "
-        + "Retry once the local worktree has finished syncing.",
-      { executionWorkspaceId, sourceRunId: args.sourceRunId },
-    );
+  // LAR-547: Build the issue patch that routes an accepted card's execution onto
+  // a fresh isolated worktree when the creating run's workspace is still
+  // syncing. Forcing `isolated_workspace` (both as the reuse preference and the
+  // resolved mode) guarantees the assignee's next run provisions a brand-new
+  // worktree instead of reusing the stale, mid-sync one; existing workspace
+  // settings (e.g. environmentId) are preserved. The stale workspace is left
+  // linked so the end-of-run cleanup idles it once the fresh run finalizes.
+  async function buildFreshExecutionWorkspacePatch(
+    tx: Pick<Db, "select">,
+    issueId: string,
+  ): Promise<Partial<typeof issues.$inferInsert>> {
+    const existingSettings = await tx
+      .select({ executionWorkspaceSettings: issues.executionWorkspaceSettings })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.executionWorkspaceSettings ?? null);
+    const baseSettings =
+      existingSettings && typeof existingSettings === "object"
+        ? (existingSettings as Record<string, unknown>)
+        : {};
+    return {
+      executionWorkspacePreference: "isolated_workspace",
+      executionWorkspaceSettings: { ...baseSettings, mode: "isolated_workspace" },
+    };
   }
 
   async function getPendingInteractionForResolution(args: {
@@ -928,6 +958,9 @@ export function issueThreadInteractionService(db: Db) {
     current: IssueThreadInteractionRow;
     input: AcceptIssueThreadInteraction;
     actor: InteractionActor;
+    // LAR-547: when true, route the returned issue's execution onto a fresh
+    // isolated worktree because the creating run's workspace has not synced.
+    forceFreshExecutionWorkspace?: boolean;
   }): Promise<{
     interaction: IssueThreadInteraction;
     continuationIssue: IssueWakeTarget | null;
@@ -998,12 +1031,16 @@ export function issueThreadInteractionService(db: Db) {
         actor: args.actor,
       })) {
         const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
+        const freshWorkspacePatch = args.forceFreshExecutionWorkspace
+          ? await buildFreshExecutionWorkspacePatch(tx, args.issue.id)
+          : {};
         const returnedIssue = await issueService(db).update(args.issue.id, {
           status: returnStatus,
           assigneeAgentId: args.current.createdByAgentId,
           assigneeUserId: null,
           actorAgentId: args.actor.agentId ?? null,
           actorUserId: args.actor.userId ?? null,
+          ...freshWorkspacePatch,
         }, tx);
 
         if (returnedIssue) {
@@ -1217,12 +1254,20 @@ export function issueThreadInteractionService(db: Db) {
           // workspace_finalize gate (PAPA-440) does not apply here.
           return issueThreadInteractionService(db).acceptSuggestedTasks(issue, interactionId, data, actor);
         case "request_confirmation": {
-          await assertIssueWorkspaceFinalizedForAccept({ db, issue, sourceRunId: current.sourceRunId });
+          // LAR-547: record the decision immediately; if the creating run's
+          // workspace is still syncing, queue execution on a fresh isolated
+          // worktree instead of refusing the accept.
+          const forceFreshExecutionWorkspace = await creatingRunWorkspaceNeedsFreshWorktree({
+            db,
+            issue,
+            sourceRunId: current.sourceRunId,
+          });
           const accepted = await acceptRequestConfirmation({
             issue,
             current,
             input: data,
             actor,
+            forceFreshExecutionWorkspace,
           });
           return {
             interaction: accepted.interaction,
@@ -1231,12 +1276,18 @@ export function issueThreadInteractionService(db: Db) {
           };
         }
         case "request_checkbox_confirmation": {
-          await assertIssueWorkspaceFinalizedForAccept({ db, issue, sourceRunId: current.sourceRunId });
+          // LAR-547: same decouple as request_confirmation above.
+          const forceFreshExecutionWorkspace = await creatingRunWorkspaceNeedsFreshWorktree({
+            db,
+            issue,
+            sourceRunId: current.sourceRunId,
+          });
           const accepted = await acceptRequestConfirmation({
             issue,
             current,
             input: data,
             actor,
+            forceFreshExecutionWorkspace,
           });
           return {
             interaction: accepted.interaction,

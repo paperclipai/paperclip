@@ -2242,10 +2242,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       });
     });
 
-    it("refuses request_confirmation accept until the source run records a successful workspace_finalize", async () => {
+    it("records a request_confirmation accept immediately even when the source run's workspace has not finished syncing (LAR-547)", async () => {
       const { companyId, executionWorkspaceId, issueId, goalId, interactionId, sourceRunId } =
         await seedAcceptGateFixture();
 
+      // Only a worktree_prepare op exists for the source run — its sync-back
+      // (workspace_finalize) never landed. The accept must still be recorded
+      // rather than bounced with a 409.
       await db.insert(workspaceOperations).values({
         companyId,
         executionWorkspaceId,
@@ -2253,37 +2256,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         phase: "worktree_prepare",
         status: "succeeded",
         startedAt: new Date("2026-05-23T22:00:00.000Z"),
-      });
-
-      await expect(
-        interactionsSvc.acceptInteraction(
-          { id: issueId, companyId, goalId, projectId: null },
-          interactionId,
-          {},
-          { userId: "local-board" },
-        ),
-      ).rejects.toMatchObject({
-        status: 409,
-        message: expect.stringContaining(
-          "the run that created this interaction has not finished syncing its workspace",
-        ),
-        details: { executionWorkspaceId, sourceRunId },
-      });
-
-      const row = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.id, interactionId))
-        .then((rows) => rows[0]);
-      expect(row?.status).toBe("pending");
-
-      await db.insert(workspaceOperations).values({
-        companyId,
-        executionWorkspaceId,
-        heartbeatRunId: sourceRunId,
-        phase: "workspace_finalize",
-        status: "succeeded",
-        startedAt: new Date("2026-05-23T22:05:00.000Z"),
       });
 
       const accepted = await interactionsSvc.acceptInteraction(
@@ -2298,6 +2270,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         kind: "request_confirmation",
         status: "accepted",
       });
+
+      const row = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0]);
+      expect(row?.status).toBe("accepted");
     });
 
     it("allows request_confirmation accept when sourceRunId is null", async () => {
@@ -2365,7 +2344,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       });
     });
 
-    it("refuses request_checkbox_confirmation accept until the source run records a successful workspace_finalize", async () => {
+    it("records a request_checkbox_confirmation accept immediately even when the source run's workspace has not finished syncing (LAR-547)", async () => {
       const { companyId, executionWorkspaceId, issueId, goalId, interactionId, sourceRunId } =
         await seedAcceptGateFixture({ kind: "request_checkbox_confirmation" });
 
@@ -2376,30 +2355,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         phase: "worktree_prepare",
         status: "succeeded",
         startedAt: new Date("2026-05-23T22:00:00.000Z"),
-      });
-
-      await expect(
-        interactionsSvc.acceptInteraction(
-          { id: issueId, companyId, goalId, projectId: null },
-          interactionId,
-          { selectedOptionIds: ["file-a"] },
-          { userId: "local-board" },
-        ),
-      ).rejects.toMatchObject({
-        status: 409,
-        message: expect.stringContaining(
-          "the run that created this interaction has not finished syncing its workspace",
-        ),
-        details: { executionWorkspaceId, sourceRunId },
-      });
-
-      await db.insert(workspaceOperations).values({
-        companyId,
-        executionWorkspaceId,
-        heartbeatRunId: sourceRunId,
-        phase: "workspace_finalize",
-        status: "succeeded",
-        startedAt: new Date("2026-05-23T22:10:00.000Z"),
       });
 
       const accepted = await interactionsSvc.acceptInteraction(
@@ -2521,6 +2476,183 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         id: created.id,
         status: "accepted",
       });
+    });
+
+    // LAR-547: an agent proposes an approval card at the end of its run, then
+    // starts its next queued issue before the creating run's workspace finishes
+    // syncing. When a board user accepts, the decision must be recorded AND the
+    // resulting execution queued onto a fresh isolated worktree instead of being
+    // bounced by the old workspace_finalize gate.
+    async function seedCreatorRoutingFixture(options?: { finalized: boolean }) {
+      const companyId = randomUUID();
+      const projectId = randomUUID();
+      const projectWorkspaceId = randomUUID();
+      const executionWorkspaceId = randomUUID();
+      const issueId = randomUUID();
+      const goalId = randomUUID();
+      const agentId = randomUUID();
+      const sourceRunId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Project",
+        status: "in_progress",
+      });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Workspace",
+        sourceType: "local_path",
+        visibility: "default",
+        isPrimary: true,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(heartbeatRuns).values({
+        id: sourceRunId,
+        companyId,
+        agentId,
+        invocationSource: "manual",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T21:55:00.000Z"),
+        finishedAt: new Date("2026-05-23T22:05:00.000Z"),
+      });
+      await db.insert(executionWorkspaces).values({
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "exec",
+        status: "active",
+        providerType: "git_worktree",
+      });
+      await db.insert(goals).values({
+        id: goalId,
+        companyId,
+        title: "Creator routing fixture",
+        level: "task",
+        status: "active",
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        projectId,
+        goalId,
+        title: "Ship it card",
+        status: "in_review",
+        priority: "medium",
+        assigneeUserId: "local-board",
+        executionWorkspaceId,
+      });
+
+      // The creating run's only workspace op is worktree_prepare unless the test
+      // asks for a finalized (fully synced) workspace.
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: sourceRunId,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      });
+      if (options?.finalized) {
+        await db.insert(workspaceOperations).values({
+          companyId,
+          executionWorkspaceId,
+          heartbeatRunId: sourceRunId,
+          phase: "workspace_finalize",
+          status: "succeeded",
+          startedAt: new Date("2026-05-23T22:05:00.000Z"),
+        });
+      }
+
+      const created = await interactionsSvc.create({
+        id: issueId,
+        companyId,
+      }, {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee_on_accept",
+        sourceRunId,
+        payload: {
+          version: 1,
+          prompt: "Ship it?",
+          acceptLabel: "Ship it",
+        },
+      }, {
+        agentId,
+      });
+
+      return { companyId, issueId, goalId, agentId, interactionId: created.id };
+    }
+
+    it("records the decision and queues execution on a fresh isolated worktree when the creating run's workspace is still syncing (LAR-547)", async () => {
+      const { companyId, issueId, goalId, agentId, interactionId } = await seedCreatorRoutingFixture();
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        {},
+        { userId: "local-board" },
+      );
+
+      // Decision is recorded and the issue is handed back to the creating agent.
+      expect(accepted.interaction).toMatchObject({ id: interactionId, status: "accepted" });
+      expect(accepted.continuationIssue).toEqual({
+        id: issueId,
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        status: "todo",
+      });
+
+      // Execution is routed onto a fresh isolated worktree rather than reusing
+      // the creating run's still-syncing workspace.
+      const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+      expect(updatedIssue?.executionWorkspacePreference).toBe("isolated_workspace");
+      expect(updatedIssue?.executionWorkspaceSettings).toMatchObject({ mode: "isolated_workspace" });
+    });
+
+    it("does not force a fresh worktree when the creating run's workspace has already finished syncing (LAR-547 regression)", async () => {
+      const { companyId, issueId, goalId, agentId, interactionId } =
+        await seedCreatorRoutingFixture({ finalized: true });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        {},
+        { userId: "local-board" },
+      );
+
+      expect(accepted.interaction).toMatchObject({ id: interactionId, status: "accepted" });
+      expect(accepted.continuationIssue).toEqual({
+        id: issueId,
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        status: "todo",
+      });
+
+      // Synced workspace → normal accept, no forced fresh-worktree override.
+      const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+      expect(updatedIssue?.executionWorkspacePreference ?? null).toBeNull();
     });
   });
 });
