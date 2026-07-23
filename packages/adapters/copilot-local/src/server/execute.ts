@@ -53,9 +53,14 @@ export function buildCopilotAcpCommand(config: Record<string, unknown>): string 
   const model = asString(config.model, "").trim();
   const reasoningEffort = firstNonEmptyString(config.reasoningEffort, config.modelReasoningEffort);
   const contextTier = asString(config.contextTier, "").trim();
-  const args = [
-    "--acp",
-    "--stdio",
+  const args = ["--acp", "--stdio"];
+  if (model) args.push("--model", model);
+  if (reasoningEffort) args.push("--effort", reasoningEffort);
+  if (contextTier === "default" || contextTier === "long_context") {
+    args.push("--context", contextTier);
+  }
+  args.push(...asStringArray(config.extraArgs));
+  args.push(
     "--no-auto-update",
     "--no-remote",
     "--no-remote-export",
@@ -63,13 +68,7 @@ export function buildCopilotAcpCommand(config: Record<string, unknown>): string 
     "--log-level",
     "error",
     "--secret-env-vars=COPILOT_GITHUB_TOKEN,GH_TOKEN,GITHUB_TOKEN",
-  ];
-  if (model) args.push("--model", model);
-  if (reasoningEffort) args.push("--effort", reasoningEffort);
-  if (contextTier === "default" || contextTier === "long_context") {
-    args.push("--context", contextTier);
-  }
-  args.push(...asStringArray(config.extraArgs));
+  );
 
   return [shellQuote(command), ...args.map(shellQuote)].join(" ");
 }

@@ -39,6 +39,39 @@ describe("copilot_local ACP configuration", () => {
     );
   });
 
+  it("gives managed safety flags final precedence over extra arguments", () => {
+    const command = buildCopilotAcpCommand({
+      extraArgs: [
+        "--auto-update",
+        "--remote",
+        "--remote-export",
+        "--color",
+        "--log-level",
+        "debug",
+        "--secret-env-vars=OTHER_TOKEN",
+      ],
+    });
+
+    expect(command.lastIndexOf("'--no-auto-update'")).toBeGreaterThan(
+      command.lastIndexOf("'--auto-update'"),
+    );
+    expect(command.lastIndexOf("'--no-remote'")).toBeGreaterThan(
+      command.lastIndexOf("'--remote'"),
+    );
+    expect(command.lastIndexOf("'--no-remote-export'")).toBeGreaterThan(
+      command.lastIndexOf("'--remote-export'"),
+    );
+    expect(command.lastIndexOf("'--no-color'")).toBeGreaterThan(
+      command.lastIndexOf("'--color'"),
+    );
+    expect(command.lastIndexOf("'error'")).toBeGreaterThan(command.lastIndexOf("'debug'"));
+    expect(
+      command.lastIndexOf(
+        "'--secret-env-vars=COPILOT_GITHUB_TOKEN,GH_TOKEN,GITHUB_TOKEN'",
+      ),
+    ).toBeGreaterThan(command.lastIndexOf("'--secret-env-vars=OTHER_TOKEN'"));
+  });
+
   it("uses the normal Copilot home without overriding explicit config", () => {
     process.env.COPILOT_HOME = path.resolve("/shared/copilot");
 
