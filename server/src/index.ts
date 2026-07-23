@@ -48,8 +48,10 @@ import {
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  statusCardService,
   toolAccessService,
 } from "./services/index.js";
+import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -848,6 +850,7 @@ export async function startServer(): Promise<StartedServer> {
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
+    const statusCards = statusCardService(db as any);
     const tools = toolAccessService(db as any, {
       deploymentMode: config.deploymentMode,
       deploymentExposure: config.deploymentExposure,
@@ -1013,6 +1016,27 @@ export async function startServer(): Promise<StartedServer> {
           .catch((err) => {
             logger.error({ err }, "routine scheduler tick failed");
           }));
+
+        if (heartbeatSchedulerStopped) return;
+        trackHeartbeatSchedulerWork((async () => {
+          const experimental = await instanceSettingsService(db).getExperimental();
+          if (experimental.enableStatusCards !== true) return;
+          const result = await statusCards.tickDueStatusCards(new Date());
+          await Promise.all(result.enqueued.map(({ cardId, generatingIssue }) => queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: generatingIssue,
+            reason: "status_card_update_assigned",
+            mutation: "status_card.scheduler_update_requested",
+            contextSource: "status_card_scheduler",
+            requestedByActorType: "system",
+            taskKey: `status-card:${cardId}`,
+          })));
+          if (result.evaluated > 0 || result.enqueued.length > 0) {
+            logger.info({ evaluated: result.evaluated, enqueued: result.enqueued.length }, "status-card scheduler tick complete");
+          }
+        })().catch((err) => {
+          logger.error({ err }, "status-card scheduler tick failed");
+        }));
 
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(environmentCustomImages

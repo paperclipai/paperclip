@@ -4,6 +4,7 @@ import {
   createStatusCardSchema,
   listStatusCardsQuerySchema,
   patchStatusCardSchema,
+  refreshStatusCardSchema,
   writeStatusCardQuerySchema,
   writeStatusCardSummarySchema,
 } from "@paperclipai/shared";
@@ -81,6 +82,32 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     return result;
   }
 
+  async function enqueueRefresh(req: Request, cardId: string, full: boolean, trigger: "manual" | "restore" = "manual") {
+    const actor = getActorInfo(req);
+    const result = await service.requestRefresh(cardId, {
+      full,
+      trigger,
+      actor: {
+        agentId: actor.actorType === "agent" ? actor.actorId : null,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      },
+    });
+    if (result.enqueued && result.generatingIssue && !result.alreadyGenerating) {
+      await queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: result.generatingIssue,
+        reason: "status_card_update_assigned",
+        mutation: "status_card.refresh_requested",
+        contextSource: "status_card_update",
+        requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+        requestedByActorId: actor.actorId,
+        taskKey: `status-card:${cardId}`,
+        rethrowOnError: true,
+      });
+    }
+    return result;
+  }
+
   router.get("/companies/:companyId/status-cards", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -121,11 +148,14 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
     const compile = req.body.interestPrompt !== undefined ? await enqueueCompile(req, card.id) : null;
+    const restore = req.body.archived === false && card.archivedAt && updated.queries.length > 0 && !updated.generatingIssueId
+      ? await enqueueRefresh(req, card.id, true, "restore")
+      : null;
     await logMutation(req, card.companyId, "status_card.updated", card.id, {
       fields: Object.keys(req.body),
       archived: Boolean(updated.archivedAt),
     });
-    res.json(compile?.card ?? updated);
+    res.json(compile?.card ?? restore?.card ?? updated);
   });
 
   router.delete("/status-cards/:id", async (req, res) => {
@@ -156,6 +186,21 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       alreadyGenerating: result.alreadyGenerating,
     });
     res.status(result.alreadyGenerating ? 200 : 202).json(result);
+  });
+
+  router.post("/status-cards/:id/refresh", validate(refreshStatusCardSchema), async (req, res) => {
+    await assertStatusCardsEnabled();
+    const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
+    if (!card) return;
+    await assertCanMutate(req, card.companyId);
+    const result = await enqueueRefresh(req, card.id, req.body.full);
+    await logMutation(req, card.companyId, "status_card.refresh_requested", card.id, {
+      full: req.body.full,
+      generatingIssueId: result.generatingIssue?.id ?? null,
+      alreadyGenerating: result.alreadyGenerating,
+      enqueued: result.enqueued,
+    });
+    res.status(result.enqueued && !result.alreadyGenerating ? 202 : 200).json(result);
   });
 
   router.get("/status-cards/:id/dry-run", async (req, res) => {

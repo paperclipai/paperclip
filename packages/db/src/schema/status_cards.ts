@@ -7,7 +7,14 @@ import { documents } from "./documents.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issues } from "./issues.js";
 
-type StatusCardFingerprint = Record<string, { status: string; updatedAt: string }>;
+type StatusCardFingerprint = Record<string, {
+  status: string;
+  updatedAt: string;
+  identifier?: string | null;
+  title?: string;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+}>;
 type StatusCardUpdateChange = {
   issueId: string;
   identifier: string;

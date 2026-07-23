@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import {
   agents,
+  costEvents,
   documentRevisions,
   documents,
   issues,
@@ -10,6 +11,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import type {
+  CompanySearchIssueSummary,
   CreateStatusCard,
   PatchStatusCard,
   WriteStatusCardQuery,
@@ -21,6 +23,17 @@ import { builtInAgentService } from "./built-in-agents.js";
 import { companySearchService } from "./company-search.js";
 import { issueService } from "./issues.js";
 import { SUMMARIZER_BUILT_IN_KEY } from "./summary-slots.js";
+import {
+  buildStatusCardFingerprint,
+  chooseStatusCardUpdateKind,
+  diffStatusCardFingerprint,
+  evaluateStatusCardPolicy,
+  filterStatusCardChanges,
+  nextStatusCardEvaluationAt,
+  statusCardFingerprintHash,
+  type StatusCardDeltaChange,
+  type StatusCardFingerprint,
+} from "./status-card-update-engine.js";
 
 type StatusCardActor = { agentId: string | null; userId: string | null };
 type StatusCardWriter = { agentId: string | null; runId: string | null };
@@ -34,11 +47,44 @@ function promptHash(prompt: string) {
 
 function compilePayload(card: StatusCardRow, generationIssueId: string | null, hash: string) {
   return {
+    operation: "compile",
     statusCardId: card.id,
     companyId: card.companyId,
     generationIssueId,
     promptHash: hash,
   };
+}
+
+function updateDescription(input: {
+  card: StatusCardRow;
+  generationIssueId: string | null;
+  fingerprint: StatusCardFingerprint;
+  changes: StatusCardDeltaChange[];
+  kind: "full" | "incremental";
+  trigger: "manual" | "interval" | "reactive" | "restore";
+  previousSummary: string | null;
+  snapshot: CompanySearchIssueSummary[];
+}) {
+  const mechanical = `Return the completed Markdown through \`PUT /api/status-cards/${input.card.id}/summary\` with \`generationIssueId\`, a short non-empty \`changeSummary\`, and the model id. Do not call issue-list endpoints. Preserve the streaming STATUS and <<<SUMMARY-DRAFT>>> sentinels used by the Summarizer.`;
+  const defaultTask = input.kind === "incremental"
+    ? `Patch the previous status summary using only the changed issues. Keep the Summarizer house format: start with **Decide:**, then **Recent work:**, use few links, and stay colloquial and action-oriented. Target roughly 300–500 output tokens.`
+    : `Rebuild the status summary from the bounded issue snapshot. Keep the Summarizer house format: start with **Decide:**, then **Recent work:**, use few links, and stay colloquial and action-oriented.`;
+  const task = input.card.instructionsMode === "replace" && input.card.instructions
+    ? input.card.instructions
+    : `${defaultTask}${input.card.instructionsMode === "append" && input.card.instructions ? `\n\nAdditional card instructions:\n${input.card.instructions}` : ""}`;
+  const payload = {
+    operation: "update",
+    statusCardId: input.card.id,
+    companyId: input.card.companyId,
+    generationIssueId: input.generationIssueId,
+    fingerprint: input.fingerprint,
+    fingerprintHash: statusCardFingerprintHash(input.fingerprint),
+    kind: input.kind,
+    trigger: input.trigger,
+    changes: input.changes.map(({ issueId, identifier, from, to, changeKind }) => ({ issueId, identifier, from, to, changeKind })),
+    queryVersion: input.card.queryVersion,
+  };
+  return `Update this Paperclip status card.\n\n${task}\n\n${mechanical}\n\n## Previous summary\n\n${input.previousSummary ?? "(none)"}\n\n## Changed issues\n\n${input.changes.length === 0 ? "(manual refresh; no detected delta)" : input.changes.map((change) => `- ${change.identifier}: ${change.from ?? "not watched"} → ${change.to ?? "removed"} — ${change.title}`).join("\n")}\n\n${input.kind === "full" ? `## Bounded snapshot\n\n${input.snapshot.map((issue) => `- ${issue.identifier ?? issue.id} [${issue.status}] ${issue.title}`).join("\n")}` : ""}\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
 }
 
 function compileDescription(card: StatusCardRow, generationIssueId: string | null, hash: string) {
@@ -63,7 +109,7 @@ ${JSON.stringify(payload, null, 2)}
 \`\`\``;
 }
 
-function parseCompilePayload(description: string | null) {
+function parseGenerationPayload(description: string | null) {
   const match = description?.match(/```json\n([\s\S]*?)\n```/);
   if (!match) return null;
   try {
@@ -121,12 +167,13 @@ export function statusCardService(db: Db) {
         : {}),
       ...(input.instructionsMode !== undefined ? { instructionsMode: input.instructionsMode } : {}),
       ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
+      ...(input.instructionsMode !== undefined || input.instructions !== undefined ? { lastUpdateRunKind: null } : {}),
       ...(input.refreshPolicy !== undefined ? { refreshPolicy: input.refreshPolicy } : {}),
       ...(archiveChanged && input.archived
         ? { archivedAt: now, archivedByAgentId: actor.agentId, archivedByUserId: actor.userId, nextEvalAt: null }
         : {}),
       ...(archiveChanged && !input.archived
-        ? { archivedAt: null, archivedByAgentId: null, archivedByUserId: null, lastChangeAt: now }
+        ? { archivedAt: null, archivedByAgentId: null, archivedByUserId: null, lastChangeAt: now, lastUpdateRunKind: null, nextEvalAt: now }
         : {}),
     };
     return db.update(statusCards).set(values).where(eq(statusCards.id, card.id)).returning().then((rows) => rows[0]!);
@@ -155,7 +202,7 @@ export function statusCardService(db: Db) {
     const hash = promptHash(card.interestPrompt);
     if (card.generatingIssueId) {
       const active = await db.select().from(issues).where(eq(issues.id, card.generatingIssueId)).then((rows) => rows[0] ?? null);
-      const payload = parseCompilePayload(active?.description ?? null);
+      const payload = parseGenerationPayload(active?.description ?? null);
       if (active && !TERMINAL_ISSUE_STATUSES.has(active.status) && payload?.promptHash === hash) {
         return { card, generatingIssue: active, alreadyGenerating: true };
       }
@@ -211,7 +258,7 @@ export function statusCardService(db: Db) {
     if (TERMINAL_ISSUE_STATUSES.has(issue.status)) {
       throw forbidden("Generation task is no longer active");
     }
-    const payload = parseCompilePayload(issue.description);
+    const payload = parseGenerationPayload(issue.description);
     if (payload?.statusCardId !== card.id || payload?.companyId !== card.companyId || payload?.generationIssueId !== generationIssueId) {
       throw forbidden("Generation task does not target this status card");
     }
@@ -265,6 +312,155 @@ export function statusCardService(db: Db) {
     });
   }
 
+  async function executeQueries(card: StatusCardRow) {
+    const issueMap = new Map<string, CompanySearchIssueSummary>();
+    for (const query of card.queries) {
+      const response = await searchSvc.search(card.companyId, query);
+      for (const result of response.results) {
+        if (result.type === "issue" && result.issue) issueMap.set(result.issue.id, result.issue);
+      }
+    }
+    return [...issueMap.values()];
+  }
+
+  async function requestRefresh(cardId: string, input: {
+    full?: boolean;
+    trigger?: "manual" | "interval" | "reactive" | "restore";
+    actor?: StatusCardActor;
+    now?: Date;
+  } = {}) {
+    const card = await getById(cardId);
+    if (!card) throw notFound("Status card not found");
+    if (card.archivedAt) throw unprocessable("Archived status cards cannot be refreshed");
+    if (card.queries.length === 0) throw conflict("Compile the status-card query before refreshing it");
+    if (card.generatingIssueId) {
+      const active = await db.select().from(issues).where(eq(issues.id, card.generatingIssueId)).then((rows) => rows[0] ?? null);
+      if (active && !TERMINAL_ISSUE_STATUSES.has(active.status)) return { card, generatingIssue: active, alreadyGenerating: true, enqueued: false };
+    }
+
+    const now = input.now ?? new Date();
+    const snapshot = await executeQueries(card);
+    const fingerprint = buildStatusCardFingerprint(snapshot);
+    const allChanges = diffStatusCardFingerprint(card.fingerprint as StatusCardFingerprint | null, fingerprint);
+    const changes = filterStatusCardChanges(allChanges, card.refreshPolicy);
+    const trigger = input.trigger ?? "manual";
+    const manual = trigger === "manual";
+    const nextEvalAt = nextStatusCardEvaluationAt(card.refreshPolicy, now);
+    if (!manual && changes.length === 0) {
+      const [next] = await db.update(statusCards).set({
+        fingerprint,
+        fingerprintAt: now,
+        pendingChangeCount: 0,
+        lastChangeAt: null,
+        state: "active",
+        nextEvalAt,
+      }).where(eq(statusCards.id, card.id)).returning();
+      return { card: next!, generatingIssue: null, alreadyGenerating: false, enqueued: false };
+    }
+
+    const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    const dayStart = new Date(now);
+    dayStart.setUTCHours(0, 0, 0, 0);
+    const recent = await db.select().from(statusCardUpdates).where(and(eq(statusCardUpdates.cardId, card.id), gte(statusCardUpdates.startedAt, hourAgo)));
+    const daily = await db.select({ tokens: sql<number>`coalesce(sum(${statusCardUpdates.inputTokens} + ${statusCardUpdates.outputTokens}), 0)::int` })
+      .from(statusCardUpdates)
+      .where(and(eq(statusCardUpdates.cardId, card.id), gte(statusCardUpdates.startedAt, dayStart)));
+    const lastChangeAt = card.pendingChangeCount === changes.length && card.lastChangeAt ? card.lastChangeAt : now;
+    const decision = evaluateStatusCardPolicy({
+      policy: card.refreshPolicy,
+      now,
+      lastChangeAt,
+      updatesLastHour: recent.filter((row) => row.kind !== "compile" && row.finishedAt).length,
+      tokensToday: Number(daily[0]?.tokens ?? 0),
+      manual,
+    });
+    if (decision.action !== "run") {
+      const [next] = await db.update(statusCards).set({
+        pendingChangeCount: changes.length,
+        lastChangeAt,
+        state: decision.action === "pause_budget" ? "paused_budget" : decision.action === "pause_hours" ? "paused_hours" : "active",
+        nextEvalAt: decision.action === "wait" && "dueAt" in decision ? decision.dueAt : nextEvalAt,
+      }).where(eq(statusCards.id, card.id)).returning();
+      return { card: next!, generatingIssue: null, alreadyGenerating: false, enqueued: false };
+    }
+
+    const history = await listUpdates(card.id);
+    const lastContentUpdate = history.find((row) => row.kind !== "compile") ?? null;
+    const firstFullIndex = history.findIndex((row) => row.kind === "full");
+    const kind = chooseStatusCardUpdateKind({
+      explicitFull: input.full,
+      hasDocument: Boolean(card.documentId),
+      changeCount: changes.length,
+      queryVersion: card.queryVersion,
+      lastUpdateQueryVersion: lastContentUpdate?.queryVersion ?? null,
+      incrementalCount: firstFullIndex < 0 ? history.filter((row) => row.kind === "incremental").length : firstFullIndex,
+      configurationChanged: card.lastUpdateRunKind === null && Boolean(card.lastGeneratedAt),
+      restoreRefresh: trigger === "restore",
+    });
+    const builtIn = await builtIns.get(card.companyId, SUMMARIZER_BUILT_IN_KEY);
+    if (builtIn.status !== "ready" || !builtIn.agentId) throw unprocessable("Summarizer built-in agent is not configured");
+    const previousSummary = card.documentId
+      ? await db.select().from(documents).where(eq(documents.id, card.documentId)).then((rows) => rows[0]?.latestBody ?? null)
+      : null;
+    const fingerprintHash = statusCardFingerprintHash(fingerprint);
+    let deduplicated = false;
+    const created = await issuesSvc.create(card.companyId, {
+      title: `${kind === "full" ? "Rebuild" : "Update"} status card: ${card.title ?? card.interestPrompt.slice(0, 80)}`,
+      description: updateDescription({ card, generationIssueId: null, fingerprint, changes, kind, trigger, previousSummary, snapshot }),
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: builtIn.agentId,
+      createdByAgentId: input.actor?.agentId ?? null,
+      createdByUserId: input.actor?.userId ?? null,
+      hiddenAt: now,
+      idempotencyKey: `status-card-update:${card.id}:${fingerprintHash}`,
+      onDeduplicated: (reason) => { deduplicated = reason === "idempotency_key"; },
+    });
+    const reopened = deduplicated && TERMINAL_ISSUE_STATUSES.has(created.status)
+      ? await issuesSvc.update(created.id, { status: "todo", assigneeAgentId: builtIn.agentId })
+      : created;
+    const generationIssue = await issuesSvc.update(reopened!.id, {
+      description: updateDescription({ card, generationIssueId: reopened!.id, fingerprint, changes, kind, trigger, previousSummary, snapshot }),
+    });
+    if (!deduplicated || TERMINAL_ISSUE_STATUSES.has(created.status)) {
+      await db.insert(statusCardUpdates).values({
+        cardId: card.id,
+        kind,
+        trigger,
+        generationIssueId: generationIssue!.id,
+        changes: changes.map(({ issueId, identifier, from, to, changeKind }) => ({ issueId, identifier, from, to, changeKind })),
+        queryVersion: card.queryVersion,
+        status: "ok",
+      });
+    }
+    const [next] = await db.update(statusCards).set({
+      generatingIssueId: generationIssue!.id,
+      pendingChangeCount: changes.length,
+      lastChangeAt,
+      state: "active",
+      nextEvalAt,
+      failureReason: null,
+    }).where(eq(statusCards.id, card.id)).returning();
+    return { card: next!, generatingIssue: generationIssue!, alreadyGenerating: deduplicated, enqueued: true, kind, changes };
+  }
+
+  async function tickDueStatusCards(now = new Date()) {
+    const due = await db.select().from(statusCards).where(and(isNull(statusCards.archivedAt), isNull(statusCards.generatingIssueId), isNotNull(statusCards.nextEvalAt), lte(statusCards.nextEvalAt, now)));
+    const enqueued: Array<{ cardId: string; generatingIssue: typeof issues.$inferSelect }> = [];
+    let evaluated = 0;
+    for (const candidate of due) {
+      const claimUntil = new Date(now.getTime() + 5 * 60 * 1000);
+      const [claimed] = await db.update(statusCards).set({ nextEvalAt: claimUntil })
+        .where(and(eq(statusCards.id, candidate.id), isNull(statusCards.generatingIssueId), lte(statusCards.nextEvalAt, now)))
+        .returning();
+      if (!claimed) continue;
+      evaluated += 1;
+      const result = await requestRefresh(claimed.id, { trigger: claimed.refreshPolicy.mode === "reactive" ? "reactive" : "interval", now });
+      if (result.enqueued && result.generatingIssue) enqueued.push({ cardId: claimed.id, generatingIssue: result.generatingIssue });
+    }
+    return { evaluated, enqueued };
+  }
+
   async function writeSummary(cardId: string, input: WriteStatusCardSummary, actor: StatusCardWriter) {
     const card = await getById(cardId);
     if (!card) throw notFound("Status card not found");
@@ -280,6 +476,14 @@ export function statusCardService(db: Db) {
       if (!generationIssue || TERMINAL_ISSUE_STATUSES.has(generationIssue.status)) {
         throw forbidden("Generation task is no longer active");
       }
+      const payload = parseGenerationPayload(generationIssue.description);
+      const updateKind = payload?.operation === "update" && (payload.kind === "full" || payload.kind === "incremental") ? payload.kind : "full";
+      const trigger = payload?.operation === "update" && ["manual", "interval", "reactive", "restore"].includes(String(payload.trigger))
+        ? payload.trigger as "manual" | "interval" | "reactive" | "restore"
+        : "manual";
+      const snapshot = payload?.operation === "update" && payload.fingerprint && typeof payload.fingerprint === "object"
+        ? payload.fingerprint as StatusCardFingerprint
+        : buildStatusCardFingerprint(await executeQueries(current));
       const existing = current.documentId
         ? await tx.select().from(documents).where(and(eq(documents.id, current.documentId), eq(documents.companyId, current.companyId))).then((rows) => rows[0] ?? null)
         : null;
@@ -323,24 +527,49 @@ export function statusCardService(db: Db) {
         state: "active",
         generatingIssueId: null,
         failureReason: null,
-        lastUpdateRunKind: "full",
+        lastUpdateRunKind: updateKind,
         lastGeneratedAt: now,
         lastModel: input.model ?? null,
+        fingerprint: snapshot,
+        fingerprintAt: now,
+        pendingChangeCount: 0,
+        lastChangeAt: null,
+        nextEvalAt: nextStatusCardEvaluationAt(current.refreshPolicy, now),
         updatedAt: now,
       }).where(and(eq(statusCards.id, current.id), eq(statusCards.generatingIssueId, input.generationIssueId))).returning();
       if (!next) throw conflict("Status-card generation was superseded by a newer task");
-      await tx.insert(statusCardUpdates).values({
-        cardId: current.id,
-        kind: "full",
-        trigger: "manual",
-        generationIssueId: input.generationIssueId,
+      const usage = actor.runId
+        ? await tx.select({
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+        }).from(costEvents).where(eq(costEvents.heartbeatRunId, actor.runId))
+        : [];
+      const existingUpdate = await tx.select().from(statusCardUpdates)
+        .where(eq(statusCardUpdates.generationIssueId, input.generationIssueId))
+        .then((rows) => rows.find((row) => row.kind !== "compile") ?? null);
+      const updateValues = {
         runId: actor.runId,
-        status: "ok",
         finishedAt: now,
         model: input.model ?? null,
         queryVersion: current.queryVersion,
         changeSummary: input.changeSummary,
-      });
+        inputTokens: Number(usage[0]?.inputTokens ?? 0),
+        outputTokens: Number(usage[0]?.outputTokens ?? 0),
+        costCents: Number(usage[0]?.costCents ?? 0),
+      };
+      if (existingUpdate) {
+        await tx.update(statusCardUpdates).set(updateValues).where(eq(statusCardUpdates.id, existingUpdate.id));
+      } else {
+        await tx.insert(statusCardUpdates).values({
+          cardId: current.id,
+          kind: updateKind,
+          trigger,
+          generationIssueId: input.generationIssueId,
+          status: "ok",
+          ...updateValues,
+        });
+      }
       return { card: next, document, revision };
     });
   }
@@ -349,5 +578,5 @@ export function statusCardService(db: Db) {
     return Promise.all(card.queries.map(async (query) => ({ query, result: await searchSvc.search(card.companyId, query) })));
   }
 
-  return { list, getById, create, update, remove, listUpdates, requestCompile, writeQuery, writeSummary, dryRun };
+  return { list, getById, create, update, remove, listUpdates, requestCompile, requestRefresh, tickDueStatusCards, writeQuery, writeSummary, dryRun };
 }

@@ -44,7 +44,14 @@ export const defaultStatusCardRefreshPolicy = statusCardRefreshPolicySchema.pars
 
 export const statusCardFingerprintSchema = z.record(
   z.string(),
-  z.object({ status: z.string(), updatedAt: z.string().datetime() }),
+  z.object({
+    status: z.string(),
+    updatedAt: z.string().datetime(),
+    identifier: z.string().nullable().optional(),
+    title: z.string().optional(),
+    assigneeAgentId: z.string().uuid().nullable().optional(),
+    assigneeUserId: z.string().nullable().optional(),
+  }),
 );
 
 export const statusCardSchema = z.object({
@@ -137,6 +144,10 @@ export const patchStatusCardSchema = z
   })
   .refine((value) => Object.keys(value).length > 0, "At least one field is required");
 
+export const refreshStatusCardSchema = z.object({
+  full: z.boolean().default(false),
+});
+
 export const writeStatusCardQuerySchema = z.object({
   queries: z.array(companySearchQuerySchema).min(1).max(10),
   title: z.string().trim().min(1).max(300),
@@ -157,5 +168,6 @@ export type StatusCardRefreshPolicy = z.infer<typeof statusCardRefreshPolicySche
 export type StatusCardUpdate = z.infer<typeof statusCardUpdateSchema>;
 export type CreateStatusCard = z.infer<typeof createStatusCardSchema>;
 export type PatchStatusCard = z.infer<typeof patchStatusCardSchema>;
+export type RefreshStatusCard = z.infer<typeof refreshStatusCardSchema>;
 export type WriteStatusCardQuery = z.infer<typeof writeStatusCardQuerySchema>;
 export type WriteStatusCardSummary = z.infer<typeof writeStatusCardSummarySchema>;

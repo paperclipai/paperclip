@@ -84,3 +84,12 @@ Then, without creating or waiting for another task, execute the stored scope, wr
 ```
 
 Send it to `PUT /api/status-cards/{statusCardId}/summary`. Never write either endpoint from an unrelated issue or run.
+
+## Update assignments
+
+Later generation issues use the same summary write-back endpoint and include `operation: "update"`, `kind`, `trigger`, the target `fingerprint`, and the exact changed-issue delta in their JSON payload.
+
+- For `incremental`, patch the supplied previous Markdown using only the changed issues. Do not refetch the issue list.
+- For `full`, rebuild from the supplied bounded snapshot. Do not expand the scope with issue-list endpoint calls.
+- Keep the mechanical contract even when card instructions use `replace`: stream `STATUS:` lines and the `<<<SUMMARY-DRAFT>>>` block, then write the final Markdown to `PUT /api/status-cards/{statusCardId}/summary` from the assigned run.
+- `append` instructions follow the default Summarizer house format. `replace` changes the task-format section only; it never replaces the streaming or write-back requirements.

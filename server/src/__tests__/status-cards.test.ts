@@ -7,6 +7,7 @@ import {
   activityLog,
   agents,
   companies,
+  costEvents,
   createDb,
   documentRevisions,
   documents,
@@ -21,6 +22,7 @@ import { errorHandler } from "../middleware/index.js";
 import { statusCardRoutes } from "../routes/status-cards.js";
 import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { statusCardService } from "../services/status-cards.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -68,6 +70,7 @@ describeEmbeddedPostgres("status card routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(costEvents);
     await db.delete(statusCardUpdates);
     await db.delete(statusCards);
     await db.delete(documentRevisions);
@@ -356,10 +359,10 @@ describeEmbeddedPostgres("status card routes", () => {
     let generationIssueId = created.body.generatingIssueId as string;
     let run = await seedRun(company.id, summarizer.id);
     await db.update(issues).set({ checkoutRunId: run.id }).where(eq(issues.id, generationIssueId));
-    await db.insert(issues).values({ companyId: company.id, title: "Launch is blocked on approval", status: "blocked", priority: "high" });
+    const watchedIssue = await db.insert(issues).values({ companyId: company.id, title: "Launch is blocked on approval", status: "blocked", priority: "high" }).returning().then((rows) => rows[0]!);
     let writerApp = createApp(db, agentActor(company.id, summarizer.id, run.id));
     const queryPayload = {
-      queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }],
+      queries: [{ scope: "issues", status: ["blocked", "done"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }],
       title: "Recent launch blockers",
       changeSummary: "Compiled one recent blocker query.",
       generationIssueId,
@@ -372,6 +375,18 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(dryRun.status).toBe(200);
     expect(dryRun.body.queries[0].result.results).toEqual(expect.arrayContaining([expect.objectContaining({ title: "Launch is blocked on approval" })]));
 
+    await db.insert(costEvents).values({
+      companyId: company.id,
+      agentId: summarizer.id,
+      issueId: generationIssueId,
+      heartbeatRunId: run.id,
+      provider: "openai",
+      model: "gpt-5.4",
+      inputTokens: 5200,
+      outputTokens: 980,
+      costCents: 2,
+      occurredAt: new Date(),
+    });
     const summaryWrite = await request(writerApp).put(`/api/status-cards/${created.body.id}/summary`).send({
       markdown: "**Decide:** unblock launch approval.\n\n**Recent work:** launch review is waiting.",
       title: "Recent launch blockers",
@@ -382,6 +397,47 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(summaryWrite.status).toBe(200);
     expect(summaryWrite.body.card).toMatchObject({ state: "active", queryVersion: 1, generatingIssueId: null });
     expect(summaryWrite.body.document.latestBody).toContain("**Decide:**");
+    expect(await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.kind === "full"))).toMatchObject({ inputTokens: 5200, outputTokens: 980 });
+
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchedIssue.id));
+    const refresh = await request(boardApp).post(`/api/status-cards/${created.body.id}/refresh`).send({});
+    expect(refresh.status).toBe(202);
+    expect(refresh.body).toMatchObject({ enqueued: true, kind: "incremental" });
+    const updateIssueId = refresh.body.generatingIssue.id as string;
+    const updateRun = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ checkoutRunId: updateRun.id }).where(eq(issues.id, updateIssueId));
+    await db.insert(costEvents).values({
+      companyId: company.id,
+      agentId: summarizer.id,
+      issueId: updateIssueId,
+      heartbeatRunId: updateRun.id,
+      provider: "openai",
+      model: "gpt-5.4",
+      inputTokens: 1300,
+      outputTokens: 410,
+      costCents: 1,
+      occurredAt: new Date(),
+    });
+    const incrementalWrite = await request(createApp(db, agentActor(company.id, summarizer.id, updateRun.id)))
+      .put(`/api/status-cards/${created.body.id}/summary`)
+      .send({
+        markdown: "**Decide:** close the launch loop.\n\n**Recent work:** approval landed.",
+        changeSummary: "Integrated the launch issue moving to done.",
+        generationIssueId: updateIssueId,
+        model: "gpt-5.4",
+      });
+    expect(incrementalWrite.status).toBe(200);
+    expect(await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.kind === "incremental"))).toMatchObject({ inputTokens: 1300, outputTokens: 410 });
+
+    const issueCountBeforeNoChangeTick = (await db.select().from(issues)).length;
+    const dueAt = new Date(Date.now() - 1000);
+    await db.update(statusCards).set({
+      refreshPolicy: { ...created.body.refreshPolicy, mode: "interval", intervalMinutes: 5 },
+      nextEvalAt: dueAt,
+    }).where(eq(statusCards.id, created.body.id));
+    const tick = await statusCardService(db).tickDueStatusCards(new Date());
+    expect(tick).toMatchObject({ evaluated: 1, enqueued: [] });
+    expect((await db.select().from(issues)).length).toBe(issueCountBeforeNoChangeTick);
 
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, generationIssueId));
     const recompile = await request(boardApp).post(`/api/status-cards/${created.body.id}/recompile`);
