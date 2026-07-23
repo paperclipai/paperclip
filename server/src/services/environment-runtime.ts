@@ -1289,7 +1289,26 @@ function createSandboxEnvironmentDriver(
       const pluginId = readString(input.lease.metadata?.pluginId);
       if (!pluginId) return false;
       const advertised = pluginWorkerManager.getWorker(pluginId)?.supportedMethods ?? [];
-      return advertised.includes("environmentSyncIn") && advertised.includes("environmentSyncOut");
+      if (!advertised.includes("environmentSyncIn") || !advertised.includes("environmentSyncOut")) {
+        return false;
+      }
+      // A worker advertises the sync verbs process-wide, but an individual lease
+      // may run on a backend that has no data channel for the native transport
+      // (e.g. a batch/job backend whose sync hook rejects immediately). The
+      // provider flags such leases so they keep the byte-identical base64
+      // fallback instead of being routed to a hook that would only error.
+      //
+      // Also fall back for any lease persisted with `backend: "job"` directly:
+      // job leases created before `nativeFileSyncUnsupported` existed carry the
+      // backend field but not the flag, and the `job` backend has no pod-exec
+      // channel, so routing them to the native hook would only reject.
+      if (
+        input.lease.metadata?.nativeFileSyncUnsupported === true ||
+        input.lease.metadata?.backend === "job"
+      ) {
+        return false;
+      }
+      return true;
     },
 
     async syncIn(input) {

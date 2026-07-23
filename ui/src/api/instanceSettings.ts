@@ -1,5 +1,5 @@
 import type {
-  InstanceExperimentalSettings,
+  InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
   InstanceSettings,
   IssueGraphLivenessAutoRecoveryPreview,
@@ -19,9 +19,9 @@ export const instanceSettingsApi = {
   updateGeneral: (patch: PatchInstanceGeneralSettings) =>
     api.patch<InstanceGeneralSettings>("/instance/settings/general", patch),
   getExperimental: () =>
-    api.get<InstanceExperimentalSettings>("/instance/settings/experimental"),
+    api.get<InstanceExperimentalSettingsWithManaged>("/instance/settings/experimental"),
   updateExperimental: (patch: PatchInstanceExperimentalSettings) =>
-    api.patch<InstanceExperimentalSettings>("/instance/settings/experimental", patch),
+    api.patch<InstanceExperimentalSettingsWithManaged>("/instance/settings/experimental", patch),
   previewIssueGraphLivenessAutoRecovery: (input: { lookbackHours?: number }) =>
     api.post<IssueGraphLivenessAutoRecoveryPreview>(
       "/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",

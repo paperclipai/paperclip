@@ -22,6 +22,16 @@ function sendNestedHostRequest(originalRequest, invocationId) {
         },
         configPath: params.configPath || "apiKeyRef",
       }
+    : hostMethod === "state.get"
+    ? {
+        // Company-scoped state key — the shape a proactive gateway loop uses
+        // (ctx.state.get with scopeKind "company"). The host derives the
+        // requested company from scopeId, not companyId.
+        scopeKind: "company",
+        scopeId: requestedCompanyId,
+        namespace: params.namespace || "ns",
+        stateKey: params.stateKey || "key",
+      }
     : {
         companyId: requestedCompanyId,
       };

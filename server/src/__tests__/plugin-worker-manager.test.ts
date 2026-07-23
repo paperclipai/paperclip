@@ -518,3 +518,124 @@ describe("plugin host company context guards", () => {
     }
   });
 });
+
+
+describe("plugin proactive company scope (LOOA-629)", () => {
+  // A proactive plugin (e.g. the chat gateway) makes company-scoped worker→host
+  // calls from its own timers/loops — outside any host-issued invocation, so
+  // those calls carry no paperclipInvocationId (the fixture's "omit" mode). The
+  // host authorizes a bounded set of companies for such proactive work; calls
+  // referencing an authorized company resolve to that scope, all others stay
+  // denied. Each case drives a real worker so the nested call flows through the
+  // worker manager's context resolution, not just the SDK gate in isolation.
+  function makeHandle(overrides?: {
+    companiesGet?: ReturnType<typeof vi.fn>;
+    stateGet?: ReturnType<typeof vi.fn>;
+  }) {
+    const companiesGet = overrides?.companiesGet ?? vi.fn(async () => ({ id: "company-1", name: "Co" }));
+    const stateGet = overrides?.stateGet ?? vi.fn(async () => ({ value: "ok" }));
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read", "plugin.state.read"],
+      services: {
+        companies: { get: companiesGet },
+        state: { get: stateGet },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers,
+    });
+    return { handle, companiesGet, stateGet };
+  }
+
+  it("denies a proactive company-scoped call when no company is authorized", async () => {
+    const { handle, companiesGet } = makeHandle();
+    try {
+      await handle.start();
+      await expect(handle.call("getData", {
+        params: { mode: "omit", hostMethod: "companies.get", requestedCompanyId: "company-1" },
+      } as unknown as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        message: expect.stringContaining("company context is required"),
+      });
+      expect(companiesGet).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("admits a proactive company-scoped call for an authorized company", async () => {
+    const { handle, companiesGet } = makeHandle();
+    try {
+      await handle.start();
+      handle.setProactiveCompanyScopes(["company-1"]);
+      const result = await handle.call("getData", {
+        params: { mode: "omit", hostMethod: "companies.get", requestedCompanyId: "company-1" },
+      } as unknown as HostToWorkerMethods["getData"][0]);
+      expect(result).toMatchObject({ id: "company-1" });
+      expect(companiesGet).toHaveBeenCalledTimes(1);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("admits a proactive state.get (scopeKind company) for an authorized company", async () => {
+    const { handle, stateGet } = makeHandle();
+    try {
+      await handle.start();
+      handle.setProactiveCompanyScopes(["company-1"]);
+      const result = await handle.call("getData", {
+        params: { mode: "omit", hostMethod: "state.get", requestedCompanyId: "company-1" },
+      } as unknown as HostToWorkerMethods["getData"][0]);
+      expect(result).toMatchObject({ value: "ok" });
+      expect(stateGet).toHaveBeenCalledTimes(1);
+      expect(stateGet.mock.calls[0]?.[0]).toMatchObject({ scopeKind: "company", scopeId: "company-1" });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("still denies proactive calls for a company outside the authorized set", async () => {
+    const { handle, companiesGet } = makeHandle();
+    try {
+      await handle.start();
+      handle.setProactiveCompanyScopes(["company-1"]);
+      await expect(handle.call("getData", {
+        params: { mode: "omit", hostMethod: "companies.get", requestedCompanyId: "company-2" },
+      } as unknown as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        message: expect.stringContaining("company context is required"),
+      });
+      expect(companiesGet).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("revokes proactive access when the authorized set is cleared", async () => {
+    const { handle, companiesGet } = makeHandle();
+    try {
+      await handle.start();
+      handle.setProactiveCompanyScopes(["company-1"]);
+      await handle.call("getData", {
+        params: { mode: "omit", hostMethod: "companies.get", requestedCompanyId: "company-1" },
+      } as unknown as HostToWorkerMethods["getData"][0]);
+      expect(companiesGet).toHaveBeenCalledTimes(1);
+
+      handle.setProactiveCompanyScopes([]);
+      await expect(handle.call("getData", {
+        params: { mode: "omit", hostMethod: "companies.get", requestedCompanyId: "company-1" },
+      } as unknown as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+      expect(companiesGet).toHaveBeenCalledTimes(1);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});

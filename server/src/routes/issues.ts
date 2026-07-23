@@ -2750,6 +2750,33 @@ export function issueRoutes(
     return resolution?.kind === "low_trust_review";
   }
 
+  async function directParentReportDisabledForIssue(issue: {
+    companyId: string;
+    projectId?: string | null;
+    executionPolicy?: unknown;
+    assigneeAgentId?: string | null;
+    checkoutRunId?: string | null;
+    executionRunId?: string | null;
+  }) {
+    const resolution = issue.assigneeAgentId
+      ? await resolveAgentTrustForIssue({
+          agentId: issue.assigneeAgentId,
+          runId: issue.checkoutRunId ?? issue.executionRunId,
+        }, issue.companyId, issue)
+      : null;
+    if (resolution) return resolution.kind !== "standard";
+
+    const project = issue.projectId ? await projectsSvc.getById(issue.projectId) : null;
+    return resolveCoreTrustPreset({
+      companyId: issue.companyId,
+      project: project?.companyId === issue.companyId ? project : null,
+      issue: {
+        companyId: issue.companyId,
+        executionPolicy: issue.executionPolicy,
+      },
+    }).kind !== "standard";
+  }
+
   async function assertLowTrustControlPlaneDenied(
     req: Request,
     res: Response,
@@ -3463,6 +3490,10 @@ export function issueRoutes(
 
   function isIssueMentionGrantDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
     return decision !== true && decision.reason === "allow_issue_mention_grant";
+  }
+
+  function isDirectParentReportDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision !== true && decision.reason === "allow_direct_parent_report";
   }
 
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
@@ -7928,6 +7959,28 @@ export function issueRoutes(
       }
     }
 
+    const nextParentId = updateFields.parentId === undefined
+      ? existing.parentId
+      : updateFields.parentId as string | null;
+    const shouldRelayStop =
+      Boolean(nextParentId) &&
+      existing.status !== updateFields.status &&
+      (updateFields.status === "blocked" || updateFields.status === "cancelled") &&
+      await directParentReportDisabledForIssue({
+        companyId: existing.companyId,
+        projectId: updateFields.projectId === undefined
+          ? existing.projectId
+          : updateFields.projectId as string | null,
+        executionPolicy: updateFields.executionPolicy === undefined
+          ? existing.executionPolicy
+          : updateFields.executionPolicy,
+        assigneeAgentId: nextAssigneeAgentId,
+        checkoutRunId: existing.checkoutRunId,
+        executionRunId: existing.executionRunId,
+      });
+    const stopRelayResult: {
+      value: Awaited<ReturnType<typeof svc.addStopRelayCommentIfNeeded>>;
+    } = { value: null };
     let issue;
     try {
       if (transition.decision && decisionId) {
@@ -7957,6 +8010,21 @@ export function issueRoutes(
             createdByRunId: actor.runId ?? null,
           });
 
+          if (shouldRelayStop) {
+            stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
+          }
+
+          return updated;
+        });
+      } else if (shouldRelayStop) {
+        issue = await db.transaction(async (tx) => {
+          const updated = await svc.update(id, {
+            ...updateFields,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          }, tx);
+          if (!updated) return null;
+          stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           return updated;
         });
       } else {
@@ -8695,6 +8763,52 @@ export function issueRoutes(
             blockerIssueIds: readiness.blockerIssueIds,
             source: "issue.blockers_restored",
             mutation: "blocked_dependency_restored",
+          });
+        }
+      }
+
+      const stopRelay = stopRelayResult.value;
+      if (stopRelay) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "issue_stop_relay",
+          agentId: null,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: stopRelay.parent.id,
+          details: {
+            commentId: stopRelay.comment.id,
+            source: "child_stop_relay",
+            childIssueId: issue.id,
+            childIdentifier: issue.identifier,
+            childStatus: issue.status,
+          },
+        });
+        if (stopRelay.parent.assigneeAgentId && !isClosedIssueStatus(stopRelay.parent.status)) {
+          addWakeup(stopRelay.parent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_commented",
+            payload: {
+              issueId: stopRelay.parent.id,
+              commentId: stopRelay.comment.id,
+              mutation: "comment",
+            },
+            requestedByActorType: "system",
+            requestedByActorId: "issue_stop_relay",
+            contextSnapshot: {
+              issueId: stopRelay.parent.id,
+              taskId: stopRelay.parent.id,
+              commentId: stopRelay.comment.id,
+              wakeCommentId: stopRelay.comment.id,
+              source: "issue.stop_relay",
+              wakeReason: "issue_commented",
+              childIssueId: issue.id,
+              childStatus: issue.status,
+            },
           });
         }
       }
@@ -9688,22 +9802,23 @@ export function issueRoutes(
     const interruptRequested = req.body.interrupt === true;
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
-    const mentionGrantedPeerAgentCommentOnly =
+    const crossIssueCommentOnlyGrant =
       isClosed &&
-      req.actor.type === "agent" &&
-      issue.assigneeAgentId !== null &&
-      issue.assigneeAgentId !== req.actor.agentId &&
-      !reopenRequested &&
-      !resumeRequested &&
-      isIssueMentionGrantDecision(commentAccessDecision);
-    const effectiveReopenRequested = mentionGrantedPeerAgentCommentOnly ? false : reopenRequested;
-    const effectiveResumeRequested = mentionGrantedPeerAgentCommentOnly ? false : resumeRequested;
+      (isDirectParentReportDecision(commentAccessDecision) ||
+        (req.actor.type === "agent" &&
+          issue.assigneeAgentId !== null &&
+          issue.assigneeAgentId !== req.actor.agentId &&
+          !reopenRequested &&
+          !resumeRequested &&
+          isIssueMentionGrantDecision(commentAccessDecision)));
+    const effectiveReopenRequested = crossIssueCommentOnlyGrant ? false : reopenRequested;
+    const effectiveResumeRequested = crossIssueCommentOnlyGrant ? false : resumeRequested;
     if (
       isClosed &&
       req.actor.type === "agent" &&
       issue.assigneeAgentId !== null &&
       issue.assigneeAgentId !== req.actor.agentId &&
-      !mentionGrantedPeerAgentCommentOnly
+      !crossIssueCommentOnlyGrant
     ) {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     }
@@ -10015,6 +10130,9 @@ export function issueRoutes(
         bodySnippet: comment.body.slice(0, 120),
         identifier: currentIssue.identifier,
         issueTitle: currentIssue.title,
+        ...(isDirectParentReportDecision(commentAccessDecision)
+          ? { directParentReportGrant: true }
+          : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
         ...(scheduledRetrySupersededByComment

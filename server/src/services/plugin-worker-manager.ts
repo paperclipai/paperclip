@@ -268,6 +268,13 @@ export interface PluginWorkerHandle {
    */
   notify(method: string, params: unknown): void;
 
+  /**
+   * Authorize the set of companies this worker may act on from proactive
+   * (non-invocation) context. Replaces any previously-authorized set. See the
+   * proactive-company-scope note in `createPluginWorkerHandle` for rationale.
+   */
+  setProactiveCompanyScopes(companyIds: readonly string[]): void;
+
   /** Subscribe to worker events. */
   on<K extends WorkerHandleEventName>(
     event: K,
@@ -337,6 +344,12 @@ export interface PluginWorkerManager {
   isRunning(pluginId: string): boolean;
 
   /**
+   * Authorize the companies a plugin's worker may act on from proactive
+   * (non-invocation) context. No-op if the worker is not registered.
+   */
+  setProactiveCompanyScopes(pluginId: string, companyIds: readonly string[]): void;
+
+  /**
    * Stop all managed workers. Called during server shutdown.
    */
   stopAll(): Promise<void>;
@@ -392,6 +405,22 @@ export function createPluginWorkerHandle(
   const pendingRequests = new Map<string | number, PendingRequest>();
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
+
+  // ------------------------------------------------------------------
+  // Proactive company scopes (LOOA-629)
+  // ------------------------------------------------------------------
+  // A proactive plugin (e.g. the chat gateway) does company-scoped work from
+  // its own timers/loops — not inside a host-issued top-level invocation
+  // (onEvent/performAction/executeTool/configChanged). Those worker→host calls
+  // carry no `paperclipInvocationId`, so the governed-access gate
+  // (host-client-factory.ts) rejects any company-scoped request with
+  // "company context is required" (regression class from #9557). The host
+  // authorizes a bounded set of companies — the plugin's configured companies,
+  // set by the loader after startup config delivery — for such proactive work.
+  // A no-invocation call that references one of these companies resolves to
+  // that company's scope; a call referencing any other company stays denied,
+  // and in-invocation calls keep their strict single-company match.
+  const proactiveCompanyScopes = new Set<string>();
 
   // Optional methods reported by the worker during initialization
   let supportedMethods: string[] = [];
@@ -554,11 +583,43 @@ export function createPluginWorkerHandle(
     activeInvocations.delete(invocation.id);
   }
 
+  /**
+   * Extract the company a worker→host call references, mirroring the SDK
+   * governed-access gate's own derivation (host-client-factory.ts
+   * `requestedCompanyScope`): an explicit `companyId`, or a company-scoped
+   * state key (`scopeKind: "company"` + `scopeId`). Returns null when the call
+   * references no specific company (e.g. `companies.list`, instance-scoped
+   * state), so proactive resolution only ever grants a single, explicit
+   * company — never a wildcard.
+   */
+  function referencedCompanyId(params: unknown): string | null {
+    if (!isRecord(params)) return null;
+    const direct = readNonEmptyString(params.companyId);
+    if (direct) return direct;
+    if (params.scopeKind === "company") {
+      return readNonEmptyString(params.scopeId);
+    }
+    return null;
+  }
+
   function contextForWorkerMessage(message: JsonRpcRequest | JsonRpcNotification): WorkerHostCallContext {
     const invocationId = readNonEmptyString(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
+      // No host-issued invocation is being echoed. This is a genuinely
+      // proactive worker→host call (timer/loop). If it references a company the
+      // plugin is authorized to act on proactively, resolve it to that
+      // company's scope so the governed-access gate admits it. This never
+      // widens access beyond the plugin's configured companies, and only
+      // applies when the worker is NOT inside a host-issued invocation (which
+      // would carry an id and keep its strict single-company match below).
+      const proactiveCompanyId = referencedCompanyId(
+        (message as { params?: unknown }).params,
+      );
+      if (proactiveCompanyId && proactiveCompanyScopes.has(proactiveCompanyId)) {
+        return { invocationScope: { companyId: proactiveCompanyId } };
+      }
       const hasActiveInvocation = activeInvocations.size > 0 ||
         Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
       return hasActiveInvocation ? { invalidInvocationScope: true } : {};
@@ -1285,6 +1346,14 @@ export function createPluginWorkerHandle(
       emitter.off(event, listener);
     },
 
+    setProactiveCompanyScopes(companyIds: readonly string[]): void {
+      proactiveCompanyScopes.clear();
+      for (const id of companyIds) {
+        const trimmed = readNonEmptyString(id);
+        if (trimmed) proactiveCompanyScopes.add(trimmed);
+      }
+    },
+
     diagnostics(): WorkerDiagnostics {
       return {
         pluginId,
@@ -1437,6 +1506,10 @@ export function createPluginWorkerManager(
     isRunning(pluginId: string): boolean {
       const handle = workers.get(pluginId);
       return handle?.status === "running";
+    },
+
+    setProactiveCompanyScopes(pluginId: string, companyIds: readonly string[]): void {
+      workers.get(pluginId)?.setProactiveCompanyScopes(companyIds);
     },
 
     async stopAll(): Promise<void> {

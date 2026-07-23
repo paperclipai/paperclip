@@ -102,6 +102,7 @@ export type AuthorizationDecision = {
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_direct_parent_report"
     | "allow_self"
     | "allow_company_agent"
     | "allow_company_member"
@@ -238,6 +239,7 @@ type IssueAuthorizationRow = {
   parentId: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  checkoutRunId: string | null;
   status: string;
   executionPolicy: unknown;
   originKind: string | null;
@@ -743,6 +745,7 @@ export function authorizationService(db: Db) {
         parentId: issues.parentId,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
+        checkoutRunId: issues.checkoutRunId,
         status: issues.status,
         executionPolicy: issues.executionPolicy,
         originKind: issues.originKind,
@@ -770,6 +773,46 @@ export function authorizationService(db: Db) {
     return isPlainRecord(context?.executionPolicy)
       ? { companyId: row.companyId, executionPolicy: context.executionPolicy }
       : null;
+  }
+
+  async function loadRunIssueId(runId: string | null | undefined, companyId: string, agentId: string) {
+    if (!runId) return null;
+    const row = await db
+      .select({
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!row || row.companyId !== companyId || row.agentId !== agentId) return null;
+    const context = isPlainRecord(row.contextSnapshot) ? row.contextSnapshot : null;
+    const issueId = typeof context?.issueId === "string"
+      ? context.issueId.trim()
+      : typeof context?.taskId === "string"
+        ? context.taskId.trim()
+        : "";
+    return issueId || null;
+  }
+
+  async function isDirectParentReportTarget(input: {
+    actor: AuthorizationActor;
+    actorAgentId: string;
+    companyId: string;
+    resource: AuthorizationResource;
+  }) {
+    if (input.resource.type !== "issue" || !input.resource.issueId) return false;
+    const runIssueId = await loadRunIssueId(input.actor.runId, input.companyId, input.actorAgentId);
+    if (!runIssueId || runIssueId === input.resource.issueId) return false;
+    const runIssue = await loadIssue(runIssueId);
+    return Boolean(
+      runIssue &&
+      runIssue.companyId === input.companyId &&
+      runIssue.assigneeAgentId === input.actorAgentId &&
+      runIssue.checkoutRunId === input.actor.runId &&
+      runIssue.parentId === input.resource.issueId,
+    );
   }
 
   async function loadProjectAuthorizationPolicy(companyId: string, projectId: string) {
@@ -899,6 +942,7 @@ export function authorizationService(db: Db) {
     action: AuthorizationAction;
     resource: AuthorizationResource;
     resolution: TrustPresetResolution;
+    directParentReportTarget: boolean;
   }): Promise<AuthorizationDecision | null> {
     if (input.resolution.kind === "standard") return null;
     if (input.resolution.kind === "denied") {
@@ -961,6 +1005,21 @@ export function authorizationService(db: Db) {
     if (input.action === "issue:comment" || input.action === "issue:read" || input.action === "issue:mutate") {
       if (input.resource.type !== "issue") {
         return lowTrustDeny("Low-trust issue access is missing an issue resource.");
+      }
+      if (input.action === "issue:comment" && input.directParentReportTarget) {
+        if (
+          input.resource.issueId &&
+          await agentHasMentionGrantOnIssue({
+            action: input.action,
+            companyId: boundary.companyId,
+            issueId: input.resource.issueId,
+            issueAssigneeAgentId: input.resource.assigneeAgentId ?? null,
+            actorAgentId: input.actorAgentId,
+          })
+        ) {
+          return allowIssueMentionGrant(input.action);
+        }
+        return lowTrustDeny("Direct-parent report comments are disabled for low-trust review runs.");
       }
       if (await issueResourceWithinLowTrustBoundary(boundary, input.resource)) {
         return lowTrustAllow("Allowed inside the low-trust issue boundary.");
@@ -1682,16 +1741,26 @@ export function authorizationService(db: Db) {
       if (taskBridgeDecision) return taskBridgeDecision;
     }
 
+    const trustResolution = await resolveActorTrust({
+      actorAgent,
+      actor: input.actor,
+      companyId,
+      resource: input.resource,
+    });
+    const directParentReportTarget =
+      input.action === "issue:comment" &&
+      await isDirectParentReportTarget({
+        actor: input.actor,
+        actorAgentId,
+        companyId,
+        resource: input.resource,
+      });
     const lowTrustDecision = await decideLowTrustAccess({
       actorAgentId,
       action: input.action,
       resource: input.resource,
-      resolution: await resolveActorTrust({
-        actorAgent,
-        actor: input.actor,
-        companyId,
-        resource: input.resource,
-      }),
+      resolution: trustResolution,
+      directParentReportTarget,
     });
     if (lowTrustDecision) {
       if (!lowTrustDecision.allowed) return lowTrustDecision;
@@ -1707,6 +1776,18 @@ export function authorizationService(db: Db) {
       ) {
         return lowTrustDecision;
       }
+    }
+
+    if (
+      trustResolution.kind === "standard" &&
+      input.action === "issue:comment" &&
+      directParentReportTarget
+    ) {
+      return allow({
+        action: input.action,
+        reason: "allow_direct_parent_report",
+        explanation: "Allowed because the target is the current run issue's direct parent under the standard trust preset.",
+      });
     }
 
 

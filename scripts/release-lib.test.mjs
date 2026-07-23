@@ -78,8 +78,35 @@ if [ "$1" = "view" ] && [ "$NPM_VERSION_EXISTS" = "true" ]; then
   exit 0
 fi
 if [ "$1" = "publish" ]; then
-  echo "published"
-  exit 0
+  case "$PNPM_MODE" in
+    success)
+      echo "published"
+      exit 0
+      ;;
+    tlog-then-success)
+      if [ ! -f "$FAKE_STATE_DIR/npm-called" ]; then
+        touch "$FAKE_STATE_DIR/npm-called"
+        echo "npm error code TLOG_CREATE_ENTRY_ERROR"
+        echo "npm error error creating tlog entry - (409) an equivalent entry already exists in the transparency log with UUID abc"
+        exit 1
+      fi
+      case " $* " in
+        *" --provenance=false "*)
+          echo "published without provenance"
+          exit 0
+          ;;
+      esac
+      ;;
+    tlog-always-fails)
+      echo "npm error code TLOG_CREATE_ENTRY_ERROR"
+      echo "npm error error creating tlog entry - (409) an equivalent entry already exists in the transparency log with UUID abc"
+      exit 1
+      ;;
+    non-tlog-failure)
+      echo "npm error code E500"
+      exit 1
+      ;;
+  esac
 fi
 exit 1
 `,
@@ -91,7 +118,9 @@ exit 1
 set -euo pipefail
 printf 'npx %s\n' "$*" >> "$FAKE_CALL_LOG"
 [ "$1" = "--yes" ] && shift
-[ "$1" = "npm@10.9.7" ] && shift
+case "$1" in
+  npm@10.9.7|npm@11.18.0) shift ;;
+esac
 exec npm "$@"
 `,
   );
@@ -141,13 +170,31 @@ test("publish_package_to_npm returns after a successful pnpm publish", () => {
   assert.doesNotMatch(result.calls, /--provenance=false/);
 });
 
-test("publish_package_to_npm uses npm for bundled dependencies", () => {
+test("publish_package_to_npm uses trusted publishing from the bundled staging directory", () => {
   const result = runPublishHelper({ pnpmMode: "success", publishTool: "npm" });
 
   assert.equal(result.status, 0);
-  assert.match(result.calls, /^npx --yes npm@10\.9\.7 publish --tag canary --access public$/m);
-  assert.match(result.calls, /^npm publish --tag canary --access public$/m);
+  assert.match(
+    result.calls,
+    /^npx --yes npm@11\.18\.0 publish --tag canary --access public --loglevel verbose$/m,
+  );
+  assert.match(
+    result.calls,
+    /^npm publish --tag canary --access public --loglevel verbose$/m,
+  );
+  assert.doesNotMatch(result.calls, / pack /);
   assert.doesNotMatch(result.calls, /^pnpm publish/m);
+});
+
+test("publish_package_to_npm retries bundled directory tlog failures without provenance", () => {
+  const result = runPublishHelper({ pnpmMode: "tlog-then-success", publishTool: "npm" });
+
+  assert.equal(result.status, 0);
+  assert.match(result.calls, /^npm view @paperclipai\/example@1\.2\.3 version$/m);
+  assert.match(
+    result.calls,
+    /^npm publish --tag canary --access public --provenance=false --loglevel verbose$/m,
+  );
 });
 
 test("publish_package_to_npm retries duplicate tlog failures without provenance", () => {

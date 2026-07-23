@@ -554,6 +554,13 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
 const activeRunExecutions = new Set<string>();
+// Background heartbeat executions are dispatched fire-and-forget (see
+// startNextQueuedRunForAgent), so the promise that resolves once a run's DB
+// writes are fully flushed is otherwise unobservable. Track those promises here
+// — shared across service instances like activeRunExecutions above — so callers
+// that must guarantee no run write is still in flight (graceful shutdown, and
+// tests tearing down a shared database) can await drainActiveRunExecutions().
+const activeRunExecutionPromises = new Set<Promise<void>>();
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -2667,7 +2674,7 @@ export function resolveLedgerCostStatus(input: {
   return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
 }
 
-async function resolveLedgerScopeForRun(
+export async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
   run: typeof heartbeatRuns.$inferSelect,
@@ -2680,6 +2687,7 @@ async function resolveLedgerScopeForRun(
     return {
       issueId: null,
       projectId: contextProjectId,
+      billingCode: null,
     };
   }
 
@@ -2687,6 +2695,7 @@ async function resolveLedgerScopeForRun(
     .select({
       id: issues.id,
       projectId: issues.projectId,
+      billingCode: issues.billingCode,
     })
     .from(issues)
     .where(and(eq(issues.id, contextIssueId), eq(issues.companyId, companyId)))
@@ -2695,6 +2704,7 @@ async function resolveLedgerScopeForRun(
   return {
     issueId: issue?.id ?? null,
     projectId: issue?.projectId ?? contextProjectId,
+    billingCode: issue?.billingCode ?? null,
   };
 }
 
@@ -11653,6 +11663,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         agentId: agent.id,
         issueId: ledgerScope.issueId,
         projectId: ledgerScope.projectId,
+        billingCode: ledgerScope.billingCode,
         provider,
         biller,
         billingType,
@@ -11744,12 +11755,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
-        void executeRun(claimedRun.id).catch((err) => {
+        const execution = executeRun(claimedRun.id).catch((err) => {
           logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+        });
+        // Register the in-flight execution so drainActiveRunExecutions() can await
+        // it. executeRun resolves only after its finally block finishes flushing
+        // run rows/events, so awaiting this promise guarantees the run's writes
+        // have landed before a caller (e.g. a test's afterEach) mutates the DB.
+        activeRunExecutionPromises.add(execution);
+        void execution.finally(() => {
+          activeRunExecutionPromises.delete(execution);
         });
       }
       return claimedRuns;
     });
+  }
+
+  // Await every background heartbeat execution that is currently in flight. A
+  // draining run can, in its finally block, promote and dispatch the next queued
+  // run for the same agent — that follow-up execution is registered in the set
+  // before the parent promise settles, so we loop until the set is empty rather
+  // than snapshotting once. Callers use this to guarantee no run is still
+  // writing rows/events (graceful shutdown, deterministic test teardown).
+  async function drainActiveRunExecutions() {
+    while (activeRunExecutionPromises.size > 0) {
+      await Promise.all([...activeRunExecutionPromises]);
+    }
   }
 
   async function executeRun(runId: string) {
@@ -16908,6 +16939,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // gate on suppression should prefer this over the env-only resolver.
     resolveSchedulingSuppression: getSchedulingSuppression,
     drainRunningRunsForShutdown,
+    drainActiveRunExecutions,
 
     promoteDueScheduledRetries,
     retryScheduledRetryNow,

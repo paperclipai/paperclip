@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import express from "express";
 import request from "supertest";
 import { WebSocketServer } from "ws";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -123,6 +123,16 @@ function agentActor(fixture: Fixture, agentId = fixture.agents.lowTrust.id): Exp
     agentId,
     companyId: fixture.company.id,
     runId: agentId === fixture.agents.lowTrust.id ? fixture.runs.lowTrust.id : fixture.runs.standard.id,
+    source: "agent_jwt",
+  };
+}
+
+function standardReportActor(fixture: Fixture): Express.Request["actor"] {
+  return {
+    type: "agent",
+    agentId: fixture.agents.standard.id,
+    companyId: fixture.company.id,
+    runId: fixture.runs.standardReport.id,
     source: "agent_jwt",
   };
 }
@@ -407,12 +417,23 @@ async function seedLowTrustFixture(db: Db) {
     permissions: {},
   }).returning();
 
+  const [reviewGrandparent] = await db.insert(issues).values({
+    companyId: company!.id,
+    projectId: allowedProject!.id,
+    title: "Review grandparent",
+    status: "in_progress",
+    priority: "medium",
+    assigneeAgentId: cto!.id,
+    responsibleUserId: "board-user",
+  }).returning();
   const [reviewRoot] = await db.insert(issues).values({
     companyId: company!.id,
     projectId: allowedProject!.id,
+    parentId: reviewGrandparent!.id,
     title: "Review root",
-    status: "todo",
+    status: "in_progress",
     priority: "medium",
+    assigneeAgentId: cto!.id,
     responsibleUserId: "board-user",
   }).returning();
   const [assignedReview] = await db.insert(issues).values({
@@ -431,6 +452,17 @@ async function seedLowTrustFixture(db: Db) {
     title: "Same boundary child",
     status: "todo",
     priority: "medium",
+    assigneeAgentId: cto!.id,
+    responsibleUserId: "board-user",
+  }).returning();
+  const [standardChild] = await db.insert(issues).values({
+    companyId: company!.id,
+    projectId: allowedProject!.id,
+    parentId: reviewRoot!.id,
+    title: "Assigned standard child",
+    status: "in_progress",
+    priority: "medium",
+    assigneeAgentId: standard!.id,
     responsibleUserId: "board-user",
   }).returning();
   const [siblingOutOfScope] = await db.insert(issues).values({
@@ -488,6 +520,12 @@ async function seedLowTrustFixture(db: Db) {
     status: "running",
     contextSnapshot: { issueId: assignedReview!.id },
   }).returning();
+  const [standardReportRun] = await db.insert(heartbeatRuns).values({
+    companyId: company!.id,
+    agentId: standard!.id,
+    status: "running",
+    contextSnapshot: { issueId: standardChild!.id },
+  }).returning();
   await db.update(issues).set({
     checkoutRunId: lowTrustRun!.id,
     executionRunId: lowTrustRun!.id,
@@ -496,6 +534,12 @@ async function seedLowTrustFixture(db: Db) {
   assignedReview!.checkoutRunId = lowTrustRun!.id;
   assignedReview!.executionRunId = lowTrustRun!.id;
   assignedReview!.executionPolicy = executionPolicy;
+  await db.update(issues).set({
+    checkoutRunId: standardReportRun!.id,
+    executionRunId: standardReportRun!.id,
+  }).where(eq(issues.id, standardChild!.id));
+  standardChild!.checkoutRunId = standardReportRun!.id;
+  standardChild!.executionRunId = standardReportRun!.id;
 
   await db.insert(issueComments).values({
     companyId: company!.id,
@@ -630,13 +674,20 @@ async function seedLowTrustFixture(db: Db) {
     company: company!,
     agents: { lowTrust: lowTrust!, standard: standard!, collaborator: collaborator!, cto: cto! },
     projects: { allowed: allowedProject!, outOfScope: outOfScopeProject! },
-    issues: { reviewRoot: reviewRoot!, assignedReview: assignedReview!, sameBoundaryChild: sameBoundaryChild!, siblingOutOfScope: siblingOutOfScope! },
+    issues: {
+      reviewGrandparent: reviewGrandparent!,
+      reviewRoot: reviewRoot!,
+      assignedReview: assignedReview!,
+      standardChild: standardChild!,
+      sameBoundaryChild: sameBoundaryChild!,
+      siblingOutOfScope: siblingOutOfScope!,
+    },
     approvals: { issueLinkedCanary: approval! },
     sensitiveRows: {
       siblingAnnotationThreadId: siblingAnnotationThread!.id,
       siblingAttachmentId: siblingAttachment!.id,
     },
-    runs: { lowTrust: lowTrustRun!, standard: standardRun! },
+    runs: { lowTrust: lowTrustRun!, standard: standardRun!, standardReport: standardReportRun! },
     canaries,
   };
 }
@@ -725,6 +776,132 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       preset: LOW_TRUST_REVIEW_PRESET,
       disposition: "quarantined",
     });
+  });
+
+  it("allows only standard checked-out runs to comment one hop upward", async () => {
+    const fixture = await seedLowTrustFixture(db);
+    const standardApp = createApp(db, standardReportActor(fixture));
+    const lowTrustApp = createApp(db, agentActor(fixture));
+
+    const parentComment = await request(standardApp)
+      .post(`/api/issues/${fixture.issues.reviewRoot.id}/comments`)
+      .send({ body: "Direct parent report" });
+    expect(parentComment.status, JSON.stringify(parentComment.body)).toBe(201);
+
+    const [audit] = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.entityId, fixture.issues.reviewRoot.id),
+        eq(activityLog.action, "issue.comment_added"),
+      ));
+    expect(audit?.details).toMatchObject({ directParentReportGrant: true });
+
+    const lowTrustParentComment = await request(lowTrustApp)
+      .post(`/api/issues/${fixture.issues.reviewRoot.id}/comments`)
+      .send({ body: "Contained report must not cross" });
+    expect(lowTrustParentComment.status, JSON.stringify(lowTrustParentComment.body)).toBe(403);
+
+    const forbiddenStandardWrites = [
+      request(standardApp)
+        .post(`/api/issues/${fixture.issues.reviewGrandparent.id}/comments`)
+        .send({ body: "No grandparent report" }),
+      request(standardApp)
+        .post(`/api/issues/${fixture.issues.sameBoundaryChild.id}/comments`)
+        .send({ body: "No sibling report" }),
+      request(standardApp)
+        .patch(`/api/issues/${fixture.issues.reviewRoot.id}`)
+        .send({ status: "blocked" }),
+      request(standardApp)
+        .put(`/api/issues/${fixture.issues.reviewRoot.id}/documents/upward-write`)
+        .send({ format: "markdown", body: "No upward document write" }),
+    ];
+    for (const forbiddenWrite of forbiddenStandardWrites) {
+      const response = await forbiddenWrite;
+      expect(response.status, JSON.stringify(response.body)).toBe(403);
+    }
+
+    for (const closedParent of [
+      { assigneeAgentId: null, intent: { reopen: true } },
+      { assigneeAgentId: fixture.agents.standard.id, intent: { resume: true } },
+    ]) {
+      await db
+        .update(issues)
+        .set({ status: "done", assigneeAgentId: closedParent.assigneeAgentId })
+        .where(eq(issues.id, fixture.issues.reviewRoot.id));
+
+      const closedParentComment = await request(standardApp)
+        .post(`/api/issues/${fixture.issues.reviewRoot.id}/comments`)
+        .send({ body: "Comment only on closed parent", ...closedParent.intent });
+      expect(closedParentComment.status, JSON.stringify(closedParentComment.body)).toBe(201);
+
+      const [persistedParent] = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, fixture.issues.reviewRoot.id));
+      expect(persistedParent?.status).toBe("done");
+    }
+  });
+
+  it("relays blocked and cancelled stops once without laundering child prose", async () => {
+    const fixture = await seedLowTrustFixture(db);
+    const app = createApp(db, boardActor(fixture));
+
+    const blocked = await request(app)
+      .patch(`/api/issues/${fixture.issues.assignedReview.id}`)
+      .send({ status: "blocked", comment: fixture.canaries.raw });
+    expect(blocked.status, JSON.stringify(blocked.body)).toBe(200);
+
+    await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "todo" }).expect(200);
+    await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "blocked" }).expect(200);
+    await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "todo" }).expect(200);
+    await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "cancelled" }).expect(200);
+    await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "todo" }).expect(200);
+    await db
+      .update(issues)
+      .set({ parentId: null })
+      .where(eq(issues.id, fixture.issues.assignedReview.id));
+    await request(app)
+      .patch(`/api/issues/${fixture.issues.assignedReview.id}`)
+      .send({ parentId: fixture.issues.reviewGrandparent.id, status: "blocked" })
+      .expect(200);
+
+    await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "blocked" }).expect(200);
+    await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "todo" }).expect(200);
+    await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "in_review" }).expect(200);
+    await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "done" }).expect(200);
+
+    const relayComments = await db
+      .select({ body: issueComments.body, authorType: issueComments.authorType })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.issueId, fixture.issues.reviewRoot.id),
+        eq(issueComments.authorType, "system"),
+      ));
+    expect(relayComments).toHaveLength(2);
+    expect(relayComments.map((comment) => comment.body)).toEqual(expect.arrayContaining([
+      expect.stringContaining(`transitioned to \`blocked\``),
+      expect.stringContaining(`transitioned to \`cancelled\``),
+    ]));
+    for (const relay of relayComments) {
+      expect(relay.authorType).toBe("system");
+      expect(relay.body).toContain(fixture.issues.assignedReview.identifier ?? fixture.issues.assignedReview.id);
+      expect(relay.body).not.toContain(fixture.canaries.raw);
+      expect(relay.body).not.toContain("in_review");
+      expect(relay.body).not.toContain("done");
+      expect(relay.body).not.toContain(fixture.issues.standardChild.identifier);
+    }
+
+    const reparentedRelayComments = await db
+      .select({ body: issueComments.body, authorType: issueComments.authorType })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.issueId, fixture.issues.reviewGrandparent.id),
+        eq(issueComments.authorType, "system"),
+      ));
+    expect(reparentedRelayComments).toHaveLength(1);
+    expect(reparentedRelayComments[0]?.body).toContain("transitioned to `blocked`");
+    expect(reparentedRelayComments[0]?.body).not.toContain(fixture.canaries.raw);
   });
 
   it("allows mentioned low-trust agents to comment on out-of-bound assigned issues", async () => {

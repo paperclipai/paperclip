@@ -2211,7 +2211,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId));
-      return rows.length >= 2 ? rows : null;
+      if (rows.length < 2) return null;
+      // Gate on the *terminal* write of the background recovery, not the
+      // intermediate retry-run commit. recordPlanApprovalResumeFailureRetry
+      // writes the system comment first and updates the interaction
+      // result.resumeFailure last (heartbeat.ts:5627 then :5632), so once
+      // resumeFailure.status is observed the comment + issue update are also
+      // committed and every assertion below is race-free.
+      const interactionRow = await db
+        .select({ result: issueThreadInteractions.result })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((interactionRows) => interactionRows[0] ?? null);
+      const result = interactionRow?.result ?? null;
+      const resumeFailure = result && "resumeFailure" in result ? result.resumeFailure : null;
+      return resumeFailure?.status === "retrying" ? rows : null;
     });
     expect(runs).toHaveLength(2);
 

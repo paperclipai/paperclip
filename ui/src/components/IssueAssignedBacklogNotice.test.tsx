@@ -59,7 +59,7 @@ describe("IssueAssignedBacklogNotice", () => {
     expect(container.querySelector('[data-testid="issue-assigned-backlog-notice"]')).toBeNull();
   });
 
-  it("warns when an agent is assigned and the issue is parked in backlog", () => {
+  it("renders the notice with the agent's name when an agent-assigned issue is parked in backlog", () => {
     act(() => {
       root.render(
         <IssueAssignedBacklogNotice
@@ -73,6 +73,29 @@ describe("IssueAssignedBacklogNotice", () => {
     expect(notice).not.toBeNull();
     expect(notice?.textContent).toContain("Parked");
     expect(notice?.textContent).toContain("ClaudeCoder");
+    expect(notice?.textContent).toContain(
+      "will not be asked to work on this until status changes to To do or In progress.",
+    );
+    expect(notice?.textContent).toContain(
+      "Comments still notify the assignee for questions or triage.",
+    );
+  });
+
+  it("falls back to 'the assignee' phrasing for a user-assigned parked issue", () => {
+    act(() => {
+      root.render(
+        <IssueAssignedBacklogNotice
+          issueStatus="backlog"
+          assigneeAgent={null}
+          assigneeUserId="user-1"
+        />,
+      );
+    });
+    const notice = container.querySelector('[data-testid="issue-assigned-backlog-notice"]');
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain(
+      "the assignee will not be asked to work on this until status changes to To do or In progress.",
+    );
   });
 
   it("calls onResume when the resume button is clicked", () => {
@@ -89,6 +112,7 @@ describe("IssueAssignedBacklogNotice", () => {
     });
     const button = container.querySelector('[data-testid="issue-assigned-backlog-resume"]') as HTMLButtonElement | null;
     expect(button).not.toBeNull();
+    expect(button?.textContent).toBe("Resume now");
     act(() => {
       button?.click();
     });
@@ -110,6 +134,6 @@ describe("IssueAssignedBacklogNotice", () => {
     const button = container.querySelector('[data-testid="issue-assigned-backlog-resume"]') as HTMLButtonElement | null;
     expect(button).not.toBeNull();
     expect(button?.disabled).toBe(true);
-    expect(button?.textContent).toContain("Resuming");
+    expect(button?.textContent).toBe("Resuming…");
   });
 });

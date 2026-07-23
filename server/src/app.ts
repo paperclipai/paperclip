@@ -65,6 +65,12 @@ import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
+import {
+  SELF_HOSTED_AUTO_INSTALL_KEYS,
+  ensureBundledPlugins,
+  resolveBundledCatalogRoot,
+  resolveBundledPluginInstalls,
+} from "./services/bundled-plugins.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
@@ -171,6 +177,15 @@ export async function createApp(
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    /**
+     * `plugins.autoInstall` from the managed config (PAPERCLIP_MANAGED_CONFIG).
+     * `null`/absent ⇒ self-hosted: only the built-in kubernetes bundle is
+     * ensured, exactly as before. A managed list is resolved against the
+     * bundled catalog fail-to-start (see services/bundled-plugins.ts).
+     */
+    managedPluginAutoInstall?: readonly string[] | null;
+    /** Test override for the bundled plugin catalog root. */
+    bundledPluginCatalogRoot?: string;
   },
 ) {
   const app = express();
@@ -538,65 +553,51 @@ export async function createApp(
     lifecycle,
     async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
   );
-  // Auto-install the bundled kubernetes sandbox-provider plugin so the
-  // "kubernetes" sandbox provider is registered for agent runs. The plugin is
-  // excluded from the pnpm workspace and built standalone into the image (see
-  // Dockerfile), then installed here from its local path. This runs BEFORE
-  // loadAll() so loadAll() can activate it in the same startup pass.
+  // Auto-provision bundled plugins so their providers are registered for
+  // agent runs. Bundles are excluded from the pnpm
+  // workspace and built standalone into the image (see Dockerfile), then
+  // installed here from their local paths. This runs BEFORE loadAll() so
+  // loadAll() can activate them in the same startup pass.
   //
-  // SAFETY (invariant B): this is fully fail-safe. Any failure (missing path,
-  // install error, load error) is caught, logged, and swallowed so the server
-  // ALWAYS finishes booting. A degraded boot (no kubernetes provider, agents
-  // cannot run) is strictly preferable to a crash loop.
-  const ensureBundledKubernetesPlugin = async (): Promise<void> => {
-    const KUBERNETES_PLUGIN_KEY = "paperclip.kubernetes-sandbox-provider";
-    const pluginPath =
-      process.env["PAPERCLIP_KUBERNETES_PLUGIN_PATH"] ??
-      "/app/packages/plugins/sandbox-providers/kubernetes";
-    try {
-      // Idempotent: skip if already installed (any non-uninstalled status).
-      const existing = await pluginRegistry.getByKey(KUBERNETES_PLUGIN_KEY);
-      if (existing) {
-        logger.info(
-          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing.status },
-          "kubernetes sandbox plugin already installed; skipping auto-install",
-        );
-        return;
-      }
-      // Skip silently when the bundle is absent (e.g. local dev or an image
-      // built without the plugin). Not an error condition.
-      if (!fs.existsSync(path.join(pluginPath, "dist", "manifest.js"))) {
-        logger.info(
-          { pluginPath },
-          "kubernetes sandbox plugin bundle not present; skipping auto-install",
-        );
-        return;
-      }
-      logger.info({ pluginPath }, "auto-installing bundled kubernetes sandbox plugin");
-      const discovered = await loader.installPlugin({ localPath: pluginPath });
-      if (!discovered.manifest) {
-        logger.error("kubernetes sandbox plugin installed but manifest is missing");
-        return;
-      }
-      // Transition installed -> ready and activate the worker.
-      const installed = await pluginRegistry.getByKey(discovered.manifest.id);
-      if (installed) {
-        await lifecycle.load(installed.id);
-        logger.info(
-          { pluginId: installed.id, pluginKey: installed.pluginKey },
-          "kubernetes sandbox plugin auto-installed and loaded",
-        );
-      } else {
-        logger.error("kubernetes sandbox plugin installed but not found in registry");
-      }
-    } catch (err) {
-      logger.error(
-        { err },
-        "Failed to auto-install the kubernetes sandbox plugin; continuing boot (degraded: kubernetes provider unavailable)",
-      );
-    }
-  };
-  void ensureBundledKubernetesPlugin()
+  // Workers are started exactly once, by loadAll(): the `lifecycle` manager
+  // above is constructed without a runtime-capable loader
+  // (pluginLifecycleManager(db, { workerManager }) — no `loader` option), so
+  // the lifecycle.load() that ensureBundledPlugins performs per newly
+  // installed bundle only records the `ready` status and does not spawn a
+  // worker (see activateReadyPlugin in services/plugin-lifecycle.ts).
+  //
+  // Managed instances (`plugins.autoInstall` from PAPERCLIP_MANAGED_CONFIG)
+  // drive the key list from the control plane; self-hosted instances keep
+  // the pre-existing behavior of ensuring only the kubernetes bundle.
+  //
+  // Resolution below is deliberately synchronous and NOT fail-safe: an
+  // unknown key or a path escaping the bundled catalog root throws out of
+  // createApp so a managed instance refuses to start (positive allowlist,
+  // fail closed).
+  const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
+  const bundledCatalogRoot =
+    opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
+  const bundledPluginInstalls = resolveBundledPluginInstalls(
+    managedAutoInstallKeys ?? SELF_HOSTED_AUTO_INSTALL_KEYS,
+    {
+      catalogRoot: bundledCatalogRoot,
+      env: process.env,
+      enforceCatalogRoot: managedAutoInstallKeys !== null,
+    },
+  );
+  // SAFETY: installation is fully fail-safe. Any failure
+  // (missing bundle, install error, load error) is caught, logged, and
+  // swallowed per plugin so the server ALWAYS finishes booting. A degraded
+  // boot (a provider unavailable, some agents cannot run) is strictly
+  // preferable to a crash loop.
+  void ensureBundledPlugins(
+    bundledPluginInstalls,
+    { registry: pluginRegistry, loader, lifecycle, logger },
+    // Managed mode reinstalls soft-uninstalled bundles (the control plane
+    // owns provisioning); self-hosted leaves an operator's uninstall alone.
+    // Operator-DISABLED plugins are never touched in either mode.
+    { reinstallUninstalled: managedAutoInstallKeys !== null },
+  )
     .then(() => loader.loadAll())
     .then((result) => {
     if (!result) return;

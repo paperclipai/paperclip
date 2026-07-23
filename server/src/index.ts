@@ -33,6 +33,10 @@ import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import {
+  getManagedInstanceConfig,
+  type ManagedInstanceConfig,
+} from "./services/managed-config.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
@@ -588,6 +592,32 @@ export async function startServer(): Promise<StartedServer> {
     serverPort: listenPort,
     databasePort: resolvedEmbeddedPostgresPort,
   });
+  // Cloud managed-config contract (harness → app). Parse PAPERCLIP_MANAGED_CONFIG
+  // once so a malformed document (blank value, bad JSON, unknown feature key,
+  // unsupported v, missing section) refuses startup with a precise error instead
+  // of silently running without the feature overlay. Absent env = self-hosted:
+  // nothing changes. The parsed document is never persisted; instanceSettingsService
+  // overlays it per read. This MUST run before any instanceSettingsService(db)
+  // construction — that constructor parses the same env, and it would otherwise
+  // throw first, bypassing this fail-closed log path.
+  let managedConfig: ManagedInstanceConfig | null;
+  try {
+    managedConfig = getManagedInstanceConfig();
+    if (managedConfig) {
+      logger.warn(
+        {
+          catalogVersion: managedConfig.catalogVersion,
+          managedFeatureKeys: Object.keys(managedConfig.features).sort(),
+          autoInstallPlugins: [...managedConfig.plugins.autoInstall],
+        },
+        "cloud managed configuration active",
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, "invalid PAPERCLIP_MANAGED_CONFIG; refusing to start (fail closed)");
+    throw err;
+  }
+
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
   const feedback = feedbackService(db as any, {
@@ -667,6 +697,10 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  // Managed instances drive bundled plugin auto-install from the managed-config
+  // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
+  // self-hosted: createApp falls back to its built-in kubernetes-only default.
+  const managedPluginAutoInstall = managedConfig?.plugins.autoInstall ?? null;
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -700,6 +734,7 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,
+    managedPluginAutoInstall,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
