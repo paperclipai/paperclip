@@ -5257,6 +5257,147 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService.checkout pending interaction guard", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-pending-interaction-checkout-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueThreadInteractions);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedPendingInteractionCheckoutFixture(contextSnapshot: Record<string, unknown>) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "timer",
+      contextSnapshot,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Waiting confirmation",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: { version: 1, prompt: "Approve the plan?" },
+    });
+
+    return { agentId, issueId, runId };
+  }
+
+  it("rejects timer checkout of an in-review issue waiting on a pending wake-assignee interaction", async () => {
+    const { agentId, issueId, runId } = await seedPendingInteractionCheckoutFixture({
+      source: "scheduler",
+      wakeReason: "heartbeat_timer",
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["in_review"], runId)).rejects.toMatchObject({
+      status: 409,
+    });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.status).toBe("in_review");
+    expect(issue.checkoutRunId).toBeNull();
+    expect(issue.executionRunId).toBeNull();
+  });
+
+  it("allows interaction/comment wake checkout of an in-review issue waiting on a pending wake-assignee interaction", async () => {
+    const { agentId, issueId, runId } = await seedPendingInteractionCheckoutFixture({
+      source: "issue.interaction",
+      wakeReason: "issue_commented",
+      interactionId: "interaction-1",
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["in_review"], runId);
+
+    expect(checkedOut.status).toBe("in_progress");
+    expect(checkedOut.checkoutRunId).toBe(runId);
+    expect(checkedOut.executionRunId).toBe(runId);
+  });
+
+  it("rejects deleted timer-run checkout when it cannot prove an interaction/comment wake", async () => {
+    const { agentId, issueId, runId } = await seedPendingInteractionCheckoutFixture({
+      source: "scheduler",
+      wakeReason: "heartbeat_timer",
+    });
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+
+    await expect(svc.checkout(issueId, agentId, ["in_review"], runId)).rejects.toMatchObject({
+      status: 409,
+    });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.status).toBe("in_review");
+    expect(issue.checkoutRunId).toBeNull();
+    expect(issue.executionRunId).toBeNull();
+  });
+
+  it("rejects deleted interaction/comment-run checkout when its provenance is unavailable", async () => {
+    const { agentId, issueId, runId } = await seedPendingInteractionCheckoutFixture({
+      source: "issue.interaction",
+      wakeReason: "issue_commented",
+      interactionId: "interaction-1",
+    });
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+
+    await expect(svc.checkout(issueId, agentId, ["in_review"], runId)).rejects.toMatchObject({
+      status: 409,
+    });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.status).toBe("in_review");
+    expect(issue.checkoutRunId).toBeNull();
+    expect(issue.executionRunId).toBeNull();
+  });
+});
+
 describeEmbeddedPostgres("accepted plan decomposition", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;

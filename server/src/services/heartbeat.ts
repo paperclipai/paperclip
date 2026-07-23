@@ -6807,6 +6807,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  async function isIssueMonitorSuppressedByPendingInteraction(issue: IssueMonitorDispatchRow) {
+    if (issue.status !== "in_review") return false;
+
+    const executionState = parseIssueExecutionState(issue.executionState);
+    const currentParticipant = executionState?.status === "pending" ? executionState.currentParticipant : null;
+    if (
+      currentParticipant?.type === "agent" &&
+      currentParticipant.agentId === issue.assigneeAgentId
+    ) {
+      return false;
+    }
+
+    return db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.status, "pending"),
+          eq(issueThreadInteractions.continuationPolicy, "wake_assignee"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
   async function triggerIssueMonitor(issueId: string, input?: {
     now?: Date;
     actorType?: "user" | "agent" | "system";
@@ -6911,6 +6938,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let skipped = 0;
 
     for (const due of dueMonitors) {
+      if (await isIssueMonitorSuppressedByPendingInteraction(due)) {
+        skipped += 1;
+        continue;
+      }
+
       const claimed = await db.transaction(async (tx) => {
         const [updated] = await tx
           .update(issues)

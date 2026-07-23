@@ -17,6 +17,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueThreadInteractions,
   issues,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
@@ -101,6 +102,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   async function cleanupRows() {
     await waitForHeartbeatSideEffectsSettled();
     await db.delete(heartbeatRunEvents);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(documentRevisions);
     await db.delete(issueDocuments);
@@ -382,6 +384,107 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       nextCheckAt: nextCheckAt.toISOString(),
       source: "manual",
     });
+  });
+
+  it("does not trigger a due in-review monitor while a pending wake-assignee interaction is waiting", async () => {
+    const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({ issueStatus: "in_review" });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: { version: 1, prompt: "Approve the plan?" },
+    });
+
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.enqueued).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.status).toBe("in_review");
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt.toISOString());
+    expect(issue.monitorAttemptCount).toBe(0);
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      nextCheckAt: nextCheckAt.toISOString(),
+      attemptCount: 0,
+    });
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(0);
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(activity).not.toContain("issue.monitor_triggered");
+    expect(activity).not.toContain("issue.monitor_skipped");
+  });
+
+  it("still triggers an in-review monitor when the assignee is the current execution-policy participant", async () => {
+    const { companyId, issueId, agentId } = await seedFixture({ issueStatus: "in_review" });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    const stageId = randomUUID();
+
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: { version: 1, prompt: "Approve the plan?" },
+    });
+    await db
+      .update(issues)
+      .set({
+        executionState: {
+          status: "pending",
+          currentStageId: stageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId, userId: null },
+          returnAssignee: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          monitor: {
+            status: "scheduled",
+            nextCheckAt: "2026-04-11T12:30:00.000Z",
+            lastTriggeredAt: null,
+            attemptCount: 0,
+            notes: "Check deploy",
+            scheduledBy: "assignee",
+            serviceName: null,
+            externalRef: null,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: null,
+            clearedAt: null,
+            clearReason: null,
+          },
+        },
+      })
+      .where(eq(issues.id, issueId));
+
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.enqueued).toBe(1);
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.reason).toBe("issue_monitor_due");
   });
 
   it("clears due monitors that cannot be dispatched and records a skip", async () => {
