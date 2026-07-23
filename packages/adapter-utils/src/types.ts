@@ -77,6 +77,15 @@ export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  /**
+   * Explicit success signal from the adapter's structured output. `true` is
+   * authoritative: the run is treated as successful even if the process exit
+   * code is nonzero (e.g. the CLI was SIGTERMed by terminal-result cleanup
+   * after emitting a successful result). `false`/`null`/absent are advisory
+   * only — the outcome falls back to exitCode + errorMessage inference, so a
+   * failing adapter must still set errorMessage/exitCode to signal failure.
+   */
+  succeeded?: boolean | null;
   errorMessage?: string | null;
   errorCode?: string | null;
   errorFamily?: AdapterExecutionErrorFamily | null;

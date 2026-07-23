@@ -439,3 +439,110 @@ describe("gemini execute", () => {
     }
   });
 });
+
+describe("gemini execute classification isolation", () => {
+  async function runGeminiExecute(
+    runId: string,
+    tmpPrefix: string,
+    commandWriter: (commandPath: string) => Promise<void>,
+  ) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), tmpPrefix));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    await fs.mkdir(workspace, { recursive: true });
+    await commandWriter(commandPath);
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    try {
+      return await execute({
+        runId,
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Gemini Coder",
+          adapterType: "gemini_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          model: "gemini-2.5-pro",
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("does not mis-code a failed run whose conversation mentions auth or network errors", async () => {
+    const result = await runGeminiExecute(
+      "run-gemini-conversation-keywords",
+      "paperclip-gemini-execute-conversation-keywords-",
+      (commandPath) =>
+        writeFailingGeminiCommand(commandPath, {
+          exitCode: 1,
+          stdoutLines: [
+            { type: "system", subtype: "init", session_id: "gemini-session-2" },
+            {
+              type: "message",
+              role: "assistant",
+              content:
+                "The user is not authenticated; login required per the docs. I also saw ENOTFOUND oauth2.googleapis.com and 429 quota errors in the logs.",
+            },
+            {
+              type: "result",
+              subtype: "error",
+              session_id: "gemini-session-2",
+              status: "error",
+              error: "Something unrelated broke while writing the report.",
+            },
+          ],
+        }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.succeeded ?? false).toBe(false);
+    expect(result.errorCode).toBeNull();
+    expect(result.errorMessage).toContain("Something unrelated broke");
+  });
+
+  it("treats a structured success result as success even when the process exits nonzero", async () => {
+    const result = await runGeminiExecute(
+      "run-gemini-cleanup-kill",
+      "paperclip-gemini-execute-cleanup-kill-",
+      (commandPath) =>
+        writeFailingGeminiCommand(commandPath, {
+          // Simulates terminal-result cleanup SIGTERMing the CLI after a
+          // successful result (observed as exit 143 in prod).
+          exitCode: 143,
+          stdoutLines: [
+            { type: "system", subtype: "init", session_id: "gemini-session-3" },
+            {
+              type: "assistant",
+              message: { content: [{ type: "output_text", text: "Deployed the fix." }] },
+            },
+            { type: "result", subtype: "success", session_id: "gemini-session-3", result: "ok" },
+          ],
+        }),
+    );
+
+    expect(result.exitCode).toBe(143);
+    expect(result.succeeded).toBe(true);
+    expect(result.errorMessage).toBeNull();
+    expect(result.errorCode).toBeNull();
+    expect(result.summary).toContain("Deployed the fix.");
+  });
+});

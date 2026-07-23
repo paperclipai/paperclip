@@ -4,6 +4,7 @@ import {
   parseObject,
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
+import { buildErrorClassificationHaystack } from "@paperclipai/adapter-utils/classification";
 
 const CODEX_TRANSIENT_UPSTREAM_RE =
   /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
@@ -31,6 +32,8 @@ export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
   let errorMessage: string | null = null;
+  let sawTurnCompleted = false;
+  let sawFailureEvent = false;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -51,6 +54,7 @@ export function parseCodexJsonl(stdout: string) {
     }
 
     if (type === "error") {
+      sawFailureEvent = true;
       const msg = asString(event.message, "").trim();
       if (msg) errorMessage = msg;
       continue;
@@ -66,6 +70,7 @@ export function parseCodexJsonl(stdout: string) {
     }
 
     if (type === "turn.completed") {
+      sawTurnCompleted = true;
       const usageObj = parseObject(event.usage);
       usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
       usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
@@ -74,6 +79,7 @@ export function parseCodexJsonl(stdout: string) {
     }
 
     if (type === "turn.failed") {
+      sawFailureEvent = true;
       const err = parseObject(event.error);
       const msg = asString(err.message, "").trim();
       if (msg) errorMessage = msg;
@@ -86,35 +92,23 @@ export function parseCodexJsonl(stdout: string) {
     usage,
     usageBasis: "per_run" as const,
     errorMessage,
+    // Structured success: the stream reported a completed turn and no
+    // error/turn.failed event. Authoritative when true — the process exit code
+    // may still be nonzero when terminal-result cleanup SIGTERMs the CLI after
+    // a successful turn.
+    succeeded: sawTurnCompleted && !sawFailureEvent && errorMessage == null,
   };
 }
 
-export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {
-  const haystack = `${stdout}\n${stderr}`
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n");
+export function isCodexUnknownSessionError(
+  stdout: string,
+  stderr: string,
+  errorMessage?: string | null,
+): boolean {
+  const haystack = buildErrorClassificationHaystack({ errorMessage, stdout, stderr });
   return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path|state db returned stale rollout path|no rollout found for thread id/i.test(
     haystack,
   );
-}
-
-function buildCodexErrorHaystack(input: {
-  stdout?: string | null;
-  stderr?: string | null;
-  errorMessage?: string | null;
-}): string {
-  return [
-    input.errorMessage ?? "",
-    input.stdout ?? "",
-    input.stderr ?? "",
-  ]
-    .join("\n")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n");
 }
 
 export function classifyCodexAuthRefreshFailure(input: {
@@ -122,7 +116,7 @@ export function classifyCodexAuthRefreshFailure(input: {
   stderr?: string | null;
   errorMessage?: string | null;
 }): CodexAuthRefreshFailureClass | null {
-  const haystack = buildCodexErrorHaystack(input);
+  const haystack = buildErrorClassificationHaystack(input);
 
   if (CODEX_REFRESH_TOKEN_REUSED_RE.test(haystack)) return "refresh_token_reused";
   if (CODEX_REFRESH_TOKEN_EXPIRED_RE.test(haystack)) return "refresh_token_expired";
@@ -271,7 +265,7 @@ export function extractCodexRetryNotBefore(input: {
   stderr?: string | null;
   errorMessage?: string | null;
 }, now = new Date()): Date | null {
-  const haystack = buildCodexErrorHaystack(input);
+  const haystack = buildErrorClassificationHaystack(input);
   const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RE);
   if (!usageLimitMatch) return null;
   return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
@@ -282,7 +276,7 @@ export function isCodexTransientUpstreamError(input: {
   stderr?: string | null;
   errorMessage?: string | null;
 }): boolean {
-  const haystack = buildCodexErrorHaystack(input);
+  const haystack = buildErrorClassificationHaystack(input);
 
   if (isCodexProviderQuotaError(input)) return false;
   if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
@@ -296,6 +290,6 @@ export function isCodexProviderQuotaError(input: {
   stderr?: string | null;
   errorMessage?: string | null;
 }): boolean {
-  const haystack = buildCodexErrorHaystack(input);
+  const haystack = buildErrorClassificationHaystack(input);
   return CODEX_PROVIDER_QUOTA_RE.test(haystack) || extractCodexRetryNotBefore(input) != null;
 }

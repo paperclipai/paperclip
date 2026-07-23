@@ -213,3 +213,76 @@ describe("isGeminiTransientNetworkError", () => {
     ).toBe(false);
   });
 });
+
+describe("classifier conversation-stdout isolation", () => {
+  const conversationStdout = [
+    JSON.stringify({ type: "system", subtype: "init", session_id: "gemini-1" }),
+    JSON.stringify({
+      type: "message",
+      role: "assistant",
+      content:
+        "The user is not authenticated and login required errors appear; run gemini auth login first. I also saw ENOTFOUND oauth2.googleapis.com and a 429 quota error, plus session gemini-1 not found.",
+    }),
+    JSON.stringify({ type: "result", subtype: "success", session_id: "gemini-1", result: "ok" }),
+  ].join("\n");
+
+  it("never classifies from agent conversation embedded in JSONL stdout", () => {
+    expect(
+      detectGeminiAuthRequired({ parsed: null, stdout: conversationStdout, stderr: "" }).requiresAuth,
+    ).toBe(false);
+    expect(isGeminiTransientNetworkError(conversationStdout, "")).toBe(false);
+    expect(isGeminiSessionUnrecoverableError(conversationStdout, "")).toBe(false);
+  });
+
+  it("still detects auth failures from stderr and structured error messages", () => {
+    expect(
+      detectGeminiAuthRequired({ parsed: null, stdout: "", stderr: "Please authenticate: not logged in" })
+        .requiresAuth,
+    ).toBe(true);
+    expect(
+      detectGeminiAuthRequired({
+        parsed: null,
+        stdout: conversationStdout,
+        stderr: "",
+        errorMessage: "Authentication required. Run gemini auth login first.",
+      }).requiresAuth,
+    ).toBe(true);
+  });
+
+  it("still detects network and session errors from stderr and structured error messages", () => {
+    expect(isGeminiTransientNetworkError("", "GaxiosError: ENOTFOUND oauth2.googleapis.com")).toBe(true);
+    expect(isGeminiTransientNetworkError(conversationStdout, "", "request to sts failed: EAI_AGAIN")).toBe(true);
+    expect(isGeminiSessionUnrecoverableError("", "", "checkpoint gemini-1 not found")).toBe(true);
+  });
+});
+
+describe("parseGeminiJsonl succeeded", () => {
+  it("reports success for a non-error result event", () => {
+    const parsed = parseGeminiJsonl(
+      JSON.stringify({ type: "result", subtype: "success", session_id: "gemini-1", result: "ok" }),
+    );
+    expect(parsed.succeeded).toBe(true);
+  });
+
+  it("does not report success for an error result event", () => {
+    const parsed = parseGeminiJsonl(
+      JSON.stringify({ type: "result", subtype: "error", session_id: "gemini-1", error: "boom" }),
+    );
+    expect(parsed.succeeded).toBe(false);
+  });
+
+  it("does not report success without a result event", () => {
+    const parsed = parseGeminiJsonl(
+      JSON.stringify({ type: "message", role: "assistant", content: "hello" }),
+    );
+    expect(parsed.succeeded).toBe(false);
+  });
+
+  it("does not report success when an error event was emitted", () => {
+    const parsed = parseGeminiJsonl([
+      JSON.stringify({ type: "error", message: "stream error" }),
+      JSON.stringify({ type: "result", subtype: "success", session_id: "gemini-1", result: "ok" }),
+    ].join("\n"));
+    expect(parsed.succeeded).toBe(false);
+  });
+});

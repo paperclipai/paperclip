@@ -33,6 +33,7 @@ describe("parseCodexJsonl", () => {
       },
       usageBasis: "per_run",
       errorMessage: "resume failed",
+      succeeded: false,
     });
   });
 
@@ -67,6 +68,7 @@ describe("parseCodexJsonl", () => {
       },
       usageBasis: "per_run",
       errorMessage: null,
+      succeeded: true,
     });
   });
 });
@@ -172,5 +174,73 @@ describe("isCodexTransientUpstreamError", () => {
         ].join("\n"),
       }),
     ).toBe(false);
+  });
+});
+
+describe("classifier conversation-stdout isolation", () => {
+  const conversationStdout = [
+    JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+    JSON.stringify({
+      type: "item.completed",
+      item: {
+        type: "agent_message",
+        text: "We're currently experiencing high demand, which may cause temporary errors. The API returned 429 too many requests; try again later. You've hit your usage limit. Session thread-1 not found earlier.",
+      },
+    }),
+    JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }),
+  ].join("\n");
+
+  it("never classifies from agent conversation embedded in JSONL stdout", () => {
+    expect(isCodexTransientUpstreamError({ stdout: conversationStdout })).toBe(false);
+    expect(isCodexProviderQuotaError({ stdout: conversationStdout })).toBe(false);
+    expect(extractCodexRetryNotBefore({ stdout: conversationStdout })).toBeNull();
+    expect(isCodexUnknownSessionError(conversationStdout, "")).toBe(false);
+  });
+
+  it("still classifies plain-text stdout diagnostics", () => {
+    expect(
+      isCodexTransientUpstreamError({
+        stdout: "Error running remote compact task: We're currently experiencing high demand, which may cause temporary errors.",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects unknown sessions from the structured error message", () => {
+    expect(isCodexUnknownSessionError("", "", "no rollout found for thread id thread-1")).toBe(true);
+    expect(isCodexUnknownSessionError(conversationStdout, "", null)).toBe(false);
+  });
+});
+
+describe("parseCodexJsonl succeeded", () => {
+  it("reports success when the turn completed without failure events", () => {
+    const parsed = parseCodexJsonl([
+      JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "done" } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }),
+    ].join("\n"));
+    expect(parsed.succeeded).toBe(true);
+  });
+
+  it("does not report success on turn.failed", () => {
+    const parsed = parseCodexJsonl([
+      JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+      JSON.stringify({ type: "turn.failed", error: { message: "boom" } }),
+    ].join("\n"));
+    expect(parsed.succeeded).toBe(false);
+  });
+
+  it("does not report success when an error event was emitted", () => {
+    const parsed = parseCodexJsonl([
+      JSON.stringify({ type: "error", message: "stream error" }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }),
+    ].join("\n"));
+    expect(parsed.succeeded).toBe(false);
+  });
+
+  it("does not report success without a completed turn", () => {
+    const parsed = parseCodexJsonl(
+      JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+    );
+    expect(parsed.succeeded).toBe(false);
   });
 });

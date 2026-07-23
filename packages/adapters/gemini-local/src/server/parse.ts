@@ -1,4 +1,5 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { buildErrorClassificationHaystack } from "@paperclipai/adapter-utils/classification";
 
 function collectMessageText(message: unknown): string[] {
   if (typeof message === "string") {
@@ -81,6 +82,7 @@ export function parseGeminiJsonl(stdout: string) {
   let errorMessage: string | null = null;
   let costUsd: number | null = null;
   let resultEvent: Record<string, unknown> | null = null;
+  let resultEventIsError = false;
   let question: { prompt: string; choices: Array<{ key: string; label: string; description?: string }> } | null = null;
   const usage = {
     inputTokens: 0,
@@ -152,6 +154,7 @@ export function parseGeminiJsonl(stdout: string) {
         asString(event.subtype, "").toLowerCase() === "error" ||
         status === "error" ||
         status === "failed";
+      resultEventIsError = isError;
       if (isError) {
         const text = asErrorText(event.error ?? event.message ?? event.result).trim();
         if (text) errorMessage = text;
@@ -196,27 +199,32 @@ export function parseGeminiJsonl(stdout: string) {
     errorMessage,
     resultEvent,
     question,
+    // Structured success: the stream emitted a result event that did not
+    // report an error, and no error/system-error event set an error message.
+    // Authoritative when true — the process exit code may still be nonzero
+    // when terminal-result cleanup SIGTERMs the CLI after a successful result.
+    succeeded: resultEvent != null && !resultEventIsError && errorMessage == null,
   };
 }
 
-export function isGeminiSessionUnrecoverableError(stdout: string, stderr: string): boolean {
-  const haystack = `${stdout}\n${stderr}`
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n");
+export function isGeminiSessionUnrecoverableError(
+  stdout: string,
+  stderr: string,
+  errorMessage?: string | null,
+): boolean {
+  const haystack = buildErrorClassificationHaystack({ errorMessage, stdout, stderr });
 
   return /unknown\s+session|session\s+.*\s+not\s+found|resume\s+.*\s+not\s+found|checkpoint\s+.*\s+not\s+found|cannot\s+resume|failed\s+to\s+resume|exceeds\s+the\s+maximum\s+number\s+of\s+tokens|input\s+token\s+count\s+exceeds/i.test(
     haystack,
   );
 }
 
-export function isGeminiTransientNetworkError(stdout: string, stderr: string): boolean {
-  const haystack = `${stdout}\n${stderr}`
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n");
+export function isGeminiTransientNetworkError(
+  stdout: string,
+  stderr: string,
+  errorMessage?: string | null,
+): boolean {
+  const haystack = buildErrorClassificationHaystack({ errorMessage, stdout, stderr });
 
   return /ENOTFOUND\s+oauth2\.googleapis\.com|ENOTFOUND\s+sts\.googleapis\.com|EAI_AGAIN|_GaxiosError.*ENOTFOUND|_UserRefreshClient.*ENOTFOUND/i.test(
     haystack,
@@ -271,15 +279,18 @@ export function detectGeminiAuthRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
+  errorMessage?: string | null;
 }): { requiresAuth: boolean } {
   const errors = extractGeminiErrorMessages(input.parsed ?? {});
-  const messages = [...errors, input.stdout, input.stderr]
-    .join("\n")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const haystack = buildErrorClassificationHaystack({
+    errorMessage: [input.errorMessage ?? "", ...errors].join("\n"),
+    stdout: input.stdout,
+    stderr: input.stderr,
+  });
 
-  const requiresAuth = messages.some((line) => GEMINI_AUTH_REQUIRED_RE.test(line));
+  const requiresAuth = haystack
+    .split("\n")
+    .some((line) => GEMINI_AUTH_REQUIRED_RE.test(line));
   return { requiresAuth };
 }
 
@@ -287,15 +298,18 @@ export function detectGeminiQuotaExhausted(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
+  errorMessage?: string | null;
 }): { exhausted: boolean } {
   const errors = extractGeminiErrorMessages(input.parsed ?? {});
-  const messages = [...errors, input.stdout, input.stderr]
-    .join("\n")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const haystack = buildErrorClassificationHaystack({
+    errorMessage: [input.errorMessage ?? "", ...errors].join("\n"),
+    stdout: input.stdout,
+    stderr: input.stderr,
+  });
 
-  const exhausted = messages.some((line) => GEMINI_QUOTA_EXHAUSTED_RE.test(line));
+  const exhausted = haystack
+    .split("\n")
+    .some((line) => GEMINI_QUOTA_EXHAUSTED_RE.test(line));
   return { exhausted };
 }
 

@@ -1461,3 +1461,119 @@ describe("codex execute", () => {
     }
   });
 });
+
+describe("codex execute classification isolation", () => {
+  async function writeStreamingCodexCommand(
+    commandPath: string,
+    options: { stdoutLines: Array<Record<string, unknown>>; exitCode?: number },
+  ): Promise<void> {
+    const script = `#!/usr/bin/env node
+for (const line of ${JSON.stringify(options.stdoutLines.map((line) => JSON.stringify(line)))}) {
+  console.log(line);
+}
+process.exit(${options.exitCode ?? 1});
+`;
+    await fs.writeFile(commandPath, script, "utf8");
+    await fs.chmod(commandPath, 0o755);
+  }
+
+  async function runCodexExecute(
+    runId: string,
+    tmpPrefix: string,
+    commandWriter: (commandPath: string) => Promise<void>,
+  ) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), tmpPrefix));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await commandWriter(commandPath);
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+    try {
+      return await execute({
+        runId,
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("does not classify a failed run as transient from conversation stdout alone", async () => {
+    const result = await runCodexExecute(
+      "run-codex-conversation-keywords",
+      "paperclip-codex-execute-conversation-keywords-",
+      (commandPath) =>
+        writeStreamingCodexCommand(commandPath, {
+          exitCode: 1,
+          stdoutLines: [
+            { type: "thread.started", thread_id: "codex-thread-1" },
+            {
+              type: "item.completed",
+              item: {
+                type: "agent_message",
+                text: "We're currently experiencing high demand, which may cause temporary errors. Users saw 429 too many requests and should try again later. You've hit your usage limit was the quota message.",
+              },
+            },
+            { type: "turn.failed", error: { message: "Something unrelated broke while writing the report." } },
+          ],
+        }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.succeeded ?? false).toBe(false);
+    expect(result.errorCode).not.toBe("codex_transient_upstream");
+    expect(result.errorCode).not.toBe("provider_quota");
+    expect(result.errorFamily ?? null).toBeNull();
+    expect(result.errorMessage).toContain("Something unrelated broke");
+  });
+
+  it("treats a completed turn as success even when the process exits nonzero", async () => {
+    const result = await runCodexExecute(
+      "run-codex-cleanup-kill",
+      "paperclip-codex-execute-cleanup-kill-",
+      (commandPath) =>
+        writeStreamingCodexCommand(commandPath, {
+          // Simulates terminal-result cleanup SIGTERMing the CLI after a
+          // successful turn (observed as exit 143 in prod).
+          exitCode: 143,
+          stdoutLines: [
+            { type: "thread.started", thread_id: "codex-thread-2" },
+            { type: "item.completed", item: { type: "agent_message", text: "Deployed the fix." } },
+            { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+          ],
+        }),
+    );
+
+    expect(result.exitCode).toBe(143);
+    expect(result.succeeded).toBe(true);
+    expect(result.errorMessage).toBeNull();
+    expect(result.errorCode).toBeNull();
+    expect(result.errorFamily ?? null).toBeNull();
+    expect(result.summary).toBe("Deployed the fix.");
+  });
+});
