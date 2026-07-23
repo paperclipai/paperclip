@@ -7131,6 +7131,35 @@ export function issueRoutes(
       },
     });
 
+    // Emit agent.delegation.created when an agent run creates a subtask assigned to another agent.
+    if (
+      actor.agentId &&
+      actor.runId &&
+      issue.assigneeAgentId &&
+      issue.assigneeAgentId !== actor.agentId &&
+      issue.parentId
+    ) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.delegation.created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          delegatingAgentId: actor.agentId,
+          delegatingRunId: actor.runId,
+          delegatedAgentId: issue.assigneeAgentId,
+          issueId: issue.id,
+          subtaskId: issue.id,
+          reason: "subtask_creation",
+          identifier: issue.identifier,
+        },
+      });
+    }
+
     if (executionPolicy?.monitor) {
       await logActivity(db, {
         companyId,
@@ -7293,6 +7322,34 @@ export function issueRoutes(
           : {}),
       },
     });
+
+    // Emit agent.delegation.created when an agent run creates a subtask assigned to another agent.
+    if (
+      actor.agentId &&
+      actor.runId &&
+      issue.assigneeAgentId &&
+      issue.assigneeAgentId !== actor.agentId
+    ) {
+      await logActivity(db, {
+        companyId: parent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.delegation.created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          delegatingAgentId: actor.agentId,
+          delegatingRunId: actor.runId,
+          delegatedAgentId: issue.assigneeAgentId,
+          issueId: issue.id,
+          subtaskId: issue.id,
+          reason: "subtask_creation",
+          identifier: issue.identifier,
+        },
+      });
+    }
 
     if (executionPolicy?.monitor) {
       await logActivity(db, {
@@ -8166,6 +8223,34 @@ export function issueRoutes(
         ),
       },
     });
+
+    // Emit agent.delegation.created when an agent run reassigns to another agent.
+    if (
+      assigneeWillChange &&
+      actor.agentId &&
+      actor.runId &&
+      issue.assigneeAgentId &&
+      issue.assigneeAgentId !== actor.agentId
+    ) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.delegation.created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          delegatingAgentId: actor.agentId,
+          delegatingRunId: actor.runId,
+          delegatedAgentId: issue.assigneeAgentId,
+          issueId: issue.id,
+          reason: "assignee_change",
+          identifier: issue.identifier,
+        },
+      });
+    }
 
     if (existing.status === "in_progress" && issue.status !== existing.status && issue.status !== "in_progress") {
       await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id], { hydrateLiveness: false })

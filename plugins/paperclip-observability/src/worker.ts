@@ -1,0 +1,1023 @@
+/**
+ * Observability plugin worker.
+ *
+ * Subscribes to Paperclip domain events (agent runs, issue lifecycle, cost
+ * events, approvals) and forwards them as OTel metrics, traces, and logs
+ * to a configured OTLP collector.
+ *
+ * Event dispatch is handled by the EventTelemetryRouter, which fans out
+ * each event to focused handler modules (metrics, traces, logs) via
+ * Promise.allSettled.
+ */
+
+import {
+  definePlugin,
+  runWorker,
+  type PaperclipPlugin,
+  type PluginContext,
+  type PluginHealthDiagnostics,
+  type PluginJobContext,
+  type Agent,
+  type Issue,
+  type Project,
+} from "@paperclipai/plugin-sdk";
+import { SpanStatusCode, type Span, type Meter } from "@opentelemetry/api";
+import type { ObservabilityConfig } from "./config.js";
+import { resolveConfig } from "./config.js";
+import { JOB_KEYS, METRIC_NAMES } from "./constants.js";
+import { initOTel, type OTelHandle } from "./otel-setup.js";
+import {
+  EventTelemetryRouter,
+  type TelemetryContext,
+} from "./telemetry/router.js";
+import {
+  computeHealthScore,
+  type HealthScoreResult,
+} from "./health-score.js";
+
+// Metrics handlers
+import {
+  handleRunStartedMetrics,
+  handleRunFinishedMetrics,
+  handleRunFailedMetrics,
+  handleRunCancelledMetrics,
+  handleCostMetrics,
+  handleIssueCreatedMetrics,
+  handleIssueUpdatedMetrics,
+  handleIssueCommentCreatedMetrics,
+  handleAgentStatusChangedMetrics,
+  handleApprovalCreatedMetrics,
+  handleApprovalDecidedMetrics,
+  handleGenericMetrics,
+} from "./telemetry/metrics-handlers.js";
+
+// Trace handlers
+import {
+  handleRunStartedTraces,
+  handleRunFinishedTraces,
+  handleRunFailedTraces,
+  handleRunCancelledTraces,
+  handleCostTraces,
+  handleIssueCreatedTraces,
+  handleIssueUpdatedTraces,
+  handleIssueCommentCreatedTraces,
+  handleApprovalCreatedTraces,
+  handleApprovalDecidedTraces,
+} from "./telemetry/trace-handlers.js";
+
+// Log handlers
+import {
+  handleRunStartedLogs,
+  handleRunFinishedLogs,
+  handleRunFailedLogs,
+  handleAgentStatusChangedLogs,
+  handleIssueCreatedLogs,
+  handleIssueUpdatedLogs,
+  handleIssueCommentCreatedLogs,
+  handleApprovalCreatedLogs,
+  handleApprovalDecidedLogs,
+  handleCostEventLogs,
+} from "./telemetry/log-handlers.js";
+
+// Activity handlers
+import {
+  handleActivityMetrics,
+  handleActivityTraces,
+  handleActivityLogs,
+} from "./telemetry/activity-handlers.js";
+
+// DB query handlers
+import {
+  handleDbQueryMetrics,
+  handleDbQueryTraces,
+} from "./telemetry/db-query-handlers.js";
+
+// Session handlers
+import {
+  handleSessionCreatedTraces,
+  handleSessionCreatedMetrics,
+  handleSessionCreatedLogs,
+  handleSessionChunkTraces,
+  handleSessionChunkMetrics,
+  handleSessionStatusTraces,
+  handleSessionDoneTraces,
+  handleSessionDoneMetrics,
+  handleSessionDoneLogs,
+  handleSessionErrorTraces,
+  handleSessionErrorMetrics,
+  handleSessionErrorLogs,
+} from "./telemetry/session-handlers.js";
+
+// ---------------------------------------------------------------------------
+// Module-level state
+// ---------------------------------------------------------------------------
+
+let otel: OTelHandle | null = null;
+let ctx: PluginContext | null = null;
+let resolvedConfig: ObservabilityConfig | null = null;
+let startedAt: string | null = null;
+let eventsProcessed = 0;
+let lastError: string | null = null;
+
+// Active span maps — shared across handler modules via TelemetryContext
+const activeRunSpans = new Map<string, Span>();
+const activeIssueSpans = new Map<string, Span>();
+const activeApprovalSpans = new Map<string, Span>();
+const activeSessionSpans = new Map<string, Span>();
+const endedRunSpanContexts = new Map<string, { traceId: string; spanId: string; traceFlags: number; endedAt: number }>();
+
+// Lookup maps — shared across handler modules via TelemetryContext
+// projectId → projectName (refreshed by collect-metrics job)
+const projectNameMap = new Map<string, string>();
+// agentId → active issue context (populated from run.started events)
+const agentIssueMap = new Map<string, { issueId: string; issueIdentifier: string; projectId: string }>();
+// issueId → { projectId, identifier, title, parentId } (refreshed by collect-metrics job)
+const issueContextMap = new Map<string, { projectId: string; identifier: string; title: string; parentId?: string }>();
+// agentId → active runId (populated on run.started, cleaned on run.finished/failed/cancelled)
+const agentActiveRunId = new Map<string, string>();
+// agentId → agentName (refreshed by collect-metrics job, also populated on run.started)
+const agentNameMap = new Map<string, string>();
+
+// Gauge snapshot data — written by the collect-metrics job, read by observable gauge callbacks
+interface AgentSnapshot {
+  agentId: string;
+  agentName: string;
+  agentRole: string;
+  companyId: string;
+  status: string;
+  heartbeatAgeSec: number | null;
+  budgetMonthlyCents: number;
+  spentMonthlyCents: number;
+}
+let agentSnapshots: AgentSnapshot[] = [];
+
+interface IssueSnapshot {
+  companyId: string;
+  projectId: string;
+  projectName: string;
+  status: string;
+  count: number;
+}
+let issueSnapshots: IssueSnapshot[] = [];
+
+interface GovernanceSnapshot {
+  companyId: string;
+  approvalsPending: number;
+  budgetIncidentsActive: number;
+  companyBudgetUtilPct: number;
+  pausedAgentCount: number;
+  pausedProjectCount: number;
+}
+let governanceSnapshots: GovernanceSnapshot[] = [];
+
+interface HealthScoreSnapshot {
+  agentId: string;
+  agentName: string;
+  agentRole: string;
+  companyId: string;
+  score: number;
+  healthStatus: string;
+}
+let healthScoreSnapshots: HealthScoreSnapshot[] = [];
+
+interface ServerHealthSnapshot {
+  score: number;
+  dbReachable: boolean;
+  otelSdkInitialized: boolean;
+}
+let serverHealthSnapshot: ServerHealthSnapshot = {
+  score: 0,
+  dbReachable: false,
+  otelSdkInitialized: false,
+};
+
+// ---------------------------------------------------------------------------
+// Router setup — register all handlers
+// ---------------------------------------------------------------------------
+
+function createRouter(): EventTelemetryRouter {
+  const router = new EventTelemetryRouter();
+
+  // agent.run.started
+  router.register("agent.run.started", handleRunStartedMetrics);
+  router.register("agent.run.started", handleRunStartedTraces);
+  router.register("agent.run.started", handleRunStartedLogs);
+
+  // agent.run.finished
+  router.register("agent.run.finished", handleRunFinishedMetrics);
+  router.register("agent.run.finished", handleRunFinishedTraces);
+  router.register("agent.run.finished", handleRunFinishedLogs);
+
+  // agent.run.failed
+  router.register("agent.run.failed", handleRunFailedMetrics);
+  router.register("agent.run.failed", handleRunFailedTraces);
+  router.register("agent.run.failed", handleRunFailedLogs);
+
+  // agent.run.cancelled
+  router.register("agent.run.cancelled", handleRunCancelledMetrics);
+  router.register("agent.run.cancelled", handleRunCancelledTraces);
+
+  // cost_event.created
+  router.register("cost_event.created", handleCostMetrics);
+  router.register("cost_event.created", handleCostTraces);
+  router.register("cost_event.created", handleCostEventLogs);
+
+  // issue.created
+  router.register("issue.created", handleIssueCreatedMetrics);
+  router.register("issue.created", handleIssueCreatedTraces);
+  router.register("issue.created", handleIssueCreatedLogs);
+
+  // issue.comment.created
+  router.register("issue.comment.created", handleIssueCommentCreatedMetrics);
+  router.register("issue.comment.created", handleIssueCommentCreatedTraces);
+  router.register("issue.comment.created", handleIssueCommentCreatedLogs);
+
+  // issue.updated
+  router.register("issue.updated", handleIssueUpdatedMetrics);
+  router.register("issue.updated", handleIssueUpdatedTraces);
+  router.register("issue.updated", handleIssueUpdatedLogs);
+
+  // agent.status_changed
+  router.register("agent.status_changed", handleAgentStatusChangedMetrics);
+  router.register("agent.status_changed", handleAgentStatusChangedLogs);
+
+  // approval.created
+  router.register("approval.created", handleApprovalCreatedMetrics);
+  router.register("approval.created", handleApprovalCreatedTraces);
+  router.register("approval.created", handleApprovalCreatedLogs);
+
+  // approval.decided
+  router.register("approval.decided", handleApprovalDecidedMetrics);
+  router.register("approval.decided", handleApprovalDecidedTraces);
+  router.register("approval.decided", handleApprovalDecidedLogs);
+
+  // activity.logged
+  router.register("activity.logged", handleGenericMetrics);
+  router.register("activity.logged", handleActivityMetrics);
+  router.register("activity.logged", handleActivityTraces);
+  router.register("activity.logged", handleActivityLogs);
+
+  // agent.session.created
+  router.register("agent.session.created", handleSessionCreatedTraces);
+  router.register("agent.session.created", handleSessionCreatedMetrics);
+  router.register("agent.session.created", handleSessionCreatedLogs);
+
+  // agent.session.chunk
+  router.register("agent.session.chunk", handleSessionChunkTraces);
+  router.register("agent.session.chunk", handleSessionChunkMetrics);
+
+  // agent.session.status
+  router.register("agent.session.status", handleSessionStatusTraces);
+
+  // agent.session.done
+  router.register("agent.session.done", handleSessionDoneTraces);
+  router.register("agent.session.done", handleSessionDoneMetrics);
+  router.register("agent.session.done", handleSessionDoneLogs);
+
+  // agent.session.error
+  router.register("agent.session.error", handleSessionErrorTraces);
+  router.register("agent.session.error", handleSessionErrorMetrics);
+  router.register("agent.session.error", handleSessionErrorLogs);
+
+  // db.query.completed — plugin-side spans nest DB operations under agent run
+  // spans for end-to-end trace visibility in the backend (e.g. Dynatrace).
+  // Server-side spans from instrumentQuery provide server-context tracing.
+  router.register("db.query.completed", handleDbQueryMetrics);
+  router.register("db.query.completed", handleDbQueryTraces);
+
+  return router;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin definition
+// ---------------------------------------------------------------------------
+
+
+/**
+ * Register all observable gauges against the given Meter. Called from setup()
+ * and again from onConfigChanged() after the SDK is reinitialised, so the
+ * gauge callbacks are always bound to the *current* Meter. Without re-binding,
+ * a config reload swaps in a fresh Meter and the gauges registered on the old
+ * (torn-down) Meter would silently stop reporting.
+ */
+function registerObservableGauges(meter: Meter): void {
+    const agentCountGauge = meter.createObservableGauge(
+      METRIC_NAMES.agentsCount,
+      { description: "Number of agents by status" },
+    );
+    agentCountGauge.addCallback((obs) => {
+      const seen = new Map<string, { count: number; companyId: string; status: string }>();
+      for (const snap of agentSnapshots) {
+        const key = `${snap.companyId}:${snap.status}`;
+        const entry = seen.get(key);
+        if (entry) {
+          entry.count++;
+        } else {
+          seen.set(key, { count: 1, companyId: snap.companyId, status: snap.status });
+        }
+      }
+      for (const { count, companyId, status } of seen.values()) {
+        obs.observe(count, { status, company_id: companyId });
+      }
+    });
+
+    const heartbeatAgeGauge = meter.createObservableGauge(
+      METRIC_NAMES.agentsHeartbeatAge,
+      { description: "Seconds since last agent heartbeat", unit: "s" },
+    );
+    heartbeatAgeGauge.addCallback((obs) => {
+      for (const snap of agentSnapshots) {
+        if (snap.heartbeatAgeSec != null) {
+          obs.observe(snap.heartbeatAgeSec, {
+            agent_id: snap.agentId,
+            agent_name: snap.agentName,
+            agent_role: snap.agentRole,
+            company_id: snap.companyId,
+          });
+        }
+      }
+    });
+
+    const budgetUtilGauge = meter.createObservableGauge(
+      METRIC_NAMES.budgetUtilization,
+      { description: "Budget utilization percentage" },
+    );
+    budgetUtilGauge.addCallback((obs) => {
+      for (const snap of agentSnapshots) {
+        if (snap.budgetMonthlyCents > 0) {
+          const utilPct = (snap.spentMonthlyCents / snap.budgetMonthlyCents) * 100;
+          obs.observe(utilPct, {
+            agent_id: snap.agentId,
+            agent_name: snap.agentName,
+            company_id: snap.companyId,
+            scope: "agent",
+          });
+        }
+      }
+    });
+
+    const budgetRemainingGauge = meter.createObservableGauge(
+      METRIC_NAMES.budgetRemaining,
+      { description: "Remaining budget in cents", unit: "cent" },
+    );
+    budgetRemainingGauge.addCallback((obs) => {
+      for (const snap of agentSnapshots) {
+        if (snap.budgetMonthlyCents > 0) {
+          obs.observe(snap.budgetMonthlyCents - snap.spentMonthlyCents, {
+            agent_id: snap.agentId,
+            agent_name: snap.agentName,
+            company_id: snap.companyId,
+          });
+        }
+      }
+    });
+
+    const issueCountGauge = meter.createObservableGauge(
+      METRIC_NAMES.issuesCount,
+      { description: "Number of issues by status and project" },
+    );
+    issueCountGauge.addCallback((obs) => {
+      for (const snap of issueSnapshots) {
+        obs.observe(snap.count, {
+          status: snap.status,
+          project_id: snap.projectId,
+          project_name: snap.projectName,
+          company_id: snap.companyId,
+        });
+      }
+    });
+
+    const approvalsPendingGauge = meter.createObservableGauge(
+      METRIC_NAMES.approvalsPending,
+      { description: "Number of pending approvals" },
+    );
+    approvalsPendingGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.approvalsPending, { company_id: snap.companyId });
+      }
+    });
+
+    const budgetIncidentsGauge = meter.createObservableGauge(
+      METRIC_NAMES.budgetIncidentsActive,
+      { description: "Number of active budget incidents" },
+    );
+    budgetIncidentsGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.budgetIncidentsActive, {
+          company_id: snap.companyId,
+        });
+      }
+    });
+
+    const companyBudgetUtilGauge = meter.createObservableGauge(
+      METRIC_NAMES.companyBudgetUtilization,
+      { description: "Company-level budget utilization percentage" },
+    );
+    companyBudgetUtilGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.companyBudgetUtilPct, {
+          company_id: snap.companyId,
+        });
+      }
+    });
+
+    const pausedAgentsGauge = meter.createObservableGauge(
+      METRIC_NAMES.budgetPausedAgents,
+      { description: "Number of agents paused due to budget" },
+    );
+    pausedAgentsGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.pausedAgentCount, { company_id: snap.companyId });
+      }
+    });
+
+    const pausedProjectsGauge = meter.createObservableGauge(
+      METRIC_NAMES.budgetPausedProjects,
+      { description: "Number of projects paused due to budget" },
+    );
+    pausedProjectsGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.pausedProjectCount, { company_id: snap.companyId });
+      }
+    });
+
+    const healthScoreGauge = meter.createObservableGauge(
+      METRIC_NAMES.agentHealthScore,
+      { description: "Agent health score (0-100)" },
+    );
+    healthScoreGauge.addCallback((obs) => {
+      for (const snap of healthScoreSnapshots) {
+        obs.observe(snap.score, {
+          agent_id: snap.agentId,
+          agent_name: snap.agentName,
+          agent_role: snap.agentRole,
+          company_id: snap.companyId,
+          health_status: snap.healthStatus,
+        });
+      }
+    });
+
+    const serverHealthGauge = meter.createObservableGauge(
+      METRIC_NAMES.serverHealthScore,
+      { description: "Server health score (100 if healthy, 0 if error)" },
+    );
+    serverHealthGauge.addCallback((obs) => {
+      obs.observe(serverHealthSnapshot.score, {
+        db_reachable: String(serverHealthSnapshot.dbReachable),
+        otel_initialized: String(serverHealthSnapshot.otelSdkInitialized),
+      });
+    });
+
+}
+
+const plugin: PaperclipPlugin = definePlugin({
+  async setup(pluginCtx: PluginContext) {
+    ctx = pluginCtx;
+    startedAt = new Date().toISOString();
+    ctx.logger.info("Observability plugin starting");
+
+    // Load config and initialise OTel SDK
+    const rawConfig = await ctx.config.get();
+    const config = resolveConfig(rawConfig);
+    resolvedConfig = config;
+
+    try {
+      otel = initOTel(config);
+      ctx.logger.info("OTel SDK initialised", {
+        endpoint: config.otlpEndpoint,
+        tracing: config.enableTracing,
+        metrics: config.enableMetrics,
+        logs: config.enableLogs,
+      });
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      ctx.logger.error("Failed to initialise OTel SDK", {
+        error: lastError,
+      });
+    }
+
+    // ----- Create router and telemetry context -----
+
+    const router = createRouter();
+
+    const telemetryCtx: TelemetryContext | null = otel
+      ? {
+          // Resolve meter/tracer/otelLogger from the *current* otel handle at
+          // access time. onConfigChanged() shuts the old SDK down and swaps in a
+          // new one; without dynamic getters this context would keep emitting
+          // through the torn-down provider after a config change.
+          get meter() {
+            return otel!.meter;
+          },
+          get tracer() {
+            return otel!.tracer;
+          },
+          state: ctx.state,
+          logger: ctx.logger,
+          issues: ctx.issues,
+          companies: ctx.companies,
+          agents: ctx.agents,
+          get otelLogger() {
+            return otel!.otelLogger;
+          },
+          activeRunSpans,
+          activeIssueSpans,
+          activeApprovalSpans,
+          activeSessionSpans,
+          getTracerForAgent(_agentId: string, _agentName: string) {
+            return otel!.tracer;
+          },
+          projectNameMap,
+          agentIssueMap,
+          issueContextMap,
+          agentActiveRunId,
+          agentNameMap,
+          endedRunSpanContexts,
+        }
+      : null;
+
+    // ----- Subscribe to domain events via router -----
+
+    const eventTypes = [
+      "agent.run.started",
+      "agent.run.finished",
+      "agent.run.failed",
+      "agent.run.cancelled",
+      "cost_event.created",
+      "issue.created",
+      "issue.comment.created",
+      "issue.updated",
+      "agent.status_changed",
+      "approval.created",
+      "approval.decided",
+      "activity.logged",
+      // Session lifecycle events (emitted when server supports them)
+      "agent.session.created",
+      "agent.session.chunk",
+      "agent.session.status",
+      "agent.session.done",
+      "agent.session.error",
+      // Database instrumentation
+      "db.query.completed",
+    ] as const;
+
+    for (const eventType of eventTypes) {
+      ctx.events.on(eventType, async (event) => {
+        // `telemetryCtx` is captured once, but its meter/tracer/otelLogger
+        // getters dereference the live `otel` handle. A failed onConfigChanged()
+        // sets `otel = null`, so dispatching here would throw a TypeError inside
+        // the getters. Guard on the live handle, not just the captured context.
+        if (!telemetryCtx || !otel) return;
+        eventsProcessed++;
+        await router.dispatch(event, telemetryCtx);
+      });
+    }
+
+    // ----- Register observable gauges (read from snapshots) -----
+
+    if (otel) {
+      registerObservableGauges(otel.meter);
+    }
+
+    // ----- Register collect-metrics job (refreshes snapshots) -----
+
+    ctx.jobs.register(
+      JOB_KEYS.collectMetrics,
+      async (_job: PluginJobContext) => {
+        if (!ctx) return;
+
+        ctx.logger.info("Collecting agent health snapshots");
+
+        const companies = await ctx.companies.list({ limit: 100, offset: 0 });
+        const now = Date.now();
+        const snapshots: AgentSnapshot[] = [];
+
+        for (const company of companies) {
+          const agents = await ctx.agents.list({
+            companyId: company.id,
+            limit: 200,
+            offset: 0,
+          });
+
+          for (const agent of agents as Agent[]) {
+            const lastHb = agent.lastHeartbeatAt
+              ? new Date(agent.lastHeartbeatAt).getTime()
+              : null;
+
+            snapshots.push({
+              agentId: agent.id,
+              agentName: agent.name,
+              agentRole: agent.role,
+              companyId: company.id,
+              status: agent.status,
+              heartbeatAgeSec: lastHb != null ? (now - lastHb) / 1000 : null,
+              budgetMonthlyCents: agent.budgetMonthlyCents,
+              spentMonthlyCents: agent.spentMonthlyCents,
+            });
+          }
+        }
+
+        agentSnapshots = snapshots;
+
+        // Refresh agentNameMap so cost/comment spans can resolve agent names
+        for (const snap of snapshots) {
+          agentNameMap.set(snap.agentId, snap.agentName);
+        }
+
+        ctx.logger.info("Agent health snapshots updated", {
+          agentCount: snapshots.length,
+          companyCount: companies.length,
+        });
+
+        // --- Collect issue count gauges ---
+
+        projectNameMap.clear();
+        for (const company of companies) {
+          const projects = await ctx.projects.list({
+            companyId: company.id,
+            limit: 200,
+            offset: 0,
+          });
+          for (const project of projects as Project[]) {
+            projectNameMap.set(project.id, project.name);
+          }
+        }
+
+        const issueBuckets = new Map<string, IssueSnapshot>();
+        // Accumulate into a fresh map and swap it in synchronously at the end.
+        // Clearing issueContextMap up front and repopulating across `await`
+        // boundaries would leave a window where concurrent event dispatch (cost
+        // attribution, delegation linking) sees empty issue context.
+        const nextIssueContext = new Map<
+          string,
+          { projectId: string; identifier: string; title: string; parentId?: string }
+        >();
+
+        for (const company of companies) {
+          const issues = await ctx.issues.list({
+            companyId: company.id,
+            limit: 200,
+            offset: 0,
+          });
+
+          for (const issue of issues as Issue[]) {
+            const projectId = issue.projectId ?? "";
+            const key = `${company.id}:${projectId}:${issue.status}`;
+            const existing = issueBuckets.get(key);
+            if (existing) {
+              existing.count++;
+            } else {
+              issueBuckets.set(key, {
+                companyId: company.id,
+                projectId,
+                projectName: projectNameMap.get(projectId) ?? "",
+                status: issue.status,
+                count: 1,
+              });
+            }
+
+            // Build issue context map for cost attribution and delegation linking
+            // The Issue SDK type does not expose parentId, but the API always returns it.
+            const issueWithParent = issue as Issue & { parentId?: string };
+            nextIssueContext.set(issue.id, {
+              projectId,
+              identifier: issue.identifier ?? "",
+              title: issue.title ?? "",
+              parentId: issueWithParent.parentId,
+            });
+          }
+        }
+
+        // Atomic swap: no `await` between clear and refill, so dispatchers never
+        // observe a partially-populated map.
+        issueContextMap.clear();
+        for (const [id, octx] of nextIssueContext) issueContextMap.set(id, octx);
+
+        issueSnapshots = Array.from(issueBuckets.values());
+        ctx.logger.info("Issue count snapshots updated", {
+          buckets: issueSnapshots.length,
+        });
+
+        // --- Collect governance & budget gauges ---
+
+        const govSnapshots: GovernanceSnapshot[] = [];
+
+        for (const company of companies) {
+          const pendingCount = await ctx.state
+            .get({
+              scopeKind: "instance",
+              stateKey: `approvals:pending:${company.id}`,
+            })
+            .catch(() => null);
+          const approvalsPending =
+            typeof pendingCount === "number" ? Math.max(0, pendingCount) : 0;
+
+          const companyBudgetUtilPct =
+            company.budgetMonthlyCents > 0
+              ? (company.spentMonthlyCents / company.budgetMonthlyCents) * 100
+              : 0;
+
+          const companyAgents = snapshots.filter(
+            (s) => s.companyId === company.id,
+          );
+          const budgetIncidentsActive = companyAgents.filter(
+            (a) =>
+              a.budgetMonthlyCents > 0 &&
+              a.spentMonthlyCents >= a.budgetMonthlyCents,
+          ).length;
+
+          const pausedAgentCount = companyAgents.filter(
+            (a) => a.status === "paused",
+          ).length;
+
+          const companyProjects = await ctx.projects.list({
+            companyId: company.id,
+            limit: 200,
+            offset: 0,
+          });
+          const pausedProjectCount = (companyProjects as Project[]).filter(
+            (p) => p.pauseReason != null,
+          ).length;
+
+          govSnapshots.push({
+            companyId: company.id,
+            approvalsPending,
+            budgetIncidentsActive,
+            companyBudgetUtilPct: Number(companyBudgetUtilPct.toFixed(2)),
+            pausedAgentCount,
+            pausedProjectCount,
+          });
+        }
+
+        governanceSnapshots = govSnapshots;
+        ctx.logger.info("Governance snapshots updated", {
+          companyCount: govSnapshots.length,
+        });
+
+        // --- Compute agent health scores ---
+
+        const healthSnapshots: HealthScoreSnapshot[] = [];
+        for (const snap of snapshots) {
+          const result = computeHealthScore({
+            status: snap.status,
+            heartbeatAgeSec: snap.heartbeatAgeSec,
+            budgetMonthlyCents: snap.budgetMonthlyCents,
+            spentMonthlyCents: snap.spentMonthlyCents,
+            runSuccessRate: null, // TODO: compute from recent runs when run history API is available
+          });
+          healthSnapshots.push({
+            agentId: snap.agentId,
+            agentName: snap.agentName,
+            agentRole: snap.agentRole,
+            companyId: snap.companyId,
+            score: result.score,
+            healthStatus: result.healthStatus,
+          });
+        }
+
+        healthScoreSnapshots = healthSnapshots;
+        ctx.logger.info("Health score snapshots updated", {
+          agentCount: healthSnapshots.length,
+        });
+
+        // --- Collect server health probe ---
+
+        let dbReachable = false;
+        try {
+          await ctx.companies.list({ limit: 1, offset: 0 });
+          dbReachable = true;
+        } catch {
+          dbReachable = false;
+        }
+
+        const otelSdkInitialized = otel != null;
+        const serverScore = dbReachable && otelSdkInitialized ? 100 : 0;
+
+        serverHealthSnapshot = {
+          score: serverScore,
+          dbReachable,
+          otelSdkInitialized,
+        };
+
+        ctx.logger.info("Server health probe completed", {
+          score: serverScore,
+          dbReachable,
+          otelSdkInitialized,
+        });
+
+        const jobCompanyId = companies[0]?.id;
+        if (jobCompanyId) {
+          await ctx.activity.log({
+            companyId: jobCompanyId,
+            message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${govSnapshots.length} governance snapshots, ${healthSnapshots.length} health scores, ${eventsProcessed} events processed since startup`,
+          });
+        }
+      },
+    );
+
+    const initCompanies = await ctx.companies.list({ limit: 1, offset: 0 });
+    const initCompanyId = initCompanies[0]?.id;
+    if (initCompanyId) {
+      await ctx.activity.log({
+        companyId: initCompanyId,
+        message:
+          "Observability plugin initialised and subscribed to domain events",
+      });
+    }
+  },
+
+  async onHealth(): Promise<PluginHealthDiagnostics> {
+    const otelSdkInitialized = otel != null;
+    const tracingEnabled = resolvedConfig?.enableTracing ?? false;
+    const metricsEnabled = resolvedConfig?.enableMetrics ?? false;
+    const logsEnabled = resolvedConfig?.enableLogs ?? false;
+    const otlpEndpoint = resolvedConfig?.otlpEndpoint ?? null;
+
+    // DB reachability probe
+    let dbReachable = false;
+    try {
+      if (ctx) {
+        await ctx.companies.list({ limit: 1, offset: 0 });
+        dbReachable = true;
+      }
+    } catch {
+      dbReachable = false;
+    }
+
+    const details = {
+      startedAt,
+      eventsProcessed,
+      otelSdkInitialized,
+      tracingEnabled,
+      metricsEnabled,
+      logsEnabled,
+      otlpEndpoint,
+      dbReachable,
+      lastError,
+    };
+
+    if (!otelSdkInitialized && !dbReachable) {
+      return {
+        status: "error",
+        message: "OTel SDK not initialised and DB unreachable",
+        details,
+      };
+    }
+
+    if (!otelSdkInitialized) {
+      return {
+        status: lastError ? "degraded" : "error",
+        message: lastError ?? "OTel SDK not initialised",
+        details,
+      };
+    }
+
+    if (!dbReachable) {
+      return {
+        status: "degraded",
+        message: "DB unreachable — metrics collection may be stale",
+        details,
+      };
+    }
+
+    return {
+      status: "ok",
+      message: `Healthy — ${eventsProcessed} events processed`,
+      details,
+    };
+  },
+
+  async onConfigChanged(newConfig: Record<string, unknown>) {
+    ctx?.logger.info("Config changed — reinitialising OTel SDK");
+
+    if (otel) {
+      try {
+        await otel.shutdown();
+      } catch (err) {
+        ctx?.logger.warn("Error shutting down old OTel SDK", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const config = resolveConfig(newConfig);
+    resolvedConfig = config;
+    try {
+      otel = initOTel(config);
+      lastError = null;
+      // Re-bind the observable gauges to the new Meter. The originals were
+      // registered against the previous (now shut-down) Meter in setup(); if we
+      // don't re-register here the gauges silently stop reporting after a reload.
+      registerObservableGauges(otel.meter);
+      ctx?.logger.info("OTel SDK reinitialised with new config");
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      otel = null;
+      ctx?.logger.error("Failed to reinitialise OTel SDK", {
+        error: lastError,
+      });
+    }
+  },
+
+  async onValidateConfig(config: Record<string, unknown>) {
+    const warnings: string[] = [];
+    const errors: string[] = [];
+
+    if (config.otlpEndpoint) {
+      const endpoint = String(config.otlpEndpoint);
+      if (
+        !endpoint.startsWith("http://") &&
+        !endpoint.startsWith("https://")
+      ) {
+        errors.push("otlpEndpoint must start with http:// or https://");
+      }
+    }
+
+    if (config.exportIntervalMs != null) {
+      const interval = Number(config.exportIntervalMs);
+      if (interval < 1000) {
+        warnings.push(
+          "exportIntervalMs below 1000ms may cause excessive load",
+        );
+      }
+    }
+
+    return { ok: errors.length === 0, warnings, errors };
+  },
+
+  async onShutdown() {
+    ctx?.logger.info(
+      "Observability plugin shutting down — flushing telemetry",
+      {
+        activeRunSpanCount: activeRunSpans.size,
+        activeIssueSpanCount: activeIssueSpans.size,
+        activeApprovalSpanCount: activeApprovalSpans.size,
+        activeSessionSpanCount: activeSessionSpans.size,
+      },
+    );
+
+    // End any active run spans before shutdown
+    for (const [runId, span] of activeRunSpans) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: "plugin_shutdown" });
+      span.setAttribute("paperclip.run.interrupted", true);
+      span.end();
+      ctx?.logger.info("Ended orphaned run span on shutdown", { runId });
+    }
+    activeRunSpans.clear();
+    endedRunSpanContexts.clear();
+
+    // End any active issue lifecycle spans before shutdown
+    for (const [issueId, span] of activeIssueSpans) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: "plugin_shutdown" });
+      span.setAttribute("paperclip.issue.interrupted", true);
+      span.end();
+      ctx?.logger.info("Ended orphaned issue span on shutdown", { issueId });
+    }
+    activeIssueSpans.clear();
+
+    // End any active approval lifecycle spans before shutdown
+    for (const [approvalId, span] of activeApprovalSpans) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: "plugin_shutdown" });
+      span.setAttribute("paperclip.approval.interrupted", true);
+      span.end();
+      ctx?.logger.info("Ended orphaned approval span on shutdown", { approvalId });
+    }
+    activeApprovalSpans.clear();
+
+    // End any active session lifecycle spans before shutdown
+    for (const [sessionId, span] of activeSessionSpans) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: "plugin_shutdown" });
+      span.setAttribute("paperclip.session.interrupted", true);
+      span.end();
+      ctx?.logger.info("Ended orphaned session span on shutdown", { sessionId });
+    }
+    activeSessionSpans.clear();
+
+    if (otel) {
+      // Bound the shutdown to under the plugin-worker-manager's 10s drain
+      // timeout so BatchSpanProcessor gets a chance to flush, but we still
+      // reply to the shutdown RPC before the host escalates to SIGTERM.
+      const SHUTDOWN_BUDGET_MS = 8_000;
+      try {
+        await Promise.race([
+          otel.shutdown(),
+          new Promise<void>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("otel.shutdown() exceeded budget")),
+              SHUTDOWN_BUDGET_MS,
+            ),
+          ),
+        ]);
+        ctx?.logger.info("OTel SDK shut down successfully");
+      } catch (err) {
+        ctx?.logger.error("Error during OTel shutdown", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      otel = null;
+    }
+  },
+});
+
+export default plugin;
+runWorker(plugin, import.meta.url);
