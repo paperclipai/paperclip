@@ -676,7 +676,9 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
 - `PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS=<hours>` controls the `/api/health`
-  stale-backup warning threshold
+  stale-backup warning threshold. It defaults to one missed backup plus a grace
+  period (at least 1h of grace, at least 2h in total), so the hourly default
+  interval warns after 2h rather than after a full day
 - `PAPERCLIP_DB_BACKUP_ALERT_FILE=/path/to/failure-marker` lets external cron
   wrappers surface the last failed backup in `/api/health`
 
