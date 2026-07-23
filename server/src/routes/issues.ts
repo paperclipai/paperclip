@@ -61,6 +61,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isIssueProductivityReviewOriginKind,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompactIssue,
@@ -4092,7 +4093,7 @@ export function issueRoutes(
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; originKind?: string | null },
   ) {
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
 
@@ -4115,18 +4116,20 @@ export function issueRoutes(
       return false;
     }
 
-    const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
-    if (activePauseHold) {
-      res.status(409).json({
-        error: "Issue follow-up blocked by active subtree pause hold",
-        details: {
-          issueId: issue.id,
-          holdId: activePauseHold.holdId,
-          rootIssueId: activePauseHold.rootIssueId,
-          mode: activePauseHold.mode,
-        },
-      });
-      return false;
+    if (!isIssueProductivityReviewOriginKind(issue.originKind)) {
+      const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
+      if (activePauseHold) {
+        res.status(409).json({
+          error: "Issue follow-up blocked by active subtree pause hold",
+          details: {
+            issueId: issue.id,
+            holdId: activePauseHold.holdId,
+            rootIssueId: activePauseHold.rootIssueId,
+            mode: activePauseHold.mode,
+          },
+        });
+        return false;
+      }
     }
 
     if (issue.status === "blocked") {
