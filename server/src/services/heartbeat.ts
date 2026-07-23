@@ -525,6 +525,20 @@ function mergeAdapterRecoveryMetadata(input: {
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  // An `issue_assigned` wake means the issue's assignee/next-step just changed
+  // (e.g. a workflow-engine-style plugin advancing an issue to its next node)
+  // and needs a run of its own — it must not be silently merged into an
+  // already-active run for the same issue. That active run is very often the
+  // very run whose own disposition/advance action just triggered this wake in
+  // the first place: by the time the wake fires, the run has already produced
+  // its final output for the previous node and is only finishing persistence,
+  // so merging into it (the default same-issue/same-agent coalescing path)
+  // means the new assignment's context is written into a run that will never
+  // read it again. Queueing a real follow-up (`deferred_issue_execution`,
+  // promoted once the active run finishes — see the promotion loop this run's
+  // finalization uses for exactly this queue) guarantees the new step
+  // actually gets executed instead of silently absorbed.
+  "issue_assigned",
 ]);
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_assigned",
@@ -4134,7 +4148,7 @@ export function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
-function shouldQueueFollowupForRunningIssueWake(input: {
+export function shouldQueueFollowupForRunningIssueWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   wakeCommentId: string | null;
 }) {
