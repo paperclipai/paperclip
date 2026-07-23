@@ -32,6 +32,7 @@ export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  thinkingTokens?: number;
 }
 
 export type AdapterBillingType =
@@ -42,6 +43,7 @@ export type AdapterBillingType =
   | "subscription_overage"
   | "credits"
   | "fixed"
+  | "estimated_cost"
   | "unknown";
 
 export interface AdapterRuntimeServiceReport {
@@ -101,6 +103,7 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  retryDelaySec?: number | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;

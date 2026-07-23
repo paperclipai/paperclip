@@ -136,6 +136,7 @@ export function billingTypeDisplayName(billingType: BillingType): string {
     subscription_overage: "Subscription overage",
     credits: "Credits",
     fixed: "Fixed",
+    estimated_cost: "Estimated cost",
     unknown: "Unknown",
   };
   return map[billingType];
