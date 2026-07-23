@@ -325,7 +325,7 @@ describe("agent routes adapter validation", () => {
       request(baseUrl)
         .patch("/api/agents/11111111-1111-4111-8111-111111111111")
         .send({
-          adapterConfig: { model: "gpt-5.4" },
+          adapterConfig: { model: "sovereign-gpt-5.4" },
         }),
     );
 

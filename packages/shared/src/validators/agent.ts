@@ -6,6 +6,7 @@ import {
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
+import { isSovereignAgentModelValue } from "../sovereign-models.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
@@ -38,13 +39,31 @@ export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructions
 
 const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
-  if (envValue === undefined) return;
-  const parsed = envConfigSchema.safeParse(envValue);
-  if (!parsed.success) {
+  if (envValue === undefined) {
+    // no env to validate — continue to model check
+  } else {
+    const parsed = envConfigSchema.safeParse(envValue);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "adapterConfig.env must be a map of valid env bindings",
+        path: ["env"],
+      });
+    }
+  }
+
+  // Sovereign model enforcement (defense-in-depth):
+  // If a model is explicitly specified, it must be a sovereign model.
+  // This mirrors the server-side assertSovereignAgentModel() check and the
+  // issueAssigneeAdapterOverridesSchema pattern in validators/issue.ts.
+  const model = value.model;
+  if (typeof model === "string" && model.trim() && !isSovereignAgentModelValue(model)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "adapterConfig.env must be a map of valid env bindings",
-      path: ["env"],
+      message:
+        "adapterConfig.model must be a sovereign model. " +
+        'Use a model id or label containing "sovereign" or "souverain".',
+      path: ["model"],
     });
   }
 });
