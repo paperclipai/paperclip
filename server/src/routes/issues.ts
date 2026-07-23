@@ -192,10 +192,21 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import { evaluateGuard, type GuardDecision } from "../services/pre-close-guard.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
+  // §7.10.3 QUA-2575: advisory prose-token dismissal (never dismisses a hard blocker).
+  guardAcknowledge: z
+    .object({
+      tokens: z.array(z.string()),
+      reason: z.string().optional(),
+    })
+    .optional(),
+  // QUA-4139 carve-out: human/Board-only bypass of the structured pre-close guard
+  // for legitimate recovery / liveness-escalation closes. Ignored for agent actors.
+  forceTerminal: z.boolean().optional(),
 });
 const refreshExternalObjectsSchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
@@ -7629,6 +7640,12 @@ export function issueRoutes(
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
+    // The audit record is either the raw guard decision, or — for a Board-forced
+    // recovery close (QUA-4139 carve-out) — a "forced" record noting what would have blocked.
+    type PreCloseGuardAudit =
+      | GuardDecision
+      | { decision: "forced"; blockedBy: string[]; forcedByActorId: string };
+    let preCloseGuardResult: PreCloseGuardAudit | null = null;
     const isClosed = isClosedIssueStatus(existing.status);
     const isBlocked = existing.status === "blocked";
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
@@ -7647,8 +7664,12 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      // §7.10.3 / QUA-4139: control fields — must NOT leak into the persisted update payload.
+      guardAcknowledge: guardAcknowledgeRaw,
+      forceTerminal: forceTerminalRaw,
       ...updateFields
     } = req.body;
+    const forceTerminalRequested = forceTerminalRaw === true;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
@@ -7670,6 +7691,92 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
+    const requestedTerminalStatus =
+      updateFields.status === "done" || updateFields.status === "cancelled"
+        ? updateFields.status
+        : null;
+    if (requestedTerminalStatus) {
+      // §7.10.3 QUA-2575: structured active-blocker evaluation.
+      // Hard blocks come from structured state only — never from prose scanning.
+      const [
+        interactions,
+        dependencyReadiness,
+        openChildren,
+        activeRecoveryAction,
+      ] = await Promise.all([
+        issueThreadInteractionService(db).listForIssue(existing.id),
+        svc.getDependencyReadiness(existing.id),
+        db
+          .select({ id: issueRows.id })
+          .from(issueRows)
+          .where(
+            and(
+              eq(issueRows.companyId, existing.companyId),
+              eq(issueRows.parentId, existing.id),
+              notInArray(issueRows.status, ["done", "cancelled"]),
+            ),
+          ),
+        recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id),
+      ]);
+      const hasPendingConfirmation = interactions.some(
+        (interaction) =>
+          interaction.kind === "request_confirmation" &&
+          interaction.status === "pending",
+      );
+      const guardAcknowledge =
+        guardAcknowledgeRaw && typeof guardAcknowledgeRaw === "object"
+          ? (guardAcknowledgeRaw as { tokens?: string[]; reason?: string })
+          : undefined;
+      const acknowledgedTokens = Array.isArray(guardAcknowledge?.tokens)
+        ? guardAcknowledge.tokens.filter(
+            (value): value is string =>
+              typeof value === "string" && value.trim().length > 0,
+          )
+        : [];
+      const acknowledgedReason =
+        typeof guardAcknowledge?.reason === "string"
+          ? guardAcknowledge.reason.trim()
+          : undefined;
+      // Advisory prose scan: never blocks, surfaced in pass response for observability.
+      const comments = await svc.listComments(existing.id, { order: "asc" });
+      const allText = [existing.description, ...comments.map((c) => c.body)]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .join("\n\n");
+      const decision = evaluateGuard({
+        state: {
+          unresolvedBlockerCount: dependencyReadiness.unresolvedBlockerCount,
+          openChildCount: openChildren.length,
+          hasPendingConfirmation,
+          hasActiveRecoveryAction: activeRecoveryAction !== null,
+        },
+        advisory: { allText, acknowledgedTokens, acknowledgedReason },
+      });
+      // QUA-4139 carve-out: a human/Board actor may force terminal close past the
+      // structured guard for legitimate recovery / liveness-escalation. We still RUN
+      // the guard (to record what WOULD have blocked) but do not 409. Agents are
+      // ALWAYS subject to the guard — forceTerminal is ignored for actorType "agent".
+      const forcedBypassAllowed = forceTerminalRequested && actor.actorType === "user";
+      if (decision.decision === "blocked" && !forcedBypassAllowed) {
+        res.status(409).json({
+          error: "PRE_CLOSE_GUARD_BLOCKED",
+          code: "PRE_CLOSE_GUARD_BLOCKED",
+          blockedBy: decision.blockedBy,
+          requestedStatus: requestedTerminalStatus,
+        });
+        return;
+      }
+      if (forcedBypassAllowed) {
+        // Record the forced bypass for audit. blockedBy = the reasons that WOULD have
+        // blocked (empty when structured state was already clean).
+        preCloseGuardResult = {
+          decision: "forced",
+          blockedBy: decision.decision === "blocked" ? decision.blockedBy : [],
+          forcedByActorId: actor.actorId,
+        };
+      } else {
+        preCloseGuardResult = decision;
+      }
+    }
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
     const recoveryRelevantSourceMutationRequested =
       req.body.status !== undefined ||
@@ -8153,6 +8260,7 @@ export function issueRoutes(
           : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
         ...(cancelledStatusRunId ? { cancelledStatusRunId } : {}),
+        ...(preCloseGuardResult ? { preCloseGuard: preCloseGuardResult } : {}),
         ...(workspaceChange ? { workspaceChange } : {}),
         _previous: hasFieldChanges ? previous : undefined,
         ...summarizeIssueReferenceActivityDetails(
