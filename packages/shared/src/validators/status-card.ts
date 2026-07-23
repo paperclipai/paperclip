@@ -4,6 +4,15 @@ import { companySearchQuerySchema } from "./search.js";
 export const STATUS_CARD_AGENT_MAX_CARDS = 20;
 export const STATUS_CARD_AGENT_MAX_INTEREST_PROMPT_LENGTH = 4_000;
 
+function isValidTimeZone(timezone: string) {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const statusCardInstructionsModeSchema = z.enum(["none", "append", "replace"]);
 export const statusCardStateSchema = z.enum(["compiling", "active", "error", "paused_budget", "paused_hours"]);
 export const statusCardUpdateKindSchema = z.enum(["compile", "full", "incremental"]);
@@ -29,7 +38,7 @@ export const statusCardRefreshPolicySchema = z
       .object({
         start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
         end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-        timezone: z.string().min(1),
+        timezone: z.string().trim().min(1).refine(isValidTimeZone, { message: "Invalid timezone identifier" }),
       })
       .optional(),
     dailyTokenCap: z.number().int().positive().optional(),
@@ -50,6 +59,7 @@ export const statusCardFingerprintSchema = z.record(
   z.object({
     status: z.string(),
     updatedAt: z.string().datetime(),
+    latestHumanCommentAt: z.string().datetime().nullable().optional(),
     identifier: z.string().nullable().optional(),
     title: z.string().optional(),
     assigneeAgentId: z.string().uuid().nullable().optional(),
