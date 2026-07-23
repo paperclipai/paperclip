@@ -296,6 +296,34 @@ export function OnboardingWizard() {
     };
   }, [disabledTypes]);
 
+  // The default (or a saved) adapterType can name an adapter the server has
+  // since disabled — e.g. a cloud sandbox registry without claude_local. The
+  // grid hides it, so without this snap the wizard would silently keep an
+  // invisible selection and create an agent that can never acquire a lease.
+  useEffect(() => {
+    const visible = [...recommendedAdapters, ...moreAdapters].filter(
+      (a) => !a.comingSoon,
+    );
+    if (visible.length === 0) return;
+    if (visible.some((a) => a.type === adapterType)) return;
+    const next = visible[0].type as AdapterType;
+    setAdapterType(next);
+    if (next === "codex_local") return;
+    if (next === "opencode_local") {
+      setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+      return;
+    }
+    if (next === "gemini_local") {
+      setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+      return;
+    }
+    if (next === "cursor") {
+      setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+      return;
+    }
+    setModel("");
+  }, [recommendedAdapters, moreAdapters, adapterType]);
+
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
     codex_local: "codex",
