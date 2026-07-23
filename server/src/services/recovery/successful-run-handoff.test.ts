@@ -13,6 +13,7 @@ import {
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
 } from "./successful-run-handoff.js";
+import { RECOVERY_REASON_KINDS } from "./origins.js";
 import { UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON } from "@paperclipai/adapter-utils/server-utils";
 
 const run = {
@@ -216,6 +217,31 @@ describe("successful run handoff decision", () => {
           issueId: "issue-1",
           wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
           handoffRequired: true,
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "source run is already a corrective handoff run",
+    });
+  });
+
+  it.each([
+    {
+      wakeReason: RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff,
+      livenessContinuationReason: RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff,
+    },
+    {
+      wakeReason: "issue_commented",
+      livenessContinuationReason: RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff,
+    },
+  ])("does not loop from a normal deliverable handoff after $wakeReason", (contextSnapshot) => {
+    expect(decide({
+      run: {
+        ...run,
+        id: "run-deliverable-handoff",
+        contextSnapshot: {
+          issueId: "issue-1",
+          ...contextSnapshot,
         },
       } as any,
     })).toEqual({

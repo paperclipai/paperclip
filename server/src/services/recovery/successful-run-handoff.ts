@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
 import type { IssueCommentMetadata, IssueCommentPresentation, RunLivenessState } from "@paperclipai/shared";
 import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
+import { RECOVERY_REASON_KINDS } from "./origins.js";
 
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
@@ -304,8 +305,12 @@ function readString(value: unknown) {
 
 function isCorrectiveHandoffRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
+  const wakeReason = readString(context.wakeReason);
+  const livenessContinuationReason = readString(context.livenessContinuationReason);
   return context.handoffRequired === true ||
-    readString(context.wakeReason) === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON;
+    wakeReason === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON ||
+    wakeReason === RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff ||
+    livenessContinuationReason === RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff;
 }
 
 function isIssueMonitorMaintenanceRun(run: HeartbeatRunRow) {
