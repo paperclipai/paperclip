@@ -719,6 +719,7 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
+  descriptionTruncated?: boolean;
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;
