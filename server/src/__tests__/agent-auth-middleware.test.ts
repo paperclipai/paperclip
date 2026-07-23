@@ -33,7 +33,13 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string };
   agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
-  run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null };
+  run?: {
+    id: string;
+    companyId: string;
+    agentId: string;
+    responsibleUserId?: string | null;
+    status?: string;
+  };
 }) {
   const activity: Array<Record<string, unknown>> = [];
   const agentRow = {
@@ -58,6 +64,7 @@ function createDbState(input: {
         companyId: input.run.companyId,
         agentId: input.run.agentId,
         responsibleUserId: input.run.responsibleUserId ?? null,
+        status: input.run.status ?? "running",
       }
     : null;
 
@@ -195,6 +202,31 @@ describe("agent auth middleware", () => {
       onBehalfOfUserId: "user-claim",
       source: "agent_jwt",
     });
+  });
+
+  it("rejects an otherwise valid agent JWT after its run finishes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: {
+        id: runId,
+        companyId,
+        agentId,
+        responsibleUserId: "user-claim",
+        status: "succeeded",
+      },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "none", source: "none" });
   });
 
   it("preserves signed skill_test JWT scope on the request actor", async () => {
