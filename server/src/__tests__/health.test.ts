@@ -337,6 +337,7 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      authReady: true,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -374,6 +375,7 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      authReady: true,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
