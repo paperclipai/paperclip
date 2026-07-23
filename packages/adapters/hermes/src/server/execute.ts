@@ -207,11 +207,12 @@ export function buildPrompt(
 // Output parsing
 // ---------------------------------------------------------------------------
 
-/** Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>" */
-const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
+/** Regex for a complete Hermes quiet-mode metadata line: "session_id: <id>" */
+const SESSION_ID_LINE_REGEX = /^session_id:\s*(\S+)\s*$/;
 
 /** Regex for legacy session output format */
-const SESSION_ID_REGEX_LEGACY = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
+const SESSION_ID_REGEX_LEGACY =
+  /^\s*session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)\s*$/im;
 
 /** Regex to extract token usage from Hermes output. */
 const TOKEN_USAGE_REGEX =
@@ -240,7 +241,6 @@ function cleanResponse(raw: string): string {
       const t = line.trim();
       if (!t) return true; // keep blank lines for paragraph separation
       if (t.startsWith("[tool]") || t.startsWith("[hermes]") || t.startsWith("[paperclip]")) return false;
-      if (t.startsWith("session_id:")) return false;
       if (/^\[\d{4}-\d{2}-\d{2}T/.test(t)) return false;
       if (/^\[done\]\s*┊/.test(t)) return false;
       if (/^┊\s*[\p{Emoji_Presentation}]/u.test(t) && !/^┊\s*💬/.test(t)) return false;
@@ -265,30 +265,44 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
 
-  // In quiet mode, Hermes outputs:
-  //   <response text>
-  //
-  //   session_id: <id>
-  const sessionMatch = stdout.match(SESSION_ID_REGEX);
-  if (sessionMatch?.[1]) {
-    result.sessionId = sessionMatch?.[1] ?? null;
-    // The response is everything before the session_id line
-    const sessionLineIdx = stdout.lastIndexOf("\nsession_id:");
-    if (sessionLineIdx > 0) {
-      result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
+  // Hermes quiet mode can emit metadata before or after response text. Remove
+  // only complete metadata lines, retain response text on both sides, and use
+  // the first session id if a runtime emits the line more than once.
+  const responseLines: string[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const sessionMatch = line.match(SESSION_ID_LINE_REGEX);
+    if (sessionMatch?.[1]) {
+      result.sessionId ??= sessionMatch[1];
+      continue;
     }
-  } else {
+    responseLines.push(line);
+  }
+
+  // Cancelled Hermes runs can emit the final quiet-mode metadata on stderr.
+  // Remove only exact metadata lines from error classification, preserving all
+  // other stderr content and the stdout session id's priority.
+  const stderrForErrorsLines: string[] = [];
+  for (const line of stderr.split("\n")) {
+    const sessionMatch = line.match(SESSION_ID_LINE_REGEX);
+    if (sessionMatch?.[1]) {
+      result.sessionId ??= sessionMatch[1];
+      continue;
+    }
+    stderrForErrorsLines.push(line);
+  }
+  const stderrForErrors = stderrForErrorsLines.join("\n");
+
+  if (!result.sessionId) {
     // Legacy format (non-quiet mode)
-    const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY);
+    const legacyMatch = stdout.match(SESSION_ID_REGEX_LEGACY);
     if (legacyMatch?.[1]) {
-      result.sessionId = legacyMatch?.[1] ?? null;
+      result.sessionId = legacyMatch[1];
     }
-    // In non-quiet mode, extract clean response from stdout by
-    // filtering out tool lines, system messages, and noise
-    const cleaned = cleanResponse(stdout);
-    if (cleaned.length > 0) {
-      result.response = cleaned;
-    }
+  }
+
+  const cleaned = cleanResponse(responseLines.join("\n"));
+  if (cleaned.length > 0) {
+    result.response = cleaned;
   }
 
   // Extract token usage
@@ -307,8 +321,8 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   }
 
   // Check for error patterns in stderr
-  if (stderr.trim()) {
-    const errorLines = stderr
+  if (stderrForErrors.trim()) {
+    const errorLines = stderrForErrors
       .split("\n")
       .filter((line) => /error|exception|traceback|failed/i.test(line))
       .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
@@ -410,11 +424,12 @@ export async function execute(
 
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
+  const useQuiet = cfgBoolean(config.quiet) !== false; // schema default true; explicit false is supported
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
-  if (model) {
+  // `auto` is an adapter sentinel: omitting -m lets Hermes resolve its configured model.
+  if (model !== "auto") {
     args.push("-m", model);
   }
 
@@ -536,11 +551,27 @@ export async function execute(
   });
 
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const stdout = result.stdout || "";
+  const stderr = result.stderr || "";
+  const parsed = parseHermesOutput(stdout, stderr);
+
+  // Older Hermes releases can return 0 after exhausting every provider. Require
+  // the complete terminal envelope so ordinary HTTP-error prose stays successful.
+  const combinedOutput = `${stdout}\n${stderr}`;
+  const terminalProviderExhaustion =
+    /API call failed \(attempt \d+\/\d+\)/i.test(combinedOutput) &&
+    /model [\s\x27"]*auto[\s\x27"]* is not supported[^\n]*Codex provider/i.test(combinedOutput) &&
+    /fallback provider[^\n]*failed[^\n]*(?:HTTP 401 Unauthorized|non-retryable client error)/i.test(combinedOutput) &&
+    /(?:all fallback providers failed|no providers remain)/i.test(combinedOutput) &&
+    /Resume this session with:/i.test(combinedOutput);
+  const effectiveExitCode = result.exitCode === 0 && terminalProviderExhaustion ? 1 : result.exitCode;
+  if (terminalProviderExhaustion) {
+    parsed.errorMessage = "Provider fallback exhaustion prevented Hermes from completing the request.";
+  }
 
   await ctx.onLog(
     "stdout",
-    `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`,
+    `[hermes] Exit code: ${effectiveExitCode ?? "null"}, timed out: ${result.timedOut}\n`,
   );
   if (parsed.sessionId) {
     await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
@@ -548,7 +579,7 @@ export async function execute(
 
   // ── Build result ───────────────────────────────────────────────────────
   const executionResult: AdapterExecutionResult = {
-    exitCode: result.exitCode,
+    exitCode: effectiveExitCode,
     signal: result.signal,
     timedOut: result.timedOut,
     provider: resolvedProvider,

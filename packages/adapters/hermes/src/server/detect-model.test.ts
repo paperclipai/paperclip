@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -92,14 +92,22 @@ test("resolveProvider still infers from the requested model when Hermes config i
 
 async function withHermesHomeConfig(
   configLines: string[],
-  fn: () => Promise<void>,
+  fn: (hermesCommand: string) => Promise<void>,
 ) {
   const tempHome = await mkdtemp(join(tmpdir(), "hermes-paperclip-adapter-"));
   const hermesDir = join(tempHome, ".hermes");
   const configPath = join(hermesDir, "config.yaml");
+  const binDir = join(tempHome, "bin");
+  const hermesCommand = join(binDir, "hermes");
+  const siblingPython = join(binDir, "python3");
 
   await mkdir(hermesDir, { recursive: true });
+  await mkdir(binDir, { recursive: true });
   await writeFile(configPath, `${configLines.join("\n")}\n`, "utf8");
+  await writeFile(hermesCommand, "#!/bin/sh\necho Hermes Agent test\n", "utf8");
+  await writeFile(siblingPython, "#!/bin/sh\necho Python 3.11.15\n", "utf8");
+  await chmod(hermesCommand, 0o755);
+  await chmod(siblingPython, 0o755);
   process.env.HOME = tempHome;
   process.env.USERPROFILE = tempHome;
   delete process.env.HOMEDRIVE;
@@ -109,7 +117,7 @@ async function withHermesHomeConfig(
   }
 
   try {
-    await fn();
+    await fn(hermesCommand);
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }
@@ -121,12 +129,12 @@ test("testEnvironment does not warn about missing API keys when Hermes config pr
     "  default: openrouter/gpt-4.1-mini",
     "  provider: openrouter",
     "  api_key: test-secret",
-  ], async () => {
+  ], async (hermesCommand) => {
     const result = await testEnvironment({
       companyId: "company-test",
       adapterType: "hermes_local",
       config: {
-        hermesCommand: "python3",
+        hermesCommand,
         model: "openrouter/gpt-4.1-mini",
       },
     });
@@ -144,12 +152,12 @@ test("testEnvironment describes provider-omitted runtime config without inventin
     "  default: oca/gpt-5.4",
     "  base_url: https://example.invalid/litellm",
     "  api_key: test-secret",
-  ], async () => {
+  ], async (hermesCommand) => {
     const result = await testEnvironment({
       companyId: "company-test",
       adapterType: "hermes_local",
       config: {
-        hermesCommand: "python3",
+        hermesCommand,
         model: "oca/gpt-5.4",
       },
     });
@@ -168,12 +176,12 @@ test("testEnvironment does not warn about missing API keys when Hermes config pr
     "  provider: custom",
     "  base_url: https://example.invalid/litellm",
     "  api_key: test-secret",
-  ], async () => {
+  ], async (hermesCommand) => {
     const result = await testEnvironment({
       companyId: "company-test",
       adapterType: "hermes_local",
       config: {
-        hermesCommand: "python3",
+        hermesCommand,
         model: "oca/gpt-5.4",
       },
     });
