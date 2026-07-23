@@ -760,6 +760,56 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   });
 
+  it("reconciles correctly when the company has more issues than one recovery-action query batch", async () => {
+    // Regression test: collectIssueGraphLivenessFindings() used to pass every
+    // in-analysis issue id into a single `inArray(...)` query. With enough issues
+    // in a company that grows a large backlog (as happens after a busy initial
+    // import), the parameter list could balloon into the tens of thousands and
+    // the query would fail on every heartbeat cycle. The fix chunks that lookup;
+    // this test proves reconciliation still finds the right issue even when it's
+    // seeded well past the chunk boundary among hundreds of unrelated issues.
+    await enableAutoRecovery();
+    const { companyId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "backlog",
+      blockerAssigneeAgentId: "coder",
+    });
+    const [companyRow] = await db
+      .select({ issuePrefix: companies.issuePrefix })
+      .from(companies)
+      .where(eq(companies.id, companyId));
+    const fillerIssueCount = 600;
+    await db.insert(issues).values(
+      Array.from({ length: fillerIssueCount }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        title: `Filler issue ${index}`,
+        status: "done",
+        priority: "low",
+        issueNumber: 3 + index,
+        identifier: `${companyRow!.issuePrefix}-${3 + index}`,
+      })),
+    );
+
+    const heartbeat = heartbeatService(db);
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(first.findings).toBe(1);
+    expect(first.escalationsCreated).toBe(1);
+    expect(second.findings).toBe(0);
+    expect(second.escalationsCreated).toBe(0);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      parentId: blockerIssueId,
+      assigneeAgentId: coderId,
+    });
+  });
+
   it("treats open recovery issues as active waiting paths for non-assigned-backlog states", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();

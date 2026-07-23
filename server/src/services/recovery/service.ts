@@ -87,6 +87,7 @@ const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiv
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
+const ISSUE_RECOVERY_ACTION_QUERY_CHUNK_SIZE = 500;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -4114,6 +4115,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
+  function chunkIds<T>(values: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let index = 0; index < values.length; index += size) {
+      chunks.push(values.slice(index, index + size));
+    }
+    return chunks;
+  }
+
+  function fetchActiveRecoveryActionsForIds(idChunk: string[]) {
+    return db
+      .select({
+        companyId: issueRecoveryActions.companyId,
+        issueId: issueRecoveryActions.sourceIssueId,
+        status: issueRecoveryActions.status,
+      })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          inArray(issueRecoveryActions.sourceIssueId, idChunk),
+        ),
+      );
+  }
+
   async function collectIssueGraphLivenessFindings() {
     const issueRowsPromise = Promise.resolve(db
       .select({
@@ -4244,23 +4269,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             notInArray(issues.status, ["done", "cancelled"]),
           ),
         ),
-      issueRowsPromise.then((rows) => {
+      issueRowsPromise.then(async (rows) => {
         const issueIdsUnderAnalysis = rows.map((row) => row.id);
-        return issueIdsUnderAnalysis.length === 0
-          ? []
-          : db
-            .select({
-              companyId: issueRecoveryActions.companyId,
-              issueId: issueRecoveryActions.sourceIssueId,
-              status: issueRecoveryActions.status,
-            })
-            .from(issueRecoveryActions)
-            .where(
-              and(
-                inArray(issueRecoveryActions.status, ["active", "escalated"]),
-                inArray(issueRecoveryActions.sourceIssueId, issueIdsUnderAnalysis),
-              ),
-            );
+        if (issueIdsUnderAnalysis.length === 0) return [];
+        // Chunked to stay well under the Postgres/driver bind-parameter limit —
+        // this list is a system-wide, unbounded scan and can reach tens of thousands of ids.
+        const results: Awaited<ReturnType<typeof fetchActiveRecoveryActionsForIds>> = [];
+        for (const idChunk of chunkIds(issueIdsUnderAnalysis, ISSUE_RECOVERY_ACTION_QUERY_CHUNK_SIZE)) {
+          results.push(...(await fetchActiveRecoveryActionsForIds(idChunk)));
+        }
+        return results;
       }),
     ]);
 
