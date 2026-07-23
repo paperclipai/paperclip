@@ -79,6 +79,8 @@ test("bundled package staging rebuilds npm dependencies and applies the acpx pat
   const binDir = join(fixtureDir, "bin");
   const callLog = join(fixtureDir, "calls.log");
   mkdirSync(sourceDir);
+  mkdirSync(join(sourceDir, "dist"));
+  writeFileSync(join(sourceDir, "dist", "index.js"), "export {};\n");
   mkdirSync(destinationDir);
   mkdirSync(binDir);
   writeFileSync(join(sourceDir, "package.json"), JSON.stringify(adapterUtilsPackage));

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -65,25 +65,35 @@ export function prepareBundledPackage(sourceDir, destinationDir) {
     throw new Error(`${sourcePackage.name} does not declare bundled dependencies`);
   }
 
-  execFileSync(
-    "pnpm",
-    ["--filter", sourcePackage.name, "deploy", "--prod", resolve(destinationDir)],
-    { cwd: repoRoot, stdio: "inherit" },
-  );
+  rmSync(destinationDir, { recursive: true, force: true });
+  mkdirSync(destinationDir, { recursive: true });
+  for (const entry of sourcePackage.files ?? []) {
+    cpSync(resolve(sourceDir, entry), resolve(destinationDir, entry), { recursive: true });
+  }
+  for (const entry of ["README.md", "LICENSE", "LICENSE.md"]) {
+    const sourcePath = resolve(sourceDir, entry);
+    if (existsSync(sourcePath)) cpSync(sourcePath, resolve(destinationDir, entry));
+  }
 
   const deployedPackagePath = resolve(destinationDir, "package.json");
-  const deployedPackage = JSON.parse(readFileSync(deployedPackagePath, "utf8"));
-  writeFileSync(
-    deployedPackagePath,
-    `${JSON.stringify(materializePublishManifest(deployedPackage), null, 2)}\n`,
-  );
+  const publishManifest = materializePublishManifest(sourcePackage);
+  const installManifest = structuredClone(publishManifest);
+  for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+    if (!installManifest[section] || !sourcePackage[section]) continue;
+    for (const [name, specifier] of Object.entries(sourcePackage[section])) {
+      if (typeof specifier === "string" && specifier.startsWith("workspace:")) {
+        delete installManifest[section][name];
+      }
+    }
+  }
+  writeFileSync(deployedPackagePath, `${JSON.stringify(installManifest, null, 2)}\n`);
 
-  rmSync(resolve(destinationDir, "node_modules"), { recursive: true, force: true });
   execFileSync(
     "npm",
     ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
     { cwd: destinationDir, stdio: "inherit" },
   );
+  writeFileSync(deployedPackagePath, `${JSON.stringify(publishManifest, null, 2)}\n`);
   applyBundledDependencyPatches(destinationDir, bundledDependencies);
 
   if (
