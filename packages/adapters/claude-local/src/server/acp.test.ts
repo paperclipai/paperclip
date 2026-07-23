@@ -9,6 +9,7 @@ import {
   createClaudeAcpExecutor,
   nodeVersionMeetsClaudeAcpMinimum,
   resolveClaudeAcpBillingIdentity,
+  resolveClaudeAuthAdvice,
   resolveClaudeExecutionEngine,
   resolveClaudeExecutionEngineForRun,
   testClaudeAcpEnvironment,
@@ -843,5 +844,31 @@ describe("resolveClaudeAcpBillingIdentity", () => {
         executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/work" },
       } as never).billingType,
     ).toBe("subscription");
+  });
+});
+
+describe("resolveClaudeAuthAdvice (ACP lane)", () => {
+  it("recognizes CLAUDE_CODE_OAUTH_TOKEN as valid subscription auth", () => {
+    expect(
+      resolveClaudeAuthAdvice({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fake-token-value" }),
+    ).toEqual({
+      code: "claude_acp_subscription_token_detected",
+      level: "info",
+      message:
+        "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
+    });
+  });
+
+  it("defers to the ANTHROPIC_API_KEY branch when both are set", () => {
+    expect(
+      resolveClaudeAuthAdvice({
+        ANTHROPIC_API_KEY: "sk-ant-api-fake",
+        CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fake-token-value",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when neither auth signal is present (unchanged local-login guidance)", () => {
+    expect(resolveClaudeAuthAdvice({})).toBeNull();
   });
 });

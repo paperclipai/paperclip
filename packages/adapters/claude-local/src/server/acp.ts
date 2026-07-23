@@ -430,6 +430,22 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+// ACP-lane mirror of the CLI-lane auth advice helper in test.ts: same
+// CLAUDE_CODE_OAUTH_TOKEN recognition contract, ACP-prefixed check code to
+// match this file's existing `claude_acp_*` naming.
+export function resolveClaudeAuthAdvice(env: Record<string, unknown>): AdapterEnvironmentCheck | null {
+  if (isNonEmpty(env.ANTHROPIC_API_KEY)) return null;
+  if (isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN)) {
+    return {
+      code: "claude_acp_subscription_token_detected",
+      level: "info",
+      message:
+        "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
+    };
+  }
+  return null;
+}
+
 export async function testClaudeAcpEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -525,12 +541,17 @@ export async function testClaudeAcpEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
-  } else if (!targetIsRemote) {
-    checks.push({
-      code: "claude_acp_subscription_mode_possible",
-      level: "info",
-      message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
-    });
+  } else {
+    const authAdvice = resolveClaudeAuthAdvice(envConfig);
+    if (authAdvice) {
+      checks.push(authAdvice);
+    } else if (!targetIsRemote) {
+      checks.push({
+        code: "claude_acp_subscription_mode_possible",
+        level: "info",
+        message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
+      });
+    }
   }
 
   const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;
