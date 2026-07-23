@@ -1981,3 +1981,229 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     expect(sessionInputs[0]?.cwd).toBe(remoteCwd);
   });
 });
+
+describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / reuse on compatible resume)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function setupRemoteSandbox() {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+    };
+    return { root, stateDir, localCwd, remoteCwd, executionTarget };
+  }
+
+  // A runtime double that records ensureSession inputs and can be told to make
+  // the turn fail (to exercise the teardown/eviction path).
+  function recordingRuntime(input: {
+    ensureInputs: Array<Record<string, unknown>>;
+    terminalStatus?: "completed" | "failed";
+  }) {
+    return {
+      ensureSession: async (session: Record<string, unknown>) => {
+        input.ensureInputs.push(session);
+        return {
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        };
+      },
+      startTurn: () => ({
+        events: (async function* () {
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result:
+          input.terminalStatus === "failed"
+            ? Promise.resolve({ status: "failed", error: new Error("boom") })
+            : Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+        cancel: async () => {},
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+  }
+
+  function baseExecuteArgs(input: {
+    stateDir: string;
+    localCwd: string;
+    executionTarget: Record<string, unknown>;
+    env?: Record<string, string>;
+  }) {
+    return {
+      agent: { id: "agent-1", companyId: "company-1" },
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir: input.stateDir,
+        cwd: input.localCwd,
+        mode: "persistent",
+        warmHandleIdleMs: 60_000,
+        ...(input.env ? { env: input.env } : {}),
+      },
+      context: {},
+      authToken: "real-run-jwt",
+      executionTarget: input.executionTarget,
+      onLog: async () => {},
+      onMeta: async () => {},
+    };
+  }
+
+  it("test_acp_resume_compatible_session_does_not_restage", async () => {
+    const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      createRuntime: () => recordingRuntime({ ensureInputs }) as never,
+    });
+    const base = baseExecuteArgs({ stateDir, localCwd, executionTarget });
+
+    const first = await execute({ runId: "run-a", runtime: {}, ...base } as never);
+    const second = await execute({
+      runId: "run-b",
+      runtime: { sessionParams: first.sessionParams },
+      ...base,
+    } as never);
+
+    expect(first.exitCode).toBe(0);
+    expect(second.exitCode).toBe(0);
+    // Staging (workspace ship + home seed) ran exactly ONCE across both runs:
+    // the compatible resume reused the already-staged in-sandbox runtime.
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(1);
+    // Both runs bind session/new (and resume) to the in-sandbox workspace cwd...
+    expect(ensureInputs[0]?.cwd).toBe(remoteCwd);
+    expect(ensureInputs[1]?.cwd).toBe(remoteCwd);
+    // ...and the second run RESUMES the first session rather than starting fresh.
+    expect(ensureInputs[1]?.resumeSessionId).toBe(first.sessionId);
+  });
+
+  it("test_acp_resume_incompatible_fingerprint_stages_fresh", async () => {
+    const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      createRuntime: () => recordingRuntime({ ensureInputs }) as never,
+    });
+
+    const first = await execute({
+      runId: "run-a",
+      runtime: {},
+      ...baseExecuteArgs({ stateDir, localCwd, executionTarget, env: { FOO: "a" } }),
+    } as never);
+    // A changed adapter env value shifts the session fingerprint → a different
+    // sessionKey → the cache slot does not match, so staging runs fresh.
+    const second = await execute({
+      runId: "run-b",
+      runtime: { sessionParams: first.sessionParams },
+      ...baseExecuteArgs({ stateDir, localCwd, executionTarget, env: { FOO: "b" } }),
+    } as never);
+
+    expect(first.exitCode).toBe(0);
+    expect(second.exitCode).toBe(0);
+    // Incompatible fingerprint → staged fresh, no stale reuse.
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(2);
+    expect(ensureInputs[0]?.cwd).toBe(remoteCwd);
+    expect(ensureInputs[1]?.cwd).toBe(remoteCwd);
+    // The second run does NOT resume the first session (fingerprint differs).
+    expect(ensureInputs[1]?.resumeSessionId).toBeUndefined();
+  });
+
+  it("test_warm_handle_scoped_per_fingerprint_no_cross_session_credential_reuse", async () => {
+    const { root, stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    // Two managed homes, one per session, each carrying a distinct credential
+    // marker. The seam seeds whichever home belongs to the current run.
+    const homeA = path.join(root, "home-a");
+    const homeB = path.join(root, "home-b");
+    await fs.mkdir(homeA, { recursive: true });
+    await fs.mkdir(homeB, { recursive: true });
+    await fs.writeFile(path.join(homeA, "auth.json"), JSON.stringify({ token: "SECRET-A" }), "utf8");
+    await fs.writeFile(path.join(homeB, "auth.json"), JSON.stringify({ token: "SECRET-B" }), "utf8");
+
+    const seededHomeEnv: string[] = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      createRuntime: () => recordingRuntime({ ensureInputs }) as never,
+      prepareRemoteManagedHome: async (input) => {
+        const localHome = input.env.SESSION_MARKER === "b" ? homeB : homeA;
+        const stagedRuntime = await input.stage([
+          { key: "home", localDir: localHome, followSymlinks: true },
+        ]);
+        input.env.MANAGED_HOME = stagedRuntime.assetDirs.home ?? "";
+        seededHomeEnv.push(input.env.MANAGED_HOME);
+        return { stagedRuntime };
+      },
+    });
+
+    const first = await execute({
+      runId: "run-a",
+      runtime: {},
+      ...baseExecuteArgs({ stateDir, localCwd, executionTarget, env: { SESSION_MARKER: "a" } }),
+    } as never);
+    // Different fingerprint (SESSION_MARKER changed) → different sessionKey. If the
+    // cache were NOT fingerprint-scoped, this run could silently inherit session A's
+    // staged auth.json without re-seeding. It must instead seed its own home.
+    const second = await execute({
+      runId: "run-b",
+      runtime: { sessionParams: first.sessionParams },
+      ...baseExecuteArgs({ stateDir, localCwd, executionTarget, env: { SESSION_MARKER: "b" } }),
+    } as never);
+
+    expect(first.exitCode).toBe(0);
+    expect(second.exitCode).toBe(0);
+    // Each session staged its OWN managed home — no cross-session reuse.
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(2);
+    expect(seededHomeEnv).toHaveLength(2);
+    // Session B's staged home holds session B's credential, never session A's.
+    const bHome = seededHomeEnv[1]!;
+    await expect(fs.readFile(path.join(bHome, "auth.json"), "utf8")).resolves.toContain("SECRET-B");
+  });
+
+  it("test_acp_failed_turn_evicts_staged_runtime_so_resume_restages", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      // The first turn fails; the second (compatible) run then completes.
+      createRuntime: (() => {
+        let call = 0;
+        return () => {
+          call += 1;
+          return recordingRuntime({
+            ensureInputs,
+            terminalStatus: call === 1 ? "failed" : "completed",
+          }) as never;
+        };
+      })(),
+    });
+    const base = baseExecuteArgs({ stateDir, localCwd, executionTarget });
+
+    const first = await execute({ runId: "run-a", runtime: {}, ...base } as never);
+    const second = await execute({
+      runId: "run-b",
+      runtime: { sessionParams: first.sessionParams },
+      ...base,
+    } as never);
+
+    expect(first.exitCode).toBe(1);
+    expect(second.exitCode).toBe(0);
+    // A failed turn discards the staged runtime, so the next run stages fresh
+    // instead of reusing a torn-down session's staged credentials.
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(2);
+  });
+});
