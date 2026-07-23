@@ -10,6 +10,7 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import { parseCmdWrapperContent } from "./cmd-wrapper-resolution.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -2218,6 +2219,31 @@ async function resolveSpawnTarget(
   }
 
   if (/\.(cmd|bat)$/i.test(executable)) {
+    // Try to resolve the actual executable from .cmd/.bat wrappers to avoid
+    // spawning cmd.exe which creates visible console windows on Windows.
+    // npm .cmd wrappers typically contain patterns like:
+    //   "%dp0%\node_modules\<pkg>\bin\<name>.exe" %*    (npm-generated)
+    //   "%~dp0\node_modules\<pkg>\bin\<name>.exe" %*   (direct %~dp0)
+    try {
+      const content = await fs.readFile(executable, "utf8");
+      const { exeRelativePath, envOverrides } = parseCmdWrapperContent(content);
+      if (exeRelativePath) {
+        const dir = path.dirname(executable);
+        const resolvedExe = path.resolve(dir, exeRelativePath);
+        try {
+          await fs.access(resolvedExe);
+          // Merge SET-based env overrides on top of the caller's sanitized env.
+          const mergedEnv = Object.keys(envOverrides).length > 0
+            ? { ...env, ...envOverrides }
+            : undefined;
+          return { command: resolvedExe, args, env: mergedEnv };
+        } catch {
+          // exe doesn't exist, fall through to cmd.exe wrapper
+        }
+      }
+    } catch {
+      // can't read .cmd file, fall through to cmd.exe wrapper
+    }
     // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
     // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
     const shell = resolveWindowsCmdShell(env);
@@ -3071,6 +3097,7 @@ export async function runChildProcess(
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
           detached: process.platform !== "win32",
+          windowsHide: process.platform === "win32",
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
