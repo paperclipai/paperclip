@@ -1,0 +1,51 @@
+[Unit]
+# Sample systemd user unit for Paperclip.
+#
+# Install location:   ~/.config/systemd/user/paperclip.service
+# Enable lingering:   sudo loginctl enable-linger "$USER"
+# Reload + start:     systemctl --user daemon-reload && systemctl --user enable --now paperclip.service
+# Logs:               journalctl --user -u paperclip.service -f
+#
+# Before installing, set the two values flagged with TODO below.
+Description=Paperclip server (paperclipai run)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+
+# TODO: Set this to the absolute path you run Paperclip from.
+#       For an npm install this is typically a directory that contains
+#       paperclip's working files; for a source checkout it is the repo root.
+WorkingDirectory=%h/paperclip
+
+Environment=NODE_ENV=production
+# Optional: pin a specific instance home. Defaults to %h/.paperclip when unset.
+# Environment=PAPERCLIP_HOME=%h/.paperclip
+
+# TODO: Pick one ExecStart line for your install method and remove the others.
+#
+# 1) npm-installed CLI (recommended for production)
+ExecStart=/usr/bin/env npx --yes paperclipai run
+#
+# 2) Source checkout — invoke the CLI through pnpm so tsx hooks load
+# ExecStart=/usr/bin/env pnpm paperclipai run
+#
+# 3) Source checkout — invoke tsx directly (no pnpm dependency at runtime)
+# ExecStart=/usr/bin/env node %h/paperclip/cli/node_modules/tsx/dist/cli.mjs %h/paperclip/cli/src/index.ts run
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+# Journal captures stdout/stderr by default. To mirror to a file instead, swap
+# the two lines below for `append:` targets and ensure the directory exists.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
