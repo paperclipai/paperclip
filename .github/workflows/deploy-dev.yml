@@ -1,0 +1,39 @@
+name: Deploy to Dev
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+jobs:
+  deploy-dev:
+    name: Build & Deploy (Dev)
+    runs-on: [self-hosted, paperclip-dev]
+    env:
+      PATH: /home/rk9admin/.local/share/pnpm:/home/rk9admin/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+    steps:
+      - name: Pull latest code
+        run: |
+          cd /opt/paperclip
+          git fetch --prune origin
+          git checkout -f master
+          git reset --hard FETCH_HEAD
+          git clean -fd --exclude='.env' --exclude='data/'
+
+      - name: Install and build
+        run: |
+          cd /opt/paperclip
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Restart service
+        run: |
+          sudo systemctl restart paperclip
+          sleep 5
+          curl -sf http://localhost:3100/api/health || exit 1
+          echo "Paperclip OK"
