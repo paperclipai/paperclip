@@ -24,12 +24,20 @@ import {
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
-import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
+import type {
+  AcpxEngineExecutorOptions,
+  AcpxRemoteManagedHomeContext,
+  AcpxRemoteManagedHomeResult,
+} from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  materializeRemoteClaudeConfig,
+  prepareClaudeConfigSeed,
+} from "./claude-config.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -166,9 +174,68 @@ export function resolveClaudeAcpBillingIdentity(
   };
 }
 
+/**
+ * Claude remote managed-home seed for the runner-backed remote sandbox ACP lane.
+ * Mirrors the Claude CLI lane (`claude-local/execute.ts`): ship a sanitized
+ * config seed (settings.json + CLAUDE.md, no credentials) as the `config-seed`
+ * asset, materialize it into an in-sandbox config dir (copying the sandbox's own
+ * `$HOME/.claude` credentials in), then repoint `CLAUDE_CONFIG_DIR` onto that
+ * in-sandbox config dir. Claude has no credential copy-back (its CLI lane has
+ * none — mirroring the CLI is the contract), so no teardown hook.
+ *
+ * Skipped when the run sets an explicit `CLAUDE_CONFIG_DIR` (user-managed) — the
+ * seam stages the workspace with no config asset, identical to the no-seam
+ * fallback. The engine's `useRemoteProcessSession` gate already guarantees the
+ * remote sandbox (managed-home) target.
+ */
+async function prepareClaudeRemoteManagedHome(
+  input: AcpxRemoteManagedHomeContext,
+): Promise<AcpxRemoteManagedHomeResult> {
+  const { env, runId, onLog, executionTarget } = input;
+  const envConfig = parseObject(input.config.env);
+  const hasExplicitClaudeConfigDir =
+    typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0;
+  if (hasExplicitClaudeConfigDir) {
+    return { stagedRuntime: await input.stage([]) };
+  }
+
+  // Content-addressed sanitized seed (managed cache under the instance root, not
+  // a temp dir — reused across runs, so no teardown cleanup).
+  const claudeConfigSeedDir = await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
+  const stagedRuntime = await input.stage([
+    { key: "config-seed", localDir: claudeConfigSeedDir, followSymlinks: true },
+  ]);
+
+  const remoteClaudeRuntimeRoot =
+    stagedRuntime.runtimeRootDir ??
+    path.posix.join(stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir, ".paperclip-runtime", "claude");
+  const remoteClaudeConfigSeedDir =
+    stagedRuntime.assetDirs["config-seed"] ?? path.posix.join(remoteClaudeRuntimeRoot, "config-seed");
+  const remoteClaudeConfigDir = path.posix.join(remoteClaudeRuntimeRoot, "config");
+
+  await onLog("stdout", `[paperclip] Materializing Claude auth/config into ${remoteClaudeConfigDir}.\n`);
+  await materializeRemoteClaudeConfig({
+    runId,
+    target: executionTarget,
+    remoteClaudeConfigDir,
+    remoteClaudeConfigSeedDir,
+    options: {
+      cwd: stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir,
+      env,
+      timeoutSec: Math.max(input.timeoutSec, 15),
+      graceSec: 20,
+      onLog,
+    },
+  });
+  // Repoint CLAUDE_CONFIG_DIR onto the in-sandbox config dir.
+  env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+  return { stagedRuntime };
+}
+
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveClaudeAcpBillingIdentity,
+    prepareRemoteManagedHome: prepareClaudeRemoteManagedHome,
     ...options,
     adapterType: "claude_local",
     moduleDir,

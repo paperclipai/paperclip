@@ -65,6 +65,11 @@ type FakeRuntimeTurn = {
 
 const tempRoots: string[] = [];
 const originalNodeVersion = process.version;
+const originalEnv: Record<string, string | undefined> = {
+  PAPERCLIP_HOME: process.env.PAPERCLIP_HOME,
+  PAPERCLIP_INSTANCE_ID: process.env.PAPERCLIP_INSTANCE_ID,
+  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+};
 
 function setNodeVersion(version: string): void {
   Object.defineProperty(process, "version", {
@@ -76,6 +81,10 @@ function setNodeVersion(version: string): void {
 
 afterEach(async () => {
   setNodeVersion(originalNodeVersion);
+  for (const [key, value] of Object.entries(originalEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -534,6 +543,72 @@ describe("claude_local ACP lane", () => {
     await expect(fs.readFile(path.join(remoteCwd, "hello.txt"), "utf8")).resolves.toBe("hi");
     expect(runtimes[0]?.ensureInputs[0]?.cwd).toBe(remoteCwd);
     expect(runtimes[0]?.ensureInputs[0]?.cwd).not.toBe(localCwd);
+  });
+
+  it("seeds the managed Claude config into the sandbox and repoints CLAUDE_CONFIG_DIR to the in-sandbox path", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-home-seed-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const sharedClaudeConfig = path.join(root, "shared-claude-config");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sharedClaudeConfig, { recursive: true });
+    // Host shared Claude config the seed is built from.
+    await fs.writeFile(
+      path.join(sharedClaudeConfig, "settings.json"),
+      JSON.stringify({ permissions: { defaultMode: "acceptEdits" } }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(sharedClaudeConfig, "CLAUDE.md"), "# shared guidance\n", "utf8");
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+    process.env.CLAUDE_CONFIG_DIR = sharedClaudeConfig;
+
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+        onMeta: async (payload: AdapterInvocationMeta) => {
+          meta.push(payload);
+        },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const remappedConfigDir = String(meta[0]?.env?.CLAUDE_CONFIG_DIR ?? "");
+    // C2 — CLAUDE_CONFIG_DIR repointed onto an in-sandbox path, distinct from the
+    // host shared config dir.
+    expect(remappedConfigDir).not.toBe(sharedClaudeConfig);
+    expect(remappedConfigDir).toContain(".paperclip-runtime");
+    expect(remappedConfigDir.endsWith("/config")).toBe(true);
+    // Seeded: settings.json was materialized into the in-sandbox config dir (the
+    // local runner uses the host FS, so this is a real host path).
+    await expect(fs.readFile(path.join(remappedConfigDir, "settings.json"), "utf8")).resolves.toContain(
+      "permissions",
+    );
+    // C4 — no XDG_* variable is introduced for in-sandbox credential discovery.
+    expect(Object.keys(meta[0]?.env ?? {}).filter((key) => key.startsWith("XDG_"))).toEqual([]);
   });
 
   it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
