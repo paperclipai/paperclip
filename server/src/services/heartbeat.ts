@@ -1725,7 +1725,20 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     );
   }
 
-  if (workspaceExpectation && effectiveCwd && !await hasGitMetadata(effectiveCwd)) {
+  // A Paperclip project can be a deliberately non-git local_folder (codebase
+  // origin === "local_folder" with repoUrl === null), e.g. the 'life' Obsidian
+  // vault. Such workspaces have no .git metadata by design, so only enforce the
+  // git-metadata requirement for git-backed projects (any repoUrl present) or
+  // the git_worktree strategy. All other workspace-binding guards above still
+  // apply unchanged. See LUN-3022.
+  const isGitBackedWorkspace =
+    input.executionWorkspace.strategy === "git_worktree" ||
+    input.persistedExecutionWorkspace?.strategyType === "git_worktree" ||
+    Boolean(readNonEmptyString(input.resolvedWorkspace.repoUrl)) ||
+    Boolean(readNonEmptyString(input.executionWorkspace.repoUrl)) ||
+    Boolean(readNonEmptyString(input.persistedExecutionWorkspace?.repoUrl));
+
+  if (workspaceExpectation && effectiveCwd && isGitBackedWorkspace && !await hasGitMetadata(effectiveCwd)) {
     fail(
       "missing_git_metadata",
       `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" has no .git metadata.`,
