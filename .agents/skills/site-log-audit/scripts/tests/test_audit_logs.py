@@ -45,7 +45,8 @@ with tempfile.TemporaryDirectory() as temp:
         "https://example.test/check#access_token=fragment-secret&ok=1 in "
         + str(root)
         + "/plugins/fragment.php on line 8\n"
-        "2026-07-21 01:01:57.000000 [NOTICE] [1] [STDERR] PHP Warning: request body {\"token\":\"json-secret\",\"nested\":{\"password\":\"nested-secret\"}} in "
+        "2026-07-21 25:01:56.000000 [NOTICE] [1] [STDERR] PHP Warning: malformed timestamp does not abort audit\n"
+        "2026-07-21 01:01:57.000000 [NOTICE] [1] [STDERR] PHP Warning: request body {\"token\":\"json-secret\",\"account\":\"private-account\",\"nested\":{\"password\":\"nested-secret\"}} in "
         + str(root)
         + "/plugins/json.php on line 9\n"
         "2026-07-21 01:01:58.000000 [NOTICE] [1] [STDERR] PHP Warning: request body {\"token\":broken-secret in "
@@ -95,8 +96,9 @@ with tempfile.TemporaryDirectory() as temp:
     fragment_warning = next(event for event in report["events"] if "plugins/fragment.php" in event["signature"])
     assert "fragment-secret" not in fragment_warning["signature"] and "access_token=<redacted>" in fragment_warning["signature"], fragment_warning
     json_warning = next(event for event in report["events"] if "plugins/json.php" in event["signature"])
-    assert "json-secret" not in json_warning["signature"] and "nested-secret" not in json_warning["signature"], json_warning
-    assert json_warning["signature"].count("<redacted>") == 2, json_warning
+    for leaked in ("json-secret", "private-account", "nested-secret", "token", "account", "password"):
+        assert leaked not in json_warning["signature"], json_warning
+    assert "request body <redacted> in <workspace>/plugins/json.php" in json_warning["signature"], json_warning
     malformed_json = next(event for event in report["events"] if "request body <redacted>" in event["signature"])
     assert "broken-secret" not in malformed_json["signature"] and "<redacted>" in malformed_json["signature"], malformed_json
     malformed = next(event for event in report["events"] if event["severity"] == "502")

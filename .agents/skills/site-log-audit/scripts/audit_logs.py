@@ -54,10 +54,16 @@ SENSITIVE_KEY_PARTS = frozenset({
 def parse_timestamp(line: str) -> datetime | None:
     access = ACCESS.match(line)
     if access:
-        return datetime.strptime(access.group(1), "%d/%b/%Y:%H:%M:%S %z")
+        try:
+            return datetime.strptime(access.group(1), "%d/%b/%Y:%H:%M:%S %z")
+        except ValueError:
+            return None
     match = OLS_TS.match(line)
     if match:
-        return datetime.fromisoformat(match.group(1)).replace(tzinfo=timezone.utc)
+        try:
+            return datetime.fromisoformat(match.group(1)).replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
     match = WP_TS.match(line)
     if match:
         for fmt in ("%d-%b-%Y %H:%M:%S %Z", "%d/%b/%Y:%H:%M:%S %z"):
@@ -119,21 +125,14 @@ def redact_url(raw: str) -> str:
 
 
 def redact_json_bodies(value: str) -> str:
-    def redact(item: object) -> object:
-        if isinstance(item, dict):
-            return {key: "<redacted>" if is_sensitive_key(key) else redact(child) for key, child in item.items()}
-        if isinstance(item, list):
-            return [redact(child) for child in item]
-        return item
-
     start = value.find("{")
     if start < 0:
         return value
     try:
-        body, end = json.JSONDecoder().raw_decode(value[start:])
+        _, end = json.JSONDecoder().raw_decode(value[start:])
     except json.JSONDecodeError:
         return value[:start] + "<redacted>"
-    return value[:start] + json.dumps(redact(body), separators=(",", ":")) + redact_json_bodies(value[start + end:])
+    return value[:start] + "<redacted>" + redact_json_bodies(value[start + end:])
 
 
 def redact_secrets(value: str) -> str:
@@ -223,7 +222,9 @@ def audit(root: Path, sites: list[str], since: datetime | None) -> dict:
                     match = ACCESS.match(line)
                     if not match or int(match.group(4)) < 400:
                         continue
-                    stamp = datetime.strptime(match.group(1), "%d/%b/%Y:%H:%M:%S %z")
+                    stamp = timestamp
+                    if stamp is None:
+                        continue
                     if since and stamp < since:
                         continue
                     method, target, status = match.group(2), redact_url(match.group(3)), int(match.group(4))

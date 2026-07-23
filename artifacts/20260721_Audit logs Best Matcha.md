@@ -14,34 +14,34 @@ Current health proof:
 
 - `https://best-matcha.test:8443/` follows one redirect and returns HTTP 200.
 - `https://best-matcha.test:8443/wp-json/` returns HTTP 200.
-- Active Elementor Framework release resolves to `/home/agents/workspaces/wordpress/releases/cla-943-aed7c113/elementor-framework`.
+- Active Elementor Framework release resolves to its local deployed release directory.
 - Fresh homepage HTML contains zero malformed `/wp-content/plugins/home/agents/.../releases/...` asset URLs.
 
 ## Findings untreated before this audit
 
 | Finding | Evidence | Disposition |
 |---|---|---|
-| Voxel Addon `IconField` requires absent `templates/icon-field.php` | 13 fatals plus 13 paired warnings in OLS log; latest 2026-07-21 13:20:49 UTC; `IconField.php:163`; edit-form requests returned HTTP 500 | [CLA-1098](/CLA/issues/CLA-1098) fixed and [CLA-1104](/CLA/issues/CLA-1104) QA-approved; [CLA-1105](/CLA/issues/CLA-1105) integrated commit `9515d12` into Voxel Addon default branch. Best Matcha still needs applicable release deployment before fresh-log closure. |
-| Elementor Framework scalar coercion warnings | 190 OLS history lines and 212 overlapping debug-history lines across `settings_resolver.php` and `includes/media/icons.php`; active release emitted seven fresh `settings_resolver.php:84` warnings from 13:27:22 through 13:29:06 UTC | [CLA-1100](/CLA/issues/CLA-1100) fixed and QA/DevOps-approved at `6469bba5`; dedicated integration and local release deployment remain its named delivery action. |
-| Voxel search terms SSR assumes `props.per_page` | 8 OLS warnings plus 2 debug warnings at `terms-ssr.php:61/85` | [CLA-1101](/CLA/issues/CLA-1101), blocked by live-source contract inspection [CLA-1106](/CLA/issues/CLA-1106). |
-| Voxel price reindex uses `TRUNCATE` across foreign-key reference | 1 WordPress DB error at 2026-07-20 19:12:24 UTC: `wp_voxel_price_index_products` references `wp_voxel_index_products` | [CLA-1102](/CLA/issues/CLA-1102); QA requested changes after data-integrity review, Backend owns remediation. |
-| Code Snippets Pro logs absent optional `code-snippets-pro-en_US.mo` as failure | 8 OLS entries, last 2026-07-19 12:32:27 UTC | [CLA-1103](/CLA/issues/CLA-1103) fixed and QA/DevOps-approved at `3f22f08`; dedicated default-branch integration/deployment remains its named delivery action. |
+| Voxel Addon `IconField` requires absent `templates/icon-field.php` | 13 fatals plus 13 paired warnings in OLS log; latest 2026-07-21 13:20:49 UTC; `IconField.php:163`; edit-form requests returned HTTP 500 | Fix reviewed and integrated. Best Matcha needs applicable release deployment before fresh-log closure. |
+| Elementor Framework scalar coercion warnings | 190 OLS history lines and 212 overlapping debug-history lines across `settings_resolver.php` and `includes/media/icons.php`; active release emitted seven fresh `settings_resolver.php:84` warnings from 13:27:22 through 13:29:06 UTC | Fix reviewed; integration and local release deployment remain delivery work. |
+| Voxel search terms SSR assumes `props.per_page` | 8 OLS warnings plus 2 debug warnings at `terms-ssr.php:61/85` | Blocked by live-source contract inspection. |
+| Voxel price reindex uses `TRUNCATE` across foreign-key reference | 1 WordPress DB error at 2026-07-20 19:12:24 UTC: `wp_voxel_price_index_products` references `wp_voxel_index_products` | Data-integrity review requested changes; backend remediation pending. |
+| Code Snippets Pro logs absent optional `code-snippets-pro-en_US.mo` as failure | 8 OLS entries, last 2026-07-19 12:32:27 UTC | Fix reviewed; default-branch integration and deployment remain delivery work. |
 
 No unmatched actionable signature remains after these tasks were created and routed. All implementation issues use active component projects. Code/site delivery routes through QA Engineer review and DevOps Engineer approval/integration.
 
-## Mapped existing tasks
+## Mapped existing work
 
-| Signature | Evidence | Existing task |
+| Signature | Evidence | Status |
 |---|---|---|
-| Hierarchy `wp_voxel_relations` FK failure for parent 12755 / child 14661 | 3 DB errors and 3 `RelationWriter` fatals | [CLA-891](/CLA/issues/CLA-891) |
-| `ef_voxel_resolve_loop()` undefined | 21 OLS fatals plus debug fatal | [CLA-986](/CLA/issues/CLA-986), done; active release is newer than retained failure |
-| Early `voxel-addon` textdomain loading | 3 debug notices | [CLA-1073](/CLA/issues/CLA-1073), done |
-| Malformed Elementor image envelopes / post 16083 save validation | 6 OLS warnings plus retained debug events | [CLA-310](/CLA/issues/CLA-310), [CLA-361](/CLA/issues/CLA-361), [CLA-541](/CLA/issues/CLA-541) |
-| Elementor editor `localized`, `this.ui.input.val`, `NestedElementBase`, duplicate registration, ReactDOM/global-class errors | Retained editor errors and HTTP 400 global-class requests | [CLA-896](/CLA/issues/CLA-896), [CLA-905](/CLA/issues/CLA-905), [CLA-907](/CLA/issues/CLA-907), [CLA-908](/CLA/issues/CLA-908) |
-| WordPress.org secure connection update warnings | 18 OLS occurrences plus retained debug warnings | [CLA-489](/CLA/issues/CLA-489), done |
-| `FS_METHOD` duplicate definition | 43 early OLS warnings | [CLA-3](/CLA/issues/CLA-3), done |
-| Preview/render-batch 400/403 | Retained access requests | [CLA-929](/CLA/issues/CLA-929), [CLA-943](/CLA/issues/CLA-943) |
-| Old CLA-909 absolute release asset URLs return 404 | Retained access requests | Deployment lineage handled by [CLA-909](/CLA/issues/CLA-909) and [CLA-943](/CLA/issues/CLA-943); current homepage emits none |
+| Hierarchy `wp_voxel_relations` foreign-key failure | 3 DB errors and 3 `RelationWriter` fatals | Existing remediation work tracked. |
+| `ef_voxel_resolve_loop()` undefined | 21 OLS fatals plus debug fatal | Done; active release is newer than retained failure. |
+| Early `voxel-addon` textdomain loading | 3 debug notices | Done. |
+| Malformed Elementor image envelopes / save validation | 6 OLS warnings plus retained debug events | Existing remediation work tracked. |
+| Elementor editor `localized`, `this.ui.input.val`, `NestedElementBase`, duplicate registration, ReactDOM/global-class errors | Retained editor errors and HTTP 400 global-class requests | Existing remediation work tracked. |
+| WordPress.org secure connection update warnings | 18 OLS occurrences plus retained debug warnings | Done. |
+| `FS_METHOD` duplicate definition | 43 early OLS warnings | Done. |
+| Preview/render-batch 400/403 | Retained access requests | Existing remediation work tracked. |
+| Old absolute release asset URLs return 404 | Retained access requests | Deployment lineage handled; current homepage emits none. |
 
 ## Historical or secondary events not filed
 
