@@ -27,6 +27,8 @@ import { errorHandler } from "../middleware/index.js";
 import { statusCardRoutes } from "../routes/status-cards.js";
 import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
+import { issueService } from "../services/issues.js";
 import { statusCardService } from "../services/status-cards.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -53,14 +55,18 @@ function unprivilegedBoardActor(companyId: string): Express.Request["actor"] {
   };
 }
 
-function createApp(db: Db, actor: Express.Request["actor"]) {
+function createApp(
+  db: Db,
+  actor: Express.Request["actor"],
+  heartbeat: IssueAssignmentWakeupDeps = { wakeup: async () => ({ queued: true }) },
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.actor = actor;
     next();
   });
-  app.use("/api", statusCardRoutes(db, { heartbeat: { wakeup: async () => ({ queued: true }) } }));
+  app.use("/api", statusCardRoutes(db, { heartbeat }));
   app.use(errorHandler);
   return app;
 }
@@ -129,6 +135,26 @@ describeEmbeddedPostgres("status card routes", () => {
     const response = await request(createApp(db, localBoardActor())).get(`/api/companies/${company.id}/status-cards`);
     expect(response.status).toBe(404);
     expect(response.body.error).toContain("not enabled");
+  });
+
+  it("rolls back a new card when compile wakeup fails", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    const app = createApp(db, localBoardActor(), {
+      wakeup: async () => {
+        throw new Error("queue unavailable");
+      },
+    });
+
+    const response = await request(app)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Recently updated launch tasks" });
+
+    expect(response.status).toBe(500);
+    expect(await db.select().from(statusCards)).toEqual([]);
+    expect(await db.select().from(statusCardUpdates)).toEqual([]);
+    expect(await db.select().from(issues).then((rows) => rows[0])).toMatchObject({ status: "cancelled" });
   });
 
   it("creates, patches, archives, restores, lists updates, and deletes a card", async () => {
@@ -374,6 +400,49 @@ describeEmbeddedPostgres("status card routes", () => {
       kind: "full",
       trigger: "restore",
       generationIssueId: restored.body.generatingIssueId,
+    });
+  });
+
+  it("finalizes cancelled generation tasks as failed ledger entries", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    const service = statusCardService(db);
+    const card = await service.create(
+      company.id,
+      {
+        interestPrompt: "Recently updated launch tasks",
+        titlePinned: false,
+        instructionsMode: "none",
+        refreshPolicy: { mode: "manual" },
+      },
+      { agentId: null, userId: "board-user" },
+    );
+    await db.update(statusCards).set({
+      state: "active",
+      queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }] as typeof card.queries,
+    }).where(eq(statusCards.id, card.id));
+    const refresh = await service.requestRefresh(card.id, {
+      actor: { agentId: null, userId: "board-user" },
+    });
+    expect(refresh.generatingIssue).toBeTruthy();
+    expect(await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.cardId, card.id)).then((rows) => rows[0])).toMatchObject({
+      status: "ok",
+      finishedAt: null,
+    });
+
+    await issueService(db).update(refresh.generatingIssue!.id, { status: "cancelled" });
+
+    expect(await service.getById(card.id)).toMatchObject({
+      state: "error",
+      generatingIssueId: null,
+      nextEvalAt: null,
+      failureReason: expect.stringContaining("cancelled"),
+    });
+    expect(await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.cardId, card.id)).then((rows) => rows[0])).toMatchObject({
+      status: "failed",
+      finishedAt: expect.any(Date),
+      error: expect.stringContaining("cancelled"),
     });
   });
 

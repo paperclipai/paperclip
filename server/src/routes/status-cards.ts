@@ -12,7 +12,7 @@ import {
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
-import { accessService, heartbeatService, instanceSettingsService, logActivity, statusCardService } from "../services/index.js";
+import { accessService, heartbeatService, instanceSettingsService, issueService, logActivity, statusCardService } from "../services/index.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 
@@ -21,6 +21,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
   const access = accessService(db);
   const settings = instanceSettingsService(db);
   const service = statusCardService(db);
+  const issueSvc = issueService(db);
   const heartbeat = opts.heartbeat ?? heartbeatService(db);
 
   async function assertStatusCardsEnabled() {
@@ -87,17 +88,22 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
     if (!result.alreadyGenerating) {
-      await queueIssueAssignmentWakeup({
-        heartbeat,
-        issue: result.generatingIssue,
-        reason: "status_card_compile_assigned",
-        mutation: "status_card.compile_requested",
-        contextSource: "status_card_compile",
-        requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
-        requestedByActorId: actor.actorId,
-        taskKey: `status-card:${cardId}`,
-        rethrowOnError: true,
-      });
+      try {
+        await queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: result.generatingIssue,
+          reason: "status_card_compile_assigned",
+          mutation: "status_card.compile_requested",
+          contextSource: "status_card_compile",
+          requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+          requestedByActorId: actor.actorId,
+          taskKey: `status-card:${cardId}`,
+          rethrowOnError: true,
+        });
+      } catch (error) {
+        await issueSvc.update(result.generatingIssue.id, { status: "cancelled" });
+        throw error;
+      }
     }
     return result;
   }
@@ -146,9 +152,14 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       agentId: actor.actorType === "agent" ? actor.actorId : null,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
-    const compile = await enqueueCompile(req, card.id);
-    await logMutation(req, companyId, "status_card.created", card.id, { state: card.state });
-    res.status(201).json(compile.card);
+    try {
+      const compile = await enqueueCompile(req, card.id);
+      await logMutation(req, companyId, "status_card.created", card.id, { state: card.state });
+      res.status(201).json(compile.card);
+    } catch (error) {
+      await service.remove(card.id);
+      throw error;
+    }
   });
 
   router.get("/status-cards/:id", async (req, res) => {
