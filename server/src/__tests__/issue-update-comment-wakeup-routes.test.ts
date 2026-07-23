@@ -11,10 +11,12 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
+  assertCheckoutOwner: vi.fn(),
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
+  hasIssueAssigneeAgentHandoffInRun: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -27,6 +29,20 @@ const mockHeartbeatService = vi.hoisted(() => ({
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+}));
+
+vi.mock("../services/task-watchdog-scope.js", () => ({
+  TASK_WATCHDOG_ORIGIN_KIND: "task_watchdog",
+  resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
+  taskWatchdogScopeAllowsIssueMutation: vi.fn(async () => ({ kind: "valid" })),
+}));
+
+vi.mock("../services/source-trust.js", () => ({
+  buildPromotedSourceTrust: vi.fn(() => null),
+  isLowTrustQuarantined: vi.fn(() => false),
+  redactQuarantinedBodyForHigherTrust: vi.fn((body: string) => body),
+  resolveActorSourceTrustForIssue: vi.fn(async () => null),
+  sanitizeQuarantinedCommentForHigherTrust: vi.fn((comment: unknown) => comment),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -101,6 +117,18 @@ vi.mock("../services/index.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/task-watchdog-scope.js", () => ({
+    TASK_WATCHDOG_ORIGIN_KIND: "task_watchdog",
+    resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
+    taskWatchdogScopeAllowsIssueMutation: vi.fn(async () => ({ kind: "valid" })),
+  }));
+  vi.doMock("../services/source-trust.js", () => ({
+    buildPromotedSourceTrust: vi.fn(() => null),
+    isLowTrustQuarantined: vi.fn(() => false),
+    redactQuarantinedBodyForHigherTrust: vi.fn((body: string) => body),
+    resolveActorSourceTrustForIssue: vi.fn(async () => null),
+    sanitizeQuarantinedCommentForHigherTrust: vi.fn((comment: unknown) => comment),
+  }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -173,7 +201,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actorOverride?: Record<string, unknown>) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -187,6 +215,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverride,
     };
     next();
   });
@@ -225,10 +254,208 @@ describe("issue update comment wakeups", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.hasIssueAssigneeAgentHandoffInRun.mockResolvedValue(false);
+  });
+
+  it("rejects agent verdict-marker patch comments without a paired assigneeAgentId handoff", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      userId: undefined,
+      runId: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+      source: "agent_jwt",
+    }))
+      .patch(`/api/issues/${existing.id}`)
+      .set("X-Paperclip-Run-Id", "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa")
+      .send({
+        status: "in_review",
+        comment: "## QA GO\n\nLooks ready.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: "HandoffContractViolation",
+      details: {
+        missingPatch: "PATCH /api/issues/{id} with assigneeAgentId",
+      },
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("rejects agent verdict-marker patch comments when assigneeAgentId is cleared", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      userId: undefined,
+      runId: "dddddddd-1111-4111-8111-dddddddddddd",
+      source: "agent_jwt",
+    }))
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        assigneeAgentId: null,
+        comment: "**Next Owner:** nobody\n**Action required:** Clear ownership.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ error: "HandoffContractViolation" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("allows agent verdict-marker patch comments when the same request changes assigneeAgentId", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: PREVIOUS_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-handoff",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "**Next Owner:** [@QA](agent://11111111-1111-4111-8111-111111111111)\n**Action required:** Review this.",
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: PREVIOUS_AGENT_ID,
+      companyId: "company-1",
+      userId: undefined,
+      runId: "bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb",
+      source: "agent_jwt",
+    }))
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        comment: "**Next Owner:** [@QA](agent://11111111-1111-4111-8111-111111111111)\n**Action required:** Review this.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.hasIssueAssigneeAgentHandoffInRun).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+  }, 20_000);
+
+  it("allows agent top-level verdict-marker comments after a same-run assigneeAgentId handoff", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.hasIssueAssigneeAgentHandoffInRun.mockResolvedValue(true);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-prior-handoff",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "## Security NO-GO\n\nNeeds changes.",
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      userId: undefined,
+      runId: "cccccccc-1111-4111-8111-cccccccccccc",
+      source: "agent_jwt",
+    }))
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: "## Security NO-GO\n\nNeeds changes.",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.hasIssueAssigneeAgentHandoffInRun).toHaveBeenCalledWith({
+      issueId: existing.id,
+      companyId: existing.companyId,
+      runId: "cccccccc-1111-4111-8111-cccccccccccc",
+    });
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+  }, 20_000);
+
+  it("rejects agent top-level verdict-marker comments without a prior same-run handoff", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      userId: undefined,
+      runId: "eeeeeeee-1111-4111-8111-eeeeeeeeeeee",
+      source: "agent_jwt",
+    }))
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: "## Security GO\n\nApproved.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ error: "HandoffContractViolation" });
+    expect(mockIssueService.hasIssueAssigneeAgentHandoffInRun).toHaveBeenCalledWith({
+      issueId: existing.id,
+      companyId: existing.companyId,
+      runId: "eeeeeeee-1111-4111-8111-eeeeeeeeeeee",
+    });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("exempts board verdict-marker comments from the handoff contract gate", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-board-verdict",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "## QA GO\n\nBoard note.",
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: "## QA GO\n\nBoard note.",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.hasIssueAssigneeAgentHandoffInRun).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {

@@ -207,6 +207,43 @@ const externalObjectSummariesSchema = z.object({
   issueIds: z.array(z.string().uuid()).max(1000),
 }).strict();
 
+const HANDOFF_CONTRACT_MARKERS = [
+  /^##\s*Security\s+(?:NO-GO|GO)\b/im,
+  /^##\s*QA\s+(?:NO-GO|GO)\b/im,
+  /^##\s*Review\s+(?:NO-GO|GO)\b/im,
+  /\*\*Next Owner:\*\*/i,
+  /\*\*Routing to\*\*/i,
+  /\bRouting back to\b/i,
+  /\bHanding off to\b/i,
+] as const;
+
+function containsHandoffContractMarker(body: string) {
+  return HANDOFF_CONTRACT_MARKERS.some((marker) => marker.test(body));
+}
+
+function isAssigneeAgentPatchPairedWithComment(input: {
+  existingAssigneeAgentId: string | null;
+  normalizedAssigneeAgentId: string | null | undefined;
+}) {
+  return (
+    input.normalizedAssigneeAgentId !== undefined &&
+    input.normalizedAssigneeAgentId !== null &&
+    input.normalizedAssigneeAgentId !== input.existingAssigneeAgentId
+  );
+}
+
+function sendHandoffContractViolation(res: Response) {
+  res.status(422).json({
+    error: "HandoffContractViolation",
+    message:
+      "Agent verdict/routing comments must be paired with an assigneeAgentId PATCH in the same request or an earlier PATCH in the same X-Paperclip-Run-Id.",
+    details: {
+      missingPatch: "PATCH /api/issues/{id} with assigneeAgentId",
+      contract: "Cross-Agent Handoff Contract",
+    },
+  });
+}
+
 const promoteLowTrustOutputSchema = z.object({
   sourceArtifactKind: z.enum(["comment", "document", "work_product", "issue"]),
   sourceArtifactId: z.string().uuid(),
@@ -7748,6 +7785,29 @@ export function issueRoutes(
       return;
     }
 
+    if (
+      req.actor.type === "agent" &&
+      commentBody &&
+      containsHandoffContractMarker(commentBody) &&
+      !isAssigneeAgentPatchPairedWithComment({
+        existingAssigneeAgentId: existing.assigneeAgentId,
+        normalizedAssigneeAgentId,
+      })
+    ) {
+      const hasPriorHandoffPatch =
+        actor.runId
+          ? await svc.hasIssueAssigneeAgentHandoffInRun({
+              issueId: existing.id,
+              companyId: existing.companyId,
+              runId: actor.runId,
+            })
+          : false;
+      if (!hasPriorHandoffPatch) {
+        sendHandoffContractViolation(res);
+        return;
+      }
+    }
+
     if (interruptRequested) {
       if (!commentBody) {
         res.status(400).json({ error: "Interrupt is only supported when posting a comment" });
@@ -9683,6 +9743,20 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    if (req.actor.type === "agent" && containsHandoffContractMarker(req.body.body)) {
+      const hasPriorHandoffPatch =
+        actor.runId
+          ? await svc.hasIssueAssigneeAgentHandoffInRun({
+              issueId: issue.id,
+              companyId: issue.companyId,
+              runId: actor.runId,
+            })
+          : false;
+      if (!hasPriorHandoffPatch) {
+        sendHandoffContractViolation(res);
+        return;
+      }
+    }
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;

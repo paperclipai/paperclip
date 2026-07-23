@@ -5172,6 +5172,40 @@ export function issueService(db: Db) {
       return getCurrentScheduledRetryForIssue(issue.id, issue.companyId);
     },
 
+    hasIssueAssigneeAgentHandoffInRun: async (input: {
+      issueId: string;
+      companyId: string;
+      runId: string;
+    }) => {
+      const rows = await db
+        .select({ details: activityLog.details })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, input.companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, input.issueId),
+            eq(activityLog.action, "issue.updated"),
+            eq(activityLog.runId, input.runId),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+      return rows.some((row) => {
+        const details = row.details;
+        if (!details || typeof details !== "object") return false;
+        const detailsRecord = details as Record<string, unknown>;
+        const previous = detailsRecord._previous;
+        return (
+          Object.prototype.hasOwnProperty.call(detailsRecord, "assigneeAgentId") &&
+          detailsRecord.assigneeAgentId !== null &&
+          detailsRecord.assigneeAgentId !== undefined &&
+          !!previous &&
+          typeof previous === "object" &&
+          Object.prototype.hasOwnProperty.call(previous, "assigneeAgentId")
+        );
+      });
+    },
+
     getRelationSummaries: async (issueId: string) => {
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
