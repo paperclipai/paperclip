@@ -5257,6 +5257,186 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService.checkout review takeover", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-review-takeover-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedReviewIssue(input: { status?: string; doerCheckoutRunStatus?: string | null } = {}) {
+    const companyId = randomUUID();
+    const doerAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    const issueId = randomUUID();
+    const reviewerRunId = randomUUID();
+    const doerRunId = input.doerCheckoutRunStatus ? randomUUID() : null;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: doerAgentId,
+        companyId,
+        name: "Doer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "Reviewer",
+        role: "qa",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: reviewerRunId,
+        companyId,
+        agentId: reviewerAgentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-07-03T10:00:00.000Z"),
+      },
+      ...(doerRunId
+        ? [{
+            id: doerRunId,
+            companyId,
+            agentId: doerAgentId,
+            status: input.doerCheckoutRunStatus!,
+            invocationSource: "manual" as const,
+            startedAt: new Date("2026-07-03T09:00:00.000Z"),
+          }]
+        : []),
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Doer deliverable awaiting review",
+      status: input.status ?? "in_review",
+      priority: "medium",
+      assigneeAgentId: doerAgentId,
+      checkoutRunId: doerRunId,
+    });
+    return { companyId, doerAgentId, reviewerAgentId, issueId, reviewerRunId, doerRunId };
+  }
+
+  it("reassigns an in_review issue to the reviewer when takeover is allowed", async () => {
+    const seeded = await seedReviewIssue();
+    const result = await svc.checkout(
+      seeded.issueId,
+      seeded.reviewerAgentId,
+      ["in_review"],
+      seeded.reviewerRunId,
+      { allowReviewTakeover: true },
+    );
+    expect(result).toMatchObject({
+      assigneeAgentId: seeded.reviewerAgentId,
+      status: "in_progress",
+      checkoutRunId: seeded.reviewerRunId,
+    });
+  });
+
+  it("still 409s for another agent's in_review issue without the takeover flag", async () => {
+    const seeded = await seedReviewIssue();
+    await expect(svc.checkout(seeded.issueId, seeded.reviewerAgentId, ["in_review"], seeded.reviewerRunId))
+      .rejects.toMatchObject({ status: 409 });
+    const row = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({ assigneeAgentId: seeded.doerAgentId, status: "in_review" });
+  });
+
+  it("does not let the takeover flag claim an issue outside in_review", async () => {
+    const seeded = await seedReviewIssue({ status: "in_progress" });
+    await expect(svc.checkout(
+      seeded.issueId,
+      seeded.reviewerAgentId,
+      ["todo", "in_progress", "in_review"],
+      seeded.reviewerRunId,
+      { allowReviewTakeover: true },
+    )).rejects.toMatchObject({ status: 409 });
+    const row = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({ assigneeAgentId: seeded.doerAgentId, status: "in_progress" });
+  });
+
+  it("does not steal an in_review issue whose checkout lock belongs to a live run", async () => {
+    const seeded = await seedReviewIssue({ doerCheckoutRunStatus: "running" });
+    await expect(svc.checkout(
+      seeded.issueId,
+      seeded.reviewerAgentId,
+      ["in_review"],
+      seeded.reviewerRunId,
+      { allowReviewTakeover: true },
+    )).rejects.toMatchObject({ status: 409 });
+    const row = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, checkoutRunId: issues.checkoutRunId })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({ assigneeAgentId: seeded.doerAgentId, checkoutRunId: seeded.doerRunId });
+  });
+
+  it("clears a terminal doer checkout lock and completes the takeover", async () => {
+    const seeded = await seedReviewIssue({ doerCheckoutRunStatus: "failed" });
+    const result = await svc.checkout(
+      seeded.issueId,
+      seeded.reviewerAgentId,
+      ["in_review"],
+      seeded.reviewerRunId,
+      { allowReviewTakeover: true },
+    );
+    expect(result).toMatchObject({
+      assigneeAgentId: seeded.reviewerAgentId,
+      status: "in_progress",
+      checkoutRunId: seeded.reviewerRunId,
+    });
+  });
+});
+
 describeEmbeddedPostgres("accepted plan decomposition", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;

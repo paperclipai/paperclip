@@ -63,6 +63,7 @@ export type AuthorizationAction =
   | "agent:read"
   | "agent:wake"
   | "company_scope:read"
+  | "issue:checkout_review"
   | "issue:comment"
   | "issue:mutate"
   | "issue:read"
@@ -151,7 +152,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
   ) {
     return null;
   }
-  if (action === "issue:comment" || action === "issue:mutate") return null;
+  if (action === "issue:checkout_review" || action === "issue:comment" || action === "issue:mutate") return null;
   return action;
 }
 
@@ -956,6 +957,12 @@ export function authorizationService(db: Db) {
       return await projectWithinLowTrustBoundary(boundary, projectId)
         ? lowTrustAllow("Allowed inside the low-trust project boundary.")
         : lowTrustDeny("Project is outside this low-trust boundary.");
+    }
+
+    if (input.action === "issue:checkout_review") {
+      return lowTrustDeny(
+        `${LOW_TRUST_REVIEW_PRESET} agents cannot take over review checkouts; reassignment is a mutate-equivalent write.`,
+      );
     }
 
     if (input.action === "issue:comment" || input.action === "issue:read" || input.action === "issue:mutate") {
@@ -1903,6 +1910,38 @@ export function authorizationService(db: Db) {
         return allowIssueMentionGrant(input.action);
       }
     }
+
+    if (input.action === "issue:checkout_review") {
+      const resource = input.resource.type === "issue" ? input.resource : null;
+      if (resource?.assigneeAgentId === actorAgentId) {
+        return allow({
+          action: input.action,
+          reason: "allow_self",
+          explanation: "Allowed because the actor owns the assigned issue.",
+        });
+      }
+      if (!resource?.assigneeAgentId) {
+        return allow({
+          action: input.action,
+          reason: "allow_company_agent",
+          explanation: "Allowed because the issue has no agent assignee.",
+        });
+      }
+      if (
+        resource.issueId &&
+        resource.status === "in_review" &&
+        await agentHasMentionGrantOnIssue({
+          action: input.action,
+          companyId,
+          issueId: resource.issueId,
+          issueAssigneeAgentId: resource.assigneeAgentId ?? null,
+          actorAgentId,
+        })
+      ) {
+        return allowIssueMentionGrant(input.action);
+      }
+    }
+
     if (
       input.action === "agent_config:update" &&
       input.resource.type === "agent" &&

@@ -13,6 +13,7 @@ const recoveryActionId = "77777777-7777-4777-8777-777777777777";
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  checkout: vi.fn(),
   create: vi.fn(),
   createChild: vi.fn(),
   decomposeAcceptedPlan: vi.fn(),
@@ -408,6 +409,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockCompanyService.getById.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.checkout.mockReset();
     mockIssueService.create.mockReset();
     mockIssueService.createChild.mockReset();
     mockIssueService.decomposeAcceptedPlan.mockReset();
@@ -807,6 +809,90 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("lets a mention-granted reviewer checkout an in_review issue with review takeover", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_review" }));
+    mockIssueService.checkout.mockResolvedValue(
+      makeIssue({ status: "in_progress", assigneeAgentId: peerAgentId }),
+    );
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:assign" || input.action === "issue:checkout_review",
+      action: input.action,
+      reason:
+        input.action === "issue:checkout_review"
+          ? "allow_issue_mention_grant"
+          : input.action === "tasks:assign"
+            ? "allow_simple_company_member"
+            : "deny_missing_grant",
+      explanation: "Test decision.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId: peerAgentId, expectedStatuses: ["in_review"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "issue:checkout_review",
+        resource: expect.objectContaining({
+          issueId,
+          assigneeAgentId: ownerAgentId,
+          status: "in_review",
+        }),
+      }),
+    );
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(
+      issueId,
+      peerAgentId,
+      ["in_review"],
+      expect.any(String),
+      { allowReviewTakeover: true },
+    );
+  });
+
+  it("keeps review takeover disabled when the checkout_review decision is denied", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_review" }));
+    mockIssueService.checkout.mockResolvedValue(
+      makeIssue({ status: "in_review", assigneeAgentId: ownerAgentId }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId: peerAgentId, expectedStatuses: ["in_review"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(
+      issueId,
+      peerAgentId,
+      ["in_review"],
+      expect.any(String),
+      { allowReviewTakeover: false },
+    );
+  });
+
+  it("does not consult checkout_review for issues outside in_review", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    mockIssueService.checkout.mockResolvedValue(
+      makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId: peerAgentId, expectedStatuses: ["in_progress"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "issue:checkout_review" }),
+    );
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(
+      issueId,
+      peerAgentId,
+      ["in_progress"],
+      expect.any(String),
+      { allowReviewTakeover: false },
+    );
   });
 
   it("rejects peer agents from listing comments when issue read is outside their boundary", async () => {
