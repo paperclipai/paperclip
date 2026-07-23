@@ -18,7 +18,7 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { forbidden, unprocessable } from "../errors.js";
+import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -35,6 +35,9 @@ async function resolveActiveAgentRun(
   if (!isUuidLike(input.runId)) return null;
   const run = await db
     .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
       responsibleUserId: heartbeatRuns.responsibleUserId,
       status: heartbeatRuns.status,
     })
@@ -47,7 +50,12 @@ async function resolveActiveAgentRun(
       ),
     )
     .then((rows) => rows[0] ?? null);
-  return run?.status === "running" ? run : null;
+  return run?.id === input.runId &&
+    run.companyId === input.companyId &&
+    run.agentId === input.agentId &&
+    run.status === "running"
+    ? run
+    : null;
 }
 
 async function loadResponsibleUserMemberships(
@@ -272,12 +280,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
-        next();
+        next(unauthorized("Agent JWT is not authorized for an active run"));
         return;
       }
 
       if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-        next();
+        next(unauthorized("Agent JWT is not authorized for an active run"));
         return;
       }
 
@@ -307,7 +315,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         runId: claims.run_id,
       });
       if (!activeRun) {
-        next();
+        next(unauthorized("Agent JWT is not authorized for an active run"));
         return;
       }
 

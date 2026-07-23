@@ -97,12 +97,15 @@ function createDbState(input: {
   return { db, activity };
 }
 
-function createApp(db: any) {
+function createApp(
+  db: any,
+  deploymentMode: "local_trusted" | "authenticated" = "authenticated",
+) {
   const app = express();
   app.use(express.json());
   app.use(
     actorMiddleware(db, {
-      deploymentMode: "authenticated",
+      deploymentMode,
       resolveSession: async () => null,
     }),
   );
@@ -221,12 +224,11 @@ describe("agent auth middleware", () => {
     const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
 
     const res = await request(createApp(db))
-      .get("/actor")
+      .get(`/companies/${companyId}/protected`)
       .set("Authorization", `Bearer ${token}`)
       .set("X-Paperclip-Run-Id", runId);
 
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ type: "none", source: "none" });
+    expect(res.status).toBe(401);
   });
 
   it("rejects an otherwise valid agent JWT when its run no longer exists", async () => {
@@ -239,12 +241,11 @@ describe("agent auth middleware", () => {
     const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
 
     const res = await request(createApp(db))
-      .get("/actor")
+      .get(`/companies/${companyId}/protected`)
       .set("Authorization", `Bearer ${token}`)
       .set("X-Paperclip-Run-Id", runId);
 
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ type: "none", source: "none" });
+    expect(res.status).toBe(401);
   });
 
   it("rejects a JWT for a run that has not been claimed from the queue", async () => {
@@ -264,12 +265,56 @@ describe("agent auth middleware", () => {
     const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
 
     const res = await request(createApp(db))
+      .get(`/companies/${companyId}/protected`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(401);
+  });
+
+  it("does not reclassify a finished agent JWT as a local-trusted board administrator", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId, status: "succeeded" },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get(`/companies/${companyId}/protected`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(401);
+  });
+
+  it.each([
+    ["company", { companyId: randomUUID() }],
+    ["agent", { agentId: randomUUID() }],
+  ])("rejects a running JWT when the %s does not match its run", async (_label, override) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const runOverride = override as { companyId?: string; agentId?: string };
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: {
+        id: runId,
+        companyId: runOverride.companyId ?? companyId,
+        agentId: runOverride.agentId ?? agentId,
+        status: "running",
+      },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+    const res = await request(createApp(db, "local_trusted"))
       .get("/actor")
       .set("Authorization", `Bearer ${token}`)
       .set("X-Paperclip-Run-Id", runId);
 
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ type: "none", source: "none" });
+    expect(res.status).toBe(401);
   });
 
   it("preserves signed skill_test JWT scope on the request actor", async () => {
