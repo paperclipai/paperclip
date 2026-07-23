@@ -19,7 +19,9 @@
  */
 
 import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type {
   AdapterExecutionContext,
@@ -51,6 +53,9 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { prepareHermesManagedSkills } from "./managed-skills.js";
+
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -408,6 +413,16 @@ export async function execute(
     prompt = agentInstructions + "\n\n---\n\n" + prompt;
   }
 
+  // ── Prepare Paperclip-managed skills ───────────────────────────────────
+  // Hermes only accepts skill identifiers via --skills. Materialize the
+  // desired managed sources under the active profile's skills directory for
+  // this run, then preload those categorized paths explicitly.
+  const preparedManagedSkills = await prepareHermesManagedSkills({
+    config,
+    moduleDir: __moduleDir,
+    runId: ctx.runId || `paperclip-${randomUUID()}`,
+  });
+
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
   const useQuiet = cfgBoolean(config.quiet) === true; // default false
@@ -426,6 +441,10 @@ export async function execute(
 
   if (toolsets) {
     args.push("-t", toolsets);
+  }
+
+  for (const skillName of preparedManagedSkills.skillNames) {
+    args.push("--skills", skillName);
   }
 
   if (maxTurns && maxTurns > 0) {
@@ -526,14 +545,19 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
-  });
+  let result;
+  try {
+    result = await runChildProcess(ctx.runId, hermesCmd, args, {
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: wrappedOnLog,
+      onSpawn: ctx.onSpawn,
+    });
+  } finally {
+    await preparedManagedSkills.cleanup();
+  }
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
