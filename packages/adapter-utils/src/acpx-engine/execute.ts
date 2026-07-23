@@ -360,6 +360,11 @@ interface AcpxPreparedRuntime {
   // executor can cache/refresh the staged-runtime entry after a clean turn.
   // Null for local runs, the runner-less fallback, and non-remote lanes.
   remoteStagingEnvDelta: Record<string, string> | null;
+  // Per-session staging lease held from the initial stage-or-reuse decision
+  // through the active turn and released only after bridge cleanup completes.
+  // This keeps later overlapping runs from re-staging into the same remote
+  // workspace while a prior turn is still using it.
+  sessionStagingLeaseRelease: (() => void) | null;
   remoteExecutionIdentity: Record<string, unknown> | null;
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
@@ -1536,9 +1541,10 @@ async function buildRuntime(input: {
   let remoteManagedHomeTeardown: (() => Promise<void>) | null = null;
   let remoteStagingDispose: (() => Promise<void>) | null = null;
   let remoteStagingEnvDelta: Record<string, string> | null = null;
+  let sessionStagingLeaseRelease: (() => void) | null = null;
   if (useRemoteProcessSession && executionTarget?.kind === "remote") {
     const remoteTarget = executionTarget;
-    const staged = await withSessionStagingLock(stagingLocks, sessionKey, async (): Promise<{
+    const staged = await withSessionStagingLease(stagingLocks, sessionKey, async (): Promise<{
       stagedRuntime: PreparedAdapterExecutionTargetRuntime;
       teardown: (() => Promise<void>) | null;
       dispose: (() => Promise<void>) | null;
@@ -1633,10 +1639,11 @@ async function buildRuntime(input: {
         envDelta: delta,
       };
     });
-    stagedRuntime = staged.stagedRuntime;
-    remoteManagedHomeTeardown = staged.teardown;
-    remoteStagingDispose = staged.dispose;
-    remoteStagingEnvDelta = staged.envDelta;
+    sessionStagingLeaseRelease = staged.release;
+    stagedRuntime = staged.value.stagedRuntime;
+    remoteManagedHomeTeardown = staged.value.teardown;
+    remoteStagingDispose = staged.value.dispose;
+    remoteStagingEnvDelta = staged.value.envDelta;
   }
   let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
   if (useRemoteProcessSession) {
@@ -1685,6 +1692,7 @@ async function buildRuntime(input: {
     // abandoned, so its staged temp must be released.
     await remoteManagedHomeTeardown?.().catch(() => {});
     await remoteStagingDispose?.().catch(() => {});
+    sessionStagingLeaseRelease?.();
     throw err;
   }
   const overrideCommand = processSessionBridge?.agentCommand ?? agentCommand;
@@ -1726,6 +1734,7 @@ async function buildRuntime(input: {
     remoteManagedHomeTeardown,
     remoteStagingDispose,
     remoteStagingEnvDelta,
+    sessionStagingLeaseRelease,
     remoteExecutionIdentity,
     skillPromptInstructions,
     skillsIdentity: {
@@ -1807,6 +1816,7 @@ async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void
   if (prepared.remoteManagedHomeTeardown) {
     await prepared.remoteManagedHomeTeardown().catch(() => {});
   }
+  prepared.sessionStagingLeaseRelease?.();
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -2331,17 +2341,17 @@ async function discardStagedRuntime(input: {
   if (prepared.remoteStagingDispose) await prepared.remoteStagingDispose().catch(() => {});
 }
 
-// Per-`sessionKey` async mutex: chains each caller after the previous one so the
-// stage-or-reuse decision for a session runs serially (PR 3 fix — "Concurrent
-// Runs Corrupt Cache Ownership"). Overlapping runs of the same session can no
-// longer ship into the same remote workspace concurrently: the loser waits, then
-// re-checks the cache before deciding to reuse or re-stage. The lock entry is
-// GC'd once the last waiter for the key finishes.
-async function withSessionStagingLock<T>(
+// Per-`sessionKey` async lease: chains each caller after the previous one so
+// the stage-or-reuse decision for a session runs serially, then keeps the
+// lease held until the active turn finishes and bridge cleanup runs. That means
+// overlapping runs of the same session can never stage fresh into the same
+// remote workspace while a prior turn is still using it: the loser waits, then
+// re-checks the cache before deciding to reuse or re-stage.
+async function withSessionStagingLease<T>(
   locks: Map<string, Promise<unknown>>,
   key: string,
   fn: () => Promise<T>,
-): Promise<T> {
+): Promise<{ value: T; release: () => void }> {
   const prev = locks.get(key) ?? Promise.resolve();
   let releaseGate!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -2352,12 +2362,19 @@ async function withSessionStagingLock<T>(
   const mine: Promise<unknown> = prev.then(() => gate);
   locks.set(key, mine);
   await prev.catch(() => {});
-  try {
-    return await fn();
-  } finally {
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
     releaseGate();
     // GC the lock if no later caller has chained after us.
     if (locks.get(key) === mine) locks.delete(key);
+  };
+  try {
+    return { value: await fn(), release };
+  } catch (error) {
+    if (!released) release();
+    throw error;
   }
 }
 

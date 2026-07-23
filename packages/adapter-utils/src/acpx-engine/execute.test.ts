@@ -2395,4 +2395,66 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
     expect(events[2]).toMatch(/^enter:/);
     expect(events[3]).toBe(`exit:${events[2]!.slice("enter:".length)}`);
   });
+
+  // Greptile P1 "Lock Ends Before Use": a same-session re-stage must wait for
+  // the prior run's active turn and cleanup to finish before it can touch the
+  // staged remote workspace again.
+  it("test_concurrent_same_session_staging_waits_for_active_turn_cleanup", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const events: string[] = [];
+    let releaseTurn!: () => void;
+    let signalTurnStarted!: () => void;
+    const turnStarted = new Promise<void>((resolve) => {
+      signalTurnStarted = resolve;
+    });
+    const turnCompleted = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      stagingLocks: new Map(),
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => {
+          signalTurnStarted();
+          return {
+            events: (async function* () {
+              yield { type: "done", stopReason: "end_turn" };
+            })(),
+            result: turnCompleted.then(() => ({ status: "completed", stopReason: "end_turn" })),
+            cancel: async () => {},
+          };
+        },
+        setConfigOption: async () => {},
+        close: async () => {},
+      }) as never,
+      prepareRemoteManagedHome: async (input) => {
+        events.push(`enter:${input.runId}`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const stagedRuntime = await input.stage([]);
+        events.push(`exit:${input.runId}`);
+        return { stagedRuntime };
+      },
+    });
+    const base = baseExecuteArgs({ stateDir, localCwd, executionTarget });
+
+    const runA = execute({ runId: "run-a", runtime: {}, ...base } as never);
+    await turnStarted;
+    const runB = execute({ runId: "run-b", runtime: {}, ...base } as never);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).not.toContain("enter:run-b");
+
+    releaseTurn();
+    await runA;
+    events.push("run-a-finished");
+    await runB;
+
+    expect(events).toContain("enter:run-b");
+    expect(events.indexOf("enter:run-b")).toBeGreaterThan(events.indexOf("run-a-finished"));
+  });
 });
