@@ -223,6 +223,66 @@ test("testEnvironment resolves the configured Windows home case-insensitively", 
   }
 });
 
+test("testEnvironment detects model config from the configured child HOME", async () => {
+  await withHermesHomeConfig([], async () => {
+    const childHome = await mkdtemp(join(tmpdir(), "hermes-paperclip-child-home-"));
+    const childHermesDir = join(childHome, ".hermes");
+    await mkdir(childHermesDir, { recursive: true });
+    await writeFile(
+      join(childHermesDir, "config.yaml"),
+      [
+        "model:",
+        "  default: openrouter/gpt-4.1-mini",
+        "  provider: openrouter",
+        "  api_key: child-home-secret",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    try {
+      const result = await testEnvironment({
+        companyId: "company-test",
+        adapterType: "hermes_local",
+        config: {
+          hermesCommand: "python3",
+          model: "openrouter/gpt-4.1-mini",
+          env: { HOME: childHome },
+        },
+      });
+
+      const codes = result.checks.map((check) => check.code);
+      expect(codes.includes("hermes_api_key_in_config")).toBe(true);
+      expect(codes.includes("hermes_no_api_keys")).toBe(false);
+    } finally {
+      await rm(childHome, { recursive: true, force: true });
+    }
+  });
+});
+
+test("testEnvironment does not fall back to the server home when child HOME is explicitly empty", async () => {
+  await withHermesHomeConfig([
+    "model:",
+    "  default: openrouter/gpt-4.1-mini",
+    "  provider: openrouter",
+    "  api_key: server-home-secret",
+  ], async () => {
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "openrouter/gpt-4.1-mini",
+        env: { HOME: "" },
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+    expect(codes.includes("hermes_api_key_in_config")).toBe(false);
+    expect(codes.includes("hermes_no_api_keys")).toBe(true);
+  });
+});
+
 test("testEnvironment describes provider-omitted runtime config without inventing provider auto", async () => {
   await withHermesHomeConfig([
     "model:",

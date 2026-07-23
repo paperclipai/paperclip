@@ -12,6 +12,7 @@ import {
   buildInvocationEnvForLogs,
   buildPaperclipEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  ensurePathInEnv,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -27,6 +28,22 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+describe("ensurePathInEnv", () => {
+  it("recognizes lowercase PATH casing on Windows without adding a competing key", () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+
+    try {
+      const env = { path: "C:\\agent-bin" };
+
+      expect(ensurePathInEnv(env)).toBe(env);
+      expect(env).toEqual({ path: "C:\\agent-bin" });
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
+  });
+});
 
 function isPidAlive(pid: number) {
   try {
