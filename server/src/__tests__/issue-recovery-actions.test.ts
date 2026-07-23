@@ -1445,7 +1445,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
   });
 
-  it("marks a recovery action stale when a blocked source issue is manually moved to todo", async () => {
+  it("rejects direct issue updates that would stale an active recovery action", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     await db
       .update(issues)
@@ -1468,14 +1468,90 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const patched = await request(app)
       .patch(`/api/issues/${sourceIssueId}`)
-      .send({ status: "todo" })
+      .send({ status: "todo", comment: "I fixed the recovery path." })
+      .expect(409);
+
+    expect(patched.body.error).toBe("Issue update rejected by active recovery action");
+    expect(patched.body.details).toMatchObject({
+      issueId: sourceIssueId,
+      recoveryActionId: action.id,
+      reason: "Recovery action became stale because the source issue was manually moved from blocked to todo.",
+    });
+
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue?.status).toBe("blocked");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments).toHaveLength(0);
+
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "active",
+      outcome: null,
+      resolutionNote: null,
+    });
+    expect(actionRow?.resolvedAt).toBeNull();
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: action.id });
+
+    const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+    expect(detail.body).toMatchObject({
+      id: sourceIssueId,
+      status: "blocked",
+      activeRecoveryAction: { id: action.id },
+    });
+
+    const activityRows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, sourceIssueId));
+    expect(activityRows.map((row) => row.action)).not.toContain("issue.updated");
+    expect(activityRows.map((row) => row.action)).not.toContain("issue.comment_added");
+    expect(activityRows.map((row) => row.action)).not.toContain("issue.recovery_action_resolved");
+  });
+
+  it.each([
+    ["done", (_ctx: { managerId: string }) => ({ status: "done" }), "Recovery action became stale because the source issue reached done."],
+    ["cancelled", (_ctx: { managerId: string }) => ({ status: "cancelled" }), "Recovery action became stale because the source issue reached cancelled."],
+    [
+      "agent owner",
+      ({ managerId }: { managerId: string }) => ({ assigneeAgentId: managerId }),
+      "Recovery action became stale because the source issue is in_progress with an agent owner.",
+    ],
+  ])("folds an active recovery action after a valid API update makes it stale: %s", async (_name, buildPatch, resolutionNote) => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const patch = buildPatch({ managerId });
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: `graph-liveness:api-fold:${_name}`,
+      evidence: { latestIssueStatus: "in_progress" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "manual" },
+    });
+    const app = createApp();
+
+    const patched = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ ...patch, comment: "Durable source update." })
       .expect(200);
 
     expect(patched.body).toMatchObject({
       id: sourceIssueId,
-      status: "todo",
-      activeRecoveryAction: null,
     });
+
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue).toMatchObject(patch);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments.map((comment) => comment.body)).toContain("Durable source update.");
 
     const [actionRow] = await db
       .select()
@@ -1484,24 +1560,21 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(actionRow).toMatchObject({
       status: "cancelled",
       outcome: "cancelled",
-      resolutionNote: "Recovery action became stale because the source issue was manually moved from blocked to todo.",
+      resolutionNote,
     });
     expect(actionRow?.resolvedAt).toBeTruthy();
-    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
-
-    const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
-    expect(detail.body.activeRecoveryAction).toBeNull();
 
     const activityRows = await db
       .select()
       .from(activityLog)
       .where(eq(activityLog.entityId, sourceIssueId));
     expect(activityRows.map((row) => row.action)).toEqual(
-      expect.arrayContaining(["issue.updated", "issue.recovery_action_resolved"]),
+      expect.arrayContaining(["issue.updated", "issue.comment_added", "issue.recovery_action_resolved"]),
     );
     expect(activityRows.find((row) => row.action === "issue.recovery_action_resolved")?.details).toMatchObject({
       source: "source_revalidation",
       trigger: "issue_update",
+      recoveryActionId: action.id,
     });
   });
 

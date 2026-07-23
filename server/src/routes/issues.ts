@@ -2653,7 +2653,9 @@ export function issueRoutes(
 
   function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
     return input.parentId !== undefined ||
+      input.projectId !== undefined ||
       input.inheritExecutionWorkspaceFromIssueId !== undefined ||
+      input.executionWorkspaceInheritanceMode !== undefined ||
       input.projectWorkspaceId !== undefined ||
       input.executionWorkspaceId !== undefined ||
       input.executionWorkspacePreference !== undefined ||
@@ -2972,6 +2974,15 @@ export function issueRoutes(
       return "Recovery action became stale because the source issue now has a scheduled monitor.";
     }
 
+    return null;
+  }
+
+  function classifyRejectedSourceRecoveryIssueUpdate(input: {
+    blockedToTodoRecovery?: boolean;
+  }) {
+    if (input.blockedToTodoRecovery === true) {
+      return "Recovery action became stale because the source issue was manually moved from blocked to todo.";
+    }
     return null;
   }
 
@@ -7928,6 +7939,31 @@ export function issueRoutes(
       }
     }
 
+    if (activeRecoveryActionBeforeUpdate) {
+      const prospectiveIssue = {
+        ...existing,
+        ...updateFields,
+      } as typeof existing;
+      const recoveryRejectionReason = classifyRejectedSourceRecoveryIssueUpdate({
+        blockedToTodoRecovery:
+          existing.status === "blocked" &&
+          prospectiveIssue.status === "todo" &&
+          req.body.status !== undefined,
+      });
+      if (recoveryRejectionReason) {
+        res.status(409).json({
+          error: "Issue update rejected by active recovery action",
+          details: {
+            issueId: existing.id,
+            recoveryActionId: activeRecoveryActionBeforeUpdate.id,
+            reason: recoveryRejectionReason,
+            securityPrinciples: ["Fail Securely", "Complete Mediation", "Reviewability"],
+          },
+        });
+        return;
+      }
+    }
+
     let issue;
     try {
       if (transition.decision && decisionId) {
@@ -9689,7 +9725,6 @@ export function issueRoutes(
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const mentionGrantedPeerAgentCommentOnly =
-      isClosed &&
       req.actor.type === "agent" &&
       issue.assigneeAgentId !== null &&
       issue.assigneeAgentId !== req.actor.agentId &&
@@ -9703,6 +9738,13 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       issue.assigneeAgentId !== null &&
       issue.assigneeAgentId !== req.actor.agentId &&
+      !mentionGrantedPeerAgentCommentOnly
+    ) {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    }
+    if (
+      issue.status === "in_progress" &&
+      req.actor.type === "agent" &&
       !mentionGrantedPeerAgentCommentOnly
     ) {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;

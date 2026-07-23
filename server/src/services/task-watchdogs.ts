@@ -1250,6 +1250,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         originFingerprint: input.classification.stopFingerprint,
         billingCode: input.sourceIssue.billingCode,
         inheritExecutionWorkspaceFromIssueId: input.sourceIssue.id,
+        executionWorkspaceInheritanceMode: "strategy_only",
       })
       .catch(async (error: unknown) => {
         if (!isActiveTaskWatchdogUniqueConflict(error)) throw error;

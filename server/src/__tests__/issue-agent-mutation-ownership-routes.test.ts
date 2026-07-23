@@ -752,6 +752,11 @@ describe("agent issue mutation checkout ownership", () => {
           .attach("file", Buffer.from("report"), { filename: "report.txt", contentType: "text/plain" }),
     ],
     ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
+    [
+      "comment",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/comments`).send({ body: "This should not persist." }),
+    ],
   ])("rejects peer agent %s on another agent's active checkout", async (_name, sendRequest) => {
     const res = await sendRequest(await createApp(peerActor()));
 
@@ -789,6 +794,30 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
       expect.any(Object),
     );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["resume", { resume: true }],
+    ["reopen", { reopen: true }],
+  ])("rejects mentioned peer agents that attach %s intent to active-checkout comments", async (_name, intent) => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_issue_mention_grant" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:comment"
+          ? "Allowed by a mention-scoped issue comment grant."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Please restart this.", ...intent });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
@@ -1170,7 +1199,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("defaults agent-created root follow-up issues to inherit the current run workspace", async () => {
+  it("defaults agent-created root follow-up issues without project scope to inherit the current run workspace", async () => {
     const app = await createApp(
       ownerActor(),
       createRunContextDb({
@@ -1183,7 +1212,6 @@ describe("agent issue mutation checkout ownership", () => {
       .post(`/api/companies/${companyId}/issues`)
       .send({
         title: "Follow-up in same worktree",
-        projectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
@@ -1191,6 +1219,39 @@ describe("agent issue mutation checkout ownership", () => {
       companyId,
       expect.objectContaining({
         title: "Follow-up in same worktree",
+        inheritExecutionWorkspaceFromIssueId: issueId,
+      }),
+    );
+  });
+
+  it("does not implicitly inherit the current run workspace when a root issue selects project scope", async () => {
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb({
+        issueId,
+        executionWorkspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+    );
+
+    const projectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Follow-up in selected project",
+        projectId,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        title: "Follow-up in selected project",
+        projectId,
+      }),
+    );
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.not.objectContaining({
         inheritExecutionWorkspaceFromIssueId: issueId,
       }),
     );
