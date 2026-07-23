@@ -40,6 +40,8 @@ import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
+import { approvalService } from "./approvals.js";
+import { getStorageService } from "../storage/index.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -75,7 +77,7 @@ import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
-import { sanitizeRecord } from "../redaction.js";
+import { redactEventPayload, sanitizeRecord } from "../redaction.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -544,6 +546,8 @@ export function buildHostServices(
   const authorization = authorizationService(db);
   const budgets = budgetService(db);
   const issueApprovals = issueApprovalService(db);
+  const approvalSvc = approvalService(db);
+  const interactions = issueThreadInteractionService(db);
   const scopedBus = eventBus.forPlugin(pluginKey);
 
   // Track active session event subscriptions for cleanup
@@ -678,6 +682,110 @@ export function buildHostServices(
       throw new Error(`actorUserId "${userId}" is not an active human member of this company`);
     }
   };
+
+  /**
+   * Wake the assignee of a continuation issue after a plugin-relayed board-user
+   * interaction resolution, mirroring the web app's board interaction routes
+   * (routes/issues.ts's queueResolvedInteractionContinuationWakeup) so a
+   * confirmation accepted/rejected from chat resumes the agent the same way it
+   * would from the web app. Deliberately narrower than the HTTP helper: it
+   * carries the core interaction context plus the plan-review continuation
+   * payload (the confirmation kind the gateway resolves), and skips the
+   * checkbox/tool-action/item-verdict extras that the gateway's yes/no decision
+   * cards never produce. Failure-tolerant: a wake failure is logged, never
+   * thrown back to the plugin (the decision itself already applied).
+   */
+  const queuePluginInteractionContinuationWakeup = (args: {
+    issue: { id: string; assigneeAgentId: string | null; status: string };
+    interaction: {
+      id: string;
+      kind: string;
+      status: string;
+      continuationPolicy: string;
+      sourceCommentId?: string | null;
+      sourceRunId?: string | null;
+      payload?: unknown;
+    };
+    actorUserId: string;
+    source: string;
+  }): void => {
+    const { interaction, issue } = args;
+    if (
+      interaction.continuationPolicy !== "wake_assignee"
+      && interaction.continuationPolicy !== "wake_assignee_on_accept"
+    ) return;
+    if (
+      interaction.continuationPolicy === "wake_assignee_on_accept"
+      && interaction.status !== "accepted"
+    ) return;
+    if (interaction.status === "expired") return;
+    if (!issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled") return;
+
+    let planReviewInteraction: Record<string, unknown> | null = null;
+    if (interaction.kind === "request_confirmation" && isRecord(interaction.payload)) {
+      const target = isRecord(interaction.payload.target) ? interaction.payload.target : null;
+      if (
+        target
+        && target.type === "issue_document"
+        && target.key === "plan"
+        && typeof target.issueId === "string"
+        && target.issueId === issue.id
+      ) {
+        planReviewInteraction = {
+          id: interaction.id,
+          kind: interaction.kind,
+          status: interaction.status,
+          target,
+          acceptedTargetRevision: interaction.status === "accepted" ? target : null,
+        };
+      }
+    }
+
+    void heartbeat.wakeup(issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: issue.id,
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        interactionStatus: interaction.status,
+        sourceCommentId: interaction.sourceCommentId ?? null,
+        sourceRunId: interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        mutation: "interaction",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: args.actorUserId,
+      contextSnapshot: {
+        issueId: issue.id,
+        taskId: issue.id,
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        interactionStatus: interaction.status,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        wakeReason: "issue_commented",
+        source: `plugin:${pluginKey}`,
+      },
+    }).catch((err) => logger.warn({
+      err,
+      issueId: issue.id,
+      interactionId: interaction.id,
+      agentId: issue.assigneeAgentId,
+      source: args.source,
+    }, "failed to wake assignee on plugin-relayed interaction resolution"));
+  };
+
+  /**
+   * Redact an approval's payload before returning it through the plugin bridge,
+   * mirroring the web app's own approval read routes (routes/approvals.ts's
+   * redactApprovalPayload). Ensures the chat surface never receives secrets the
+   * web app itself hides from an approval reader.
+   */
+  const redactApprovalPayload = <T extends { payload: Record<string, unknown> }>(approval: T): T => ({
+    ...approval,
+    payload: redactEventPayload(approval.payload) ?? {},
+  });
 
   const pluginActivityDetails = (
     details: Record<string, unknown> | null | undefined,
@@ -2122,6 +2230,228 @@ export function buildHostServices(
           },
         });
         return interaction as any;
+      },
+      async listInteractions(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        return (await interactions.listForIssue(params.issueId)) as any;
+      },
+      async respondInteraction(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        // Resolving an interaction is a board-user action (the web app's
+        // interaction-resolve routes are board-only). The host re-verifies the
+        // paired user is an active human member at apply time and never trusts
+        // the plugin-supplied identity — matching the createComment bar.
+        if (!params.actorUserId) {
+          throw new Error("actorUserId is required to respond to an interaction on behalf of a board user");
+        }
+        await requireActiveHumanMember(companyId, params.actorUserId);
+
+        const current = await interactions.getById(params.interactionId);
+        if (!current || current.issueId !== issue.id || current.companyId !== companyId) {
+          throw new Error(`Interaction "${params.interactionId}" not found for this issue`);
+        }
+        // Idempotent replay: an already-resolved interaction converges without
+        // re-applying, so a duplicate button tap from chat is a safe no-op.
+        if (current.status !== "pending") {
+          return { interaction: current as any, applied: false };
+        }
+
+        const actor = { userId: params.actorUserId };
+        let resolved: typeof current;
+        let continuationTarget = {
+          id: issue.id,
+          assigneeAgentId: issue.assigneeAgentId,
+          status: issue.status,
+        };
+        if (params.action === "accept") {
+          const result = await interactions.acceptInteraction(
+            { id: issue.id, companyId, projectId: issue.projectId ?? null, goalId: issue.goalId ?? null },
+            params.interactionId,
+            {},
+            actor,
+          );
+          resolved = result.interaction as typeof current;
+          if (result.continuationIssue) {
+            continuationTarget = {
+              id: result.continuationIssue.id,
+              assigneeAgentId: result.continuationIssue.assigneeAgentId,
+              status: result.continuationIssue.status,
+            };
+          }
+        } else {
+          resolved = (await interactions.rejectInteraction(
+            { id: issue.id, companyId },
+            params.interactionId,
+            { reason: params.reason ?? undefined },
+            actor,
+          )) as typeof current;
+        }
+
+        await logPluginActivity({
+          companyId,
+          action: params.action === "accept"
+            ? "issue.thread_interaction_accepted"
+            : "issue.thread_interaction_rejected",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorUserId: params.actorUserId },
+          details: {
+            identifier: issue.identifier,
+            interactionId: resolved.id,
+            interactionKind: resolved.kind,
+            interactionStatus: resolved.status,
+          },
+        });
+
+        queuePluginInteractionContinuationWakeup({
+          issue: continuationTarget,
+          interaction: resolved,
+          actorUserId: params.actorUserId,
+          source: `plugin:${pluginKey}:interaction.${params.action}`,
+        });
+
+        return { interaction: resolved as any, applied: true };
+      },
+      async listAttachments(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        return (await issues.listAttachments(params.issueId)) as any;
+      },
+      async getAttachmentContent(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const attachment = await issues.getAttachmentById(params.attachmentId);
+        // Unknown and cross-company ids are deliberately indistinguishable to
+        // the plugin: both return null (no existence oracle across companies).
+        if (!attachment || attachment.companyId !== companyId) return null;
+
+        const maxBytes = typeof params.maxBytes === "number" && params.maxBytes > 0 ? params.maxBytes : null;
+        if (maxBytes !== null && attachment.byteSize > maxBytes) {
+          throw new Error(
+            `attachment ${attachment.id} is ${attachment.byteSize} bytes, over the ${maxBytes}-byte cap`,
+          );
+        }
+
+        const object = await getStorageService().getObject(attachment.companyId, attachment.objectKey);
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for await (const chunk of object.stream) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          total += buf.length;
+          // Defense in depth: enforce the cap during streaming too, so a
+          // metadata/object size mismatch can never exceed the requested cap.
+          if (maxBytes !== null && total > maxBytes) {
+            object.stream.destroy();
+            throw new Error(`attachment ${attachment.id} exceeded the ${maxBytes}-byte cap while reading`);
+          }
+          chunks.push(buf);
+        }
+        const bytes = Buffer.concat(chunks);
+
+        await logPluginActivity({
+          companyId,
+          action: "issue.attachment.read",
+          entityType: "issue",
+          entityId: attachment.issueId,
+          details: {
+            attachmentId: attachment.id,
+            byteSize: bytes.length,
+            contentType: attachment.contentType,
+          },
+        });
+
+        return {
+          attachmentId: attachment.id,
+          contentType: attachment.contentType,
+          byteSize: bytes.length,
+          sha256: attachment.sha256,
+          originalFilename: attachment.originalFilename ?? null,
+          contentBase64: bytes.toString("base64"),
+        };
+      },
+    },
+
+    approvals: {
+      async list(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rows = await approvalSvc.list(companyId, params.status ?? undefined);
+        // Match the web app's approval read surface: payloads are redacted so
+        // the chat bridge never receives secrets the web app itself hides.
+        return rows.map((approval) => redactApprovalPayload(approval)) as any;
+      },
+      async get(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const approval = await approvalSvc.getById(params.approvalId);
+        if (!approval || approval.companyId !== companyId) return null;
+        return redactApprovalPayload(approval) as any;
+      },
+      async decide(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const existing = await approvalSvc.getById(params.approvalId);
+        if (!existing || existing.companyId !== companyId) {
+          throw new Error(`Approval "${params.approvalId}" not found`);
+        }
+        // Deciding an approval is a board-user action (the web app's approval
+        // decision routes are board-only). Re-verify active membership at apply
+        // time; never trust the plugin-supplied identity.
+        if (!params.actorUserId) {
+          throw new Error("actorUserId is required to decide an approval on behalf of a board user");
+        }
+        await requireActiveHumanMember(companyId, params.actorUserId);
+
+        const { approval, applied } = params.action === "approve"
+          ? await approvalSvc.approve(params.approvalId, params.actorUserId, params.decisionNote ?? null)
+          : await approvalSvc.reject(params.approvalId, params.actorUserId, params.decisionNote ?? null);
+
+        await logPluginActivity({
+          companyId,
+          action: params.action === "approve" ? "approval.approved" : "approval.rejected",
+          entityType: "approval",
+          entityId: approval.id,
+          actor: { actorUserId: params.actorUserId },
+          details: {
+            type: approval.type,
+            requestedByAgentId: approval.requestedByAgentId,
+            applied,
+          },
+        });
+
+        // Mirror the web app's approve/reject routes: wake the requesting agent
+        // so it resumes after a chat-driven decision. Only on a fresh decision
+        // (applied) and only when a requester agent exists.
+        if (applied && approval.requestedByAgentId) {
+          void heartbeat.wakeup(approval.requestedByAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: params.action === "approve" ? "approval_approved" : "approval_rejected",
+            payload: {
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+            },
+            requestedByActorType: "user",
+            requestedByActorId: params.actorUserId,
+            contextSnapshot: {
+              source: `plugin:${pluginKey}:approval.${params.action}`,
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+              wakeReason: params.action === "approve" ? "approval_approved" : "approval_rejected",
+            },
+          }).catch((err) => logger.warn({
+            err,
+            approvalId: approval.id,
+            requestedByAgentId: approval.requestedByAgentId,
+          }, "failed to wake requester on plugin-relayed approval decision"));
+        }
+
+        return { approval: redactApprovalPayload(approval) as any, applied };
       },
     },
 

@@ -23,7 +23,9 @@ import type {
   IssueDocumentSummary,
   IssueRelationIssueSummary,
   IssueAssigneeAdapterOverrides,
+  IssueAttachment,
   IssueThreadInteraction,
+  Approval,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
@@ -1320,6 +1322,20 @@ export interface PluginIssueSummariesClient {
 }
 
 /**
+ * Attachment content bytes returned by `ctx.issues.getAttachmentContent`.
+ * Bytes are base64-encoded; there is no URL surface.
+ */
+export interface PluginIssueAttachmentContent {
+  attachmentId: string;
+  contentType: string;
+  byteSize: number;
+  sha256: string;
+  originalFilename: string | null;
+  /** The attachment's raw bytes, base64-encoded. */
+  contentBase64: string;
+}
+
+/**
  * `ctx.issues` — read and mutate issues plus comments.
  *
  * Requires:
@@ -1333,6 +1349,9 @@ export interface PluginIssueSummariesClient {
  * - `issue.comments.create` for `createComment`
  * - `issue.comments.create_human_attributed` for `createComment` calls that pass `actorUserId`
  * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, `requestConfirmation`, and `requestCheckboxConfirmation`
+ * - `issue.interactions.read` for `listInteractions`
+ * - `issue.interactions.respond` for `respondInteraction`
+ * - `issue.attachments.read` for `listAttachments` and `getAttachmentContent`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -1489,12 +1508,83 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<RequestCheckboxConfirmationInteraction>;
+  /**
+   * List the issue-thread interactions (decision cards) on an issue.
+   * Requires `issue.interactions.read`.
+   */
+  listInteractions(issueId: string, companyId: string): Promise<IssueThreadInteraction[]>;
+  /**
+   * Resolve (accept/reject) a pending issue-thread interaction on behalf of a
+   * paired board user. Requires `issue.interactions.respond`.
+   *
+   * `actorUserId` is the human company member the decision is attributed to.
+   * The host independently re-verifies that this user is an active human
+   * member of the issue's company before applying the decision — a plugin can
+   * only ever resolve interactions as an identity that could have resolved
+   * them in the web app (whose interaction-resolve routes are board-only).
+   *
+   * Returns the (possibly already-resolved) interaction and `applied`, which is
+   * `true` when this call performed the resolution and `false` when the
+   * interaction had already converged to a resolved state (idempotent replays).
+   */
+  respondInteraction(
+    issueId: string,
+    interactionId: string,
+    input: { action: "accept" | "reject"; actorUserId?: string; reason?: string | null },
+    companyId: string,
+  ): Promise<{ interaction: IssueThreadInteraction; applied: boolean }>;
+  /** List attachment metadata for an issue. Requires `issue.attachments.read`. */
+  listAttachments(issueId: string, companyId: string): Promise<IssueAttachment[]>;
+  /**
+   * Read an attachment's content bytes (base64) through the capability-scoped
+   * host bridge. Requires `issue.attachments.read`.
+   *
+   * Company-scoped and audit-logged host-side; there is no URL surface. Returns
+   * `null` for an unknown or cross-company attachment id (indistinguishable by
+   * design). Pass `maxBytes` to refuse over-cap assets — the host throws rather
+   * than partially reading when the stored size exceeds the cap.
+   */
+  getAttachmentContent(
+    attachmentId: string,
+    companyId: string,
+    options?: { maxBytes?: number | null },
+  ): Promise<PluginIssueAttachmentContent | null>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */
   relations: PluginIssueRelationsClient;
   /** Read compact orchestration summaries. */
   summaries: PluginIssueSummariesClient;
+}
+
+/**
+ * `ctx.approvals` — read and decide company approvals.
+ *
+ * Requires `approvals.read` for `list` / `get`; `approvals.respond` for
+ * `decide`. Approval payloads returned by `list` / `get` are redacted host-side
+ * to match the web app's own approval read surface (no secret leakage through
+ * the bridge).
+ */
+export interface PluginApprovalsClient {
+  list(input: { companyId: string; status?: string | null }): Promise<Approval[]>;
+  get(approvalId: string, companyId: string): Promise<Approval | null>;
+  /**
+   * Approve or reject an approval on behalf of a paired board user.
+   *
+   * `actorUserId` is the human company member the decision is attributed to.
+   * The host independently re-verifies that this user is an active human member
+   * of the approval's company before applying the decision — a plugin can only
+   * ever decide approvals as an identity that could have decided them in the
+   * web app (whose approval-decision routes are board-only).
+   *
+   * `applied` is `true` when this call performed the decision and `false` when
+   * the approval had already converged to a decided state (idempotent replays).
+   */
+  decide(
+    approvalId: string,
+    input: { action: "approve" | "reject"; actorUserId?: string; decisionNote?: string | null },
+    companyId: string,
+  ): Promise<{ approval: Approval; applied: boolean }>;
 }
 
 /**
@@ -1923,6 +2013,9 @@ export interface PluginContext {
 
   /** Read and write issues, comments, and documents. Requires issue capabilities. */
   issues: PluginIssuesClient;
+
+  /** Read and decide company approvals. Requires `approvals.read` / `approvals.respond`. */
+  approvals: PluginApprovalsClient;
 
   /** Read and manage agents. Requires `agents.read` for reads; `agents.pause` / `agents.resume` / `agents.invoke` for write ops. */
   agents: PluginAgentsClient;

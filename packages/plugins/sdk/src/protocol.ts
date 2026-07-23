@@ -28,8 +28,10 @@ import type {
   IssueDocument,
   IssueDocumentSummary,
   IssueAssigneeAdapterOverrides,
+  IssueAttachment,
   IssueThreadInteraction,
   CreateIssueThreadInteraction,
+  Approval,
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
   PluginManagedRoutineResolution,
@@ -55,6 +57,7 @@ import type {
   PluginIssueOrchestrationSummary,
   PluginIssueRelationSummary,
   PluginIssueSubtree,
+  PluginIssueAttachmentContent,
   PluginIssueWakeupBatchResult,
   PluginIssueWakeupResult,
   PluginJobContext,
@@ -1468,6 +1471,34 @@ export interface WorkerToHostMethods {
     },
     result: IssueThreadInteraction,
   ];
+  "issues.listInteractions": [
+    params: { issueId: string; companyId: string },
+    result: IssueThreadInteraction[],
+  ];
+  "issues.respondInteraction": [
+    params: {
+      issueId: string;
+      interactionId: string;
+      companyId: string;
+      action: "accept" | "reject";
+      /**
+       * Active human company member the decision is attributed to. Required —
+       * resolving an interaction is a board-user action; the host re-verifies
+       * active membership at apply time and never trusts this value blindly.
+       */
+      actorUserId?: string;
+      reason?: string | null;
+    },
+    result: { interaction: IssueThreadInteraction; applied: boolean },
+  ];
+  "issues.listAttachments": [
+    params: { issueId: string; companyId: string },
+    result: IssueAttachment[],
+  ];
+  "issues.getAttachmentContent": [
+    params: { attachmentId: string; companyId: string; maxBytes?: number | null },
+    result: PluginIssueAttachmentContent | null,
+  ];
 
   // Issue Documents
   "issues.documents.list": [
@@ -1493,6 +1524,31 @@ export interface WorkerToHostMethods {
   "issues.documents.delete": [
     params: { issueId: string; key: string; companyId: string },
     result: void,
+  ];
+
+  // Approvals
+  "approvals.list": [
+    params: { companyId: string; status?: string | null },
+    result: Approval[],
+  ];
+  "approvals.get": [
+    params: { approvalId: string; companyId: string },
+    result: Approval | null,
+  ];
+  "approvals.decide": [
+    params: {
+      approvalId: string;
+      companyId: string;
+      action: "approve" | "reject";
+      /**
+       * Active human company member the decision is attributed to. Required —
+       * deciding an approval is a board-user action; the host re-verifies
+       * active membership at apply time and never trusts this value blindly.
+       */
+      actorUserId?: string;
+      decisionNote?: string | null;
+    },
+    result: { approval: Approval; applied: boolean },
   ];
 
   // Agents (read)

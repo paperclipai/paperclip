@@ -17,9 +17,11 @@ import type {
   IssueComment,
   IssueThreadInteraction,
   CreateIssueThreadInteraction,
+  IssueAttachment,
   IssueDocument,
   Agent,
   Goal,
+  Approval,
 } from "@paperclipai/shared";
 import type {
   EventFilter,
@@ -108,6 +110,9 @@ export interface TestHarness {
     projects?: Project[];
     issues?: Issue[];
     issueComments?: IssueComment[];
+    issueInteractions?: IssueThreadInteraction[];
+    issueAttachments?: Array<IssueAttachment & { contentBase64?: string }>;
+    approvals?: Approval[];
     agents?: Agent[];
     goals?: Goal[];
     projectWorkspaces?: PluginWorkspace[];
@@ -492,6 +497,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const blockedByIssueIds = new Map<string, string[]>();
   const issueComments = new Map<string, IssueComment[]>();
   const issueInteractions = new Map<string, IssueThreadInteraction[]>();
+  const issueAttachments = new Map<string, IssueAttachment[]>();
+  const attachmentContentById = new Map<string, string>();
+  const approvals = new Map<string, Approval>();
   const issueDocuments = new Map<string, IssueDocument>();
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
@@ -1765,6 +1773,75 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async requestCheckboxConfirmation(issueId, interaction, companyId, options) {
         return this.createInteraction(issueId, { ...interaction, kind: "request_checkbox_confirmation" }, companyId, options) as Promise<any>;
       },
+      async listInteractions(issueId, companyId) {
+        requireCapability(manifest, capabilitySet, "issue.interactions.read");
+        if (!isInCompany(issues.get(issueId), companyId)) return [];
+        return issueInteractions.get(issueId) ?? [];
+      },
+      async respondInteraction(issueId, interactionId, input, companyId) {
+        requireCapability(manifest, capabilitySet, "issue.interactions.respond");
+        const parentIssue = issues.get(issueId);
+        if (!isInCompany(parentIssue, companyId)) {
+          throw new Error(`Issue not found: ${issueId}`);
+        }
+        if (!input.actorUserId) {
+          throw new Error("actorUserId is required to respond to an interaction on behalf of a board user");
+        }
+        const actorUserId = input.actorUserId;
+        // Mirror the host's active-human-member re-verification.
+        const isActiveHumanMember = [...accessMembers.values()].some(
+          (member) =>
+            member.companyId === companyId
+            && member.principalType === "user"
+            && member.principalId === actorUserId
+            && member.status === "active",
+        );
+        if (!isActiveHumanMember) {
+          throw new Error(`actorUserId "${actorUserId}" is not an active human member of this company`);
+        }
+        const list = issueInteractions.get(issueId) ?? [];
+        const current = list.find((entry) => entry.id === interactionId);
+        if (!current) {
+          throw new Error(`Interaction not found: ${interactionId}`);
+        }
+        if (current.status !== "pending") {
+          return { interaction: current, applied: false };
+        }
+        const resolved: IssueThreadInteraction = {
+          ...current,
+          status: input.action === "accept" ? "accepted" : "rejected",
+          updatedAt: new Date(),
+        } as IssueThreadInteraction;
+        const index = list.indexOf(current);
+        list[index] = resolved;
+        issueInteractions.set(issueId, list);
+        return { interaction: resolved, applied: true };
+      },
+      async listAttachments(issueId, companyId) {
+        requireCapability(manifest, capabilitySet, "issue.attachments.read");
+        if (!isInCompany(issues.get(issueId), companyId)) return [];
+        return issueAttachments.get(issueId) ?? [];
+      },
+      async getAttachmentContent(attachmentId, companyId, options) {
+        requireCapability(manifest, capabilitySet, "issue.attachments.read");
+        const attachment = [...issueAttachments.values()]
+          .flat()
+          .find((entry) => entry.id === attachmentId);
+        if (!attachment || attachment.companyId !== companyId) return null;
+        const maxBytes = typeof options?.maxBytes === "number" && options.maxBytes > 0 ? options.maxBytes : null;
+        if (maxBytes !== null && attachment.byteSize > maxBytes) {
+          throw new Error(`attachment ${attachment.id} is ${attachment.byteSize} bytes, over the ${maxBytes}-byte cap`);
+        }
+        const contentBase64 = attachmentContentById.get(attachment.id) ?? "";
+        return {
+          attachmentId: attachment.id,
+          contentType: attachment.contentType,
+          byteSize: attachment.byteSize,
+          sha256: attachment.sha256,
+          originalFilename: attachment.originalFilename ?? null,
+          contentBase64,
+        };
+      },
       documents: {
         async list(issueId, companyId) {
           requireCapability(manifest, capabilitySet, "issue.documents.read");
@@ -1914,6 +1991,56 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             invocationBlocks: [],
           };
         },
+      },
+    },
+    approvals: {
+      async list(input) {
+        requireCapability(manifest, capabilitySet, "approvals.read");
+        return [...approvals.values()].filter(
+          (approval) =>
+            approval.companyId === input.companyId
+            && (!input.status || approval.status === input.status),
+        );
+      },
+      async get(approvalId, companyId) {
+        requireCapability(manifest, capabilitySet, "approvals.read");
+        const approval = approvals.get(approvalId);
+        if (!approval || approval.companyId !== companyId) return null;
+        return approval;
+      },
+      async decide(approvalId, input, companyId) {
+        requireCapability(manifest, capabilitySet, "approvals.respond");
+        const approval = approvals.get(approvalId);
+        if (!approval || approval.companyId !== companyId) {
+          throw new Error(`Approval not found: ${approvalId}`);
+        }
+        if (!input.actorUserId) {
+          throw new Error("actorUserId is required to decide an approval on behalf of a board user");
+        }
+        const actorUserId = input.actorUserId;
+        const isActiveHumanMember = [...accessMembers.values()].some(
+          (member) =>
+            member.companyId === companyId
+            && member.principalType === "user"
+            && member.principalId === actorUserId
+            && member.status === "active",
+        );
+        if (!isActiveHumanMember) {
+          throw new Error(`actorUserId "${actorUserId}" is not an active human member of this company`);
+        }
+        if (approval.status !== "pending") {
+          return { approval, applied: false };
+        }
+        const decided: Approval = {
+          ...approval,
+          status: input.action === "approve" ? "approved" : "rejected",
+          decisionNote: input.decisionNote ?? null,
+          decidedByUserId: actorUserId,
+          decidedAt: new Date(),
+          updatedAt: new Date(),
+        };
+        approvals.set(approvalId, decided);
+        return { approval: decided, applied: true };
       },
     },
     agents: {
@@ -2400,6 +2527,19 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         list.push(row);
         issueComments.set(row.issueId, list);
       }
+      for (const row of input.issueInteractions ?? []) {
+        const list = issueInteractions.get(row.issueId) ?? [];
+        list.push(row);
+        issueInteractions.set(row.issueId, list);
+      }
+      for (const row of input.issueAttachments ?? []) {
+        const { contentBase64, ...attachment } = row;
+        const list = issueAttachments.get(attachment.issueId) ?? [];
+        list.push(attachment);
+        issueAttachments.set(attachment.issueId, list);
+        attachmentContentById.set(attachment.id, contentBase64 ?? "");
+      }
+      for (const row of input.approvals ?? []) approvals.set(row.id, row);
       for (const row of input.agents ?? []) agents.set(row.id, row);
       for (const row of input.goals ?? []) goals.set(row.id, row);
       for (const row of input.projectWorkspaces ?? []) {

@@ -8,6 +8,8 @@ import {
   activityLog,
   agentWakeupRequests,
   agents,
+  approvals,
+  assets,
   companies,
   companyMemberships,
   costEvents,
@@ -15,8 +17,10 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueAttachments,
   issueComments,
   issueRelations,
+  issueThreadInteractions,
   issues,
   pluginManagedResources,
   plugins,
@@ -95,6 +99,10 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
     await db.delete(issueComments);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueAttachments);
+    await db.delete(assets);
+    await db.delete(approvals);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(pluginManagedResources);
@@ -851,5 +859,207 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, wakeupRequest!.runId!));
     expect(run).toMatchObject({ agentId, companyId, status: "queued" });
+  });
+
+  // ---------------------------------------------------------------------------
+  // LOOA-641 — interactions.respond / approvals.decide impersonation surface.
+  // The host must independently re-verify the paired user's active membership
+  // at apply time and never trust the plugin-supplied identity.
+  // ---------------------------------------------------------------------------
+
+  async function seedInteraction(
+    companyId: string,
+    issueId: string,
+    overrides: Partial<typeof issueThreadInteractions.$inferInsert> = {},
+  ) {
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Proceed?" } as never,
+      ...overrides,
+    });
+    return interactionId;
+  }
+
+  it("respondInteraction fails closed when actorUserId is omitted", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const interactionId = await seedInteraction(companyId, issueId);
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.issues.respondInteraction({ issueId, interactionId, companyId, action: "accept" }),
+    ).rejects.toThrow("actorUserId is required");
+  });
+
+  it("respondInteraction rejects an actorUserId that is not an active company member", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const interactionId = await seedInteraction(companyId, issueId);
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.issues.respondInteraction({
+        issueId, interactionId, companyId, action: "accept", actorUserId: randomUUID(),
+      }),
+    ).rejects.toThrow("is not an active human member of this company");
+
+    // The interaction must remain pending — no resolution was applied.
+    const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+    expect(row?.status).toBe("pending");
+  });
+
+  it("respondInteraction converges (applied:false) when the interaction is already resolved", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: humanUserId, status: "active", membershipRole: "owner",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const interactionId = await seedInteraction(companyId, issueId, { status: "rejected" });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const result = await services.issues.respondInteraction({
+      issueId, interactionId, companyId, action: "accept", actorUserId: humanUserId,
+    });
+    expect(result.applied).toBe(false);
+    expect(result.interaction).toMatchObject({ id: interactionId, status: "rejected" });
+  });
+
+  it("approvals.decide fails closed when actorUserId is omitted", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId, companyId, type: "request_board_approval", status: "pending", payload: { title: "Ship it" },
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.approvals.decide({ approvalId, companyId, action: "approve" }),
+    ).rejects.toThrow("actorUserId is required");
+    const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(row?.status).toBe("pending");
+  });
+
+  it("approvals.decide rejects an actorUserId that is not an active company member", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId, companyId, type: "request_board_approval", status: "pending", payload: { title: "Ship it" },
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.approvals.decide({ approvalId, companyId, action: "approve", actorUserId: randomUUID() }),
+    ).rejects.toThrow("is not an active human member of this company");
+    const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(row?.status).toBe("pending");
+  });
+
+  it("approvals.decide applies for an active member and redacts secret payload fields", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: humanUserId, status: "active", membershipRole: "owner",
+    });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Ship it", botToken: "xoxb-super-secret" },
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const result = await services.approvals.decide({
+      approvalId, companyId, action: "approve", actorUserId: humanUserId, decisionNote: "lgtm",
+    });
+    expect(result.applied).toBe(true);
+    expect(result.approval).toMatchObject({ id: approvalId, status: "approved", decidedByUserId: humanUserId });
+    // Bridge output must be redacted the same way the web app redacts approvals.
+    expect(result.approval.payload.title).toBe("Ship it");
+    expect(result.approval.payload.botToken).toBe("***REDACTED***");
+
+    // Persisted row is decided; the raw stored secret is untouched (redaction is
+    // an output transform, not a mutation).
+    const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(row?.status).toBe("approved");
+  });
+
+  it("approvals.list redacts payloads and is company-scoped", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const otherCompany = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompany, name: "Other", issuePrefix: issuePrefix(otherCompany), requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(approvals).values({
+      id: randomUUID(), companyId, type: "request_board_approval", status: "pending",
+      payload: { title: "Mine", accessToken: "sekret" },
+    });
+    await db.insert(approvals).values({
+      id: randomUUID(), companyId: otherCompany, type: "request_board_approval", status: "pending",
+      payload: { title: "Theirs" },
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const rows = await services.approvals.list({ companyId });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload.title).toBe("Mine");
+    expect(rows[0]!.payload.accessToken).toBe("***REDACTED***");
+  });
+
+  it("getAttachmentContent returns null for a cross-company attachment id", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const otherCompany = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompany, name: "Other", issuePrefix: issuePrefix(otherCompany), requireBoardApprovalForNewAgents: false,
+    });
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId, companyId: otherCompany, title: "Theirs", status: "todo", priority: "medium",
+    });
+    const assetId = randomUUID();
+    await db.insert(assets).values({
+      id: assetId, companyId: otherCompany, provider: "local_disk", objectKey: "k", contentType: "image/png",
+      byteSize: 10, sha256: "abc",
+    });
+    const attachmentId = randomUUID();
+    await db.insert(issueAttachments).values({
+      id: attachmentId, companyId: otherCompany, issueId: otherIssueId, assetId,
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    // Requested under our own company: the cross-company id must be invisible.
+    void agentId;
+    const content = await services.issues.getAttachmentContent({ attachmentId, companyId });
+    expect(content).toBeNull();
+  });
+
+  it("getAttachmentContent refuses an over-cap attachment", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Has asset", status: "todo", priority: "medium",
+    });
+    const assetId = randomUUID();
+    await db.insert(assets).values({
+      id: assetId, companyId, provider: "local_disk", objectKey: "k", contentType: "image/png",
+      byteSize: 5_000_000, sha256: "abc",
+    });
+    const attachmentId = randomUUID();
+    await db.insert(issueAttachments).values({
+      id: attachmentId, companyId, issueId, assetId,
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.issues.getAttachmentContent({ attachmentId, companyId, maxBytes: 1_000_000 }),
+    ).rejects.toThrow("over the");
   });
 });

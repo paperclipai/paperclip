@@ -956,6 +956,42 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           }) as Promise<RequestCheckboxConfirmationInteraction>;
         },
 
+        async listInteractions(issueId: string, companyId: string) {
+          return callHost("issues.listInteractions", { issueId, companyId });
+        },
+
+        async respondInteraction(
+          issueId: string,
+          interactionId: string,
+          input: { action: "accept" | "reject"; actorUserId?: string; reason?: string | null },
+          companyId: string,
+        ) {
+          return callHost("issues.respondInteraction", {
+            issueId,
+            interactionId,
+            companyId,
+            action: input.action,
+            actorUserId: input.actorUserId,
+            reason: input.reason,
+          });
+        },
+
+        async listAttachments(issueId: string, companyId: string) {
+          return callHost("issues.listAttachments", { issueId, companyId });
+        },
+
+        async getAttachmentContent(
+          attachmentId: string,
+          companyId: string,
+          options?: { maxBytes?: number | null },
+        ) {
+          return callHost("issues.getAttachmentContent", {
+            attachmentId,
+            companyId,
+            maxBytes: options?.maxBytes ?? null,
+          });
+        },
+
         documents: {
           async list(issueId: string, companyId: string) {
             return callHost("issues.documents.list", { issueId, companyId });
@@ -1025,6 +1061,33 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           async getOrchestration(input) {
             return callHost("issues.summaries.getOrchestration", input);
           },
+        },
+      },
+
+      approvals: {
+        async list(input: { companyId: string; status?: string | null }) {
+          return callHost("approvals.list", {
+            companyId: input.companyId,
+            status: input.status,
+          });
+        },
+
+        async get(approvalId: string, companyId: string) {
+          return callHost("approvals.get", { approvalId, companyId });
+        },
+
+        async decide(
+          approvalId: string,
+          input: { action: "approve" | "reject"; actorUserId?: string; decisionNote?: string | null },
+          companyId: string,
+        ) {
+          return callHost("approvals.decide", {
+            approvalId,
+            companyId,
+            action: input.action,
+            actorUserId: input.actorUserId,
+            decisionNote: input.decisionNote,
+          });
         },
       },
 
