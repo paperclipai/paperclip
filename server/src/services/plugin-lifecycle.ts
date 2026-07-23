@@ -43,6 +43,7 @@ import type {
   PaperclipPluginManifestV1,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
+import { companyStandingService } from "./company-standing.js";
 import { pluginLoader, type PluginLoader } from "./plugin-loader.js";
 import type { PluginWorkerManager, WorkerStartOptions } from "./plugin-worker-manager.js";
 import { badRequest, notFound } from "../errors.js";
@@ -320,6 +321,7 @@ export function pluginLifecycleManager(
   }
 
   const registry = pluginRegistryService(db);
+  const companyStandings = companyStandingService(db);
   const pluginLoaderInstance = loaderArg ?? pluginLoader(db);
   const emitter = new EventEmitter();
   emitter.setMaxListeners(100); // plugins may have many listeners; 100 is a safe upper bound
@@ -523,6 +525,12 @@ export function pluginLifecycleManager(
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
       const result = await transition(pluginId, "disabled", reason ?? null, plugin);
+
+      // A disabled governance plugin must never leave companies stranded:
+      // drop every standing row it has written (spec §5.2). Fail-safe —
+      // missing rows simply mean "active".
+      await companyStandings.clearAllForPlugin(pluginId);
+
       emitDomain("plugin.disabled", {
         pluginId,
         pluginKey: result.pluginKey,
@@ -542,6 +550,11 @@ export function pluginLifecycleManager(
       if (plugin.status === "uninstalled") {
         if (removeData) {
           await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
+          // Uninstall cleanup (spec §5.2). The hard-delete path also cascades
+          // via the company_standing.plugin_id FK; this explicit delete is
+          // defensive — rows should already be gone from the earlier soft
+          // unload.
+          await companyStandings.clearAllForPlugin(pluginId);
           const deleted = await registry.uninstall(pluginId, true);
           log.info(
             { pluginId, pluginKey: plugin.pluginKey },
@@ -562,6 +575,11 @@ export function pluginLifecycleManager(
 
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
       await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
+
+      // Uninstall cleanup (spec §5.2). The hard-delete path also cascades via
+      // the company_standing.plugin_id FK; the soft path needs this explicit
+      // delete because the plugin row survives with status "uninstalled".
+      await companyStandings.clearAllForPlugin(pluginId);
 
       // Perform the uninstall via registry (handles soft/hard delete)
       const result = await registry.uninstall(pluginId, removeData);

@@ -8,7 +8,7 @@ import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { MissingUserSecretsBanner } from "../pages/secrets/MissingUserSecretsBanner";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
@@ -512,12 +512,7 @@ export function NewIssueDialog() {
     queryFn: () => accessApi.listUserDirectory(effectiveCompanyId!),
     enabled: Boolean(effectiveCompanyId) && newIssueOpen,
   });
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    enabled: newIssueOpen,
-    retry: false,
-  });
+  const { data: experimentalSettings } = useFeatures();
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const activeProjects = useMemo(
     () => (projects ?? []).filter((p) => !p.archivedAt),

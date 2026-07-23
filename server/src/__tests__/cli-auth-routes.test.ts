@@ -28,6 +28,14 @@ const mockBoardAuthService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getVisibility: vi.fn(),
+}));
+
+const mockCompanyStandingService = vi.hoisted(() => ({
+  getEffectiveStandings: vi.fn().mockResolvedValue({}),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
@@ -35,6 +43,8 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),
   deduplicateAgentName: vi.fn((name: string) => name),
+  instanceSettingsService: () => mockInstanceSettingsService,
+  companyStandingService: () => mockCompanyStandingService,
 }));
 
 function registerModuleMocks() {
@@ -47,6 +57,8 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     notifyHireApproved: vi.fn(),
     deduplicateAgentName: vi.fn((name: string) => name),
+    instanceSettingsService: () => mockInstanceSettingsService,
+    companyStandingService: () => mockCompanyStandingService,
   }));
 }
 
@@ -99,6 +111,15 @@ describe.sequential("cli auth routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.resetAllMocks();
+    mockInstanceSettingsService.getVisibility.mockResolvedValue({
+      companySurfaces: [
+        "company.general",
+        "company.members",
+        "company.invites",
+        "company.secrets",
+        "company.plugins",
+      ],
+    });
   });
 
   it.sequential("creates a CLI auth challenge with approval metadata", async () => {

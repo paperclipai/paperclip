@@ -782,6 +782,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async get(companyId: string) {
           return callHost("companies.get", { companyId });
         },
+
+        async setStanding(companyId: string, input) {
+          return callHost("companies.setStanding", {
+            companyId,
+            status: input.status,
+            reason: input.reason,
+            message: input.message,
+            actionUrl: input.actionUrl,
+          });
+        },
+
+        async clearStanding(companyId: string) {
+          return callHost("companies.clearStanding", { companyId });
+        },
       },
 
       issues: {

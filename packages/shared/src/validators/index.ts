@@ -8,10 +8,13 @@ export {
   instanceExperimentalSettingsWithManagedSchema,
   managedSettingMetadataSchema,
   patchInstanceExperimentalSettingsSchema,
+  instanceVisibilitySettingsSchema,
+  patchInstanceVisibilitySettingsSchema,
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
+  type PatchInstanceVisibilitySettings,
   type PatchInstanceSettings,
   type IssueGraphLivenessAutoRecoveryRequest,
 } from "./instance.js";

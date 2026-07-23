@@ -150,7 +150,7 @@ describe("IssueWorkspaceCard", () => {
     const reusableWorkspace = createExecutionWorkspace();
 
     useQueryMock.mockImplementation((options: { queryKey: unknown[] }) => {
-      if (options.queryKey[0] === "instance") {
+      if (options.queryKey[0] === "access") {
         return { data: { enableEnvironments: true, enableIsolatedWorkspaces: true } };
       }
       if (options.queryKey[0] === "environments") {
@@ -217,7 +217,7 @@ describe("IssueWorkspaceCard", () => {
     const root = createRoot(container);
 
     useQueryMock.mockImplementation((options: { queryKey: unknown[] }) => {
-      if (options.queryKey[0] === "instance") {
+      if (options.queryKey[0] === "access") {
         return { data: { enableEnvironments: false, enableIsolatedWorkspaces: true } };
       }
       if (options.queryKey[0] === "execution-workspaces") {

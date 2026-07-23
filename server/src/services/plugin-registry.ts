@@ -4,6 +4,7 @@ import {
   plugins,
   pluginConfig,
   pluginCompanySettings,
+  companyStanding,
   pluginEntities,
   pluginJobs,
   pluginJobRuns,
@@ -445,7 +446,7 @@ export function pluginRegistryService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (existing) {
-        return db
+        const updated = await db
           .update(pluginCompanySettings)
           .set({
             enabled: input.enabled ?? existing.enabled,
@@ -455,10 +456,21 @@ export function pluginRegistryService(db: Db) {
           })
           .where(eq(pluginCompanySettings.id, existing.id))
           .returning()
-          .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
+          .then((rows) => rows[0]) as PluginCompanySettings;
+        if (input.enabled === false) {
+          // Company-disable cleanup (spec §5.2): the plugin loses its verdict
+          // for this company; other companies' rows are untouched.
+          await db
+            .delete(companyStanding)
+            .where(and(
+              eq(companyStanding.pluginId, pluginId),
+              eq(companyStanding.companyId, companyId),
+            ));
+        }
+        return updated;
       }
 
-      return db
+      const created = await db
         .insert(pluginCompanySettings)
         .values({
           pluginId,
@@ -468,7 +480,16 @@ export function pluginRegistryService(db: Db) {
           lastError: input.lastError ?? null,
         })
         .returning()
-        .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
+        .then((rows) => rows[0]) as PluginCompanySettings;
+      if (input.enabled === false) {
+        await db
+          .delete(companyStanding)
+          .where(and(
+            eq(companyStanding.pluginId, pluginId),
+            eq(companyStanding.companyId, companyId),
+          ));
+      }
+      return created;
     },
 
     // ----- Entities -------------------------------------------------------

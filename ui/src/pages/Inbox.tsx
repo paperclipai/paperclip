@@ -12,7 +12,7 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { projectsApi } from "../api/projects";
 import {
   BLOCKED_GROUP_OPTIONS,
@@ -708,11 +708,7 @@ export function Inbox() {
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
   const { keyboardShortcutsEnabled } = useGeneralSettings();
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
+  const { data: experimentalSettings } = useFeatures();
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedSearchQuery = searchQuery.trim();

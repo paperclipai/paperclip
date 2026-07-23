@@ -11,7 +11,7 @@ import { builtInAgentsApi, type BuiltInManagedResourceKind } from "../api/builtI
 import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
@@ -733,11 +733,7 @@ export function AgentDetail() {
     ? resourceMembershipState(membershipsQuery.data, "agent", resolvedAgentId)
     : "joined";
 
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    enabled: !!resolvedCompanyId,
-  });
+  const { data: experimentalSettings } = useFeatures();
   const builtInAgentsEnabled = experimentalSettings?.enableBuiltInAgents === true;
   const { data: builtInStates } = useQuery({
     queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!),
@@ -3835,10 +3831,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     };
   }, [isLive, run.companyId, run.id, run.agentId]);
 
-  const censorUsernameInLogs = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-  }).data?.censorUsernameInLogs === true;
+  const censorUsernameInLogs = useFeatures().data?.censorUsernameInLogs === true;
 
   const adapterInvokePayload = useMemo(() => {
     const evt = events.find((e) => e.eventType === "adapter.invoke");
