@@ -48,6 +48,24 @@ describe("issue validators", () => {
     expect(parsed.comment).toBe("Done\n\n- Verified the route");
   });
 
+  it("validates structured unblock descriptors", () => {
+    expect(updateIssueSchema.parse({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: "00000000-0000-4000-8000-000000000001" }, action: "Review the finding" },
+    }).unblockDescriptor).toEqual({
+      owner: { agentId: "00000000-0000-4000-8000-000000000001" },
+      action: "Review the finding",
+    });
+    expect(updateIssueSchema.safeParse({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: "not-a-uuid" }, action: "Review" },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "   " },
+    }).success).toBe(false);
+  });
+
   it("keeps issue attribution fields create-only", () => {
     const created = createIssueSchema.parse({
       title: "Preserve attribution input for route checks",

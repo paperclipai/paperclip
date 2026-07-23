@@ -2594,6 +2594,9 @@ const issueListSelect = {
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
   sourceTrust: issues.sourceTrust,
+  unblockDescriptor: issues.unblockDescriptor,
+  blockedTransitionAt: issues.blockedTransitionAt,
+  blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
@@ -6596,6 +6599,14 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
+      if (existing.status !== "blocked" && issueData.status === "blocked") {
+        patch.blockedTransitionAt = patch.updatedAt;
+        patch.blockedOwnerNotifiedAt = null;
+      } else if (existing.status === "blocked" && issueData.status && issueData.status !== "blocked") {
+        patch.unblockDescriptor = null;
+        patch.blockedTransitionAt = null;
+        patch.blockedOwnerNotifiedAt = null;
+      }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
       }

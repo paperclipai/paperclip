@@ -833,6 +833,8 @@ export type {
   IssueInboxAttentionKind,
   IssueBlockedInboxAction,
   IssueBlockedInboxAttention,
+  IssueUnblockDescriptor,
+  IssueUnblockOwner,
   IssueBlockedInboxIssueRef,
   IssueBlockedInboxOwner,
   IssueBlockedInboxOwnerType,
