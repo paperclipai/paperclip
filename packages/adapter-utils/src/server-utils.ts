@@ -10,6 +10,7 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import { parseCmdWrapperContent } from "./cmd-wrapper-resolution.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -113,14 +114,6 @@ const REDACTED_LOG_VALUE = "***REDACTED***";
 // config env must never override them.
 export function isPaperclipRuntimeEnvKey(key: string): boolean {
   return key.startsWith("PAPERCLIP_");
-}
-
-// PAPERCLIP_API_KEY is never accepted from adapter/user config env: the
-// harness-minted run token is the only source of Paperclip API identity.
-// Other PAPERCLIP_*-named config keys are allowed as long as Paperclip has
-// not assigned the same key for the run (runtime vars always win).
-export function isForbiddenConfigEnvKey(key: string): boolean {
-  return key === "PAPERCLIP_API_KEY";
 }
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
@@ -2052,11 +2045,9 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
     // runtime variable. Non-PAPERCLIP_* keys (plain values and resolved
     // secret_ref values) always forward to the spawned process; a PAPERCLIP_*
     // key from config only applies when Paperclip has NOT already assigned it
-    // for this run. PAPERCLIP_API_KEY is never accepted from config — the
-    // harness-minted run token is the only source. This keeps runtime
-    // identity, wake, and workspace vars authoritative regardless of what a
-    // config binding sets.
-    if (isForbiddenConfigEnvKey(key)) continue;
+    // for this run (e.g. an explicitly configured PAPERCLIP_API_KEY that the
+    // adapter applies after this merge). This keeps runtime identity, wake, and
+    // workspace vars authoritative regardless of what a config binding sets.
     if (isPaperclipRuntimeEnvKey(key) && key in input.env) continue;
     input.env[key] = value;
   }
@@ -2218,6 +2209,31 @@ async function resolveSpawnTarget(
   }
 
   if (/\.(cmd|bat)$/i.test(executable)) {
+    // Try to resolve the actual executable from .cmd/.bat wrappers to avoid
+    // spawning cmd.exe which creates visible console windows on Windows.
+    // npm .cmd wrappers typically contain patterns like:
+    //   "%dp0%\node_modules\<pkg>\bin\<name>.exe" %*    (npm-generated)
+    //   "%~dp0\node_modules\<pkg>\bin\<name>.exe" %*   (direct %~dp0)
+    try {
+      const content = await fs.readFile(executable, "utf8");
+      const { exeRelativePath, envOverrides } = parseCmdWrapperContent(content);
+      if (exeRelativePath) {
+        const dir = path.dirname(executable);
+        const resolvedExe = path.resolve(dir, exeRelativePath);
+        try {
+          await fs.access(resolvedExe);
+          // Merge SET-based env overrides on top of the caller's sanitized env.
+          const mergedEnv = Object.keys(envOverrides).length > 0
+            ? { ...env, ...envOverrides }
+            : undefined;
+          return { command: resolvedExe, args, env: mergedEnv };
+        } catch {
+          // exe doesn't exist, fall through to cmd.exe wrapper
+        }
+      }
+    } catch {
+      // can't read .cmd file, fall through to cmd.exe wrapper
+    }
     // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
     // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
     const shell = resolveWindowsCmdShell(env);
@@ -3071,6 +3087,7 @@ export async function runChildProcess(
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
           detached: process.platform !== "win32",
+          windowsHide: process.platform === "win32",
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
