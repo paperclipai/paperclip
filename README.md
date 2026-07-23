@@ -49,13 +49,18 @@ It looks like a task manager. Under the hood: org charts, budgets, governance, g
 <div align="center">
 <table>
   <tr>
-    <td align="center"><strong>Works<br/>with</strong></td>
+    <td align="center" rowspan="2"><strong>Works<br/>with</strong></td>
     <td align="center"><img src="doc/assets/logos/openclaw.svg" width="32" alt="OpenClaw" /><br/><sub>OpenClaw</sub></td>
     <td align="center"><img src="doc/assets/logos/claude.svg" width="32" alt="Claude" /><br/><sub>Claude Code</sub></td>
     <td align="center"><img src="doc/assets/logos/codex.svg" width="32" alt="Codex" /><br/><sub>Codex</sub></td>
+    <td align="center"><img src="doc/assets/logos/gemini.svg" width="32" alt="Gemini CLI" /><br/><sub>Gemini CLI</sub></td>
+    <td align="center"><img src="doc/assets/logos/grok.svg" width="32" alt="Grok Build" /><br/><sub>Grok Build</sub></td>
+  </tr>
+  <tr>
     <td align="center"><img src="doc/assets/logos/cursor.svg" width="32" alt="Cursor" /><br/><sub>Cursor</sub></td>
-    <td align="center"><img src="doc/assets/logos/bash.svg" width="32" alt="Bash" /><br/><sub>Bash</sub></td>
-    <td align="center"><img src="doc/assets/logos/http.svg" width="32" alt="HTTP" /><br/><sub>HTTP</sub></td>
+    <td align="center"><img src="doc/assets/logos/opencode.svg" width="32" alt="OpenCode" /><br/><sub>OpenCode</sub></td>
+    <td align="center"><img src="doc/assets/logos/pi.svg" width="32" alt="Pi" /><br/><sub>Pi</sub></td>
+    <td align="center"><img src="doc/assets/logos/hermes.svg" width="32" alt="Hermes" /><br/><sub>Hermes</sub></td>
   </tr>
 </table>
 
