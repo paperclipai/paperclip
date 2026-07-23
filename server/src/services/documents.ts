@@ -138,6 +138,8 @@ export function documentService(db: Db) {
         planDocument: planDocument ? mapIssueDocumentRow(planDocument, true) : null,
         documentSummaries: filterSystemDocuments(documentSummaries, options.includeSystem ?? false)
           .map((row) => mapIssueDocumentRow(row, false)),
+        documents: filterSystemDocuments(documentSummaries, options.includeSystem ?? false)
+          .map((row) => mapIssueDocumentRow(row, true)),
         legacyPlanDocument: legacyPlanBody
           ? {
               key: "plan" as const,
