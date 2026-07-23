@@ -69,6 +69,32 @@ def list_pending() -> list[dict]:
     return out
 
 
+def _norm_to(x: str) -> str:
+    return (x or "").strip().lower()
+
+
+def _norm_file(x: str) -> str:
+    """Ursprungsdatei auf Basename normalisieren (Pfad-Präfix wie 'E-Mails/' egal)."""
+    return (x or "").replace("\\", "/").rsplit("/", 1)[-1].strip().lower()
+
+
+def find_pending_duplicate(to: str, original_mail_file: str) -> dict | None:
+    """Existierender **pending**-Entwurf für dieselbe (Empfänger + Ursprungsmail)?
+
+    Verhindert, dass ein Triage-Re-Lauf (z.B. nach 'blocked'/Recovery oder ein
+    LLM-Schleifen-Re-Draft) für dieselbe Kundenmail einen zweiten Entwurf anlegt
+    und Walter erneut eine Freigabe-Mail schickt. Vergleich normalisiert: Empfänger
+    strip/lower, Ursprungsdatei per Basename. Nur `pending` blockt — verbrauchte
+    Einträge (sent/superseded/…) nicht."""
+    tgt_to, tgt_file = _norm_to(to), _norm_file(original_mail_file)
+    if not tgt_file:
+        return None
+    for e in list_pending():
+        if _norm_to(e.get("to")) == tgt_to and _norm_file(e.get("original_mail_file")) == tgt_file:
+            return e
+    return None
+
+
 def mark(token: str, status: str, **extra) -> dict:
     e = load(token)
     if e is None:

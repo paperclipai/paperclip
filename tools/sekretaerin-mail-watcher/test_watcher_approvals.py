@@ -243,6 +243,21 @@ class ApprovalScanTest(unittest.TestCase):
         self._write("2026-07-22-spam-eingang.md", mail)
         self.assertNotIn("2026-07-22-spam-eingang.md", w.scan(3))
 
+    def test_scan_skips_walters_own_sent_mail(self):
+        # Walters eigene (gesendete) Mail im Vault ist KEINE Kundenpost → nicht triagieren.
+        mail = ('---\nbetreff: "AW: VR Clips Haus"\n'
+                'von: "WHITESTAG - Walter Schönenbröcher <w.schonenbrocher@oubifb.hostedoffice.ag>"\n'
+                'an: "Steve Nemitz"\nordner: "Gesendete Elemente"\n---\n\nHallo Steve, anbei …\n')
+        self._write("2026-07-23-AW-VR-Clips-Haus-w.schonenbrocher.md", mail)
+        self.assertNotIn("2026-07-23-AW-VR-Clips-Haus-w.schonenbrocher.md", w.scan(3))
+
+    def test_scan_keeps_customer_named_walter(self):
+        # Ein KUNDE mit Vornamen Walter darf NICHT herausgefiltert werden.
+        mail = ('---\nbetreff: "Anfrage"\n'
+                'von: "Walter Müller <walter.mueller@fremdefirma.de>"\n---\n\nGuten Tag\n')
+        self._write("2026-07-23-Anfrage-walter.mueller.md", mail)
+        self.assertIn("2026-07-23-Anfrage-walter.mueller.md", w.scan(3))
+
     def test_scan_keeps_unblocked_sender(self):
         import blocklist as bl
         bl.STATE = self.dir / "luna-blocklist.json"  # leere Blocklist

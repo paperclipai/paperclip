@@ -54,6 +54,32 @@ class QueueTest(unittest.TestCase):
         self.assertIn(tok, expired)
         self.assertEqual(q.load(tok)["status"], "expired")
 
+    def test_find_pending_duplicate_matches_recipient_and_file(self):
+        tok = q.create(to="steve.nemitz@b-tu.de", area="FILM", subject="AW: VR Clips Haus",
+                       body_md="b", rendered_html="h",
+                       original_mail_file="2026-07-22-Re-VR-Clips-Haus-steve.nemitz.md",
+                       approval_subject="a")
+        # gleicher Empfänger (andere Groß-/Schreibweise) + gleiche Datei (mit Pfad-Präfix) → Treffer
+        dup = q.find_pending_duplicate("Steve.Nemitz@b-tu.de",
+                                       "E-Mails/2026-07-22-Re-VR-Clips-Haus-steve.nemitz.md")
+        self.assertIsNotNone(dup)
+        self.assertEqual(dup["token"], tok)
+
+    def test_find_pending_duplicate_none_for_other(self):
+        q.create(to="steve.nemitz@b-tu.de", area="FILM", subject="s", body_md="b",
+                 rendered_html="h", original_mail_file="2026-07-22-a.md", approval_subject="a")
+        # anderer Empfänger → kein Treffer
+        self.assertIsNone(q.find_pending_duplicate("hoffmanc@b-tu.de", "2026-07-22-a.md"))
+        # andere Ursprungsdatei → kein Treffer
+        self.assertIsNone(q.find_pending_duplicate("steve.nemitz@b-tu.de", "2026-07-22-b.md"))
+
+    def test_find_pending_duplicate_ignores_non_pending(self):
+        tok = q.create(to="k@x.de", area="AI", subject="s", body_md="b", rendered_html="h",
+                       original_mail_file="2026-07-22-x.md", approval_subject="a")
+        q.mark(tok, "superseded")
+        # ein verbrauchter (superseded/sent) Entwurf blockt einen neuen NICHT
+        self.assertIsNone(q.find_pending_duplicate("k@x.de", "2026-07-22-x.md"))
+
 
 if __name__ == "__main__":
     unittest.main()

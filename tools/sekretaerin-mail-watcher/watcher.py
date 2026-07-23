@@ -116,6 +116,32 @@ def _is_agent_mail(path: Path) -> bool:
     return False
 
 
+# Walters eigene Absende-Adressen (Adress-Fragmente, NICHT das bloße Wort "walter" —
+# sonst würde ein Kunde namens Walter fälschlich aus der Triage gefiltert).
+WALTER_OWN_ADDRESSES = ("w.schonenbrocher", "walter@schoenenbroecher", "ws@whitestag.ai")
+
+
+def _is_walter_mail(path: Path) -> bool:
+    """True, wenn die Mail von Walter selbst stammt (Frontmatter `von:`).
+
+    Walters eigene (gesendete) Mails landen als Kopie im Vault; sie sind KEINE
+    Kundenpost, auf die Luna antworten soll — sonst entwirft sie Antworten für
+    Threads, die Walter längst selbst beantwortet hat. Match nur auf seine echten
+    Absende-Adressen, damit ein Kunde mit Vornamen Walter nicht gefiltert wird."""
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for _ in range(12):
+                line = fh.readline()
+                if not line:
+                    break
+                low = line.lower()
+                if low.startswith(("von:", "from:")):
+                    return any(s in low for s in WALTER_OWN_ADDRESSES)
+    except OSError:
+        return False
+    return False
+
+
 def _is_blocked_sender(path: Path, blocked: set[str] | None = None) -> bool:
     """True, wenn die `von:`-Adresse der Mail auf der Blockliste steht.
 
@@ -344,6 +370,8 @@ def scan(window: int) -> list[str]:
         if p.name[:10] < cutoff:
             continue
         if _is_agent_mail(p):
+            continue
+        if _is_walter_mail(p):
             continue
         if _is_blocked_sender(p, blocked):
             continue

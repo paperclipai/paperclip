@@ -49,6 +49,15 @@ def main() -> None:
     ap.add_argument("--in-reply-to", default="")
     a = ap.parse_args()
 
+    # Idempotenz: existiert für diese (Empfänger + Ursprungsmail) schon ein pending
+    # Entwurf, KEINEN zweiten anlegen (sonst bekommt Walter dieselbe Freigabe erneut,
+    # z.B. wenn ein Triage-Issue nach 'blocked'/Recovery neu läuft).
+    dup = q.find_pending_duplicate(a.to, a.original_file)
+    if dup:
+        print(f"SKIP: pending Freigabe #{dup['token']} existiert bereits für {a.to} "
+              f"(Ursprung: {a.original_file}) — kein neuer Entwurf.")
+        return
+
     body_md = Path(a.body).read_text(encoding="utf-8")
     rendered_html, attachments = render.render_customer_html(a.area, body_md)
     token = q.gen_token()
