@@ -441,6 +441,55 @@ type PaperclipWakeIssue = {
   status: string | null;
   workMode: string | null;
   priority: string | null;
+  projectId: string | null;
+  goalId: string | null;
+};
+
+type PaperclipWakeGoalRecord = {
+  id: string;
+  title: string | null;
+  description: string | null;
+  descriptionTruncated: boolean;
+  level: string | null;
+  status: string | null;
+  parentId: string | null;
+  ownerAgentId: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  changeKind?: string | null;
+};
+
+type PaperclipWakeProjectRecord = {
+  id: string;
+  goalId: string | null;
+  name: string | null;
+  description: string | null;
+  descriptionTruncated: boolean;
+  status: string | null;
+  leadAgentId: string | null;
+  targetDate: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  changeKind?: string | null;
+};
+
+type PaperclipWakeGoalProjectIntake = {
+  capturedAt: string | null;
+  changedSince: string | null;
+  baselineRunId: string | null;
+  baselineKind: string | null;
+  project: PaperclipWakeProjectRecord | null;
+  goal: PaperclipWakeGoalRecord | null;
+  activeMilestones: PaperclipWakeGoalRecord[];
+  deltas: {
+    project: PaperclipWakeProjectRecord | null;
+    goal: PaperclipWakeGoalRecord | null;
+    activeMilestones: PaperclipWakeGoalRecord[];
+    noLongerActiveMilestoneIds: string[];
+  };
+  activeMilestoneCount: number;
+  includedActiveMilestoneCount: number;
+  truncated: boolean;
 };
 
 type PaperclipWakeExecutionPrincipal = {
@@ -649,6 +698,7 @@ type PaperclipWakePayload = {
   reason: string | null;
   recovery: PaperclipWakeRecovery | null;
   issue: PaperclipWakeIssue | null;
+  goalProjectIntake: PaperclipWakeGoalProjectIntake | null;
   checkedOutByHarness: boolean;
   dependencyBlockedInteraction: boolean;
   treeHoldInteraction: boolean;
@@ -705,6 +755,8 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   const status = asString(issue.status, "").trim() || null;
   const workMode = asString(issue.workMode, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
+  const projectId = asString(issue.projectId, "").trim() || null;
+  const goalId = asString(issue.goalId, "").trim() || null;
   if (!id && !identifier && !title) return null;
   return {
     id,
@@ -713,6 +765,97 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
     status,
     workMode,
     priority,
+    projectId,
+    goalId,
+  };
+}
+
+function normalizePaperclipWakeGoalRecord(value: unknown): PaperclipWakeGoalRecord | null {
+  const goal = parseObject(value);
+  const id = asString(goal.id, "").trim();
+  if (!id) return null;
+  return {
+    id,
+    title: asString(goal.title, "").trim() || null,
+    description: typeof goal.description === "string" ? goal.description : null,
+    descriptionTruncated: asBoolean(goal.descriptionTruncated, false),
+    level: asString(goal.level, "").trim() || null,
+    status: asString(goal.status, "").trim() || null,
+    parentId: asString(goal.parentId, "").trim() || null,
+    ownerAgentId: asString(goal.ownerAgentId, "").trim() || null,
+    createdAt: asString(goal.createdAt, "").trim() || null,
+    updatedAt: asString(goal.updatedAt, "").trim() || null,
+    changeKind: asString(goal.changeKind, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeProjectRecord(value: unknown): PaperclipWakeProjectRecord | null {
+  const project = parseObject(value);
+  const id = asString(project.id, "").trim();
+  if (!id) return null;
+  return {
+    id,
+    goalId: asString(project.goalId, "").trim() || null,
+    name: asString(project.name, "").trim() || null,
+    description: typeof project.description === "string" ? project.description : null,
+    descriptionTruncated: asBoolean(project.descriptionTruncated, false),
+    status: asString(project.status, "").trim() || null,
+    leadAgentId: asString(project.leadAgentId, "").trim() || null,
+    targetDate: asString(project.targetDate, "").trim() || null,
+    createdAt: asString(project.createdAt, "").trim() || null,
+    updatedAt: asString(project.updatedAt, "").trim() || null,
+    changeKind: asString(project.changeKind, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeGoalProjectIntake(
+  value: unknown,
+): PaperclipWakeGoalProjectIntake | null {
+  const intake = parseObject(value);
+  const project = normalizePaperclipWakeProjectRecord(intake.project);
+  const goal = normalizePaperclipWakeGoalRecord(intake.goal);
+  const activeMilestones = Array.isArray(intake.activeMilestones)
+    ? intake.activeMilestones
+        .map((entry) => normalizePaperclipWakeGoalRecord(entry))
+        .filter((entry): entry is PaperclipWakeGoalRecord => Boolean(entry))
+    : [];
+  if (!project && !goal && activeMilestones.length === 0) return null;
+  const deltas = parseObject(intake.deltas);
+  const activeMilestoneDeltas = Array.isArray(deltas.activeMilestones)
+    ? deltas.activeMilestones
+        .map((entry) => normalizePaperclipWakeGoalRecord(entry))
+        .filter((entry): entry is PaperclipWakeGoalRecord => Boolean(entry))
+    : [];
+  const noLongerActiveMilestoneIds = Array.isArray(
+    deltas.noLongerActiveMilestoneIds,
+  )
+    ? deltas.noLongerActiveMilestoneIds
+        .map((entry) => asString(entry, "").trim())
+        .filter(Boolean)
+    : [];
+  return {
+    capturedAt: asString(intake.capturedAt, "").trim() || null,
+    changedSince: asString(intake.changedSince, "").trim() || null,
+    baselineRunId: asString(intake.baselineRunId, "").trim() || null,
+    baselineKind: asString(intake.baselineKind, "").trim() || null,
+    project,
+    goal,
+    activeMilestones,
+    deltas: {
+      project: normalizePaperclipWakeProjectRecord(deltas.project),
+      goal: normalizePaperclipWakeGoalRecord(deltas.goal),
+      activeMilestones: activeMilestoneDeltas,
+      noLongerActiveMilestoneIds,
+    },
+    activeMilestoneCount: Math.max(
+      0,
+      asNumber(intake.activeMilestoneCount, activeMilestones.length),
+    ),
+    includedActiveMilestoneCount: Math.max(
+      0,
+      asNumber(intake.includedActiveMilestoneCount, activeMilestones.length),
+    ),
+    truncated: asBoolean(intake.truncated, false),
   };
 }
 
@@ -1262,7 +1405,10 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  const goalProjectIntake = normalizePaperclipWakeGoalProjectIntake(
+    payload.goalProjectIntake,
+  );
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !recovery && !goalProjectIntake && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1270,6 +1416,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     reason: asString(payload.reason, "").trim() || null,
     recovery,
     issue: normalizePaperclipWakeIssue(payload.issue),
+    goalProjectIntake,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
@@ -1453,6 +1600,20 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.goalProjectIntake) {
+    const intake = normalized.goalProjectIntake;
+    const changedMilestoneCount = intake.deltas.activeMilestones.length;
+    lines.push(
+      `- goal/project intake baseline: ${intake.baselineKind ?? "unknown"}${intake.changedSince ? ` (changed since ${intake.changedSince})` : ""}`,
+      `- linked project: ${intake.project?.name ?? intake.project?.id ?? "none"}`,
+      `- linked goal: ${intake.goal?.title ?? intake.goal?.id ?? "none"}`,
+      `- active milestones: ${intake.includedActiveMilestoneCount}/${intake.activeMilestoneCount}`,
+      `- intake deltas: project ${intake.deltas.project ? "changed" : "unchanged"}, goal ${intake.deltas.goal ? "changed" : "unchanged"}, active milestones ${changedMilestoneCount} changed and ${intake.deltas.noLongerActiveMilestoneIds.length} no longer active`,
+    );
+    if (intake.truncated) {
+      lines.push("- goal/project intake payload truncated: yes");
+    }
   }
   if (normalized.checkboxSelection) {
     if (normalized.checkboxSelection.prompt) {

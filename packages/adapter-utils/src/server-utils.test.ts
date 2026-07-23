@@ -906,6 +906,125 @@ describe("renderPaperclipWakePrompt", () => {
     expect(fallbackPrompt).toContain("- fallback fetch needed: yes");
   });
 
+  it("preserves and summarizes scoped goal/project milestone intake data", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1581",
+        title: "Validate portfolio intake",
+        status: "in_progress",
+        projectId: "project-1",
+        goalId: "goal-1",
+      },
+      goalProjectIntake: {
+        capturedAt: "2026-07-23T12:00:00.000Z",
+        changedSince: "2026-07-22T12:00:00.000Z",
+        baselineRunId: "run-previous",
+        baselineKind: "incremental",
+        project: {
+          id: "project-1",
+          goalId: "goal-1",
+          name: "Portfolio intelligence",
+          description: "Rank work using evidence and expected outcomes.",
+          status: "in_progress",
+          leadAgentId: "agent-lead",
+          targetDate: "2026-09-30",
+          createdAt: "2026-07-01T00:00:00.000Z",
+          updatedAt: "2026-07-23T10:00:00.000Z",
+        },
+        goal: {
+          id: "goal-1",
+          title: "Build a repeatable growth engine",
+          description: "Outcome, horizon, evidence, and approval boundary.",
+          level: "team",
+          status: "active",
+          ownerAgentId: "agent-owner",
+          createdAt: "2026-07-01T00:00:00.000Z",
+          updatedAt: "2026-07-23T10:00:00.000Z",
+        },
+        activeMilestones: [
+          {
+            id: "milestone-1",
+            title: "Reach $100 MRR",
+            description: "Exit evidence and dependencies.",
+            level: "task",
+            status: "active",
+            parentId: "goal-1",
+            ownerAgentId: "agent-owner",
+            createdAt: "2026-07-02T00:00:00.000Z",
+            updatedAt: "2026-07-23T11:00:00.000Z",
+          },
+        ],
+        deltas: {
+          project: {
+            id: "project-1",
+            goalId: "goal-1",
+            name: "Portfolio intelligence",
+            changeKind: "updated",
+          },
+          goal: null,
+          activeMilestones: [
+            {
+              id: "milestone-1",
+              title: "Reach $100 MRR",
+              changeKind: "updated",
+            },
+          ],
+          noLongerActiveMilestoneIds: ["milestone-old"],
+        },
+        activeMilestoneCount: 1,
+        includedActiveMilestoneCount: 1,
+        truncated: false,
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const serialized = JSON.parse(
+      stringifyPaperclipWakePayload(payload) ?? "{}",
+    );
+    expect(serialized).toMatchObject({
+      issue: { projectId: "project-1", goalId: "goal-1" },
+      goalProjectIntake: {
+        changedSince: "2026-07-22T12:00:00.000Z",
+        project: {
+          id: "project-1",
+          description: "Rank work using evidence and expected outcomes.",
+        },
+        goal: {
+          id: "goal-1",
+          ownerAgentId: "agent-owner",
+        },
+        activeMilestones: [
+          {
+            id: "milestone-1",
+            description: "Exit evidence and dependencies.",
+          },
+        ],
+        deltas: {
+          project: { changeKind: "updated" },
+          activeMilestones: [
+            { id: "milestone-1", changeKind: "updated" },
+          ],
+          noLongerActiveMilestoneIds: ["milestone-old"],
+        },
+      },
+    });
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain(
+      "- goal/project intake baseline: incremental (changed since 2026-07-22T12:00:00.000Z)",
+    );
+    expect(prompt).toContain("- linked project: Portfolio intelligence");
+    expect(prompt).toContain("- linked goal: Build a repeatable growth engine");
+    expect(prompt).toContain("- active milestones: 1/1");
+    expect(prompt).toContain(
+      "- intake deltas: project changed, goal unchanged, active milestones 1 changed and 1 no longer active",
+    );
+  });
+
   it("renders the execution workspace branch guard only on non-resumed sessions", () => {
     const payload = {
       reason: "issue_assigned",
