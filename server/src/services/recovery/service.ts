@@ -806,7 +806,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string, agentId?: string | null) {
-    const [run, deferredWake] = await Promise.all([
+    const [run, lockedRun, deferredWake] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -815,6 +815,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             eq(heartbeatRuns.companyId, companyId),
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
             sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: heartbeatRuns.id })
+        .from(issues)
+        .innerJoin(
+          heartbeatRuns,
+          or(
+            eq(heartbeatRuns.id, issues.checkoutRunId),
+            eq(heartbeatRuns.id, issues.executionRunId),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.id, issueId),
+            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
             agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
           ),
         )
@@ -835,7 +855,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(run || deferredWake);
+    return Boolean(run || lockedRun || deferredWake);
   }
 
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
