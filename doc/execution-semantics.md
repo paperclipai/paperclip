@@ -743,3 +743,32 @@ For a board operator, the intended meaning is:
 - blockers explain waiting
 
 That is the execution contract Paperclip should present to operators.
+
+## 16. Routine Schedule Health
+
+Routine execution issues (`originKind: routine_execution`) mirror their state back onto the originating routine run row. That mirror follows one invariant: **a run reports exactly one terminal result, plus optional context**.
+
+### Run status mirror
+
+- linked issue reaches `done` → run `completed`, `failureReason` cleared. If the run had previously been marked failed because the issue was blocked or cancelled along the way, that earlier reason moves to `triggerPayload.transientFailure` (`{ reason, clearedAt }`) instead of remaining in `failureReason`. A run must never look both completed and failed.
+- linked issue moves to `blocked` or `cancelled` → run `failed` with `failureReason: "Execution issue moved to <status>"`.
+- linked issue resumes active work (`todo`/`in_progress`/`in_review`) after such a transient block → the run is restored to `issue_created` with `failureReason` cleared, because the execution path is live again.
+
+### Skip and suppression vocabulary
+
+Runs recorded with status `skipped` carry the machine reason in `failureReason`:
+
+- no reason (or an unrecognized one) → intentional concurrency skip: a live execution issue already existed (`skip_if_active`).
+- `paused` → the routine's project was paused at the scheduled tick.
+- `no_external_activity` → the activity gate found nothing new since the last dispatch.
+- `worktree_execution_cutoff` → automatic dispatch was suppressed for worktree execution.
+
+These are intentional outcomes, not failures, and the UI run list renders them with that distinction.
+
+### Derived missed ticks
+
+`GET /api/routines/:id/health?days=N` (default 7, max 31) returns a per-day rollup for the routine's schedule triggers. Expected cron ticks are enumerated over the window and matched against recorded runs; each day gets exactly one result, worst-first:
+
+`missed` > `failed` > `cancelled` > `blocked` > `running` > `pending` > `suppressed` > `skipped_active` > `coalesced` > `done`
+
+`missed` means an expected tick has **no run row at all** — the scheduler was offline or the trigger claim failed. Because this is derived at read time rather than written at fire time, server-down windows are still visible, which is the gap `catchUpPolicy: skip_missed` used to hide. A tick younger than 15 minutes with no row yet reports `pending`, and a late catch-up fire is matched back to the tick it caught up, not counted as missed. Days with `missed`/`failed`/`cancelled`/`blocked` results are repeated in the report's `alerts` array with their reasons.

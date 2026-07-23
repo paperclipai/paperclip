@@ -2351,4 +2351,148 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run).toMatchObject({ source: "webhook", status: "issue_created" });
   });
+
+  it("tracks transient blocks without leaving a completed run marked failed", async () => {
+    const { companyId, projectId, routine, svc } = await seedFixture();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(routineRuns).values({
+      id: runId,
+      companyId,
+      routineId: routine.id,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Routine execution",
+      status: "in_progress",
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: runId,
+    });
+    await db.update(routineRuns).set({ linkedIssueId: issueId }).where(eq(routineRuns.id, runId));
+
+    // Issue blocks: the run reflects the failure.
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+    await expect(svc.syncRunStatusForIssue(issueId)).resolves.toMatchObject({
+      status: "failed",
+      failureReason: "Execution issue moved to blocked",
+    });
+
+    // Issue resumes: the run returns to its live state instead of staying failed.
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+    const resumed = await svc.syncRunStatusForIssue(issueId);
+    expect(resumed).toMatchObject({ status: "issue_created", failureReason: null });
+    expect(resumed!.completedAt).toBeNull();
+    expect(resumed!.triggerPayload).toMatchObject({
+      transientFailure: { reason: "Execution issue moved to blocked" },
+    });
+
+    // Issue completes after resuming: exactly one terminal result, with the transient
+    // block preserved as context instead of a stale failureReason.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const completed = await svc.syncRunStatusForIssue(issueId);
+    expect(completed).toMatchObject({ status: "completed", failureReason: null });
+    expect(completed!.completedAt).toBeTruthy();
+    expect(completed!.triggerPayload).toMatchObject({
+      transientFailure: { reason: "Execution issue moved to blocked" },
+    });
+  });
+
+  it("reports seven-day schedule health with one result per day and missed-tick alerts", async () => {
+    const { companyId, projectId, routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 2 * * *",
+      timezone: "UTC",
+    }, {});
+    const now = new Date("2026-07-16T12:00:00Z");
+
+    async function seedIssue(status: string, completedAt: Date | null = null) {
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        projectId,
+        title: "Routine execution",
+        status,
+        completedAt,
+        originKind: "routine_execution",
+        originId: routine.id,
+      });
+      return issueId;
+    }
+
+    async function seedRun(input: {
+      day: string;
+      status: string;
+      failureReason?: string | null;
+      triggerPayload?: Record<string, unknown> | null;
+      linkedIssueId?: string | null;
+      source?: string;
+    }) {
+      await db.insert(routineRuns).values({
+        companyId,
+        routineId: routine.id,
+        triggerId: trigger.id,
+        source: input.source ?? "schedule",
+        status: input.status,
+        triggeredAt: new Date(`${input.day}T02:00:05Z`),
+        failureReason: input.failureReason ?? null,
+        triggerPayload: input.triggerPayload ?? null,
+        linkedIssueId: input.linkedIssueId ?? null,
+      });
+    }
+
+    const doneIssue = await seedIssue("done", new Date("2026-07-10T04:00:00Z"));
+    await seedRun({ day: "2026-07-10", status: "completed", linkedIssueId: doneIssue });
+    await seedRun({ day: "2026-07-11", status: "skipped", failureReason: "paused" });
+    await seedRun({ day: "2026-07-12", status: "skipped" });
+    // 2026-07-13 has no run at all: the silent skip_missed gap.
+    const blockedIssue = await seedIssue("blocked");
+    await seedRun({
+      day: "2026-07-14",
+      status: "failed",
+      failureReason: "Execution issue moved to blocked",
+      linkedIssueId: blockedIssue,
+    });
+    const recoveredIssue = await seedIssue("done", new Date("2026-07-15T09:00:00Z"));
+    await seedRun({
+      day: "2026-07-15",
+      status: "completed",
+      triggerPayload: { transientFailure: { reason: "Execution issue moved to blocked" } },
+      linkedIssueId: recoveredIssue,
+    });
+    const runningIssue = await seedIssue("in_progress");
+    await seedRun({ day: "2026-07-16", status: "issue_created", linkedIssueId: runningIssue });
+    // Manual run inside the window is reported separately from schedule health.
+    await seedRun({ day: "2026-07-15", status: "completed", source: "manual" });
+
+    const report = await svc.getHealth(routine.id, { days: 7, now });
+    expect(report).not.toBeNull();
+    expect(report!.timezone).toBe("UTC");
+    expect(report!.unscheduledRunCount).toBe(1);
+    expect(report!.dailyResults.map((day) => [day.date, day.result])).toEqual([
+      ["2026-07-10", "done"],
+      ["2026-07-11", "suppressed"],
+      ["2026-07-12", "skipped_active"],
+      ["2026-07-13", "missed"],
+      ["2026-07-14", "blocked"],
+      ["2026-07-15", "done"],
+      ["2026-07-16", "running"],
+    ]);
+    const recoveredDay = report!.dailyResults.find((day) => day.date === "2026-07-15");
+    expect(recoveredDay!.reason).toContain("Recovered after a transient failure");
+    expect(report!.alerts).toHaveLength(2);
+    expect(report!.alerts[0]).toContain("2026-07-13: missed");
+    expect(report!.alerts[1]).toContain("2026-07-14: blocked");
+    expect(report!.summary).toMatchObject({ done: 2, missed: 1, blocked: 1 });
+    const doneDay = report!.dailyResults.find((day) => day.date === "2026-07-10");
+    expect(doneDay!.ticks[0]!.linkedIssue).toMatchObject({ status: "done" });
+    expect(doneDay!.ticks[0]!.linkedIssue!.completedAt).toBeTruthy();
+  });
 });
