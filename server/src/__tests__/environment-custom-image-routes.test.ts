@@ -70,6 +70,7 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../services/environments.js", () => ({
   environmentService: () => mockEnvironmentService,
+  ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES: ["starting", "waiting_for_user", "capturing"],
 }));
 
 vi.mock("../services/execution-workspaces.js", () => ({

@@ -1850,7 +1850,7 @@ export function environmentRuntimeService(
         .where(
           and(
             eq(environmentLeases.heartbeatRunId, heartbeatRunId),
-            inArray(environmentLeases.status, ["active"]),
+            eq(environmentLeases.status, "active"),
           ),
         );
       if (leaseRows.length === 0) {
@@ -1871,6 +1871,69 @@ export function environmentRuntimeService(
               status,
             })
           : await environmentsSvc.releaseLease(leaseRow.id, status);
+        if (!lease) continue;
+
+        released.push({
+          environment,
+          lease,
+          leaseContext: {
+            executionWorkspaceId: lease.executionWorkspaceId,
+            executionWorkspaceMode:
+              (lease.metadata?.executionWorkspaceMode as ExecutionWorkspace["mode"] | null | undefined) ?? null,
+          },
+        });
+      }
+
+      return released;
+    },
+
+    async releaseActiveLeasesForEnvironment(
+      environmentId: string,
+      status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> = "released",
+    ): Promise<EnvironmentRuntimeLeaseRecord[]> {
+      const environment = await environmentsSvc.getById(environmentId);
+      if (!environment) return [];
+      const leaseRows = await db
+        .select()
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.environmentId, environmentId),
+            eq(environmentLeases.status, "active"),
+          ),
+        );
+      if (leaseRows.length === 0) return [];
+
+      const released: EnvironmentRuntimeLeaseRecord[] = [];
+      for (const leaseRow of leaseRows) {
+        const leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
+        const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
+        const lease = await (async () => {
+          if (!driver) {
+            return environmentsSvc.releaseLease(leaseSnapshot.id, "pending_cleanup", {
+              failureReason: "environment_delete_missing_runtime_driver",
+              cleanupStatus: "failed",
+            });
+          }
+          if (leaseSnapshot.leasePolicy === "reuse_by_environment") {
+            if (!driver.destroyRunLease) {
+              return environmentsSvc.releaseLease(leaseSnapshot.id, "pending_cleanup", {
+                failureReason: "environment_delete_missing_reusable_lease_destroyer",
+                cleanupStatus: "failed",
+              });
+            }
+            return driver.destroyRunLease({
+              environment,
+              lease: leaseSnapshot,
+              failureReason: "environment_deleted",
+            });
+          }
+          return driver.releaseRunLease({
+            environment,
+            lease: leaseSnapshot,
+            status,
+          });
+        })();
         if (!lease) continue;
 
         released.push({

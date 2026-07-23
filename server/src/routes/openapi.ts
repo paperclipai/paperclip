@@ -4462,7 +4462,10 @@ registry.registerPath({
   path: "/api/environments/{id}",
   tags: ["environments"],
   summary: "Delete an environment",
-  request: { params: z.object({ id: z.string() }) },
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ force: z.boolean().optional() }).strict()),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 

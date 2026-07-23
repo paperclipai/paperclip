@@ -5,6 +5,7 @@ import {
   agents,
   companies,
   companySecretBindings,
+  companySecretVersions,
   companySecrets,
   createDb,
   environmentCustomImageSetupSessions,
@@ -15,6 +16,8 @@ import {
   instanceSettings,
   issues,
   projects,
+  userSecretDeclarations,
+  userSecretDefinitions,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -45,6 +48,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
 
   afterEach(async () => {
     await db.delete(companySecretBindings);
+    await db.delete(userSecretDeclarations);
     await db.delete(environmentCustomImageSetupSessions);
     await db.delete(environmentLeases);
     await db.delete(heartbeatRuns);
@@ -54,7 +58,9 @@ describeEmbeddedPostgres("environmentService leases", () => {
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(environments);
+    await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(userSecretDefinitions);
     await db.delete(companies);
   });
 
@@ -381,7 +387,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(impact).toEqual({
       environmentId,
       canDelete: false,
-      deleteBlockedReasons: ["instance_default"],
+      deleteBlockedReasons: ["instance_default", "active_runtime_use"],
       staticReferences: {
         isManagedLocal: false,
         isInstanceDefault: true,
@@ -471,6 +477,276 @@ describeEmbeddedPostgres("environmentService leases", () => {
 
     expect(removedDeletable?.id).toBe(deletableEnvId);
     expect(deletedRows).toHaveLength(0);
+  });
+
+  it("removes an environment and cleanup references in one guarded transaction", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const environmentId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const workspaceId = randomUUID();
+    const privateKeySecretId = randomUUID();
+    const retainedSecretId = randomUUID();
+    const otherTargetSecretId = randomUUID();
+    const userSecretDefinitionId = randomUUID();
+    const now = new Date();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Acme",
+        status: "active",
+        issuePrefix: "ACM",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other Co",
+        status: "active",
+        issuePrefix: "OTH",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(environments).values({
+      id: environmentId,
+      name: "Atomic SSH",
+      driver: "ssh",
+      status: "active",
+      config: {
+        host: "atomic.example.test",
+        port: 22,
+        username: "fixture",
+        remoteWorkspacePath: "/srv/paperclip",
+        privateKey: null,
+        privateKeySecretRef: {
+          type: "secret_ref",
+          secretId: privateKeySecretId,
+          version: "latest",
+        },
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Project",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        defaultMode: "isolated_workspace",
+        environmentId,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Issue",
+      status: "todo",
+      priority: "medium",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Workspace",
+      status: "active",
+      providerType: "git_worktree",
+      metadata: {
+        config: {
+          environmentId,
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companySecrets).values([
+      {
+        id: privateKeySecretId,
+        companyId,
+        key: "atomic-private-key",
+        name: "Atomic Private Key",
+        provider: "local_encrypted",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: retainedSecretId,
+        companyId,
+        key: "retained-env-secret",
+        name: "Retained Env Secret",
+        provider: "local_encrypted",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: otherTargetSecretId,
+        companyId,
+        key: "other-target-secret",
+        name: "Other Target Secret",
+        provider: "local_encrypted",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(companySecretVersions).values({
+      secretId: privateKeySecretId,
+      version: 1,
+      material: { provider: "local_encrypted", ciphertext: "encrypted-private-key" },
+      valueSha256: "private-key-value",
+      fingerprintSha256: "private-key-fingerprint",
+      createdAt: now,
+    });
+    await db.insert(companySecretBindings).values([
+      {
+        companyId,
+        secretId: privateKeySecretId,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "config.privateKeySecretRef",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        companyId,
+        secretId: retainedSecretId,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "env.OPENAI_API_KEY",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        companyId,
+        secretId: otherTargetSecretId,
+        targetType: "agent",
+        targetId: "agent-1",
+        configPath: "env.OPENAI_API_KEY",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(userSecretDefinitions).values({
+      id: userSecretDefinitionId,
+      companyId,
+      key: "deploy-key",
+      name: "Deploy Key",
+      provider: "local_encrypted",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(userSecretDeclarations).values([
+      {
+        companyId,
+        userSecretDefinitionId,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "env.DEPLOY_KEY",
+        envKey: "DEPLOY_KEY",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        companyId,
+        userSecretDefinitionId,
+        targetType: "agent",
+        targetId: "agent-1",
+        configPath: "env.DEPLOY_KEY",
+        envKey: "DEPLOY_KEY",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+
+    const removed = await svc.removeIfDeletableWithCleanup(environmentId);
+
+    expect(removed?.id).toBe(environmentId);
+    await expect(db.select().from(environments).where(eq(environments.id, environmentId)))
+      .resolves.toHaveLength(0);
+    const [workspace] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, workspaceId));
+    expect(
+      (workspace?.metadata as { config?: { environmentId?: unknown } } | null | undefined)?.config?.environmentId,
+    ).toBeNull();
+    const [issue] = await db
+      .select({ executionWorkspaceSettings: issues.executionWorkspaceSettings })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(
+      (issue?.executionWorkspaceSettings as { environmentId?: unknown } | null | undefined)?.environmentId,
+    ).toBeNull();
+    const [project] = await db
+      .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projects)
+      .where(eq(projects.id, projectId));
+    expect(
+      (project?.executionWorkspacePolicy as { environmentId?: unknown } | null | undefined)?.environmentId,
+    ).toBeNull();
+    await expect(
+      db.select().from(companySecretBindings).where(and(
+        eq(companySecretBindings.targetType, "environment"),
+        eq(companySecretBindings.targetId, environmentId),
+      )),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(userSecretDeclarations).where(and(
+        eq(userSecretDeclarations.targetType, "environment"),
+        eq(userSecretDeclarations.targetId, environmentId),
+      )),
+    ).resolves.toHaveLength(0);
+    await expect(db.select().from(companySecrets).where(eq(companySecrets.id, privateKeySecretId)))
+      .resolves.toHaveLength(0);
+    await expect(db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, privateKeySecretId)))
+      .resolves.toHaveLength(0);
+    await expect(db.select().from(companySecrets).where(eq(companySecrets.id, retainedSecretId)))
+      .resolves.toHaveLength(1);
+    await expect(db.select().from(companySecretBindings).where(and(
+      eq(companySecretBindings.targetType, "agent"),
+      eq(companySecretBindings.targetId, "agent-1"),
+    ))).resolves.toHaveLength(1);
+    await expect(db.select().from(userSecretDeclarations).where(and(
+      eq(userSecretDeclarations.targetType, "agent"),
+      eq(userSecretDeclarations.targetId, "agent-1"),
+    ))).resolves.toHaveLength(1);
+  });
+
+  it("refuses cleanup delete when active runtime leases are present", async () => {
+    const { companyId, environmentId } = await seedEnvironment();
+    await svc.acquireLease({
+      companyId,
+      environmentId,
+      provider: "fake",
+      providerLeaseId: "provider-lease-1",
+    });
+
+    const removed = await svc.removeIfDeletableWithCleanup(environmentId);
+
+    expect(removed).toBeNull();
+    await expect(db.select().from(environments).where(eq(environments.id, environmentId)))
+      .resolves.toHaveLength(1);
+    await expect(db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.environmentId, environmentId),
+      eq(environmentLeases.status, "active"),
+    ))).resolves.toHaveLength(1);
   });
 
   it("creates and then reuses the default local environment for a company", async () => {

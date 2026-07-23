@@ -35,6 +35,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   removeIfDeletable: vi.fn(),
+  removeIfDeletableWithCleanup: vi.fn(),
   getDeleteBlastRadius: vi.fn(),
   listLeases: vi.fn(),
   getLeaseById: vi.fn(),
@@ -77,6 +78,9 @@ const mockDeletePluginEnvironmentTemplate = vi.hoisted(() => vi.fn());
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   clearEnvironmentSelection: vi.fn(),
 }));
+const mockEnvironmentRuntimeService = vi.hoisted(() => ({
+  releaseActiveLeasesForEnvironment: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
@@ -96,11 +100,16 @@ vi.mock("../services/secrets.js", () => ({
 }));
 
 vi.mock("../services/environments.js", () => ({
+  ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES: ["starting", "waiting_for_user", "capturing"],
   environmentService: () => mockEnvironmentService,
 }));
 
 vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
+}));
+
+vi.mock("../services/environment-runtime.js", () => ({
+  environmentRuntimeService: () => mockEnvironmentRuntimeService,
 }));
 
 vi.mock("../services/plugin-environment-driver.js", () => ({
@@ -162,6 +171,7 @@ function createDeleteBlastRadius(overrides: Partial<{
   const deleteBlockedReasons = [
     ...(staticReferences.isManagedLocal ? ["managed_local" as const] : []),
     ...(staticReferences.isInstanceDefault ? ["instance_default" as const] : []),
+    ...(activeRuntimeUse.hasActiveRuntimeUse ? ["active_runtime_use" as const] : []),
   ];
   return {
     environmentId: "env-1",
@@ -234,10 +244,12 @@ describe("environment routes", () => {
     mockEnvironmentService.create.mockReset();
     mockEnvironmentService.update.mockReset();
     mockEnvironmentService.removeIfDeletable.mockReset();
+    mockEnvironmentService.removeIfDeletableWithCleanup.mockReset();
     mockEnvironmentService.getDeleteBlastRadius.mockReset();
     mockEnvironmentService.listLeases.mockReset();
     mockEnvironmentService.getLeaseById.mockReset();
     mockExecutionWorkspaceService.clearEnvironmentSelection.mockReset();
+    mockEnvironmentRuntimeService.releaseActiveLeasesForEnvironment.mockReset();
     Object.values(mockEnvironmentCustomImageService).forEach((mock) => mock.mockReset());
     mockEnvironmentCustomImageService.getOverview.mockResolvedValue({
       activeTemplate: null,
@@ -263,6 +275,7 @@ describe("environment routes", () => {
     mockIssueService.clearExecutionWorkspaceEnvironmentSelection.mockResolvedValue(0);
     mockProjectService.clearExecutionWorkspaceEnvironmentSelection.mockResolvedValue(0);
     mockExecutionWorkspaceService.clearEnvironmentSelection.mockResolvedValue(0);
+    mockEnvironmentRuntimeService.releaseActiveLeasesForEnvironment.mockResolvedValue([]);
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env ?? {});
     mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue([]);
@@ -418,8 +431,8 @@ describe("environment routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       environmentId: "env-1",
-      canDelete: true,
-      deleteBlockedReasons: [],
+      canDelete: false,
+      deleteBlockedReasons: ["active_runtime_use"],
       staticReferences: {
         isManagedLocal: false,
         isInstanceDefault: false,
@@ -741,8 +754,8 @@ describe("environment routes", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("Cannot delete the managed local environment.");
     expect(res.body.details).toEqual({ deleteBlockedReasons: ["managed_local"] });
-    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
-    expect(mockExecutionWorkspaceService.clearEnvironmentSelection).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.removeIfDeletableWithCleanup).not.toHaveBeenCalled();
+    expect(mockEnvironmentRuntimeService.releaseActiveLeasesForEnvironment).not.toHaveBeenCalled();
   });
 
   it("rejects deleting the current instance default environment", async () => {
@@ -778,10 +791,10 @@ describe("environment routes", () => {
       "Cannot delete the current instance default environment. Set a new default environment before deleting this one.",
     );
     expect(res.body.details).toEqual({ deleteBlockedReasons: ["instance_default"] });
-    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.removeIfDeletableWithCleanup).not.toHaveBeenCalled();
   });
 
-  it("clears environment selections and secret bindings across all companies when deleting an environment", async () => {
+  it("uses the atomic cleanup delete path when deleting an environment", async () => {
     const environment = {
       ...createEnvironment(),
       id: "env-ssh",
@@ -804,7 +817,7 @@ describe("environment routes", () => {
     };
     mockEnvironmentService.getById.mockResolvedValue(environment);
     mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius());
-    mockEnvironmentService.removeIfDeletable.mockResolvedValue(environment);
+    mockEnvironmentService.removeIfDeletableWithCleanup.mockResolvedValue(environment);
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
     const app = createApp({
       type: "board",
@@ -815,27 +828,13 @@ describe("environment routes", () => {
     const res = await request(app).delete("/api/environments/env-ssh");
 
     expect(res.status).toBe(200);
-    expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith("env-ssh");
-    for (const companyId of ["company-1", "company-2"]) {
-      expect(mockExecutionWorkspaceService.clearEnvironmentSelection)
-        .toHaveBeenCalledWith(companyId, "env-ssh");
-      expect(mockIssueService.clearExecutionWorkspaceEnvironmentSelection)
-        .toHaveBeenCalledWith(companyId, "env-ssh");
-      expect(mockProjectService.clearExecutionWorkspaceEnvironmentSelection)
-        .toHaveBeenCalledWith(companyId, "env-ssh");
-      expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
-        companyId,
-        { targetType: "environment", targetId: "env-ssh" },
-        {},
-      );
-      expect(mockSecretService.syncSecretRefsForTarget).toHaveBeenCalledWith(
-        companyId,
-        { targetType: "environment", targetId: "env-ssh" },
-        [],
-        { replaceAll: true },
-      );
-    }
-    expect(mockSecretService.remove).toHaveBeenCalledWith("11111111-1111-1111-1111-111111111111");
+    expect(mockEnvironmentService.removeIfDeletableWithCleanup).toHaveBeenCalledWith("env-ssh");
+    expect(mockExecutionWorkspaceService.clearEnvironmentSelection).not.toHaveBeenCalled();
+    expect(mockIssueService.clearExecutionWorkspaceEnvironmentSelection).not.toHaveBeenCalled();
+    expect(mockProjectService.clearExecutionWorkspaceEnvironmentSelection).not.toHaveBeenCalled();
+    expect(mockSecretService.syncEnvBindingsForTarget).not.toHaveBeenCalled();
+    expect(mockSecretService.syncSecretRefsForTarget).not.toHaveBeenCalled();
+    expect(mockSecretService.remove).not.toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -845,6 +844,191 @@ describe("environment routes", () => {
         entityId: "env-ssh",
       }),
     );
+  });
+
+  it("requires force before deleting an environment with active runtime use", async () => {
+    const environment = {
+      ...createEnvironment(),
+      id: "env-sandbox",
+      name: "Sandbox Fixture",
+      driver: "sandbox" as const,
+      config: { provider: "fake", image: "paperclip-test", reuseLease: false },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      activeLeaseCount: 1,
+      activeCustomImageSetupSessionCount: 1,
+    }));
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).delete("/api/environments/env-sandbox");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Repeat the delete request with force: true");
+    expect(res.body.details).toEqual({
+      requiresForce: true,
+      activeRuntimeUse: {
+        activeLeaseCount: 1,
+        activeCustomImageSetupSessionCount: 1,
+        hasActiveRuntimeUse: true,
+      },
+    });
+    expect(mockEnvironmentRuntimeService.releaseActiveLeasesForEnvironment).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.removeIfDeletableWithCleanup).not.toHaveBeenCalled();
+  });
+
+  it("cleans active runtime use before forced environment delete", async () => {
+    const environment = {
+      ...createEnvironment(),
+      id: "env-sandbox",
+      name: "Sandbox Fixture",
+      driver: "sandbox" as const,
+      config: { provider: "fake", image: "paperclip-test", reuseLease: false },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      activeLeaseCount: 1,
+      activeCustomImageSetupSessionCount: 1,
+    }));
+    mockEnvironmentRuntimeService.releaseActiveLeasesForEnvironment.mockResolvedValue([
+      {
+        environment,
+        lease: {
+          id: "lease-1",
+          status: "released",
+          cleanupStatus: "success",
+        },
+        leaseContext: {
+          executionWorkspaceId: null,
+          executionWorkspaceMode: null,
+        },
+      },
+    ]);
+    mockEnvironmentCustomImageService.getOverview.mockResolvedValue({
+      activeTemplate: null,
+      activeSession: {
+        id: "setup-1",
+        environmentId: "env-sandbox",
+        provider: "secure-plugin",
+        status: "waiting_for_user",
+      },
+      latestSession: null,
+    });
+    mockEnvironmentCustomImageService.cancelSetupSession.mockResolvedValue({
+      id: "setup-1",
+      environmentId: "env-sandbox",
+      provider: "secure-plugin",
+      status: "cancelled",
+    });
+    mockEnvironmentService.removeIfDeletableWithCleanup.mockResolvedValue(environment);
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .delete("/api/environments/env-sandbox")
+      .send({ force: true });
+
+    expect(res.status).toBe(200);
+    expect(mockEnvironmentRuntimeService.releaseActiveLeasesForEnvironment)
+      .toHaveBeenCalledWith("env-sandbox", "released");
+    expect(mockEnvironmentCustomImageService.cancelSetupSession).toHaveBeenCalledWith({
+      sessionId: "setup-1",
+      reason: "environment_deleted",
+    });
+    expect(mockEnvironmentService.removeIfDeletableWithCleanup).toHaveBeenCalledWith("env-sandbox");
+  });
+
+  it("rejects forced environment delete when active lease cleanup fails", async () => {
+    const environment = {
+      ...createEnvironment(),
+      id: "env-sandbox",
+      name: "Sandbox Fixture",
+      driver: "sandbox" as const,
+      config: { provider: "fake", image: "paperclip-test", reuseLease: false },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      activeLeaseCount: 1,
+    }));
+    mockEnvironmentRuntimeService.releaseActiveLeasesForEnvironment.mockResolvedValue([
+      {
+        environment,
+        lease: {
+          id: "lease-1",
+          status: "released",
+          cleanupStatus: "failed",
+        },
+        leaseContext: {
+          executionWorkspaceId: null,
+          executionWorkspaceMode: null,
+        },
+      },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .delete("/api/environments/env-sandbox")
+      .send({ force: true });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("could not clean up all active runtime leases");
+    expect(res.body.details).toEqual({ failedLeaseIds: ["lease-1"] });
+    expect(mockEnvironmentService.removeIfDeletableWithCleanup).not.toHaveBeenCalled();
+  });
+
+  it("rejects forced environment delete when active custom image cancellation remains active", async () => {
+    const environment = {
+      ...createEnvironment(),
+      id: "env-sandbox",
+      name: "Sandbox Fixture",
+      driver: "sandbox" as const,
+      config: { provider: "fake", image: "paperclip-test", reuseLease: false },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      activeCustomImageSetupSessionCount: 1,
+    }));
+    mockEnvironmentRuntimeService.releaseActiveLeasesForEnvironment.mockResolvedValue([]);
+    mockEnvironmentCustomImageService.getOverview.mockResolvedValue({
+      activeTemplate: null,
+      activeSession: {
+        id: "setup-1",
+        environmentId: "env-sandbox",
+        provider: "secure-plugin",
+        status: "waiting_for_user",
+      },
+      latestSession: null,
+    });
+    mockEnvironmentCustomImageService.cancelSetupSession.mockResolvedValue({
+      id: "setup-1",
+      environmentId: "env-sandbox",
+      provider: "secure-plugin",
+      status: "waiting_for_user",
+    });
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .delete("/api/environments/env-sandbox")
+      .send({ force: true });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("could not cancel the active custom image setup session");
+    expect(mockEnvironmentService.removeIfDeletableWithCleanup).not.toHaveBeenCalled();
   });
 
   it("rejects invalid SSH config on create", async () => {
