@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { APP_DEFINITIONS } from "@paperclipai/shared";
-import type { AppDefinition, ConnectionMethodDef } from "@paperclipai/shared";
+import type { AppDefinition, ConnectionMethodDef, ToolConnectionOwnership } from "@paperclipai/shared";
 
 import { MethodBadges } from "./MethodSelect";
 import { ConfigureStep } from "./ConfigureStep";
@@ -11,10 +11,16 @@ import { ConfigureStep } from "./ConfigureStep";
  * step so review can capture each archetype (branded OAuth / multi-method /
  * api-key multi-key / generic OAuth discovery) without a backend.
  *
+ * The "managed modes" toggle force-enables every ownership mode a method
+ * declares (as the rails would once the connector service + provider app
+ * exist), so reviewers can capture the managed and assisted-setup
+ * (`platform_provisioned`) states too — otherwise hidden by the rails default.
+ *
  * Dev-only surface routed at `/apps/preview`.
  */
 export function ConnectPreview() {
   const [activeSlug, setActiveSlug] = useState<string>(APP_DEFINITIONS[0]?.slug ?? "");
+  const [showManaged, setShowManaged] = useState(false);
   const active = APP_DEFINITIONS.find((d) => d.slug === activeSlug) ?? APP_DEFINITIONS[0];
 
   return (
@@ -41,13 +47,25 @@ export function ConnectPreview() {
             </li>
           ))}
         </ul>
+        <label className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={showManaged} onChange={(e) => setShowManaged(e.target.checked)} />
+          Preview managed modes
+        </label>
       </nav>
 
       <div className="min-w-0 flex-1 space-y-8">
-        {active && <ProviderPreview def={active} />}
+        {active && <ProviderPreview def={showManaged ? withManagedModesEnabled(active) : active} />}
       </div>
     </div>
   );
+}
+
+/** Force-enable every ownership mode the def's methods declare (preview only). */
+function withManagedModesEnabled(def: AppDefinition): AppDefinition {
+  const modes = new Set<ToolConnectionOwnership>();
+  for (const method of def.methods) for (const mode of method.ownershipModes) modes.add(mode);
+  const availability = Object.fromEntries([...modes].map((mode) => [mode, true])) as Record<ToolConnectionOwnership, boolean>;
+  return { ...def, ownershipAvailability: availability };
 }
 
 function ProviderPreview({ def }: { def: AppDefinition }) {
