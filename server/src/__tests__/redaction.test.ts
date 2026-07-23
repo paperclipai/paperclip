@@ -180,4 +180,34 @@ describe("redaction", () => {
     });
     expect(JSON.stringify(result)).not.toContain(plaintextValue);
   });
+
+  it("redacts non-env adapter keys while leaving env binding shapes intact", () => {
+    const result = redactAgentAdapterConfig({
+      command: "pnpm agent:run",
+      apiKey: "adapter-level-secret",
+      env: {
+        API_KEY: "env-level-secret",
+        AUTH_TOKEN: { type: "plain", value: "another-env-secret" },
+      },
+    });
+
+    // Non-env keys still go through the shared payload sanitizer.
+    expect(result.apiKey).toBe(REDACTED_EVENT_VALUE);
+    expect(result.command).toBe("pnpm agent:run");
+
+    // Env bindings keep their binding shape rather than collapsing to a bare
+    // sentinel string, which is what a second sanitizer pass would produce for
+    // these sensitive-looking key names.
+    expect(result.env).toEqual({
+      API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+      AUTH_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+    });
+  });
+
+  it("redacts adapter configs that have no env block", () => {
+    expect(redactAgentAdapterConfig({ command: "pnpm agent:run", apiKey: "secret" })).toEqual({
+      command: "pnpm agent:run",
+      apiKey: REDACTED_EVENT_VALUE,
+    });
+  });
 });

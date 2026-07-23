@@ -148,14 +148,18 @@ export function redactAgentAdapterConfig(
   adapterConfig: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!isPlainObject(adapterConfig)) return adapterConfig;
+  if (!isPlainObject(adapterConfig.env)) return redactEventPayload(adapterConfig) ?? {};
 
-  const env = isPlainObject(adapterConfig.env)
-    ? Object.fromEntries(
-        Object.entries(adapterConfig.env).map(([key, value]) => [key, redactAgentEnvBinding(value)]),
-      )
-    : adapterConfig.env;
+  // Redact `env` here and sanitize the remaining keys separately, so bindings
+  // are never processed twice. `redactAgentEnvBinding` is authoritative for
+  // `env`; keeping it out of `sanitizeRecord` means a future change there
+  // cannot alter entries this function has already redacted.
+  const { env, ...rest } = adapterConfig;
+  const redactedEnv = Object.fromEntries(
+    Object.entries(env).map(([key, value]) => [key, redactAgentEnvBinding(value)]),
+  );
 
-  return redactEventPayload({ ...adapterConfig, env }) ?? {};
+  return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }
 
 export function redactSensitiveText(input: string): string {
