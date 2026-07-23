@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   buildSshEnvLabFixtureConfig,
   getSshEnvLabSupport,
@@ -1564,6 +1564,503 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const firstMetadata = JSON.stringify(first.lease.metadata);
     expect(firstMetadata).not.toContain("resolved-provider-key");
     expect(firstMetadata).not.toContain("rotated-provider-key");
+  });
+
+  it("does not resume released reusable plugin sandbox leases after an in-place secret value change under the same version", async () => {
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const apiSecret = await secretService(db).create(companyId, {
+      name: `inplace-plugin-api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "resolved-provider-key",
+    });
+    const providerConfig = {
+      provider: "secure-plugin",
+      template: "base",
+      apiKey: apiSecret.id,
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "In-place Secure Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await secretService(db).createBinding({
+      companyId,
+      secretId: apiSecret.id,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.inplace-sandbox-provider",
+      packageName: "@acme/inplace-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.inplace-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "In-place Sandbox Provider",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "secure-plugin",
+            kind: "sandbox_provider",
+            displayName: "Secure Sandbox",
+            supportsReusableLeases: true,
+            configSchema: {
+              type: "object",
+              properties: {
+                template: { type: "string" },
+                apiKey: { type: "string", format: "secret-ref" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Reusable workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: any) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: `lease-${params.config.apiKey}`,
+            metadata: {
+              provider: "secure-plugin",
+              template: params.config.template,
+              apiKey: params.config.apiKey,
+              timeoutMs: params.config.timeoutMs,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentResumeLease") {
+          // If the lease fingerprint fails to detect the value change, the runtime
+          // would resume this stale sandbox. Return it so the negative assertions
+          // below fail loudly instead of falling back to acquire.
+          return {
+            providerLeaseId: params.providerLeaseId,
+            metadata: {
+              provider: "secure-plugin",
+              reuseLease: true,
+              remoteCwd: "/workspace",
+              resumed: true,
+            },
+          };
+        }
+        if (method === "environmentReleaseLease" || method === "environmentDestroyLease") {
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const first = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+    await runtimeWithPlugin.releaseRunLeases(runId);
+
+    // Simulate an in-place re-encryption: the credential material changes but the
+    // secret keeps the SAME version number (no rotate, latestVersion is unchanged).
+    const [versionBefore] = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, apiSecret.id));
+    expect(versionBefore).toBeDefined();
+    const sameVersionNumber = versionBefore.version;
+    await db
+      .update(companySecretVersions)
+      .set({
+        fingerprintSha256: `sha256:in-place-${randomUUID()}`,
+        valueSha256: `sha256:in-place-${randomUUID()}`,
+      })
+      .where(
+        and(
+          eq(companySecretVersions.secretId, apiSecret.id),
+          eq(companySecretVersions.version, sameVersionNumber),
+        ),
+      );
+    const versionRowsAfter = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, apiSecret.id));
+    // Proves the change was in place: still exactly one version, same number, and
+    // the providerVersionRef (the other lease discriminator) did not move.
+    expect(versionRowsAfter).toHaveLength(1);
+    expect(versionRowsAfter[0].version).toBe(sameVersionNumber);
+    expect(versionRowsAfter[0].providerVersionRef).toBe(versionBefore.providerVersionRef);
+
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: nextRunId,
+      companyId,
+      agentId,
+      invocationSource: "manual",
+      status: "running",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const second = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: nextRunId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    // The stale sandbox must not be resumed; it must be destroyed and replaced.
+    expect(second.lease.id).not.toBe(first.lease.id);
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentResumeLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", expect.objectContaining({
+      providerLeaseId: "lease-resolved-provider-key",
+    }), 31234);
+    await expect(environmentService(db).getLeaseById(first.lease.id)).resolves.toMatchObject({
+      status: "expired",
+      cleanupStatus: "success",
+      failureReason: "lease_fingerprint_mismatch",
+    });
+    // The lease metadata must never carry the raw credential value.
+    const firstMetadata = JSON.stringify(first.lease.metadata);
+    expect(firstMetadata).not.toContain("resolved-provider-key");
+  });
+
+  it("does not resume a legacy secret-blind reusable sandbox lease for a secret-bearing environment even on the same active run", async () => {
+    // A LEGACY lease was created before value-aware lease fingerprints existed:
+    // its metadata carries only the secret-blind runtimeFingerprint (no
+    // leaseFingerprint). On a same-run active resume, `allowLegacyRuntimeFingerprint`
+    // would normally let the runtime fallback match it. But the environment
+    // references a secret, so the fallback is blind to any in-place value change
+    // and must be refused — forcing a fresh, value-aware lease.
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const apiSecret = await secretService(db).create(companyId, {
+      name: `legacy-plugin-api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "resolved-provider-key",
+    });
+    const providerConfig = {
+      provider: "secure-plugin",
+      template: "base",
+      apiKey: apiSecret.id,
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Legacy Secure Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await secretService(db).createBinding({
+      companyId,
+      secretId: apiSecret.id,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.legacy-sandbox-provider",
+      packageName: "@acme/legacy-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.legacy-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Legacy Sandbox Provider",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "secure-plugin",
+            kind: "sandbox_provider",
+            displayName: "Secure Sandbox",
+            supportsReusableLeases: true,
+            configSchema: {
+              type: "object",
+              properties: {
+                template: { type: "string" },
+                apiKey: { type: "string", format: "secret-ref" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Reusable workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Seed a LEGACY reusable lease on the SAME active run: only a secret-blind
+    // runtimeFingerprint, no leaseFingerprint.
+    const legacyLease = await environmentService(db).acquireLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "reuse_by_environment",
+      provider: "secure-plugin",
+      providerLeaseId: "legacy-secure-lease",
+      metadata: {
+        agentId,
+        driver: "sandbox",
+        pluginId,
+        pluginKey: "acme.legacy-sandbox-provider",
+        sandboxProviderPlugin: true,
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: apiSecret.id,
+        timeoutMs: 1234,
+        reuseLease: true,
+        remoteCwd: "/workspace",
+        reusableSandboxLease: {
+          version: 1,
+          companyId,
+          environmentId: environment.id,
+          executionWorkspaceId,
+          agentId,
+          adapterType: null,
+          provider: "secure-plugin",
+          runtimeFingerprint: reusableRuntimeFingerprint({
+            provider: "secure-plugin",
+            adapterType: null,
+            config: providerConfig,
+          }),
+          remoteCwd: "/workspace",
+        },
+      },
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: any) => {
+        if (method === "environmentResumeLease") {
+          // If the secret gate regresses and the legacy lease is resumed, return
+          // it so the negative assertions below fail loudly.
+          return {
+            providerLeaseId: params.providerLeaseId,
+            metadata: {
+              provider: "secure-plugin",
+              reuseLease: true,
+              remoteCwd: "/workspace",
+              resumed: true,
+            },
+          };
+        }
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: `lease-${params.config.apiKey}`,
+            metadata: {
+              provider: "secure-plugin",
+              template: params.config.template,
+              apiKey: params.config.apiKey,
+              timeoutMs: params.config.timeoutMs,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentReleaseLease" || method === "environmentDestroyLease") {
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    // The legacy secret-blind lease must NOT be resumed; a fresh, value-aware
+    // lease is acquired instead. The runtime resolves the secret ref before the
+    // worker call, so the fresh provider lease id reflects the resolved value.
+    expect(acquired.lease.providerLeaseId).toBe("lease-resolved-provider-key");
+    expect(acquired.lease.providerLeaseId).not.toBe("legacy-secure-lease");
+    expect(acquired.lease.id).not.toBe(legacyLease.id);
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentResumeLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    // The fresh lease carries a value-aware leaseFingerprint (the whole point).
+    expect(acquired.lease.metadata?.reusableSandboxLease).toMatchObject({
+      leaseFingerprint: expect.objectContaining({
+        category: "lease",
+        fingerprint: expect.stringMatching(/^v1:sha256:[a-f0-9]{64}$/),
+      }),
+    });
+  });
+
+  it("resumes a legacy secret-blind reusable sandbox lease via the runtime fallback when the environment has no secret refs", async () => {
+    // Contrast to the secret-bearing case: with no secret refs, a legacy lease
+    // (runtimeFingerprint, no leaseFingerprint) on the same active run may still
+    // be resumed through the runtime fallback.
+    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId } =
+      await seedReusablePluginSandboxLease();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: any) => {
+        if (method === "environmentResumeLease") {
+          return {
+            providerLeaseId: params.providerLeaseId,
+            metadata: {
+              provider: "fake-plugin",
+              reuseLease: true,
+              remoteCwd: "/workspace",
+              resumed: true,
+            },
+          };
+        }
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    // The legacy lease is resumed via the runtime fallback (no fresh acquire).
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentResumeLease",
+      expect.objectContaining({ providerLeaseId: "reusable-plugin-lease" }),
+      expect.anything(),
+    );
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentAcquireLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    // The resumed lease keeps the legacy provider lease id (persisted as a fresh
+    // row, so the runtime lease id may differ).
+    expect(acquired.lease.providerLeaseId).toBe("reusable-plugin-lease");
   });
 
   it("preserves active reusable sandbox leases held by another running run", async () => {
