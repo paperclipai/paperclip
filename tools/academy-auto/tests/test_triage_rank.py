@@ -128,3 +128,10 @@ def test_build_prompt_contains_issue_despite_many_tsc():
     prompt = _build_prompt(many + [issue], baseline_red=True)
     assert "issue:42" in prompt
     assert "Onboarding-Screen" in prompt
+
+
+def test_ranker_is_pinned_to_haiku():
+    """Der Ranker darf NICHT den CLI-Standard (opus) erben — das kostet jede Nacht unnoetig."""
+    from academy_auto.triage.rank import RANK_CMD
+    assert "--model" in RANK_CMD
+    assert RANK_CMD[RANK_CMD.index("--model") + 1] == "haiku"

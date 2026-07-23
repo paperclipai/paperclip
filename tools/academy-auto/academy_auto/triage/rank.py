@@ -4,7 +4,10 @@ import json
 import subprocess
 from dataclasses import dataclass
 
-RANK_CMD = ["claude", "-p", "--tools", "", "--strict-mcp-config"]
+# Ranker fest auf haiku: es ist eine winzige Urteilsfrage ueber ~30 Zeilen.
+# Ohne --model erbt der Aufruf den CLI-Standard (opus) und verbrennt jede
+# Nacht unnoetig Tokens. Alias statt Modell-ID, damit es nicht veraltet.
+RANK_CMD = ["claude", "-p", "--model", "haiku", "--tools", "", "--strict-mcp-config"]
 MAX_CANDIDATES = 30
 RANK_TIMEOUT = 180
 
