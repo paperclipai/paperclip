@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
-import { accessApi } from "../api/access";
+import { accessApi, type CompanyJoinRequest } from "../api/access";
 import { authApi } from "../api/auth";
 import { ApiError } from "../api/client";
 import { dashboardApi } from "../api/dashboard";
@@ -124,7 +124,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
-import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type { Approval, ExecutionWorkspaceSummary, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -173,6 +173,21 @@ import {
   type InboxWorkItemGroupBy,
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
+
+// Stable empty-array defaults. A `const { data = [] }` from a disabled or
+// still-loading useQuery hands back a FRESH `[]` on every render (data is
+// undefined), giving derived memos a new identity each render. In Inbox those
+// memos feed `groupedSections` -> `flatNavItems`, whose effect calls
+// setSelectedIndex every render -> infinite render loop crashing the page with
+// React error #185. Module-level constants keep the references stable so the
+// memo chain settles.
+const EMPTY_EXECUTION_WORKSPACES: ExecutionWorkspaceSummary[] = [];
+const EMPTY_ISSUES: Issue[] = [];
+// joinRequests feeds the same groupedSections -> flatNavItems chain via
+// joinRequestsForTab -> workItemsToRender. The query is always enabled, so
+// this instability is transient (it settles once the first response lands),
+// but it churns the same way during that initial-load window.
+const EMPTY_JOIN_REQUESTS: CompanyJoinRequest[] = [];
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 500;
@@ -771,7 +786,7 @@ export function Inbox() {
   });
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
-  const { data: executionWorkspaces = [] } = useQuery({
+  const { data: executionWorkspaces = EMPTY_EXECUTION_WORKSPACES } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
       : ["execution-workspaces", "__disabled__"],
@@ -809,7 +824,7 @@ export function Inbox() {
   });
 
   const {
-    data: joinRequests = [],
+    data: joinRequests = EMPTY_JOIN_REQUESTS,
     isLoading: isJoinRequestsLoading,
   } = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId!),
@@ -862,7 +877,7 @@ export function Inbox() {
   });
   usePublishSharedQueryData(sharedInboxIssues, issues, issuesUpdatedAt);
   const {
-    data: mineIssuesRaw = [],
+    data: mineIssuesRaw = EMPTY_ISSUES,
     isLoading: isMineIssuesLoading,
     dataUpdatedAt: mineIssuesUpdatedAt,
   } = useQuery({
@@ -889,7 +904,7 @@ export function Inbox() {
   });
   usePublishSharedQueryData(sharedMineIssues, mineIssuesRaw, mineIssuesUpdatedAt);
   const {
-    data: touchedIssuesRaw = [],
+    data: touchedIssuesRaw = EMPTY_ISSUES,
     isLoading: isTouchedIssuesLoading,
     dataUpdatedAt: touchedIssuesUpdatedAt,
   } = useQuery({
@@ -978,7 +993,7 @@ export function Inbox() {
   const shouldUseIssueSearchSupplement =
     !!selectedCompanyId
     && normalizedSearchQuery.length > 0;
-  const { data: remoteIssueSearchResults = [] } = useQuery({
+  const { data: remoteIssueSearchResults = EMPTY_ISSUES } = useQuery({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
       "compact",

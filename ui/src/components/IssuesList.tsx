@@ -82,8 +82,20 @@ import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
-import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
+import { deriveOriginatingActor, ISSUE_STATUSES, type ExecutionWorkspaceSummary, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
+
+// Stable empty-array defaults. A disabled/loading query returns `data ===
+// undefined`, and a fresh `[]` literal default would give it a new identity
+// every render, churning executionWorkspaceById -> issueFilterContext ->
+// `filtered` and driving the row-limit effect into an infinite render loop
+// (React error #185). Module-level constants keep the references stable.
+// `executionWorkspaces` is disabled whenever isolated workspaces are off
+// (the default), so it is permanently unstable without this. `searchedIssues`
+// is disabled whenever there is no active search term, which is also the
+// common default state.
+const EMPTY_EXECUTION_WORKSPACES: ExecutionWorkspaceSummary[] = [];
+const EMPTY_SEARCHED_ISSUES: Issue[] = [];
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
@@ -765,7 +777,7 @@ export function IssuesList({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issues]);
 
-  const { data: searchedIssues = [] } = useQuery({
+  const { data: searchedIssues = EMPTY_SEARCHED_ISSUES } = useQuery({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
@@ -810,7 +822,7 @@ export function IssuesList({
       placeholderData: (previousData: Issue[] | undefined) => previousData,
     })),
   });
-  const { data: executionWorkspaces = [] } = useQuery({
+  const { data: executionWorkspaces = EMPTY_EXECUTION_WORKSPACES } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
       : ["execution-workspaces", "__disabled__"],
