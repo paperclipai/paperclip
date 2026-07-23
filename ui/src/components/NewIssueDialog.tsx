@@ -1335,7 +1335,7 @@ export function NewIssueDialog() {
                       : undefined
                   }
                 >
-                  {(dialogCompany?.name ?? "").slice(0, 3).toUpperCase()}
+                  {dialogCompany?.issuePrefix ?? ""}
                 </button>
               </PopoverTrigger>
               <PopoverContent className="w-48 p-1" align="start">
@@ -1365,7 +1365,7 @@ export function NewIssueDialog() {
                           : undefined
                       }
                     >
-                      {c.name.slice(0, 3).toUpperCase()}
+                      {c.issuePrefix}
                     </span>
                     <span className="truncate">{c.name}</span>
                   </button>

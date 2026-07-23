@@ -1314,4 +1314,35 @@ describe("NewIssueDialog", () => {
       act(() => root.unmount());
     });
   });
+
+  describe("PAP-8501: company badge shows issuePrefix", () => {
+    it("displays issuePrefix instead of name-derived prefix", async () => {
+      // Override company data to have mismatched name/prefix
+      companyState.companies = [
+        {
+          id: "company-1",
+          name: "Acme Labs",
+          status: "active",
+          brandColor: "#123456",
+          issuePrefix: "OPS",
+        },
+      ];
+      companyState.selectedCompany = {
+        id: "company-1",
+        name: "Acme Labs",
+        status: "active",
+        brandColor: "#123456",
+        issuePrefix: "OPS",
+      };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        const text = container.textContent ?? "";
+        // Should show OPS (issuePrefix), not ACM (name.slice(0,3))
+        expect(text).toContain("OPS");
+      });
+
+      act(() => root.unmount());
+    });
+  });
 });
