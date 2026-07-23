@@ -1263,6 +1263,75 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     });
   });
 
+  it("falls back to the server process env for an approved key when connection.config carries no literal value (SAG-7582)", async () => {
+    const previousFlag = process.env.SAG_7582_FALLBACK_FLAG;
+    process.env.SAG_7582_FALLBACK_FLAG = "server-flag-42";
+    try {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const localTool = await createLocalStdioMcpTool(db, company.id, {
+        applicationKey: "local-env-fallback-demo",
+        connectionName: "Local Env Fallback Demo",
+        toolName: "inspect_env",
+        title: "Inspect env",
+        envKeys: ["SAG_7582_FALLBACK_FLAG"],
+        // Deliberately no `connectionConfig.env` entry for SAG_7582_FALLBACK_FLAG: the
+        // connection never carries a literal value for it, so it must be resolved from
+        // the server's own process env at spawn time instead.
+        stdioScript: `
+const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "env-fallback-stdio", version: "0.0.0" } } }) + "\\n");
+    return;
+  }
+  if (message.method === "tools/call") {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        content: [{ type: "text", text: "env" }],
+        structuredContent: { fallbackFlag: process.env.SAG_7582_FALLBACK_FLAG ?? null },
+      },
+    }) + "\\n");
+  }
+});
+`,
+      });
+      const expectedName = expectedConnectedToolName({
+        applicationKey: "local-env-fallback-demo",
+        connectionId: localTool.connection.id,
+        toolName: "inspect_env",
+      });
+      const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+      await db.insert(toolProfileEntries).values({
+        companyId: company.id,
+        profileId: profile.id,
+        selectorType: "catalog_entry",
+        effect: "include",
+        catalogEntryId: localTool.catalogEntry.id,
+      });
+
+      const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: expectedName,
+        parameters: { message: "hello" },
+      })).resolves.toMatchObject({
+        status: "completed",
+        result: { data: { structuredContent: { fallbackFlag: "server-flag-42" } } },
+      });
+    } finally {
+      if (previousFlag === undefined) delete process.env.SAG_7582_FALLBACK_FLAG;
+      else process.env.SAG_7582_FALLBACK_FLAG = previousFlag;
+    }
+  });
+
   it("passes only approved env values to local stdio MCP processes", async () => {
     const previousDatabaseUrl = process.env.DATABASE_URL;
     process.env.DATABASE_URL = "postgres://server-secret.example/paperclip";

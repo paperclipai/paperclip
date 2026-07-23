@@ -155,6 +155,94 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     expect(JSON.stringify(tokens)).not.toContain(first[0]!.token);
   });
 
+  it("delivers a local_stdio connection only to the agent it is bound to (SAG-7582 MCP boundary)", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    const [company] = await db.insert(companies).values({
+      name: `Local Stdio ACL ${randomUUID()}`,
+      issuePrefix: `LS${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    const [allowlistedAgent, otherAgent] = await db.insert(agents).values([
+      {
+        companyId: company!.id,
+        name: "Allowlisted Agent",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      {
+        companyId: company!.id,
+        name: "Other Agent",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+    ]).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `local-stdio-acl-${randomUUID().slice(0, 8)}`,
+      name: "Local Stdio ACL App",
+      type: "mcp_local_stdio",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company!.id,
+      applicationId: application!.id,
+      name: "Scoped Local Stdio Connection",
+      uid: `test/${randomUUID()}`,
+      transport: "local_stdio",
+      status: "active",
+      enabled: true,
+      config: { templateId: "paperclip.synthetic-todo-kv" },
+    }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company!.id,
+      profileKey: `app:${connection!.id}`,
+      name: "Scoped Local Stdio Connection",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      selectorType: "connection",
+      effect: "include",
+      applicationId: application!.id,
+      connectionId: connection!.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      targetType: "agent",
+      targetId: allowlistedAgent!.id,
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company!.id,
+      connectionId: connection!.id,
+      targetType: "agent",
+      targetId: allowlistedAgent!.id,
+    });
+
+    const allowlistedServers = await buildPaperclipRuntimeMcpServers({
+      db,
+      agent: allowlistedAgent!,
+      runId: randomUUID(),
+    });
+    const otherServers = await buildPaperclipRuntimeMcpServers({
+      db,
+      agent: otherAgent!,
+      runId: randomUUID(),
+    });
+
+    expect(allowlistedServers).toHaveLength(1);
+    expect(allowlistedServers[0]).toMatchObject({
+      name: "Scoped Local Stdio Connection",
+      connectionId: connection!.id,
+      token: expect.stringMatching(/^pcgw_/),
+    });
+    // The non-allowlisted agent's Graph-bearing call must be rejected at the MCP
+    // boundary: no binding/install means no runtime server is ever delivered to it.
+    expect(otherServers).toEqual([]);
+  });
+
   it("audits permitted remote MCP connections that were not installed when delivery is empty", async () => {
     const [company] = await db.insert(companies).values({
       name: `Runtime MCP diagnostic ${randomUUID()}`,

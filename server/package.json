@@ -34,6 +34,7 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
+    "seed:sag7582-ms365-mail-cto-acl": "tsx ./scripts/seed-sag7582-ms365-mail-cto-acl.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
     "build": "tsc && mkdir -p dist/onboarding-assets dist/built-ins && cp -R src/onboarding-assets/. dist/onboarding-assets/ && cp -R src/built-ins/. dist/built-ins/",
     "prepack": "pnpm run prepare:ui-dist",
