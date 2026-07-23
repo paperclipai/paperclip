@@ -213,6 +213,14 @@ export async function installNpmPayload(
   }
 }
 
+function gitBuildEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = { ...process.env, ...extra };
+  // Source builds need devDependencies (esbuild, typescript); ambient NODE_ENV=production
+  // makes pnpm/npm omit them, so the checkout build must not inherit it.
+  delete env.NODE_ENV;
+  return env;
+}
+
 export async function installGitPayload(repo: string, sha: string, runCommand: CommandRunner, paths = resolveInstallStorePaths()): Promise<{ payloadPath: string; reused: boolean; version: string }> {
   const identifier = sha.slice(0, 12);
   const payloadPath = payloadPathFor(paths, "git", identifier);
@@ -239,9 +247,9 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
   try {
     await runCommand("curl", ["--fail", "--silent", "--show-error", "--location", "--output", archivePath, `https://codeload.github.com/${repo}/tar.gz/${sha}`], { maxBuffer: 4 * 1024 * 1024 });
     await runCommand("tar", ["-xzf", archivePath, "--strip-components=1", "-C", checkoutPath], { maxBuffer: 4 * 1024 * 1024 });
-    await runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
-    await runCommand("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
-    await runCommand("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
+    await runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], { cwd: checkoutPath, env: gitBuildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    await runCommand("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { cwd: checkoutPath, env: gitBuildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    await runCommand("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { cwd: checkoutPath, env: gitBuildEnv(), maxBuffer: 32 * 1024 * 1024 });
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
     for (const [index, workspacePackage] of workspacePackages.entries()) {
@@ -250,13 +258,13 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       const bundledDependencies = packageJson.bundleDependencies ?? packageJson.bundledDependencies ?? [];
       if (bundledDependencies.length > 0) {
         const stagedPackage = path.join(stagingRoot, `workspace-package-${index}`);
-        await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), packageDir, stagedPackage], { cwd: checkoutPath, maxBuffer: 32 * 1024 * 1024 });
-        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot], { cwd: checkoutPath, maxBuffer: 16 * 1024 * 1024 });
+        await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), packageDir, stagedPackage], { cwd: checkoutPath, env: gitBuildEnv(), maxBuffer: 32 * 1024 * 1024 });
+        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot], { cwd: checkoutPath, env: gitBuildEnv(), maxBuffer: 16 * 1024 * 1024 });
       } else {
-        await runCommand("corepack", ["pnpm", "--dir", workspacePackage.dir, "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, env: { ...process.env, PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }, maxBuffer: 32 * 1024 * 1024 });
+        await runCommand("corepack", ["pnpm", "--dir", workspacePackage.dir, "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, env: gitBuildEnv({ PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }), maxBuffer: 32 * 1024 * 1024 });
       }
     }
-    await runCommand("npm", ["pack", "--pack-destination", stagingRoot], { cwd: path.join(checkoutPath, "cli"), maxBuffer: 16 * 1024 * 1024 });
+    await runCommand("npm", ["pack", "--pack-destination", stagingRoot], { cwd: path.join(checkoutPath, "cli"), env: gitBuildEnv(), maxBuffer: 16 * 1024 * 1024 });
     const tarballs = fs.readdirSync(stagingRoot).filter((entry) => entry.endsWith(".tgz"));
     const cliTarball = tarballs.find((entry) => entry === `paperclipai-${metadata.version}.tgz`);
     const workspaceTarballs = tarballs.filter((entry) => entry !== cliTarball);

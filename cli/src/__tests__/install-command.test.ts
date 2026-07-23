@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  type CommandRunner,
   installCommand,
   installGitPayload,
   resolveGitHubRef,
@@ -104,9 +105,8 @@ describe("managed install commands", () => {
     expect(runCommand.mock.calls[0]?.[0]).toBe(process.execPath);
   });
 
-  it("installs a GitHub branch through codeload and reuses the resolved SHA", async () => {
-    const sha = "c".repeat(40);
-    const runCommand = vi.fn(async (file: string, args: string[]) => {
+  const createGitCheckoutRunCommand = (sha: string) =>
+    vi.fn(async (file: string, args: string[], _options?: Parameters<CommandRunner>[2]) => {
       if (file === "curl" && !args.includes("--output")) return { stdout: JSON.stringify({ sha }), stderr: "" };
       if (file === "curl") { fs.writeFileSync(args[args.indexOf("--output") + 1], "archive"); return { stdout: "", stderr: "" }; }
       if (file === "tar") {
@@ -150,6 +150,10 @@ describe("managed install commands", () => {
       if (file === process.execPath) return { stdout: "0.3.1\n", stderr: "" };
       throw new Error(`Unexpected command: ${file} ${args.join(" ")}`);
     });
+
+  it("installs a GitHub branch through codeload and reuses the resolved SHA", async () => {
+    const sha = "c".repeat(40);
+    const runCommand = createGitCheckoutRunCommand(sha);
     await installCommand({ ref: "master", repo: "HenkDz/paperclip", yes: true }, { runCommand });
     await installCommand({ ref: "master", repo: "HenkDz/paperclip", yes: true }, { runCommand });
     const manifest = readInstallManifest(resolveInstallStorePaths());
@@ -162,6 +166,26 @@ describe("managed install commands", () => {
     expect(runCommand.mock.calls.filter(([command, args]) => command === "npm" && args[0] === "pack")).toHaveLength(2);
     const installCall = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "install");
     expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
+  });
+
+  it("builds git checkouts with NODE_ENV cleared so ambient production mode keeps devDependencies", async () => {
+    process.env.NODE_ENV = "production";
+    const sha = "d".repeat(40);
+    const runCommand = createGitCheckoutRunCommand(sha);
+    await expect(installGitPayload("paperclipai/paperclip", sha, runCommand, resolveInstallStorePaths())).resolves.toMatchObject({ version: "0.3.1", reused: false });
+    const buildCalls = runCommand.mock.calls.filter(([file, args]) =>
+      file === "bash" ||
+      file === "corepack" ||
+      (file === "npm" && args[0] === "pack") ||
+      (file === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs")));
+    expect(buildCalls).toHaveLength(8);
+    for (const call of buildCalls) {
+      const env = call[2]?.env;
+      expect(env, `${call[0]} ${call[1].join(" ")} must run with an explicit env`).toBeDefined();
+      expect(env, `${call[0]} ${call[1].join(" ")} must not inherit NODE_ENV`).not.toHaveProperty("NODE_ENV");
+    }
+    const uiPackCall = buildCalls.find(([file, , options]) => file === "corepack" && options?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST === "1");
+    expect(uiPackCall).toBeDefined();
   });
 
   it("resolves the complete server workspace dependency closure in dependency order", () => {
