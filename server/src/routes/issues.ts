@@ -7938,6 +7938,9 @@ export function issueRoutes(
       }
       if (descriptor && typeof descriptor === "object") {
         const owner = descriptor.owner;
+        if (req.actor.type === "agent" && (owner === "board" || "userId" in owner)) {
+          throw forbidden("Agents may only name themselves as an unblock owner");
+        }
         if (owner !== "board" && "agentId" in owner) {
           const target = await db.select({ id: agents.id }).from(agents).where(and(
             eq(agents.id, owner.agentId),
@@ -7945,7 +7948,7 @@ export function issueRoutes(
           )).then((rows) => rows[0] ?? null);
           if (!target) throw unprocessable("Unblock owner agent must belong to the issue company");
           if (req.actor.type === "agent" && req.actor.agentId !== owner.agentId) {
-            throw forbidden("Agents may only name themselves as an agent unblock owner");
+            throw forbidden("Agents may only name themselves as an unblock owner");
           }
         } else if (owner !== "board" && "userId" in owner) {
           const member = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
