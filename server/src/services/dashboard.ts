@@ -1,6 +1,14 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  agents,
+  approvals,
+  companies,
+  costEvents,
+  heartbeatRuns,
+  issueRelations,
+  issues,
+} from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -21,6 +29,30 @@ function getRecentUtcDateKeys(now: Date, days: number): string[] {
     const dayOffset = index - (days - 1);
     return formatUtcDateKey(new Date(todayUtc + dayOffset * 24 * 60 * 60 * 1000));
   });
+}
+
+export type LastRunOutcome = "succeeded" | "failed" | "error" | "none";
+export type QuiescenceMode = "A" | "A_prime" | "B1" | "B2" | "unknown";
+
+export interface AgentStatusEntry {
+  agentId: string;
+  name: string;
+  status: string;
+  lastRunOutcome: LastRunOutcome;
+  quietSince: string | null;
+  quietForMs: number | null;
+  quiescenceMode: QuiescenceMode;
+  blockersOpen: number;
+}
+
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+
+function mapRunStatusToOutcome(status: string | null | undefined): LastRunOutcome {
+  if (!status) return "none";
+  if (status === "succeeded") return "succeeded";
+  if (status === "failed") return "failed";
+  if (status === "error" || status === "crashed" || status === "timeout") return "error";
+  return "none";
 }
 
 export function dashboardService(db: Db) {
@@ -179,6 +211,8 @@ export function dashboardService(db: Db) {
           : 0;
       const budgetOverview = await budgets.overview(companyId);
 
+      const agentsStatus = await computeAgentsStatus(db, companyId, now);
+
       return {
         companyId,
         agents: {
@@ -187,6 +221,7 @@ export function dashboardService(db: Db) {
           paused: agentCounts.paused,
           error: agentCounts.error,
         },
+        agentsStatus,
         tasks: taskCounts,
         costs: {
           monthSpendCents,
@@ -204,4 +239,134 @@ export function dashboardService(db: Db) {
       };
     },
   };
+}
+
+// Per-agent status computation for the CMP-379 watch-list field split.
+// Surfaces lastRunOutcome, quietSince/quietForMs, quiescenceMode, blockersOpen
+// per agent so audits can distinguish "harness errored last run" from
+// "agent has been intentionally idle for N hours".
+//
+// quiescenceMode is currently returned as "unknown" pending the CMP-365
+// sibling deliverables:
+//   - Child B (adapter retry queue) — needed to detect A_prime (close-out-stuck)
+//   - Child C (staleness scanner) — needed to distinguish A vs B1 vs B2 from
+//     the agent's blocker chain plus quiet duration
+// Once those land, the inference function below should be updated to consume
+// their outputs. B2 ("blocked with live chain") is already inferrable from
+// blockersOpen > 0 but we keep the field "unknown" until the full taxonomy is
+// computable end-to-end to avoid mixed-fidelity reporting.
+export async function computeAgentsStatus(
+  db: Db,
+  companyId: string,
+  now: Date = new Date(),
+): Promise<AgentStatusEntry[]> {
+  const agentRows = await db
+    .select({
+      id: agents.id,
+      name: agents.name,
+      status: agents.status,
+      lastHeartbeatAt: agents.lastHeartbeatAt,
+    })
+    .from(agents)
+    .where(eq(agents.companyId, companyId));
+
+  if (agentRows.length === 0) return [];
+
+  const agentIds = agentRows.map((row) => row.id);
+
+  // Latest completed heartbeat run per agent. We pull both the status and the
+  // finishedAt so quietSince anchors to the last actual run completion when
+  // agents.lastHeartbeatAt is unset.
+  const latestRunRows = await db
+    .select({
+      agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
+      finishedAt: heartbeatRuns.finishedAt,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, companyId),
+        inArray(heartbeatRuns.agentId, agentIds),
+        isNotNull(heartbeatRuns.finishedAt),
+      ),
+    )
+    .orderBy(sql`${heartbeatRuns.agentId}, ${heartbeatRuns.finishedAt} desc`);
+
+  const latestByAgent = new Map<
+    string,
+    { status: string | null; finishedAt: Date | null }
+  >();
+  for (const row of latestRunRows) {
+    if (!latestByAgent.has(row.agentId)) {
+      latestByAgent.set(row.agentId, { status: row.status, finishedAt: row.finishedAt });
+    }
+  }
+
+  // blockersOpen per agent: count distinct blocker issues (issue_relations
+  // type='blocks', where the blocked issue is assigned to the agent and the
+  // blocker is itself non-terminal).
+  //
+  // We join issue_relations -> issues (the blocked side, to filter by
+  // assignee), then look up blocker statuses in a second pass to avoid
+  // joining `issues` twice in the same query.
+  const blockedSideRows = await db
+    .select({
+      blockerIssueId: issueRelations.issueId,
+      blockedAgentId: issues.assigneeAgentId,
+    })
+    .from(issueRelations)
+    .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+    .where(
+      and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.type, "blocks"),
+        inArray(issues.assigneeAgentId, agentIds),
+      ),
+    );
+
+  const blockerIssueIds = [
+    ...new Set(blockedSideRows.map((row) => row.blockerIssueId)),
+  ];
+  const blockerStatusById = new Map<string, string>();
+  if (blockerIssueIds.length > 0) {
+    const blockerStatusRows = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(inArray(issues.id, blockerIssueIds));
+    for (const row of blockerStatusRows) {
+      blockerStatusById.set(row.id, row.status);
+    }
+  }
+
+  const blockersOpenByAgent = new Map<string, Set<string>>();
+  for (const row of blockedSideRows) {
+    if (!row.blockedAgentId) continue;
+    const blockerStatus = blockerStatusById.get(row.blockerIssueId);
+    if (!blockerStatus || TERMINAL_ISSUE_STATUSES.has(blockerStatus)) continue;
+    if (!blockersOpenByAgent.has(row.blockedAgentId)) {
+      blockersOpenByAgent.set(row.blockedAgentId, new Set());
+    }
+    blockersOpenByAgent.get(row.blockedAgentId)!.add(row.blockerIssueId);
+  }
+
+  return agentRows.map((agent): AgentStatusEntry => {
+    const latest = latestByAgent.get(agent.id);
+    const quietAnchor = agent.lastHeartbeatAt ?? latest?.finishedAt ?? null;
+    return {
+      agentId: agent.id,
+      name: agent.name,
+      // Deprecated single status field — derives from agents.status. Kept for
+      // one minor version while consumers migrate to the four orthogonal
+      // signals below (CMP-379, sub-finding 1 of CMP-365).
+      status: agent.status,
+      lastRunOutcome: mapRunStatusToOutcome(latest?.status),
+      quietSince: quietAnchor ? quietAnchor.toISOString() : null,
+      quietForMs: quietAnchor ? Math.max(0, now.getTime() - quietAnchor.getTime()) : null,
+      // See note on quiescenceMode above. Returns "unknown" until CMP-365
+      // Children B and C land.
+      quiescenceMode: "unknown",
+      blockersOpen: blockersOpenByAgent.get(agent.id)?.size ?? 0,
+    };
+  });
 }
