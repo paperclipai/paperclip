@@ -204,6 +204,13 @@ describe("adapter model listing", () => {
     expect(models).toEqual(opencodeFallbackModels);
   });
 
+  it("returns curated Hermes OpenRouter models for the picker", async () => {
+    const models = await listAdapterModels("hermes_local");
+
+    expect(models).toContainEqual({ id: "openrouter/fusion", label: "OpenRouter: Fusion" });
+    expect(models).toContainEqual({ id: "z-ai/glm-5.2", label: "Z.ai: GLM 5.2" });
+  });
+
   it("loads cursor models dynamically and caches them", async () => {
     const runner = vi.fn(() => ({
       status: 0,
