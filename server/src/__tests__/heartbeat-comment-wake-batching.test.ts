@@ -13,7 +13,10 @@ import {
   issues,
 } from "@paperclipai/db";
 import { runningProcesses } from "../adapters/index.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import {
+  allReferencedCommentsAreSelfAuthored,
+  heartbeatService,
+} from "../services/heartbeat.ts";
 import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
 import {
   getEmbeddedPostgresTestSupport,
@@ -29,6 +32,20 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres heartbeat comment wake batching tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+describe("self-authored deferred comment classification", () => {
+  it("does not suppress a batch when any referenced comment is missing", () => {
+    expect(
+      allReferencedCommentsAreSelfAuthored({
+        referencedCommentIds: ["self-comment", "missing-comment"],
+        resolvedComments: [
+          { id: "self-comment", createdByRunId: "closing-run" },
+        ],
+        runId: "closing-run",
+      }),
+    ).toBe(false);
+  });
+});
 
 async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 10_000, intervalMs = 50) {
   const startedAt = Date.now();

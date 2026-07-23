@@ -4175,6 +4175,21 @@ export function extractWakeCommentIds(
   return out;
 }
 
+export function allReferencedCommentsAreSelfAuthored(input: {
+  referencedCommentIds: string[];
+  resolvedComments: Array<{ id: string; createdByRunId: string | null }>;
+  runId: string;
+}): boolean {
+  const referencedIds = Array.from(new Set(input.referencedCommentIds));
+  if (referencedIds.length === 0 || input.resolvedComments.length !== referencedIds.length) {
+    return false;
+  }
+  const resolvedById = new Map(input.resolvedComments.map((comment) => [comment.id, comment]));
+  return referencedIds.every(
+    (commentId) => resolvedById.get(commentId)?.createdByRunId === input.runId,
+  );
+}
+
 function mergeWakeCommentIds(...values: Array<unknown>): string[] {
   const merged: string[] = [];
   const append = (value: unknown) => {
@@ -14609,7 +14624,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         let deferredCommentWakeIsSelfAuthored = false;
         if (deferredCommentIds.length > 0) {
           const deferredComments = await tx
-            .select({ createdByRunId: issueComments.createdByRunId })
+            .select({
+              id: issueComments.id,
+              createdByRunId: issueComments.createdByRunId,
+            })
             .from(issueComments)
             .where(
               and(
@@ -14621,8 +14639,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .then((rows) => rows);
           deferredCommentWakeIsSelfAuthored =
             deferred.agentId === run.agentId &&
-            deferredComments.length > 0 &&
-            deferredComments.every((comment) => comment.createdByRunId === run.id);
+            allReferencedCommentsAreSelfAuthored({
+              referencedCommentIds: deferredCommentIds,
+              resolvedComments: deferredComments,
+              runId: run.id,
+            });
         }
         if (deferredCommentWakeIsSelfAuthored) {
           await tx
