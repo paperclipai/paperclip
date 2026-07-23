@@ -2232,8 +2232,12 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
+  const pathKey = process.platform === "win32"
+    ? Object.keys(env).find((key) => key.toLowerCase() === "path")
+    : "PATH";
+  if (pathKey !== undefined && typeof env[pathKey] === "string" && env[pathKey].length > 0) {
+    return env;
+  }
   return { ...env, PATH: defaultPathForPlatform() };
 }
 
@@ -3025,6 +3029,7 @@ export async function runChildProcess(
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+    inheritProcessEnv?: boolean;
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
@@ -3034,7 +3039,7 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
+      ...(opts.inheritProcessEnv === false ? {} : sanitizeInheritedPaperclipEnv(process.env)),
       ...opts.env,
     };
 

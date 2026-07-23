@@ -38,7 +38,7 @@ vi.mock("node:fs/promises", () => ({
   stat: vi.fn(async () => ({ isFile: () => true, isDirectory: () => false })),
 }));
 
-import { execute } from "./execute.js";
+import { buildHermesChildEnv, execute } from "./execute.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
@@ -135,5 +135,163 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
       else process.env.PAPERCLIP_API_KEY = previousApiKey;
     }
+  });
+
+  it("does not forward server-only environment variables to Hermes", async () => {
+    const previous = {
+      databaseUrl: process.env.DATABASE_URL,
+      jwtSecret: process.env.PAPERCLIP_AGENT_JWT_SECRET,
+      hermesHome: process.env.HERMES_HOME,
+      bashEnv: process.env.BASH_ENV,
+      envHook: process.env.ENV,
+    };
+    process.env.DATABASE_URL = "postgres://server-only";
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "server-signing-secret";
+    process.env.HERMES_HOME = "/server/control-plane-profile";
+    process.env.BASH_ENV = "/server/hostile-bash-env";
+    process.env.ENV = "/server/hostile-shell-env";
+
+    try {
+      const { ctx } = makeCtx();
+      await execute(ctx as any);
+
+      const mocked = vi.mocked(serverUtils.runChildProcess);
+      const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+      const opts = lastCall[3] as {
+        env: Record<string, string>;
+        inheritProcessEnv?: boolean;
+      };
+      expect(opts.inheritProcessEnv).toBe(false);
+      expect(opts.env.DATABASE_URL).toBeUndefined();
+      expect(opts.env.PAPERCLIP_AGENT_JWT_SECRET).toBeUndefined();
+      expect(opts.env.HERMES_HOME).toBeUndefined();
+      expect(opts.env.BASH_ENV).toBeUndefined();
+      expect(opts.env.ENV).toBeUndefined();
+      expect(opts.env.PATH).toBe(process.env.PATH);
+    } finally {
+      if (previous.databaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous.databaseUrl;
+      if (previous.jwtSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previous.jwtSecret;
+      if (previous.hermesHome === undefined) delete process.env.HERMES_HOME;
+      else process.env.HERMES_HOME = previous.hermesHome;
+      if (previous.bashEnv === undefined) delete process.env.BASH_ENV;
+      else process.env.BASH_ENV = previous.bashEnv;
+      if (previous.envHook === undefined) delete process.env.ENV;
+      else process.env.ENV = previous.envHook;
+    }
+  });
+
+  it("removes mixed-case configured collisions with managed Paperclip identity on Windows", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+
+    try {
+      const { ctx } = makeCtx({
+        env: {
+          paperclip_api_key: "configured-key",
+          paperclip_agent_id: "configured-agent",
+          paperclip_company_id: "configured-company",
+          paperclip_run_id: "configured-run",
+          paperclip_task_id: "configured-task",
+          paperclip_wake_reason: "configured-reason",
+        },
+      });
+      (ctx as any).authToken = "run-scoped-token";
+
+      await execute(ctx as any);
+
+      const mocked = vi.mocked(serverUtils.runChildProcess);
+      const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+      const env = (lastCall[3] as { env: Record<string, string> }).env;
+      for (const key of [
+        "PAPERCLIP_API_KEY",
+        "PAPERCLIP_AGENT_ID",
+        "PAPERCLIP_COMPANY_ID",
+        "PAPERCLIP_RUN_ID",
+        "PAPERCLIP_TASK_ID",
+        "PAPERCLIP_WAKE_REASON",
+      ]) {
+        expect(Object.keys(env).filter((candidate) => candidate.toLowerCase() === key.toLowerCase())).toEqual([key]);
+      }
+      expect(env.PAPERCLIP_API_KEY).toBe("run-scoped-token");
+      expect(env.PAPERCLIP_AGENT_ID).toBe("agent-1");
+      expect(env.PAPERCLIP_COMPANY_ID).toBe("company-1");
+      expect(env.PAPERCLIP_RUN_ID).toBe("test-run-1");
+      expect(env.PAPERCLIP_TASK_ID).toBe("issue-1");
+      expect(env.PAPERCLIP_WAKE_REASON).toBe("manual");
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
+  });
+
+  it("rejects unsupported remote targets before spawning a local process", async () => {
+    const { ctx } = makeCtx();
+    (ctx as any).executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/remote/workspace",
+    };
+
+    await expect(execute(ctx as any)).rejects.toThrow(
+      "Hermes local adapter does not support remote execution targets",
+    );
+    expect(vi.mocked(serverUtils.runChildProcess)).not.toHaveBeenCalled();
+  });
+
+  it("rejects legacy remote transports before spawning a local process", async () => {
+    const { ctx } = makeCtx();
+    (ctx as any).executionTransport = {
+      remoteExecution: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteCwd: "/remote/workspace",
+      },
+    };
+
+    await expect(execute(ctx as any)).rejects.toThrow(
+      "Hermes local adapter does not support remote execution targets",
+    );
+    expect(vi.mocked(serverUtils.runChildProcess)).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildHermesChildEnv", () => {
+  it("drops credentialed inherited proxy URLs", () => {
+    const env = buildHermesChildEnv(
+      {},
+      {
+        HTTP_PROXY: "http://proxy-user:proxy-pass@proxy.example:8080",
+        HTTPS_PROXY: "https://proxy.example:8443",
+        ALL_PROXY: "socks5://proxy-user@proxy.example:1080",
+        NO_PROXY: "localhost,127.0.0.1",
+      },
+    );
+
+    expect(env.HTTP_PROXY).toBeUndefined();
+    expect(env.ALL_PROXY).toBeUndefined();
+    expect(env.HTTPS_PROXY).toBe("https://proxy.example:8443");
+    expect(env.NO_PROXY).toBe("localhost,127.0.0.1");
+  });
+
+  it("preserves a credentialed proxy explicitly configured for the agent", () => {
+    const configuredProxy = "http://agent-user:agent-pass@proxy.example:8080";
+    const env = buildHermesChildEnv(
+      { env: { HTTP_PROXY: configuredProxy } },
+      { HTTP_PROXY: "http://server-user:server-pass@proxy.example:8080" },
+    );
+
+    expect(env.HTTP_PROXY).toBe(configuredProxy);
+  });
+
+  it("lets configured Windows environment keys override inherited casing", () => {
+    const env = buildHermesChildEnv(
+      { env: { Path: "C:\\agent-bin" } },
+      { PATH: "C:\\server-bin" },
+      "win32",
+    );
+
+    expect(env).toEqual({ Path: "C:\\agent-bin" });
   });
 });

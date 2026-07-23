@@ -26,6 +26,7 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { readAdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 
 import {
   runChildProcess,
@@ -51,6 +52,7 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { deleteEnvironmentValue, resolveHermesConfigPath } from "./environment.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -69,6 +71,116 @@ function cfgStringArray(v: unknown): string[] | undefined {
   return Array.isArray(v) && v.every((i) => typeof i === "string")
     ? (v as string[])
     : undefined;
+}
+
+const HERMES_INHERITED_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "USERNAME",
+  "SHELL",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LANGUAGE",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TERM",
+  "COLORTERM",
+  "NO_COLOR",
+  "FORCE_COLOR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "SystemRoot",
+  "WINDIR",
+  "COMSPEC",
+  "PATHEXT",
+] as const;
+
+const HERMES_PROXY_ENV_KEYS = new Set([
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+]);
+
+const MANAGED_PAPERCLIP_ENV_KEYS = [
+  "PAPERCLIP_AGENT_ID",
+  "PAPERCLIP_COMPANY_ID",
+  "PAPERCLIP_API_URL",
+  "PAPERCLIP_RUN_ID",
+  "PAPERCLIP_API_KEY",
+  "PAPERCLIP_TASK_ID",
+  "PAPERCLIP_WAKE_REASON",
+  "PAPERCLIP_WAKE_COMMENT_ID",
+  "PAPERCLIP_WAKE_PAYLOAD_JSON",
+] as const;
+
+function inheritedProxyContainsCredentials(value: string): boolean {
+  if (value.includes("@")) return true;
+  try {
+    const url = new URL(value);
+    return url.username.length > 0 || url.password.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function buildHermesInheritedEnv(source: NodeJS.ProcessEnv): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of HERMES_INHERITED_ENV_ALLOWLIST) {
+    const value = source[key];
+    if (
+      value !== undefined &&
+      !(HERMES_PROXY_ENV_KEYS.has(key) && inheritedProxyContainsCredentials(value))
+    ) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
+export function buildHermesChildEnv(
+  config: Record<string, unknown>,
+  source: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Record<string, string> {
+  const env = buildHermesInheritedEnv(source);
+  const userEnv = (config.env ?? {}) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(userEnv)) {
+    if (typeof value !== "string") continue;
+    if (platform === "win32") {
+      const inheritedKey = Object.keys(env).find(
+        (envKey) => envKey.toLowerCase() === key.toLowerCase(),
+      );
+      if (inheritedKey !== undefined) delete env[inheritedKey];
+    }
+    env[key] = value;
+  }
+  return env;
 }
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
@@ -327,7 +439,15 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
 export async function execute(
   ctx: AdapterExecutionContext,
 ): Promise<AdapterExecutionResult> {
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  if (executionTarget?.kind === "remote") {
+    throw new Error("Hermes local adapter does not support remote execution targets");
+  }
   const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
+  const childEnv = buildHermesChildEnv(config);
 
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = resolveHermesCommand(config);
@@ -359,7 +479,7 @@ export async function execute(
 
   if (!explicitProvider) {
     try {
-      detectedConfig = await detectModel();
+      detectedConfig = await detectModel(resolveHermesConfigPath(childEnv));
     } catch {
       // Non-fatal — detection failure shouldn't block execution
     }
@@ -456,18 +576,16 @@ export async function execute(
   }
 
   // ── Build environment ──────────────────────────────────────────────────
-  const userEnv = config.env as Record<string, string> | undefined;
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
-    ...buildPaperclipEnv(ctx.agent),
-  };
+  const env: Record<string, string> = childEnv;
+  for (const key of MANAGED_PAPERCLIP_ENV_KEYS) {
+    deleteEnvironmentValue(env, key);
+  }
+  Object.assign(env, buildPaperclipEnv(ctx.agent));
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
 
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
   // token is the only source of Paperclip API identity.
-  delete env.PAPERCLIP_API_KEY;
   if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;
 
   // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)
@@ -529,6 +647,7 @@ export async function execute(
   const result = await runChildProcess(ctx.runId, hermesCmd, args, {
     cwd,
     env,
+    inheritProcessEnv: false,
     timeoutSec,
     graceSec,
     onLog: wrappedOnLog,

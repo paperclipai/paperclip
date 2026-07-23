@@ -11,6 +11,7 @@ import {
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  ensurePathInEnv,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -25,6 +26,22 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+describe("ensurePathInEnv", () => {
+  it("recognizes lowercase PATH casing on Windows without adding a competing key", () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+
+    try {
+      const env = { path: "C:\\agent-bin" };
+
+      expect(ensurePathInEnv(env)).toBe(env);
+      expect(env).toEqual({ path: "C:\\agent-bin" });
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
+  });
+});
 
 function isPidAlive(pid: number) {
   try {
@@ -390,6 +407,35 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it("can disable inherited process environment variables", async () => {
+    const previous = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "must-not-reach-child";
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          "process.stdout.write(JSON.stringify({inherited: process.env.DATABASE_URL ?? null, explicit: process.env.EXPLICIT_CHILD_VALUE ?? null}));",
+        ],
+        {
+          cwd: process.cwd(),
+          env: { EXPLICIT_CHILD_VALUE: "kept" },
+          inheritProcessEnv: false,
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ inherited: null, explicit: "kept" });
+    } finally {
+      if (previous === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous;
+    }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
