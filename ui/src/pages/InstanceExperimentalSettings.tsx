@@ -321,6 +321,17 @@ export function InstanceExperimentalSettings() {
     }
   }, [experimentalQuery.data?.issueGraphLivenessAutoRecoveryLookbackHours]);
 
+  const autoRecoveryManaged =
+    experimentalQuery.data?.managedKeys?.enableIssueGraphLivenessAutoRecovery?.managed === true;
+
+  // If refreshed settings mark auto-recovery as managed while the preview
+  // dialog is open, close it so its confirmation actions cannot emit a PATCH.
+  useEffect(() => {
+    if (autoRecoveryManaged) {
+      closeRecoveryPreview();
+    }
+  }, [autoRecoveryManaged]);
+
   if (experimentalQuery.isLoading) {
     return <div className="text-sm text-muted-foreground">Loading experimental settings...</div>;
   }
@@ -369,7 +380,6 @@ export function InstanceExperimentalSettings() {
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
-  const autoRecoveryManaged = managedKeys.enableIssueGraphLivenessAutoRecovery?.managed === true;
   const lookbackHours =
     experimentalQuery.data?.issueGraphLivenessAutoRecoveryLookbackHours ?? 24;
   const parsedLookbackHours = Number.parseInt(lookbackHoursDraft, 10);
@@ -379,6 +389,7 @@ export function InstanceExperimentalSettings() {
     toggleMutation.isPending || previewMutation.isPending || runRecoveryMutation.isPending;
 
   function previewForEnable() {
+    if (autoRecoveryManaged) return;
     if (!lookbackHoursIsValid) {
       setActionError("Lookback hours must be a whole number from 1 to 720.");
       return;
@@ -388,6 +399,7 @@ export function InstanceExperimentalSettings() {
   }
 
   function enableOnly() {
+    if (autoRecoveryManaged) return;
     if (!lookbackHoursIsValid) return;
     closeRecoveryPreview();
     toggleMutation.mutate({
@@ -397,6 +409,7 @@ export function InstanceExperimentalSettings() {
   }
 
   function enableAndRun() {
+    if (autoRecoveryManaged) return;
     if (!lookbackHoursIsValid) return;
     closeRecoveryPreview();
     toggleMutation.mutate({
@@ -763,7 +776,7 @@ export function InstanceExperimentalSettings() {
         </div>
       </Card>
 
-      {previewDialogOpen ? (
+      {previewDialogOpen && !autoRecoveryManaged ? (
         <RecoveryPreviewDialog
           open
           onOpenChange={(open) => {

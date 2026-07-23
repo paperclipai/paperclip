@@ -10,6 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InstanceExperimentalSettings } from "./InstanceExperimentalSettings";
+import { queryKeys } from "../lib/queryKeys";
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
@@ -574,11 +575,12 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
 
   let container: HTMLDivElement;
   let root: Root | null = null;
+  let queryClient: QueryClient;
 
   async function renderPage(settings: InstanceExperimentalSettingsWithManaged) {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ ...settings });
     root = createRoot(container);
-    const queryClient = new QueryClient({
+    queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
     flushSync(() => {
@@ -655,6 +657,39 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     expect(mockInstanceSettingsApi.previewIssueGraphLivenessAutoRecovery).not.toHaveBeenCalled();
     expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toContain("Confirm auto-recovery");
+  });
+
+  it("closes an open recovery preview when a refresh marks auto-recovery as managed", async () => {
+    mockInstanceSettingsApi.previewIssueGraphLivenessAutoRecovery.mockResolvedValue(
+      emptyRecoveryPreview(),
+    );
+    const settings = defaultExperimentalSettings();
+    await renderPage(settings);
+
+    const toggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
+    await act(() => toggle?.click());
+    await flushReact();
+    expect(document.body.textContent).toContain("Confirm auto-recovery");
+
+    const managedSettings: InstanceExperimentalSettingsWithManaged = {
+      ...settings,
+      enableIssueGraphLivenessAutoRecovery: true,
+      managedKeys: {
+        enableIssueGraphLivenessAutoRecovery: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    };
+    await act(() => {
+      queryClient.setQueryData(queryKeys.instance.experimentalSettings, managedSettings);
+    });
+    await flushReact();
+
+    expect(document.body.textContent).not.toContain("Confirm auto-recovery");
+    expect(document.body.querySelector('[data-slot="dialog-overlay"]')).toBeNull();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+    expect(mockInstanceSettingsApi.runIssueGraphLivenessAutoRecovery).not.toHaveBeenCalled();
+
+    const lockedToggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
+    expect(lockedToggle?.disabled).toBe(true);
   });
 
   it("renders no managed badge and keeps toggles editable without managedKeys (self-hosted)", async () => {
