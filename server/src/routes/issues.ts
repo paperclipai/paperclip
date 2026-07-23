@@ -7,13 +7,17 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  approvals,
+  companyMemberships,
   documents,
   executionWorkspaces,
   heartbeatRuns,
+  issueApprovals,
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
   issueRelations,
+  issueThreadInteractions,
   issues as issueRows,
   issueWorkProducts,
   pipelineCaseIssueLinks,
@@ -192,6 +196,7 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -7901,6 +7906,65 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+
+    const nextStatus = updateFields.status ?? existing.status;
+    if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
+      throw unprocessable("unblockDescriptor requires blocked status");
+    }
+    const descriptor = updateFields.unblockDescriptor ?? null;
+    if (descriptor && typeof descriptor === "object") {
+      const owner = descriptor.owner;
+      if (req.actor.type === "agent" && (owner === "board" || "userId" in owner)) {
+        throw forbidden("Agents may only name themselves as an unblock owner");
+      }
+      if (owner !== "board" && "agentId" in owner) {
+        const target = await db.select({ id: agents.id }).from(agents).where(and(
+          eq(agents.id, owner.agentId),
+          eq(agents.companyId, existing.companyId),
+        )).limit(1).then((rows) => rows[0] ?? null);
+        if (!target) throw unprocessable("Unblock owner agent must belong to the issue company");
+        if (req.actor.type === "agent" && req.actor.agentId !== owner.agentId) {
+          throw forbidden("Agents may only name themselves as an unblock owner");
+        }
+      } else if (owner !== "board" && "userId" in owner) {
+        const member = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, existing.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, owner.userId),
+          eq(companyMemberships.status, "active"),
+        )).limit(1).then((rows) => rows[0] ?? null);
+        if (!member) throw unprocessable("Unblock owner user must be an active company member");
+      }
+    }
+    const enteringBlocked = existing.status !== "blocked" && updateFields.status === "blocked";
+    if (enteringBlocked) {
+      const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
+        ? [...new Set(req.body.blockedByIssueIds as string[])]
+        : null;
+      const hasUnresolvedBlocker = requestedBlockerIds
+        ? requestedBlockerIds.length > 0 && await db.select({ id: issueRows.id }).from(issueRows).where(and(
+          eq(issueRows.companyId, existing.companyId),
+          inArray(issueRows.id, requestedBlockerIds),
+          notInArray(issueRows.status, ["done", "cancelled"]),
+        )).limit(1).then((rows) => rows.length > 0)
+        : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
+      const [pendingInteraction, pendingApproval] = await Promise.all([
+        db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+          eq(issueThreadInteractions.companyId, existing.companyId),
+          eq(issueThreadInteractions.issueId, existing.id),
+          eq(issueThreadInteractions.status, "pending"),
+        )).limit(1).then((rows) => rows[0] ?? null),
+        db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id)).where(and(
+          eq(issueApprovals.companyId, existing.companyId),
+          eq(issueApprovals.issueId, existing.id),
+          eq(approvals.status, "pending"),
+        )).limit(1).then((rows) => rows[0] ?? null),
+      ]);
+      if (!hasUnresolvedBlocker && !pendingInteraction && !pendingApproval && !descriptor) {
+        res.status(422).json({ error: "Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor" });
+        return;
+      }
+    }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
@@ -7981,7 +8045,7 @@ export function issueRoutes(
     const stopRelayResult: {
       value: Awaited<ReturnType<typeof svc.addStopRelayCommentIfNeeded>>;
     } = { value: null };
-    let issue;
+    let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
       if (transition.decision && decisionId) {
         const decision = transition.decision;
@@ -8060,6 +8124,25 @@ export function issueRoutes(
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+
+    if (enteringBlocked) {
+      const blockedIssue = issue;
+      let ownerNotifiedAt: Date | null = null;
+      await deliverAgentUnblockNotification({
+        issue: blockedIssue,
+        wakeup: heartbeat.wakeup,
+        markNotified: async (blockedOwnerNotifiedAt) => {
+          ownerNotifiedAt = blockedOwnerNotifiedAt;
+        },
+      });
+      if (ownerNotifiedAt) {
+        await db.update(issueRows).set({ blockedOwnerNotifiedAt: ownerNotifiedAt }).where(and(
+          eq(issueRows.id, blockedIssue.id),
+          eq(issueRows.companyId, blockedIssue.companyId),
+        ));
+        issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
+      }
     }
 
     let cancelledStatusRunId: string | null = null;

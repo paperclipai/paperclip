@@ -20,6 +20,7 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
   getComment: vi.fn(),
+  getDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   list: vi.fn(),
@@ -286,9 +287,13 @@ function createRunContextDb(
     return [{ id: runAgentId, companyId: runAgentCompanyId, permissions: {}, role: "engineer", reportsTo: null }];
   };
   const buildQuery = (selection: Record<string, unknown>) => {
+    const rows = rowsForSelection(selection);
     const whereResult = {
       orderBy: vi.fn(async () => []),
-      then: async (resolve: (rows: unknown[]) => unknown) => resolve(rowsForSelection(selection)),
+      limit: vi.fn(() => ({
+        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
+      })),
+      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
     };
     const query = {
       innerJoin: vi.fn(() => query),
@@ -415,6 +420,12 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.getById.mockReset();
     mockIssueService.getComment.mockReset();
+    mockIssueService.getDependencyReadiness.mockReset();
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: [],
+      isDependencyReady: false,
+      unresolvedBlockerCount: 0,
+    });
     mockIssueService.getRelationSummaries.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockIssueService.list.mockReset();
@@ -1511,6 +1522,59 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
+  it.each([
+    ["board", "board"],
+    ["a company user", { userId: "board-user" }],
+  ])("rejects an agent naming %s as unblock owner", async (_label, unblockOwner) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+
+    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["board", "board"],
+    ["a company user", { userId: "board-user" }],
+  ])("rejects an agent changing an already-blocked issue owner to %s", async (_label, unblockOwner) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
+
+    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
+      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a board actor to name the board as unblock owner", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress" }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(boardActor())).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        unblockDescriptor: { owner: "board", action: "Review the blocker" },
+      }),
+    );
+  });
+
   it("rejects peer-agent status updates that would clear a recovery action they do not own", async () => {
     mockIssueService.getById.mockResolvedValue(
       makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),
@@ -1706,9 +1770,13 @@ describe("agent issue mutation checkout ownership", () => {
         return [{ id: peerAgentId, companyId, permissions: {}, role: "engineer", reportsTo: null }];
       };
       const buildQuery = (selection: Record<string, unknown>) => {
+        const rows = rowsForSelection(selection);
         const whereResult = {
           orderBy: vi.fn(async () => []),
-          then: async (resolve: (rows: unknown[]) => unknown) => resolve(rowsForSelection(selection)),
+          limit: vi.fn(() => ({
+            then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
+          })),
+          then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
         };
         const query = {
           innerJoin: vi.fn(() => query),

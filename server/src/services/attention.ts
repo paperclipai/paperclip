@@ -39,6 +39,7 @@ import { PRODUCTIVITY_REVIEW_ORIGIN_KIND } from "./productivity-review.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 
 const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "approval",
@@ -918,9 +919,40 @@ export function attentionService(db: Db) {
       const blockedIssueSummaries = await issueSummaryMap(db, companyId, blockedIssues.map((issue) => issue.id));
       const blockedImageMap = await issueImageMap(db, companyId, blockedIssues.map((issue) => issue.id));
       const blockingIssues = await blockingIssueMap(db, companyId, blockedIssues.map((issue) => issue.id));
-      for (const issue of blockedIssues as Array<IssueSubjectRow & { blockerAttention?: { state?: string; sampleStalledBlockerIdentifier?: string | null; sampleBlockerIdentifier?: string | null } | null }>) {
+      for (const issue of blockedIssues as Array<IssueSubjectRow & {
+        blockerAttention?: { state?: string; sampleStalledBlockerIdentifier?: string | null; sampleBlockerIdentifier?: string | null } | null;
+        unblockDescriptor?: { owner: { userId: string } | { agentId: string } | "board"; action: string } | null;
+        blockedTransitionAt?: Date | null;
+      }>) {
+        const descriptor = issue.unblockDescriptor;
+        const humanOwnerMatches = descriptor?.owner === "board"
+          || (descriptor?.owner && "userId" in descriptor.owner && descriptor.owner.userId === options.userId);
+        if (descriptor && humanOwnerMatches && isProspectiveBlockedTransition(issue)) {
+          const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
+          add(createItem({
+            companyId,
+            sourceKind: "blocker_attention",
+            subject: issueSubject(prefix, issueSummary ?? issue),
+            whyNow: descriptor.action,
+            decisionVerbs: decisionVerbs(
+              { id: "unblock", label: "Unblock", description: descriptor.action },
+              { id: "reassign", label: "Reassign", description: "Route this blocked issue to another owner." },
+            ),
+            inlineResolvable: false,
+            entryRule: "blocked issue has a human-owned unblockDescriptor",
+            exitRule: "Issue leaves blocked status.",
+            dedupKey: `blocked-owner:${issue.id}:${issue.blockedTransitionAt.toISOString()}`,
+            severity: "high",
+            activityAt: toIso(issue.blockedTransitionAt),
+            createdAt: toIso(issue.createdAt),
+            updatedAt: toIso(issue.updatedAt),
+            relatedIssue: null,
+            ...issueContext(issueSummary),
+            detail: { kind: "blocker", blockingIssue: { id: issue.id, identifier: issue.identifier, title: issue.title }, images: issueImages(blockedImageMap, issue.id) },
+          }));
+        }
         const blockerAttention = issue.blockerAttention;
-        if (blockerAttention?.state !== "stalled") continue;
+        if (blockerAttention?.state !== "stalled" && blockerAttention?.state !== "needs_attention") continue;
         const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
         const summarizedIssue = issueSummary ?? issue;
         const sample = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier ?? issue.identifier ?? issue.id;
@@ -930,14 +962,16 @@ export function attentionService(db: Db) {
           companyId,
           sourceKind: "blocker_attention",
           subject: issueSubject(prefix, summarizedIssue),
-          whyNow: "Blocked dependency chain is stalled and needs a human to choose the next owner or action.",
+          whyNow: blockerAttention.state === "needs_attention"
+            ? "Blocked dependency chain needs human attention."
+            : "Blocked dependency chain is stalled and needs a human to choose the next owner or action.",
           decisionVerbs: decisionVerbs(
             { id: "unblock", label: "Unblock", description: "Repair or replace the stalled blocker path." },
             { id: "reassign", label: "Reassign", description: "Assign the stalled blocker to a live owner." },
             { id: "nudge", label: "Nudge", description: "Wake or prompt the current owner." },
           ),
           inlineResolvable: false,
-          entryRule: "blocked issue has blockerAttention.state = 'stalled'",
+          entryRule: `blocked issue has blockerAttention.state = '${blockerAttention.state}'`,
           exitRule: "Blocker chain is no longer stalled or the issue leaves blocked status.",
           dedupKey,
           severity: "high",

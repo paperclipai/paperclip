@@ -846,14 +846,23 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
   it("relays blocked and cancelled stops once without laundering child prose", async () => {
     const fixture = await seedLowTrustFixture(db);
     const app = createApp(db, boardActor(fixture));
+    const unblockDescriptor = { owner: "board", action: "Review the low-trust stop" } as const;
+
+    await db
+      .delete(issueApprovals)
+      .where(eq(issueApprovals.issueId, fixture.issues.assignedReview.id));
 
     const blocked = await request(app)
       .patch(`/api/issues/${fixture.issues.assignedReview.id}`)
-      .send({ status: "blocked", comment: fixture.canaries.raw });
+      .send({ status: "blocked", comment: fixture.canaries.raw, unblockDescriptor });
     expect(blocked.status, JSON.stringify(blocked.body)).toBe(200);
+    expect(blocked.body.unblockDescriptor).toEqual(unblockDescriptor);
 
     await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "todo" }).expect(200);
-    await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "blocked" }).expect(200);
+    await request(app)
+      .patch(`/api/issues/${fixture.issues.assignedReview.id}`)
+      .send({ status: "blocked", unblockDescriptor })
+      .expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "todo" }).expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "cancelled" }).expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.assignedReview.id}`).send({ status: "todo" }).expect(200);
@@ -863,10 +872,13 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       .where(eq(issues.id, fixture.issues.assignedReview.id));
     await request(app)
       .patch(`/api/issues/${fixture.issues.assignedReview.id}`)
-      .send({ parentId: fixture.issues.reviewGrandparent.id, status: "blocked" })
+      .send({ parentId: fixture.issues.reviewGrandparent.id, status: "blocked", unblockDescriptor })
       .expect(200);
 
-    await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "blocked" }).expect(200);
+    await request(app)
+      .patch(`/api/issues/${fixture.issues.standardChild.id}`)
+      .send({ status: "blocked", unblockDescriptor })
+      .expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "todo" }).expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "in_review" }).expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "done" }).expect(200);

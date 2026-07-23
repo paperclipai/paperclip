@@ -32,6 +32,15 @@ function sendNestedHostRequest(originalRequest, invocationId) {
         namespace: params.namespace || "ns",
         stateKey: params.stateKey || "key",
       }
+    : hostMethod === "events.subscribe"
+    ? {
+        // The subscribe shape the SDK issues from setup() via
+        // ctx.events.on(name, { companyId }, fn): the requested company lives in
+        // filter.companyId, NOT a top-level companyId. The host resolver must
+        // mirror the SDK gate and read it from there (LOOA-695).
+        eventPattern: params.eventPattern || "issue.updated",
+        filter: { companyId: requestedCompanyId },
+      }
     : {
         companyId: requestedCompanyId,
       };
