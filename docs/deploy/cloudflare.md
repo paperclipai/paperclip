@@ -28,7 +28,11 @@ npx wrangler secret put DATABASE_URL
 The Worker forwards `DATABASE_URL` into the container and Paperclip uses it
 instead of embedded Postgres.
 
-## Durable Attachments via R2 (Optional)
+## Durable Attachments via R2 (Optional, Experimental)
+
+> **Experimental:** this mount path is newer than the rest of the deployment
+> and has not yet been validated on a live deployment. The default (no R2
+> binding) is unaffected.
 
 Uploaded files (issue attachments, images) can survive container recycling
 without any Paperclip configuration: the Worker FUSE-mounts an R2 bucket at

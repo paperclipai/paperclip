@@ -21,12 +21,12 @@
     "bindings": [{ "class_name": "Sandbox", "name": "Sandbox" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
-  // Optional: durable attachment storage. Paperclip's upload directory is
-  // FUSE-mounted from this bucket (credential-less, via the Worker binding),
-  // so attachments survive container recycling. To enable:
+  // Optional (experimental): durable attachment storage. Paperclip's upload
+  // directory is FUSE-mounted from this bucket (credential-less, via the
+  // Worker binding), so attachments survive container recycling. To enable:
   //   1. npx wrangler r2 bucket create paperclip-attachments
   //   2. Uncomment the block below and redeploy.
-  // See docs/deploy/cloudflare.md#durable-attachments-via-r2-optional.
+  // See docs/deploy/cloudflare.md#durable-attachments-via-r2-optional-experimental.
   // "r2_buckets": [
   //   { "binding": "ARTIFACTS", "bucket_name": "paperclip-attachments" }
   // ],
