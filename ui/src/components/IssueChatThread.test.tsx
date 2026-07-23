@@ -286,6 +286,35 @@ function createExpiredRequestConfirmationInteraction(
   };
 }
 
+function createPendingRequestConfirmationInteraction(
+  overrides: Partial<RequestConfirmationInteraction> = {},
+): RequestConfirmationInteraction {
+  return {
+    id: "interaction-confirmation-pending",
+    companyId: "company-1",
+    issueId: "issue-1",
+    kind: "request_confirmation",
+    title: "Approve the plan",
+    status: "pending",
+    continuationPolicy: "wake_assignee_on_accept",
+    createdByAgentId: "agent-1",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    createdAt: new Date("2026-04-06T12:04:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:04:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      prompt: "Approve the plan and let the assignee start implementation?",
+      acceptLabel: "Approve plan",
+      rejectLabel: "Request revisions",
+    },
+    result: null,
+    ...overrides,
+  };
+}
+
 function createFileDragEvent(type: string, files: File[]) {
   const event = new Event(type, { bubbles: true, cancelable: true }) as Event & {
     dataTransfer: {
@@ -2752,6 +2781,74 @@ describe("IssueChatThread", () => {
 
     expect(container.textContent).toContain("Approve the plan");
     expect(container.textContent).toContain("Confirmation expired after comment");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("pins pending confirmations above the composer instead of burying them in the timeline", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[createPendingRequestConfirmationInteraction()]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const decisionRegion = container.querySelector(
+      '[data-testid="issue-chat-pending-confirmations"]',
+    );
+    const composerDock = container.querySelector('[data-testid="issue-chat-composer-dock"]');
+    const threadViewport = container.querySelector('[data-testid="thread-viewport"]');
+
+    expect(decisionRegion).not.toBeNull();
+    expect(composerDock?.contains(decisionRegion)).toBe(true);
+    expect(decisionRegion?.textContent).toContain("Decision required");
+    expect(decisionRegion?.textContent).toContain("Approve the plan and let the assignee start implementation?");
+    expect(threadViewport?.textContent).not.toContain("Approve the plan and let the assignee start implementation?");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps pending confirmations in the timeline when the composer is hidden", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[createPendingRequestConfirmationInteraction()]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const threadViewport = container.querySelector('[data-testid="thread-viewport"]');
+
+    expect(container.querySelector('[data-testid="issue-chat-pending-confirmations"]')).toBeNull();
+    expect(threadViewport?.textContent).toContain(
+      "Approve the plan and let the assignee start implementation?",
+    );
 
     act(() => {
       root.unmount();
