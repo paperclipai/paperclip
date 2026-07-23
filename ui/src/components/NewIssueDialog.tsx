@@ -168,6 +168,26 @@ function clearDraft() {
   localStorage.removeItem(DRAFT_KEY);
 }
 
+const WORK_MODE_PREF_KEY = "paperclip:work-mode-pref";
+
+function loadWorkModePref(): IssueWorkMode {
+  try {
+    const raw = localStorage.getItem(WORK_MODE_PREF_KEY);
+    if (raw && isIssueWorkMode(raw)) return raw;
+  } catch {
+    // ignore storage access errors
+  }
+  return "ask";
+}
+
+function saveWorkModePref(mode: IssueWorkMode) {
+  try {
+    localStorage.setItem(WORK_MODE_PREF_KEY, mode);
+  } catch {
+    // ignore storage access errors
+  }
+}
+
 function isTextDocumentFile(file: File) {
   const name = file.name.toLowerCase();
   return (
@@ -446,7 +466,7 @@ export function NewIssueDialog() {
   const [assigneeChrome, setAssigneeChrome] = useState(false);
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
-  const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
+  const [workMode, setWorkMode] = useState<IssueWorkMode>(() => loadWorkModePref());
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
@@ -621,6 +641,7 @@ export function NewIssueDialog() {
             : undefined,
         });
       }
+      saveWorkModePref(workMode);
       clearDraft();
       reset();
       closeNewIssue();
@@ -757,7 +778,7 @@ export function NewIssueDialog() {
 
     const draft = loadDraft();
     if (newIssueDefaults.parentId) {
-      const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
+      const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : loadWorkModePref();
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
@@ -781,7 +802,7 @@ export function NewIssueDialog() {
         ? defaultProjectId || null
         : null;
     } else if (newIssueDefaults.title) {
-      const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
+      const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : loadWorkModePref();
       setIssueText(newIssueDefaults.title, newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
@@ -808,7 +829,7 @@ export function NewIssueDialog() {
         ? defaultProjectId || null
         : null;
     } else if (draft && draft.title.trim()) {
-      const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
+      const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : loadWorkModePref();
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
@@ -857,7 +878,7 @@ export function NewIssueDialog() {
         ? restoredProjectId || null
         : null;
     } else {
-      setWorkMode("standard");
+      setWorkMode(isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : loadWorkModePref());
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
@@ -943,7 +964,7 @@ export function NewIssueDialog() {
     setAssigneeChrome(false);
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
-    setWorkMode("standard");
+    setWorkMode(loadWorkModePref());
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);

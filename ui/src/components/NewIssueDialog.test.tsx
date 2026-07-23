@@ -469,7 +469,7 @@ describe("NewIssueDialog", () => {
         goalId: "goal-1",
         projectId: "project-1",
         executionWorkspaceId: "workspace-1",
-        workMode: "standard",
+        workMode: "ask",
       }),
     );
 
@@ -790,7 +790,7 @@ describe("NewIssueDialog", () => {
       expect.objectContaining({
         title: "Typed issue",
         description: "Typed description",
-        workMode: "standard",
+        workMode: "ask",
       }),
     );
 
@@ -833,7 +833,7 @@ describe("NewIssueDialog", () => {
       expect.objectContaining({
         title,
         description,
-        workMode: "standard",
+        workMode: "ask",
       }),
     );
 
@@ -921,12 +921,22 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
-    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
         bubbles: true,
         code: "",
+        key: ".",
+        metaKey: true,
+      }));
+    });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
         key: ".",
         metaKey: true,
       }));
@@ -943,16 +953,6 @@ describe("NewIssueDialog", () => {
     });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
 
-    await act(async () => {
-      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
-        bubbles: true,
-        code: "Period",
-        key: ".",
-        metaKey: true,
-      }));
-    });
-    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
-
     act(() => root.unmount());
   });
 
@@ -961,7 +961,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
-    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
     expect(dialogContentState.onEscapeKeyDown).not.toBeNull();
 
     const commandPeriodAsEscape = new KeyboardEvent("keydown", {
@@ -975,7 +975,7 @@ describe("NewIssueDialog", () => {
     });
 
     expect(commandPeriodAsEscape.defaultPrevented).toBe(true);
-    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
     expect(dialogState.closeNewIssue).not.toHaveBeenCalled();
 
     const plainEscape = new KeyboardEvent("keydown", {
@@ -988,7 +988,7 @@ describe("NewIssueDialog", () => {
     });
 
     expect(plainEscape.defaultPrevented).toBe(false);
-    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
 
     const controlEscape = new KeyboardEvent("keydown", {
       bubbles: true,
@@ -1001,7 +1001,7 @@ describe("NewIssueDialog", () => {
     });
 
     expect(controlEscape.defaultPrevented).toBe(false);
-    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
 
     act(() => root.unmount());
   });
@@ -1011,7 +1011,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
-    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -1021,7 +1021,7 @@ describe("NewIssueDialog", () => {
         ctrlKey: true,
       }));
     });
-    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
 
     act(() => root.unmount());
   });
