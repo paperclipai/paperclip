@@ -16,6 +16,7 @@ import {
   writeSummarySlotSchema,
   createStatusCardSchema,
   patchStatusCardSchema,
+  refreshStatusCardSchema,
   writeStatusCardQuerySchema,
   writeStatusCardSummarySchema,
   wakeAgentSchema,
@@ -1474,6 +1475,14 @@ registerCurrentRoute({
   tags: ["status-cards"],
   summary: "Update, archive, or restore a status card",
   body: patchStatusCardSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/status-cards/{id}/refresh",
+  tags: ["status-cards"],
+  summary: "Refresh a status card",
+  body: refreshStatusCardSchema,
 });
 
 registerCurrentRoute({
