@@ -100,6 +100,13 @@ import {
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
 import {
+  HEARTBEAT_POSTCONDITION_EVENT_TYPE,
+  HEARTBEAT_POSTCONDITION_SYSTEM_COMMENT_BODY,
+  HEARTBEAT_POSTCONDITION_TERMINAL_STATUS,
+  evaluateHeartbeatPostCondition,
+  type HeartbeatPostConditionReason,
+} from "./heartbeat-postcondition-guard.js";
+import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
@@ -8330,6 +8337,165 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  // Post-condition guard for routine-fire heartbeats.
+  //
+  // Fires when a `routine_execution` issue was checked out, the adapter
+  // reported success, and yet the execution issue is still `in_progress`
+  // with no comment or child issue created during the run. Force-terminates
+  // the issue to `done`, posts a system-authored comment, appends a distinct
+  // run event, and emits a distinct activity so operators can measure how
+  // often silently-exited routine fires would otherwise strand issues.
+  async function enforceRoutineFirePostCondition(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    issueId: string,
+    runOutcome: string,
+  ) {
+    let issueRow: {
+      originKind: string | null;
+      status: string | null;
+      companyId: string;
+    } | null = null;
+    try {
+      issueRow = await db
+        .select({
+          originKind: issues.originKind,
+          status: issues.status,
+          companyId: issues.companyId,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id, issueId },
+        "postcondition guard: issue lookup failed; skipping",
+      );
+      return { triggered: false as const, reason: "not_routine_execution" as HeartbeatPostConditionReason };
+    }
+    if (!issueRow) {
+      return { triggered: false as const, reason: "not_routine_execution" as HeartbeatPostConditionReason };
+    }
+
+    let hasRunComment = false;
+    let hasRunChildIssue = false;
+
+    if (issueRow.originKind === "routine_execution") {
+      hasRunComment = (await findRunIssueComment(run.id, issueRow.companyId, issueId)) !== null;
+      if (!hasRunComment) {
+        // Any issue created by this run's agent, on or after the run
+        // started, counts as terminal progress — parented child issues,
+        // sibling recheck watchers, etc. all show the agent DID something
+        // durable during the fire.
+        const windowStart = run.startedAt ?? run.createdAt ?? null;
+        if (windowStart) {
+          const childIssue = await db
+            .select({ id: issues.id })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, issueRow.companyId),
+                eq(issues.createdByAgentId, agent.id),
+                gte(issues.createdAt, windowStart),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          hasRunChildIssue = childIssue !== null;
+        }
+      }
+    }
+
+    const decision = evaluateHeartbeatPostCondition({
+      issueOriginKind: issueRow.originKind,
+      issueStatus: issueRow.status,
+      runOutcome,
+      hasRunComment,
+      hasRunChildIssue,
+    });
+
+    if (!decision.triggered) {
+      return decision;
+    }
+
+    // Emit telemetry via the activity log BEFORE the mutations. If a mutation
+    // throws we still get the "the guard fired" signal (activity log +
+    // publishLiveEvent broadcast).
+    try {
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "heartbeat_postcondition_guard",
+        agentId: agent.id,
+        runId: run.id,
+        action: HEARTBEAT_POSTCONDITION_EVENT_TYPE,
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          issueOriginKind: issueRow.originKind,
+          issueStatusBefore: issueRow.status,
+          runOutcome,
+          reason: decision.reason,
+          appliedStatus: HEARTBEAT_POSTCONDITION_TERMINAL_STATUS,
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id, issueId },
+        "postcondition guard: activity log emission failed",
+      );
+    }
+
+    try {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "postcondition_guard",
+        stream: "system",
+        level: "warn",
+        message:
+          "Routine fire ended without a terminal PATCH; auto-terminating execution issue",
+        payload: {
+          issueId,
+          reason: decision.reason,
+          appliedStatus: HEARTBEAT_POSTCONDITION_TERMINAL_STATUS,
+          hasRunComment,
+          hasRunChildIssue,
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id, issueId },
+        "postcondition guard: appendRunEvent failed",
+      );
+    }
+
+    try {
+      await issuesSvc.addComment(
+        issueId,
+        HEARTBEAT_POSTCONDITION_SYSTEM_COMMENT_BODY,
+        { agentId: agent.id, runId: run.id },
+        { authorType: "agent" },
+      );
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id, issueId },
+        "postcondition guard: addComment failed",
+      );
+    }
+
+    try {
+      await issuesSvc.update(issueId, {
+        status: HEARTBEAT_POSTCONDITION_TERMINAL_STATUS,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id, issueId },
+        "postcondition guard: issue status update failed",
+      );
+    }
+
+    return decision;
+  }
+
   async function refreshContinuationSummaryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -13942,6 +14108,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
+        }
+        // Enforce the routine-fire post-condition BEFORE the existing
+        // issue-comment policy so a triggered guard's own system comment
+        // satisfies that policy on the same run.
+        if (issueId) {
+          try {
+            await enforceRoutineFirePostCondition(livenessRun, agent, issueId, outcome);
+          } catch (err) {
+            logger.warn(
+              { err, runId: livenessRun.id, issueId },
+              "postcondition guard: enforcement wrapper threw",
+            );
+          }
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
