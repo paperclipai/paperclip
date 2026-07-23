@@ -14,6 +14,7 @@ import {
   type DatabaseBackupHealthWarning,
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
+import { getLiveEventsTransportHealth } from "../services/live-events.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
 
@@ -35,6 +36,8 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
   if (expected.length !== provided.length) return false;
   return timingSafeEqual(expected, provided);
 }
+
+let lastNotificationQueueWarnAtMs = 0;
 
 function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): DatabaseBackupHealthWarning {
   const messages: Record<DatabaseBackupHealthWarning["code"], string> = {
@@ -147,6 +150,20 @@ export function healthRoutes(
       return;
     }
 
+    const liveEvents = await getLiveEventsTransportHealth();
+    if (liveEvents.mode === "transport" && (liveEvents.notificationQueueUsage ?? 0) > 0.5) {
+      // Health probes fire every few seconds; during a queue incident one
+      // warning per minute is signal, one per probe is noise.
+      const now = Date.now();
+      if (now - lastNotificationQueueWarnAtMs > 60_000) {
+        lastNotificationQueueWarnAtMs = now;
+        logger.warn(
+          { notificationQueueUsage: liveEvents.notificationQueueUsage },
+          "Postgres notification queue is filling — a lagging LISTEN session is holding back cleanup",
+        );
+      }
+    }
+
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
     let bootstrapInviteActive = false;
     // Cloud-managed instances have no first-admin concept: the control
@@ -232,6 +249,7 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       serverInfo,
+      liveEvents,
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),

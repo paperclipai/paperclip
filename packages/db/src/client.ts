@@ -798,3 +798,9 @@ export async function resetPostgresDatabase(
 }
 
 export type Db = ReturnType<typeof createDb>;
+
+// Re-exported so workspace consumers (e.g. the server's live-events
+// LISTEN/NOTIFY transport) can open raw postgres-js connections without
+// declaring their own copy of the `postgres` dependency.
+export { default as postgres } from "postgres";
+

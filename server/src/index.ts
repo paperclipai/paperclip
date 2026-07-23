@@ -40,6 +40,11 @@ import {
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
+  configureLiveEventsTransport,
+  resolveLiveEventsRedisUrl,
+  resolveLiveEventsTransportMode,
+} from "./services/live-events.js";
+import {
   feedbackService,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
@@ -770,6 +775,21 @@ export async function startServer(): Promise<StartedServer> {
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
+
+  // Cross-replica live-events transport. Default: Postgres LISTEN/NOTIFY
+  // against the same database the server already uses — no new infra.
+  // Operators who run Redis can opt in via PAPERCLIP_LIVE_EVENTS_TRANSPORT=redis.
+  // Single-replica deployments are unaffected: in-process delivery has
+  // always worked locally and the transport is purely additive.
+  const liveEventsTransportMode = resolveLiveEventsTransportMode();
+  void configureLiveEventsTransport({
+    mode: liveEventsTransportMode,
+    databaseUrl: activeDatabaseConnectionString ?? config.databaseUrl,
+    redisUrl: resolveLiveEventsRedisUrl(),
+  }).catch((err) => {
+    logger.warn({ err }, "live-events: transport configuration failed; falling back to in-process");
+  });
+
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
