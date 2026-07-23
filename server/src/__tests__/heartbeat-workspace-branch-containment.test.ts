@@ -145,6 +145,7 @@ async function createForwardBranchMismatch(input: {
   expectedBranch: string;
   actualBranch: string;
   divergeRecordedBranch?: boolean;
+  deleteRecordedBranch?: boolean;
 }) {
   await mkdir(path.dirname(input.worktreePath), { recursive: true });
   await runGit(input.repoRoot, ["branch", input.expectedBranch]);
@@ -158,6 +159,9 @@ async function createForwardBranchMismatch(input: {
   await writeFile(path.join(input.worktreePath, "actual-branch.txt"), "actual branch work\n", "utf8");
   await runGit(input.worktreePath, ["add", "actual-branch.txt"]);
   await runGit(input.worktreePath, ["commit", "-m", "Add actual branch work"]);
+  if (input.deleteRecordedBranch) {
+    await runGit(input.repoRoot, ["branch", "-D", input.expectedBranch]);
+  }
 }
 
 async function waitForRunToFinish(heartbeat: Heartbeat, runId: string, timeoutMs = 10_000) {
@@ -313,7 +317,7 @@ async function seedBranchContainmentRun(
   db: Db,
   repoRoot: string,
   callSite: BranchContainmentCallSite,
-  opts: { enableWorkspaceBranchReconcileForward?: boolean } = {},
+  opts: { enableWorkspaceBranchReconcileForward?: boolean; deleteRecordedBranch?: boolean } = {},
 ) {
   const companyId = randomUUID();
   const projectId = randomUUID();
@@ -401,6 +405,7 @@ async function seedBranchContainmentRun(
       expectedBranch,
       actualBranch,
       divergeRecordedBranch: opts.enableWorkspaceBranchReconcileForward !== true,
+      deleteRecordedBranch: opts.deleteRecordedBranch === true,
     });
   }
 
@@ -601,7 +606,13 @@ async function expectContainedWorkspaceBranchFailure(input: {
   sourceExecutionWorkspaceId?: string | null;
   expectedBranch: string;
   actualBranch: string;
+  expectedAncestryVerdict?: "diverged" | "unknown";
+  expectedSafeRepairReason?: string;
+  expectedPlainLanguageReason?: string;
 }) {
+  const expectedAncestryVerdict = input.expectedAncestryVerdict ?? "diverged";
+  const expectedSafeRepairReason = input.expectedSafeRepairReason ?? "expected branch and current HEAD differ";
+  const expectedPlainLanguageReason = input.expectedPlainLanguageReason ?? "cannot prove a forward-only reconciliation";
   const finishedRun = await waitForRunToFinish(input.heartbeat, input.runId, 10_000);
   expect(finishedRun).toMatchObject({
     status: "failed",
@@ -620,7 +631,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
       eligible: false,
       attempted: false,
       succeeded: false,
-      reason: "expected branch and current HEAD differ",
+      reason: expectedSafeRepairReason,
     }),
   });
   if (input.sourceExecutionWorkspaceId !== undefined) {
@@ -630,15 +641,19 @@ async function expectContainedWorkspaceBranchFailure(input: {
   expect(provenance).toMatchObject({
     expectedBranchRef: `refs/heads/${input.expectedBranch}`,
     actualBranchRef: `refs/heads/${input.actualBranch}`,
-    expectedBranchExists: true,
+    expectedBranchExists: expectedAncestryVerdict === "unknown" ? false : true,
     actualBranchExists: true,
     sameHead: false,
-    ancestryVerdict: "diverged",
+    ancestryVerdict: expectedAncestryVerdict,
   });
-  expect(provenance.expectedHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
+  if (expectedAncestryVerdict === "unknown") {
+    expect(provenance.expectedHeadSha).toBeNull();
+  } else {
+    expect(provenance.expectedHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
+  }
   expect(provenance.actualHeadSha).toEqual(expect.stringMatching(/^[a-f0-9]{40}$/));
   expect(provenance.expectedHeadSha).not.toBe(provenance.actualHeadSha);
-  expect(provenance.plainLanguageReason).toEqual(expect.stringContaining("cannot prove a forward-only reconciliation"));
+  expect(provenance.plainLanguageReason).toEqual(expect.stringContaining(expectedPlainLanguageReason));
 
   const { issueRows, actionRows, comments } = await waitForContainmentSideEffects({
     db: input.db,
@@ -686,7 +701,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
         provenance: expect.objectContaining({
           expectedHeadSha: provenance.expectedHeadSha,
           actualHeadSha: provenance.actualHeadSha,
-          ancestryVerdict: "diverged",
+          ancestryVerdict: expectedAncestryVerdict,
           plainLanguageReason: provenance.plainLanguageReason,
         }),
       }),
@@ -719,6 +734,7 @@ async function expectForwardBranchReconciled(input: {
   worktreePath: string;
   expectsExistingRecordUpdate: boolean;
   expectedResolvedRecoveryActionFingerprint?: string | null;
+  expectedReconcileAncestryVerdict?: "ancestor" | "unknown";
 }) {
   const finishedRun = await waitForRunToFinish(input.heartbeat, input.runId, 10_000);
   expect(finishedRun).toMatchObject({
@@ -796,6 +812,7 @@ async function expectForwardBranchReconciled(input: {
   }
 
   if (input.expectsExistingRecordUpdate) {
+    const expectedAncestryVerdict = input.expectedReconcileAncestryVerdict ?? "ancestor";
     const [updatedWorkspace] = await input.db
       .select({
         name: executionWorkspaces.name,
@@ -850,7 +867,7 @@ async function expectForwardBranchReconciled(input: {
             mode: "forward",
             fromBranch: input.expectedBranch,
             toBranch: input.actualBranch,
-            ancestryVerdict: "ancestor",
+            ancestryVerdict: expectedAncestryVerdict,
           }),
         }),
       ]),
@@ -1105,8 +1122,8 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   }, 30_000);
 
   it.each([
-    ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, false],
-    ["workspace-runtime persisted restore", "persisted_restore" as const, false],
+    ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, true],
+    ["workspace-runtime persisted restore", "persisted_restore" as const, true],
     ["heartbeat finalization", "finalize" as const, false],
   ])("auto-reconciles forward branch divergence at %s when the flag is enabled", async (_name, callSite, expectsExistingRecordUpdate) => {
     const repoRoot = await createGitRepo();
@@ -1211,5 +1228,34 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       expectedResolvedRecoveryActionFingerprint,
     });
     expect(adapterExecute).toHaveBeenCalledTimes(1);
+  }, 30_000);
+
+  it("contains a persisted registered worktree branch when the recorded branch was deleted", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const seeded = await seedBranchContainmentRun(db, repoRoot, "persisted_restore", {
+      enableWorkspaceBranchReconcileForward: true,
+      deleteRecordedBranch: true,
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    await expectContainedWorkspaceBranchFailure({
+      db,
+      heartbeat,
+      runId: seeded.runId,
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.sourceIssueId,
+      sameWorkspaceSiblingId: seeded.sameWorkspaceSiblingId,
+      otherWorkspaceSiblingId: seeded.otherWorkspaceSiblingId,
+      sourceExecutionWorkspaceId: seeded.sourceExecutionWorkspaceId,
+      expectedBranch: seeded.expectedBranch,
+      actualBranch: seeded.actualBranch,
+      expectedAncestryVerdict: "unknown",
+      expectedSafeRepairReason: "expected branch does not exist",
+      expectedPlainLanguageReason: "missing a resolvable HEAD commit",
+    });
+    expect(adapterExecute).not.toHaveBeenCalled();
   }, 30_000);
 });

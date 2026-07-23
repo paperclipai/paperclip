@@ -8,16 +8,33 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+type PackMetadata = { filename: string; files: Array<{ path: string }> };
+
 function readPackMetadata(packDestination: string) {
   const output = execFileSync("npm", ["pack", "--json", "--pack-destination", packDestination], {
     cwd: packageRoot,
     encoding: "utf8",
   });
-  const metadata = JSON.parse(output);
+  const metadata = normalizePackMetadata(JSON.parse(output));
   if (!Array.isArray(metadata) || metadata.length === 0 || typeof metadata[0]?.filename !== "string") {
     throw new Error(`Unexpected npm pack output from ${packageRoot}: ${output}`);
   }
-  return metadata[0] as { filename: string; files: Array<{ path: string }> };
+  return metadata[0] as PackMetadata;
+}
+
+function normalizePackMetadata(metadata: unknown): PackMetadata[] {
+  if (Array.isArray(metadata)) return metadata.filter(isPackMetadata);
+  if (metadata && typeof metadata === "object") {
+    const entries = Object.values(metadata);
+    if (entries.every(isPackMetadata)) {
+      return entries;
+    }
+  }
+  return [];
+}
+
+function isPackMetadata(entry: unknown): entry is PackMetadata {
+  return Boolean(entry && typeof entry === "object" && "filename" in entry);
 }
 
 describe("skills catalog package artifacts", () => {

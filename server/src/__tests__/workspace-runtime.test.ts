@@ -27,10 +27,12 @@ import {
   buildWorkspaceRuntimeDesiredStatePatch,
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
+  ensureGitWorktreeBranchCoherent,
   ensureServerWorkspaceLinksCurrent,
   ensureRuntimeServicesForRun,
   listConfiguredRuntimeServiceEntries,
   normalizeAdapterManagedRuntimeServices,
+  reconcilePendingForwardBranchAfterPersistence,
   reconcilePersistedRuntimeServicesOnStartup,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
@@ -2603,6 +2605,187 @@ describe("realizeExecutionWorkspace", () => {
     await expect(readGit(initial.cwd, ["branch", "--show-current"])).resolves.toBe(actualBranch);
   }, 15_000);
 
+  it.each([
+    {
+      identifier: "TASK-101",
+      recordedBranch: "task-101-recorded-provenance",
+      publicBranch: "fix/public-safe-task-101",
+    },
+    {
+      identifier: "TASK-202",
+      recordedBranch: "task-202-recorded-provenance",
+      publicBranch: "fix/public-safe-task-202",
+    },
+  ])("stages pending audited reconciliation for $identifier public-safe branch when it matches the recorded provenance HEAD", async ({
+    identifier,
+    recordedBranch,
+    publicBranch,
+  }) => {
+    const repoRoot = await createTempRepo();
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", recordedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", recordedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", publicBranch, worktreePath, recordedBranch]);
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      db: {} as ReturnType<typeof createDb>,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: `execution-workspace-${identifier.toLowerCase()}`,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: recordedBranch,
+      },
+      issue: null,
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      enableWorkspaceBranchReconcileForward: true,
+    });
+
+    expect(restored?.branchName).toBe(publicBranch);
+    expect(restored?.warnings).toEqual([]);
+    expect(restored?.pendingForwardBranchReconcile).toEqual(expect.objectContaining({
+      recordedBranchName: recordedBranch,
+      adoptedBranchName: publicBranch,
+      prePersistenceFingerprint: expect.stringMatching(/^workspace_incoherence:v1:sha256:/),
+      reason: "Automatic branch provenance reconciliation: recorded branch and checked-out branch resolve to the same commit.",
+    }));
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe(publicBranch);
+  }, 15_000);
+
+  it("fails closed without database audit access when the recorded branch is missing but the worktree is on a registered public branch", async () => {
+    const repoRoot = await createTempRepo();
+    const recordedBranch = "internal-review-provenance";
+    const publicBranch = "fix/review-workspace-recovery";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", recordedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", recordedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", publicBranch, worktreePath, recordedBranch]);
+    await runGit(repoRoot, ["branch", "-D", recordedBranch]);
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: "execution-workspace-deleted-recorded-public",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: recordedBranch,
+      },
+      issue: {
+        id: "issue-deleted-recorded-public",
+        identifier: "PAP-PUBLIC-DELETED",
+        title: "Review public branch recovery",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      enableWorkspaceBranchReconcileForward: true,
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          expectedBranch: recordedBranch,
+          actualBranch: publicBranch,
+          cleanliness: "clean",
+          provenance: expect.objectContaining({
+            expectedBranchExists: false,
+            actualBranchExists: true,
+            registeredPathFound: true,
+            registeredBranchMatchesHead: true,
+          }),
+          safeRepair: expect.objectContaining({
+            eligible: false,
+            attempted: false,
+            succeeded: false,
+            reason: "expected branch does not exist",
+          }),
+        }),
+      },
+    });
+  }, 15_000);
+
+  it("rejects deleted recorded-branch adoption when the registered worktree branch does not match HEAD", async () => {
+    const repoRoot = await createTempRepo();
+    const recordedBranch = "internal-review-provenance-mismatch";
+    const registeredBranch = "fix/registered-worktree-branch";
+    const actualBranch = "fix/current-worktree-head";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", recordedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", recordedBranch]);
+    await runGit(repoRoot, ["branch", actualBranch, recordedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", registeredBranch, worktreePath, recordedBranch]);
+    await runGit(repoRoot, ["branch", "-D", recordedBranch]);
+
+    await expect(ensureGitWorktreeBranchCoherent({
+      repoRoot,
+      worktreePath,
+      expectedBranchName: recordedBranch,
+      actualBranchName: actualBranch,
+      sourceIssue: {
+        id: "issue-deleted-recorded-registration-mismatch",
+        identifier: "PAP-PUBLIC-MISMATCH",
+        title: "Reject mismatched worktree registration",
+      },
+      executionWorkspaceId: "execution-workspace-deleted-recorded-registration-mismatch",
+      enableWorkspaceBranchReconcileForward: true,
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          expectedBranch: recordedBranch,
+          actualBranch,
+          cleanliness: "clean",
+          provenance: expect.objectContaining({
+            expectedBranchExists: false,
+            actualBranchExists: true,
+            registeredPathFound: true,
+            registeredBranchRef: `refs/heads/${registeredBranch}`,
+            registeredBranchMatchesHead: false,
+          }),
+          safeRepair: expect.objectContaining({
+            eligible: false,
+            attempted: false,
+            succeeded: false,
+            reason: "registered worktree branch does not match HEAD",
+          }),
+        }),
+      },
+    });
+  }, 15_000);
+
   it("classifies persisted git worktree branch incoherence as diverged when the checked-out branch is not forward", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-457-recorded-work";
@@ -2748,6 +2931,8 @@ describe("realizeExecutionWorkspace", () => {
           provenance: expect.objectContaining({
             expectedBranchExists: false,
             actualBranchExists: true,
+            registeredPathFound: true,
+            registeredBranchMatchesHead: true,
             expectedHeadSha: null,
             sameHead: false,
             ancestryVerdict: "unknown",
@@ -4582,6 +4767,86 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
       recorder: input.recorder ?? null,
     });
   }
+
+  it("fails closed when the recorded branch was deleted even if the checked-out branch is registered", async () => {
+    const repoRoot = await createTempRepo();
+    const recordedBranch = "internal-review-provenance";
+    const publicBranch = "fix/review-workspace-recovery";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", recordedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", recordedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", publicBranch, worktreePath, recordedBranch]);
+    await runGit(repoRoot, ["branch", "-D", recordedBranch]);
+    const ids = await seedDirtyQuarantineRecords({
+      repoRoot,
+      worktreePath,
+      expectedBranch: recordedBranch,
+      actualBranch: publicBranch,
+      sourceIdentifier: "TASK-PUBLIC-DELETED",
+      claimant: "none",
+    });
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      db,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: ids.projectId,
+        workspaceId: ids.projectWorkspaceId,
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: ids.sourceWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: ids.projectId,
+        projectWorkspaceId: ids.projectWorkspaceId,
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: recordedBranch,
+      },
+      issue: {
+        id: ids.sourceIssueId,
+        identifier: "TASK-PUBLIC-DELETED",
+        title: "Review public branch recovery",
+      },
+      agent: {
+        id: ids.agentId,
+        name: "Codex Coder",
+        companyId: ids.companyId,
+      },
+      heartbeatRunId: ids.runId,
+      enableWorkspaceBranchReconcileForward: true,
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          expectedBranch: recordedBranch,
+          actualBranch: publicBranch,
+          cleanliness: "clean",
+          provenance: expect.objectContaining({
+            expectedBranchExists: false,
+            actualBranchExists: true,
+            registeredPathFound: true,
+            registeredBranchMatchesHead: true,
+            expectedHeadSha: null,
+            sameHead: false,
+            ancestryVerdict: "unknown",
+          }),
+          safeRepair: expect.objectContaining({
+            eligible: false,
+            attempted: false,
+            succeeded: false,
+            reason: "expected branch does not exist",
+          }),
+        }),
+      },
+    });
+  }, 15_000);
 
   it("quarantines dirty foreign-branch work into a rescue branch before restoring the recorded branch", async () => {
     const expectedBranch = "PAP-455-recorded";

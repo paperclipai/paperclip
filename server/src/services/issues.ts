@@ -141,6 +141,13 @@ const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
 
+function canInheritWorkspaceLinkageForProject(
+  targetProjectId: string | null | undefined,
+  sourceProjectId: string | null | undefined,
+) {
+  return targetProjectId == null || sourceProjectId == null || targetProjectId === sourceProjectId;
+}
+
 function wakeRequestTargetsIssue(issueId: string) {
   return sql`(
     ${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}
@@ -4206,7 +4213,11 @@ export function issueService(db: Db) {
     if (!workspace) throw notFound("Project workspace not found");
     if (workspace.companyId !== companyId) throw unprocessable("Project workspace must belong to same company");
     if (projectId && workspace.projectId !== projectId) {
-      throw unprocessable("Project workspace must belong to the selected project");
+      throw unprocessable("Project workspace must belong to the selected project", {
+        selectedProjectId: projectId,
+        projectWorkspaceId,
+        workspaceProjectId: workspace.projectId,
+      });
     }
     return workspace;
   }
@@ -4229,7 +4240,11 @@ export function issueService(db: Db) {
     if (!workspace) throw notFound("Execution workspace not found");
     if (workspace.companyId !== companyId) throw unprocessable("Execution workspace must belong to same company");
     if (projectId && workspace.projectId !== projectId) {
-      throw unprocessable("Execution workspace must belong to the selected project");
+      throw unprocessable("Execution workspace must belong to the selected project", {
+        selectedProjectId: projectId,
+        executionWorkspaceId,
+        workspaceProjectId: workspace.projectId,
+      });
     }
     return workspace;
   }
@@ -5821,11 +5836,13 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
+      const childProjectId = issueData.projectId ?? parent.projectId;
+      const canInheritParentProjectWorkspace = canInheritWorkspaceLinkageForProject(childProjectId, parent.projectId);
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
-        projectId: issueData.projectId ?? parent.projectId,
-        projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritStrategyOnly ? parent.projectWorkspaceId : undefined),
+        projectId: childProjectId,
+        projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritStrategyOnly && canInheritParentProjectWorkspace ? parent.projectWorkspaceId : undefined),
         goalId: issueData.goalId ?? parent.goalId,
         actorResponsibleUserId: issueData.actorResponsibleUserId ?? null,
         trustExplicitResponsibleUserId: issueData.trustExplicitResponsibleUserId === true,
@@ -5833,7 +5850,7 @@ export function issueService(db: Db) {
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
         description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
-        ...(inheritedPreRealizationWorkspaceSettings
+        ...(inheritedPreRealizationWorkspaceSettings && canInheritParentProjectWorkspace
           ? { executionWorkspaceSettings: inheritedPreRealizationWorkspaceSettings }
           : {}),
         ...(inheritStrategyOnly
@@ -6258,10 +6275,15 @@ export function issueService(db: Db) {
           if (issueData.projectId == null && workspaceSource.projectId) {
             issueData.projectId = workspaceSource.projectId;
           }
-          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
+          const canInheritWorkspaceLinkage = canInheritWorkspaceLinkageForProject(
+            issueData.projectId,
+            workspaceSource.projectId,
+          );
+          if (canInheritWorkspaceLinkage && projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
           if (
+            canInheritWorkspaceLinkage &&
             isolatedWorkspacesEnabled &&
             !hasExplicitExecutionWorkspaceOverride &&
             workspaceSource.executionWorkspaceId
