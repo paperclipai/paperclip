@@ -425,6 +425,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  // Every claude-local run is a headless `--print` heartbeat. Plugin SessionStart hooks (e.g. from
+  // marketplace plugins) re-inject their full skill text on every one of these runs — hundreds to
+  // thousands of tokens each — and Claude settings offer no per-plugin hook disable. Suppress hooks
+  // for these headless runs via a highest-precedence `--settings` overlay (see buildClaudeArgs). This
+  // is scoped to this launcher process only, so a user's interactive `claude` sessions — and their
+  // statusLine hook — are untouched (and a headless `--print` run has no statusline to lose anyway).
+  // Opt out per agent with `config.disableHooks: false`.
+  const disableHooksOnHeadlessRun = asBoolean(config.disableHooks, true);
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -850,6 +858,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    // Suppress plugin/user hooks for this headless run unless the caller supplied an explicit
+    // --settings (respect theirs — they may be steering hooks intentionally).
+    if (disableHooksOnHeadlessRun && !extraArgs.includes("--settings")) {
+      args.push("--settings", JSON.stringify({ disableAllHooks: true }));
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
