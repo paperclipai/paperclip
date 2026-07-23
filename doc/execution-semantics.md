@@ -167,7 +167,25 @@ Use it for:
 - explicit waiting relationships
 - automatic wakeups when all blockers resolve
 
-Blocked issues should stay idle while blockers remain unresolved. Paperclip should not create a queued heartbeat run for that issue until the final blocker is done and the `issue_blockers_resolved` wake can start real work.
+Blocked issues should stay idle while any blocker edge is not `done`. Paperclip should not create a queued heartbeat run for dependency resolution until every blocker edge is `done` and any workspace-finalize gate has released; then the `issue_blockers_resolved` wake can start real work.
+
+The two contracts below are normative requirements for the finalize-barrier implementation phases. A deployment that cannot persist the synthetic terminal outcome or that lets finalize readiness veto the human-comment transition is not yet conformant with this execution model; follow-up implementation work must close those gaps rather than weakening the contracts here.
+
+### Workspace-finalize barrier liveness
+
+A `done` blocker may temporarily remain behind a workspace-finalize barrier so dependent work cannot dispatch or check out against workspace state that the blocker run still owes. That barrier is held only by a live run that can still deliver the finalize outcome.
+
+If the run reaches `failed` or `cancelled`, including a `process_lost` reap, without recording `workspace_finalize`, the control plane must release the dead run's hold. It records the terminal finalize outcome as a synthetic workspace operation with `synthetic: true` and a reason that preserves why normal finalization did not run, then recomputes readiness for every dependent issue. Any newly ready dependent receives the same `issue_blockers_resolved` wake that normal workspace finalization would have emitted.
+
+A terminal or missing run must never hold the barrier indefinitely. The synthetic marker and reason are persisted parts of this contract, including for implementations whose current workspace-operation model does not yet expose them. The synthetic outcome does not claim that workspace finalization succeeded; it makes the terminal outcome explicit and restores a bounded readiness path instead of leaving a pseudo-blocker that no actor can resolve.
+
+### Human comment reopen
+
+Human intent outranks the workspace-finalize barrier when deciding whether a blocked issue should return to dispatch state. A human comment on a `blocked` issue with an assigned agent moves the issue to `todo` when it has no blocker edges or every blocker edge is `done`.
+
+A `done` blocker whose finalize outcome is still pending does not veto that reopen. Only a blocker edge whose issue is not `done` keeps the issue `blocked`. The workspace-finalize barrier remains an internal dispatch and checkout gate, so moving the issue to `todo` does not permit execution against workspace state that is still being finalized.
+
+The comment-reopen decision must therefore evaluate blocker-edge status separately from dependency dispatch readiness. An implementation that folds a pending finalize into its unresolved-blocker count must not reuse that combined count to veto this human-directed status transition.
 
 `cancelled` is terminal for the blocker issue itself, but it does not satisfy the dependency. A cancelled blocker edge remains unresolved until the edge is removed or replaced, and Paperclip must surface blocker attention on the dependent regardless of whether that dependent is currently displayed as `blocked`, `todo`, `backlog`, or another non-terminal agent-owned status.
 
