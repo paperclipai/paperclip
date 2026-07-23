@@ -865,7 +865,9 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     const standardActor = agentActor(fixture, fixture.agents.standard.id);
     const standardRes = await request(createApp(db, { ...standardActor, runId: null })).get("/api/agents/me");
     expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
-    expect(JSON.stringify(standardRes.body)).toContain(fixture.canaries.agentConfig);
+    expectNoCanary(standardRes.body, fixture.canaries.agentConfig);
+    expect(standardRes.body.adapterConfig).toMatchObject({ token: "***REDACTED***" });
+    expect(standardRes.body.runtimeConfig).toMatchObject({ env: { SECRET_MARKER: "***REDACTED***" } });
 
     const issueScopedLowTrustRes = await request(createApp(db, standardActor)).get("/api/agents/me");
     expect(issueScopedLowTrustRes.status, JSON.stringify(issueScopedLowTrustRes.body)).toBe(200);

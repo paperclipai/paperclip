@@ -47,6 +47,7 @@ const mockAgentService = vi.hoisted(() => ({
   terminate: vi.fn(),
   update: vi.fn(),
   updatePermissions: vi.fn(),
+  rollbackConfigRevision: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
 }));
@@ -312,6 +313,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.terminate.mockReset();
     mockAgentService.update.mockReset();
     mockAgentService.updatePermissions.mockReset();
+    mockAgentService.rollbackConfigRevision.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockReset();
@@ -360,6 +362,7 @@ describe.sequential("agent permission routes", () => {
     });
     mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
+    mockAgentService.rollbackConfigRevision.mockResolvedValue(baseAgent);
     mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockResolvedValue(0);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
@@ -435,7 +438,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.runtimeConfig).toEqual({});
   }, 20_000);
 
-  it("keeps board agent detail unredacted for low-trust agents", async () => {
+  it("redacts secret-bearing board agent detail while preserving non-secret config", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
       permissions: {
@@ -444,11 +447,21 @@ describe.sequential("agent permission routes", () => {
       },
       adapterConfig: {
         command: "pnpm agent:run",
-        env: { PAPERCLIP_API_KEY: "secret-test-key" },
+        model: "local/model",
+        env: {
+          PAPERCLIP_API_KEY: "secret-test-key",
+          PUBLIC_MODE: "debug",
+        },
       },
       runtimeConfig: {
         modelProfiles: {
-          default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+          default: {
+            enabled: true,
+            adapterConfig: {
+              model: "openai/gpt-5.4-mini",
+              env: { OPENAI_API_KEY: "runtime-secret-test-key" },
+            },
+          },
         },
       },
     });
@@ -466,14 +479,105 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.adapterConfig).toMatchObject({
       command: "pnpm agent:run",
-      env: { PAPERCLIP_API_KEY: "secret-test-key" },
+      model: "local/model",
+      env: {
+        PAPERCLIP_API_KEY: "***REDACTED***",
+        PUBLIC_MODE: "debug",
+      },
     });
     expect(res.body.runtimeConfig).toMatchObject({
       modelProfiles: {
-        default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+        default: {
+          enabled: true,
+          adapterConfig: {
+            model: "openai/gpt-5.4-mini",
+            env: { OPENAI_API_KEY: "***REDACTED***" },
+          },
+        },
       },
     });
+    expect(JSON.stringify(res.body)).not.toContain("secret-test-key");
+    expect(JSON.stringify(res.body)).not.toContain("runtime-secret-test-key");
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
+  }, 20_000);
+
+  it("redacts secret-bearing config values from privileged agent list and detail reads", async () => {
+    const secretBearingAgent = {
+      ...baseAgent,
+      adapterConfig: {
+        model: "local/model",
+        endpoint: "https://agent.example.test",
+        env: {
+          OPENAI_API_KEY: "synthetic-openai-secret",
+          PUBLIC_MODE: "debug",
+        },
+        nested: {
+          bearerToken: "synthetic-bearer-secret",
+        },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {
+              model: "openai/gpt-5.4-mini",
+              env: {
+                ANTHROPIC_API_KEY: "synthetic-runtime-secret",
+                LOG_LEVEL: "info",
+              },
+            },
+          },
+        },
+      },
+    };
+    mockAgentService.getById.mockResolvedValue(secretBearingAgent);
+    mockAgentService.list.mockResolvedValue([secretBearingAgent]);
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      companyIds: [companyId],
+    });
+
+    const listRes = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+    const detailRes = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    for (const res of [listRes, detailRes]) {
+      expect(res.status).toBe(200);
+      expect(JSON.stringify(res.body)).not.toContain("synthetic-openai-secret");
+      expect(JSON.stringify(res.body)).not.toContain("synthetic-bearer-secret");
+      expect(JSON.stringify(res.body)).not.toContain("synthetic-runtime-secret");
+    }
+
+    const listAgent = listRes.body[0];
+    expect(listAgent.adapterConfig).toMatchObject({
+      model: "local/model",
+      endpoint: "https://agent.example.test",
+      env: {
+        OPENAI_API_KEY: "***REDACTED***",
+        PUBLIC_MODE: "debug",
+      },
+      nested: {
+        bearerToken: "***REDACTED***",
+      },
+    });
+    expect(detailRes.body.adapterConfig).toMatchObject(listAgent.adapterConfig);
+    expect(detailRes.body.runtimeConfig).toMatchObject({
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          adapterConfig: {
+            model: "openai/gpt-5.4-mini",
+            env: {
+              ANTHROPIC_API_KEY: "***REDACTED***",
+              LOG_LEVEL: "info",
+            },
+          },
+        },
+      },
+    });
   }, 20_000);
 
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
@@ -623,10 +727,33 @@ describe.sequential("agent permission routes", () => {
   });
 
   it("allows board updates that set cheap-profile workspace commands", async () => {
+    const updatedAgent = {
+      ...baseAgent,
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          OPENAI_API_KEY: "synthetic-patch-secret",
+          PUBLIC_MODE: "debug",
+        },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {
+              env: {
+                ANTHROPIC_API_KEY: "synthetic-patch-runtime-secret",
+                LOG_LEVEL: "info",
+              },
+            },
+          },
+        },
+      },
+    };
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
       adapterType: "codex_local",
     });
+    mockAgentService.update.mockResolvedValue(updatedAgent);
 
     const app = await createApp({
       type: "board",
@@ -654,6 +781,26 @@ describe.sequential("agent permission routes", () => {
       .send({ runtimeConfig }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain("synthetic-patch-secret");
+    expect(JSON.stringify(res.body)).not.toContain("synthetic-patch-runtime-secret");
+    expect(res.body.adapterConfig).toMatchObject({
+      env: {
+        OPENAI_API_KEY: "***REDACTED***",
+        PUBLIC_MODE: "debug",
+      },
+    });
+    expect(res.body.runtimeConfig).toMatchObject({
+      modelProfiles: {
+        cheap: {
+          adapterConfig: {
+            env: {
+              ANTHROPIC_API_KEY: "***REDACTED***",
+              LOG_LEVEL: "info",
+            },
+          },
+        },
+      },
+    });
     expect(mockAgentService.update).toHaveBeenCalledWith(
       agentId,
       expect.objectContaining({ runtimeConfig }),
@@ -874,6 +1021,78 @@ describe.sequential("agent permission routes", () => {
       "agent-admin-user",
     );
     expect(mockBuiltInAgentService.ensureCompanyDefaultAgentGrants).toHaveBeenCalledWith(companyId);
+  });
+
+  it("redacts secret-bearing config values from direct creation and hire responses", async () => {
+    const secretBearingAgent = {
+      ...baseAgent,
+      adapterConfig: {
+        model: "local/model",
+        env: {
+          OPENAI_API_KEY: "synthetic-create-secret",
+          PUBLIC_MODE: "debug",
+        },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          default: {
+            enabled: true,
+            adapterConfig: {
+              env: {
+                ANTHROPIC_API_KEY: "synthetic-runtime-create-secret",
+                LOG_LEVEL: "info",
+              },
+            },
+          },
+        },
+      },
+    };
+    mockAgentService.create.mockResolvedValue(secretBearingAgent);
+
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const directRes = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {
+          env: { OPENAI_API_KEY: "synthetic-request-secret" },
+        },
+      }));
+    const hireRes = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {
+          env: { OPENAI_API_KEY: "synthetic-request-secret" },
+        },
+      }));
+
+    for (const res of [directRes, hireRes]) {
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(JSON.stringify(res.body)).not.toContain("synthetic-create-secret");
+      expect(JSON.stringify(res.body)).not.toContain("synthetic-runtime-create-secret");
+      expect(JSON.stringify(res.body)).not.toContain("synthetic-request-secret");
+    }
+    expect(directRes.body.adapterConfig).toMatchObject({
+      model: "local/model",
+      env: {
+        OPENAI_API_KEY: "***REDACTED***",
+        PUBLIC_MODE: "debug",
+      },
+    });
+    expect(hireRes.body.agent.adapterConfig).toMatchObject(directRes.body.adapterConfig);
+    expect(hireRes.body).toHaveProperty("approval");
   });
 
   it("rejects direct agent creation when new agents require board approval", async () => {
@@ -1114,6 +1333,24 @@ describe.sequential("agent permission routes", () => {
     const approvedAgent = {
       ...baseAgent,
       status: "idle",
+      adapterConfig: {
+        env: {
+          OPENAI_API_KEY: "synthetic-approve-secret",
+          PUBLIC_MODE: "debug",
+        },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          default: {
+            adapterConfig: {
+              env: {
+                ANTHROPIC_API_KEY: "synthetic-approve-runtime-secret",
+                LOG_LEVEL: "info",
+              },
+            },
+          },
+        },
+      },
     };
     mockAgentService.getById.mockResolvedValue(pendingAgent);
     mockAgentService.activatePendingApproval.mockResolvedValue({
@@ -1134,6 +1371,26 @@ describe.sequential("agent permission routes", () => {
       .send({}));
 
     expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain("synthetic-approve-secret");
+    expect(JSON.stringify(res.body)).not.toContain("synthetic-approve-runtime-secret");
+    expect(res.body.adapterConfig).toMatchObject({
+      env: {
+        OPENAI_API_KEY: "***REDACTED***",
+        PUBLIC_MODE: "debug",
+      },
+    });
+    expect(res.body.runtimeConfig).toMatchObject({
+      modelProfiles: {
+        default: {
+          adapterConfig: {
+            env: {
+              ANTHROPIC_API_KEY: "***REDACTED***",
+              LOG_LEVEL: "info",
+            },
+          },
+        },
+      },
+    });
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith(agentId);
     expect(mockApprovalService.approve).not.toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -1783,6 +2040,77 @@ describe.sequential("agent permission routes", () => {
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
         action: "agent_config:read",
         resource: { type: "company", companyId },
+      }));
+    });
+
+    it("redacts secret-bearing config values from rollback mutation responses", async () => {
+      const secretBearingAgent = {
+        ...baseAgent,
+        adapterConfig: {
+          model: "local/model",
+          env: {
+            OPENAI_API_KEY: "synthetic-rollback-secret",
+            PUBLIC_MODE: "debug",
+          },
+        },
+        runtimeConfig: {
+          modelProfiles: {
+            default: {
+              enabled: true,
+              adapterConfig: {
+                env: {
+                  ANTHROPIC_API_KEY: "synthetic-runtime-rollback-secret",
+                  LOG_LEVEL: "info",
+                },
+              },
+            },
+          },
+        },
+      };
+      mockAgentService.getById.mockResolvedValue(secretBearingAgent);
+      mockAgentService.rollbackConfigRevision.mockResolvedValue(secretBearingAgent);
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${agentId}/config-revisions/revision-1/rollback`)
+        .send({}));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(JSON.stringify(res.body)).not.toContain("synthetic-rollback-secret");
+      expect(JSON.stringify(res.body)).not.toContain("synthetic-runtime-rollback-secret");
+      expect(res.body.adapterConfig).toMatchObject({
+        model: "local/model",
+        env: {
+          OPENAI_API_KEY: "***REDACTED***",
+          PUBLIC_MODE: "debug",
+        },
+      });
+      expect(res.body.runtimeConfig).toMatchObject({
+        modelProfiles: {
+          default: {
+            enabled: true,
+            adapterConfig: {
+              env: {
+                ANTHROPIC_API_KEY: "***REDACTED***",
+                LOG_LEVEL: "info",
+              },
+            },
+          },
+        },
+      });
+      expect(mockAgentService.rollbackConfigRevision).toHaveBeenCalledWith(agentId, "revision-1", {
+        agentId: null,
+        userId: "board-user",
+      });
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "agent.config_rolled_back",
       }));
     });
   });
