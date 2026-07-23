@@ -8,6 +8,7 @@ import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipa
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
+import { boardAuthService } from "../services/board-auth.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 
 interface WsSocket {
@@ -114,7 +115,7 @@ function headersFromIncomingMessage(req: IncomingMessage): Headers {
   return headers;
 }
 
-async function authorizeUpgrade(
+export async function authorizeUpgrade(
   db: Db,
   req: IncomingMessage,
   companyId: string,
@@ -181,19 +182,67 @@ async function authorizeUpgrade(
     .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
     .then((rows) => rows[0] ?? null);
 
-  if (!key || key.companyId !== companyId) {
+  if (key) {
+    if (key.companyId !== companyId) {
+      return null;
+    }
+
+    // Same best-effort rule as the board-key touch below: authentication has
+    // already succeeded, so a transient bookkeeping write failure must not
+    // reject a valid upgrade.
+    try {
+      await db
+        .update(agentApiKeys)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(agentApiKeys.id, key.id));
+    } catch (err) {
+      logger.warn({ err, companyId }, "failed to touch agent api key lastUsedAt on ws upgrade");
+    }
+
+    return {
+      companyId,
+      actorType: "agent",
+      actorId: key.agentId,
+    };
+  }
+
+  // Paperclip Desk (and other board CLI clients) authenticate with a board API
+  // key rather than an agent key, so the agent lookup above misses. Mirror the
+  // REST board-bearer path in middleware/auth.ts: resolve the owning user via
+  // the board-auth service (which enforces revocation/expiry), then enforce
+  // company scoping the same way the session-cookie branch above does —
+  // instance admins pass, everyone else must have an active membership in the
+  // requested company.
+  const boardAuth = boardAuthService(db);
+  const boardKey = await boardAuth.findBoardApiKeyByToken(token);
+  if (!boardKey) {
     return null;
   }
 
-  await db
-    .update(agentApiKeys)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(agentApiKeys.id, key.id));
+  const access = await boardAuth.resolveBoardAccess(boardKey.userId);
+  if (!access.user) {
+    return null;
+  }
+
+  const hasCompanyMembership = access.companyIds.includes(companyId);
+  if (!access.isInstanceAdmin && !hasCompanyMembership) {
+    return null;
+  }
+
+  // Authentication has already succeeded at this point. The lastUsedAt update is
+  // best-effort bookkeeping — a transient write failure must not turn a valid,
+  // authenticated Desk client into a rejected upgrade (the caller maps a thrown
+  // error to a 500 rejection), so swallow and log instead of propagating.
+  try {
+    await boardAuth.touchBoardApiKey(boardKey.id);
+  } catch (err) {
+    logger.warn({ err, companyId }, "failed to touch board api key lastUsedAt on ws upgrade");
+  }
 
   return {
     companyId,
-    actorType: "agent",
-    actorId: key.agentId,
+    actorType: "board",
+    actorId: boardKey.userId,
   };
 }
 
