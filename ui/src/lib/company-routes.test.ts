@@ -138,4 +138,42 @@ describe("company routes", () => {
     // Already-prefixed paths are returned untouched.
     expect(applyCompanyPrefix("/PAP/artifacts", "PAP")).toBe("/PAP/artifacts");
   });
+
+  it("strips company prefix from plugin-registered route paths (e.g. /browse-repo)", () => {
+    expect(toCompanyRelativePath("/PAP/browse-repo")).toBe("/browse-repo");
+    expect(toCompanyRelativePath("/NEX/some-plugin-page")).toBe("/some-plugin-page");
+    expect(toCompanyRelativePath("/PAP/browse-repo/sub-path")).toBe("/browse-repo/sub-path");
+  });
+
+  it("strips company prefix from plugin routes regardless of second segment", () => {
+    expect(toCompanyRelativePath("/PAP/custom-route")).toBe("/custom-route");
+    expect(toCompanyRelativePath("/PAP/any-plugin-path")).toBe("/any-plugin-path");
+  });
+
+  it("produces correct navigation target when switching companies from a plugin page", () => {
+    // Simulate the full flow in useCompanyPageMemory:
+    // 1. User is on /PAP/browse-repo (plugin page)
+    // 2. Saved path for PAP = toCompanyRelativePath("/PAP/browse-repo") = "/browse-repo" ✓
+    // 3. User switches to NEX, NEX has no saved path → sanitizeRememberedPathForCompany gives "/dashboard"
+    // 4. Final target: "/" + "NEX" + "/dashboard" = "/NEX/dashboard" ✓
+    const savedPathPAP = toCompanyRelativePath("/PAP/browse-repo");
+    expect(savedPathPAP).toBe("/browse-repo");
+    const targetPrefix = "NEX";
+    const targetPath = "/dashboard"; // no saved path for NEX yet
+    expect(`/${targetPrefix}${targetPath}`).toBe("/NEX/dashboard");
+
+    // 5. After visiting NEX's plugin page, saved path for NEX = toCompanyRelativePath("/NEX/browse-repo")
+    const savedPathNEX = toCompanyRelativePath("/NEX/browse-repo");
+    expect(savedPathNEX).toBe("/browse-repo");
+    // 6. Switching from PAP back to NEX uses the saved path:
+    const finalUrl = `/${targetPrefix}${savedPathNEX}`;
+    expect(finalUrl).toBe("/NEX/browse-repo"); // no duplication ✓
+  });
+
+  it("does not strip prefix from global routes", () => {
+    expect(toCompanyRelativePath("/auth/login")).toBe("/auth/login");
+    expect(toCompanyRelativePath("/invite/abc123")).toBe("/invite/abc123");
+    expect(toCompanyRelativePath("/docs/api")).toBe("/docs/api");
+  });
 });
+

@@ -111,11 +111,8 @@ export function toCompanyRelativePath(path: string): string {
   const { pathname, search, hash } = splitPath(path);
   const segments = pathname.split("/").filter(Boolean);
 
-  if (segments.length >= 2) {
-    const second = segments[1]!.toLowerCase();
-    if (!GLOBAL_ROUTE_ROOTS.has(segments[0]!.toLowerCase()) && BOARD_ROUTE_ROOTS.has(second)) {
-      return `/${segments.slice(1).join("/")}${search}${hash}`;
-    }
+  if (segments.length >= 2 && !GLOBAL_ROUTE_ROOTS.has(segments[0]!.toLowerCase())) {
+    return `/${segments.slice(1).join("/")}${search}${hash}`;
   }
 
   return `${pathname}${search}${hash}`;
