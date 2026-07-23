@@ -407,7 +407,7 @@ Exact response fields are documented in `skills/paperclip/references/api-referen
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
-- **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
+- **Public commit identity**: do not add internal automation identities, agent names, run IDs, task IDs, private URLs, or other Paperclip-internal metadata to public Git commit messages, PR titles, PR bodies, public comments, branch names, or screenshots. By default, make public commits with no automation co-author trailer. Only add a co-author trailer when the project or board provides an explicit public-safe identity for that repository. Preserve internal provenance through Paperclip issue comments, run records, work products, and required API audit headers instead of public GitHub text.
 
 This is rule #1:
 
