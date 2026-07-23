@@ -10,6 +10,7 @@ import {
   attentionToneStyle,
   buildAttentionFilterOptions,
   countActiveAttentionFilters,
+  defaultExpandedAttentionId,
   defaultAttentionFilterState,
   filterAttentionItems,
   groupAttentionItems,
@@ -256,6 +257,22 @@ describe("sortAttentionItems", () => {
     const input = [older, newer];
     sortAttentionItems(input, "newest");
     expect(input.map((i) => i.id)).toEqual(["old", "new"]);
+  });
+});
+
+describe("defaultExpandedAttentionId", () => {
+  it("selects the first inline decision in the visible sort order", () => {
+    const newestDeepLink = buildItem({
+      id: "deep-link",
+      sourceKind: "failed_run",
+      inlineResolvable: false,
+      activityAt: "2026-07-10T12:00:00Z",
+    });
+    const newestInline = buildItem({ id: "new-inline", activityAt: "2026-07-09T12:00:00Z" });
+    const oldestInline = buildItem({ id: "old-inline", activityAt: "2026-07-08T12:00:00Z" });
+
+    expect(defaultExpandedAttentionId([oldestInline, newestDeepLink, newestInline], "newest")).toBe("new-inline");
+    expect(defaultExpandedAttentionId([oldestInline, newestDeepLink, newestInline], "oldest")).toBe("old-inline");
   });
 });
 

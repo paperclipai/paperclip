@@ -184,7 +184,7 @@ describe("AttentionQueueRow", () => {
     expect(trigger).toBeTruthy();
   });
 
-  it("toggles expand when the collapsed header of an inline row is clicked", () => {
+  it("toggles expand when the decision body or empty card space is clicked", () => {
     const onToggleExpand = vi.fn();
     render(
       <AttentionQueueRow
@@ -195,13 +195,58 @@ describe("AttentionQueueRow", () => {
         onDismiss={noop}
       />,
     );
-    const header = container?.querySelector('[role="button"][aria-expanded]');
-    expect(header).toBeTruthy();
-    expect(header?.getAttribute("aria-expanded")).toBe("false");
+    const body = container?.querySelector("[data-attention-card-body]");
+    const detail = Array.from(container?.querySelectorAll("p") ?? []).find((element) =>
+      element.textContent?.includes("Approval is pending"),
+    );
+    expect(body).toBeTruthy();
+    expect(detail).toBeTruthy();
     act(() => {
-      header?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      detail?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      body?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(onToggleExpand).toHaveBeenCalledTimes(1);
+    expect(onToggleExpand).toHaveBeenCalledTimes(2);
+  });
+
+  it("toggles expand from the keyboard-focused decision body", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+    const body = container?.querySelector<HTMLElement>("[data-attention-card-body]");
+    expect(body?.getAttribute("role")).toBe("button");
+    expect(body?.tabIndex).toBe(0);
+    expect(body?.getAttribute("aria-expanded")).toBe("false");
+    act(() => {
+      body?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      body?.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    });
+    expect(onToggleExpand).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not toggle when an ARIA button inside the decision body is clicked", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+    const body = container?.querySelector("[data-attention-card-body]");
+    const ariaButton = document.createElement("span");
+    ariaButton.setAttribute("role", "button");
+    body?.appendChild(ariaButton);
+    act(() => ariaButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onToggleExpand).not.toHaveBeenCalled();
   });
 
   it("exposes the visible expand chevron as an accessible button", () => {
@@ -223,19 +268,41 @@ describe("AttentionQueueRow", () => {
     expect(onToggleExpand).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
   });
 
-  it("does not navigate on title click — the title is plain text, not a link", () => {
+  it("opens the title, issue identifier, and timestamp in a new tab without toggling", () => {
+    const onToggleExpand = vi.fn();
     render(
       <AttentionQueueRow
-        item={buildItem()}
+        item={buildItem({
+          relatedIssue: {
+            kind: "issue",
+            id: "issue-1",
+            companyId: "c1",
+            title: "Implement linked decision",
+            identifier: "PAP-42",
+            status: "in_progress",
+            href: "/PAP/issues/PAP-42",
+            metadata: {},
+          },
+        })}
         companyId="c1"
         expanded={false}
-        onToggleExpand={noop}
+        onToggleExpand={onToggleExpand}
         onDismiss={noop}
       />,
     );
-    const links = Array.from(container?.querySelectorAll("a") ?? []);
-    // No anchor should carry the subject title (only the identifier link, absent here).
-    expect(links.some((a) => a.textContent?.includes("Hire agent: Research Analyst"))).toBe(false);
+    const links = Array.from(container?.querySelectorAll('a[href="/PAP/issues/PAP-42"]') ?? []);
+    expect(links.map((link) => link.textContent?.trim())).toEqual([
+      "PAP-42",
+      expect.stringMatching(/ago$/),
+      "Hire agent: Research Analyst",
+    ]);
+    for (const link of links) {
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+      link.addEventListener("click", (event) => event.preventDefault());
+      act(() => link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })));
+    }
+    expect(onToggleExpand).not.toHaveBeenCalled();
   });
 
   it("renders project identity once without a filter button", () => {
@@ -310,9 +377,11 @@ describe("AttentionQueueRow", () => {
       />,
     );
 
-    const header = container?.querySelector('[role="button"][aria-expanded]');
-    expect(header?.textContent).not.toContain("Approve");
-    expect(header?.textContent).not.toContain("Reject");
+    const title = Array.from(container?.querySelectorAll("span") ?? []).find((element) =>
+      element.textContent === "Hire agent: Research Analyst",
+    );
+    expect(title?.parentElement?.textContent).not.toContain("Approve");
+    expect(title?.parentElement?.textContent).not.toContain("Reject");
 
     const decisionActions = container?.querySelector('[aria-label="Decision actions"]');
     expect(decisionActions?.textContent).toContain("Approve");

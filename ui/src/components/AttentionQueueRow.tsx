@@ -1,4 +1,4 @@
-import { memo, useState, type KeyboardEvent } from "react";
+import { memo, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlarmClock,
@@ -118,6 +118,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const isHidden = variant === "hidden";
   const inline = !isHidden && isInlineResolvable(item);
   const href = item.subject.href;
+  const issueHref = item.relatedIssue?.href ?? (item.subject.kind === "issue" ? href : null);
   const snoozedUntil = item.dismissal?.kind === "snooze" ? item.dismissal.snoozedUntil : null;
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
   const images = attentionDetailImages(item);
@@ -139,12 +140,19 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const activate = () => {
     if (expandable) onToggleExpand(item);
   };
-  const onHeaderKeyDown = (e: KeyboardEvent) => {
-    if (!expandable) return;
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      onToggleExpand(item);
+  const activateFromCard = (event: MouseEvent<HTMLDivElement>) => {
+    if (
+      event.target instanceof Element &&
+      event.target.closest("a,button,input,textarea,select,[role='button'],[role='menuitem']") !== event.currentTarget
+    ) {
+      return;
     }
+    activate();
+  };
+  const activateFromCardKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    activate();
   };
 
   // Which rows contribute an action bar. Inline rows carry compact decision
@@ -179,7 +187,16 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
       {/* Type accent bar (canonical color map — never severity). */}
       <span className={cn("absolute inset-y-0 left-0 w-1", tone.accent)} aria-hidden />
 
-      <div className="flex items-start gap-2 py-3 pl-4 pr-3">
+      <div
+        className={cn("flex items-start gap-2 py-3 pl-4 pr-3", expandable && "cursor-pointer")}
+        onClick={activateFromCard}
+        onKeyDown={activateFromCardKeyboard}
+        role={expandable ? "button" : undefined}
+        tabIndex={expandable ? 0 : undefined}
+        aria-expanded={expandable ? expanded : undefined}
+        aria-label={expandable ? (expanded ? "Collapse decision" : "Expand decision") : undefined}
+        data-attention-card-body
+      >
         {/* Expand affordance / spacer gutter — keeps headlines aligned across the list. */}
         {expandable ? (
           <button
@@ -216,11 +233,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
                   {sevBadge.label}
                 </span>
               )}
-              {item.relatedIssue?.identifier && (
+              {item.relatedIssue?.identifier && issueHref && (
                 <Link
-                  to={item.relatedIssue.href ?? "#"}
+                  to={issueHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="font-mono text-(length:--text-nano) text-muted-foreground hover:text-foreground"
-                  onClick={(e) => e.stopPropagation()}
                 >
                   {item.relatedIssue.identifier}
                 </Link>
@@ -254,6 +272,16 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
                 >
                   Reappears {reappearLabel(snoozedUntil)}
                 </span>
+              ) : issueHref ? (
+                <Link
+                  to={issueHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-(length:--text-nano) text-muted-foreground hover:text-foreground"
+                  aria-label="Open issue in a new tab"
+                >
+                  {relativeTime(item.activityAt)}
+                </Link>
               ) : (
                 <span className="text-(length:--text-nano) text-muted-foreground">{relativeTime(item.activityAt)}</span>
               )}
@@ -289,27 +317,24 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             </div>
           </div>
 
-          {/* Headline — the primary expand target for inline rows. Title now wraps
-              to two lines instead of truncating to a sliver on narrow screens. */}
-          <div
-            className={cn(
-              "min-w-0 rounded-md",
-              expandable && "cursor-pointer focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none",
+          {/* The issue title opens in a new tab. The surrounding card body remains
+              the expand target, including the detail text and empty space. */}
+          <div className="min-w-0 rounded-md">
+            {issueHref ? (
+              <Link
+                to={issueHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="line-clamp-2 text-sm font-medium text-foreground hover:underline"
+                title={item.subject.title ?? undefined}
+              >
+                {item.subject.title ?? meta.label}
+              </Link>
+            ) : (
+              <span className="line-clamp-2 text-sm font-medium text-foreground" title={item.subject.title ?? undefined}>
+                {item.subject.title ?? meta.label}
+              </span>
             )}
-            {...(expandable
-              ? {
-                  role: "button",
-                  tabIndex: 0,
-                  "aria-expanded": expanded,
-                  "aria-label": expanded ? "Collapse decision" : "Expand decision",
-                  onClick: activate,
-                  onKeyDown: onHeaderKeyDown,
-                }
-              : {})}
-          >
-            <span className="line-clamp-2 text-sm font-medium text-foreground" title={item.subject.title ?? undefined}>
-              {item.subject.title ?? meta.label}
-            </span>
             <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
           </div>
 
