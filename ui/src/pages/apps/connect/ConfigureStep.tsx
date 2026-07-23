@@ -162,8 +162,11 @@ export function ConfigureStep({
 
   return (
     <div className="space-y-5">
-      {/* Guidance box — register-app steps + sharp caveats, above the form */}
-      {method.guidanceMd && (
+      {/* Guidance box — register-app steps + sharp caveats, above the form.
+          Suppressed in the provisioned tab: Paperclip creates the app on the
+          customer's behalf, so BYO "register an app first" guidance contradicts
+          the assisted-setup promise. */}
+      {method.guidanceMd && ownership !== "platform_provisioned" && (
         <InlineBanner
           tone="info"
           title="Before you connect"

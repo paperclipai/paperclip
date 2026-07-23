@@ -101,6 +101,26 @@ describe("ConfigureStep grammar", () => {
     expect(container.textContent).toContain("Sign in & set up Linear");
   });
 
+  it("shows the BYO register-app guidance in the customer (BYO) tab", () => {
+    const byo = {
+      ...bySlug("linear"),
+      ownershipAvailability: { customer: true, platform_provisioned: false, dcr: false },
+    };
+    act(() => root.render(<ConfigureStep def={byo} method={byo.methods[0]!} />));
+    expect(container.textContent).toContain("Before you connect");
+  });
+
+  it("suppresses the BYO register-app guidance in the provisioned tab", () => {
+    // Provisioned mode: Paperclip creates the app, so the BYO "register an app
+    // first" guidance must not surface — it contradicts the assisted-setup promise.
+    const provisioned = {
+      ...bySlug("linear"),
+      ownershipAvailability: { platform_provisioned: true, customer: false, dcr: false },
+    };
+    act(() => root.render(<ConfigureStep def={provisioned} method={provisioned.methods[0]!} />));
+    expect(container.textContent).not.toContain("Before you connect");
+  });
+
   it("provisioned ownership label reads 'Provisioned by Paperclip' when tabs render", () => {
     const def = {
       ...bySlug("linear"),
