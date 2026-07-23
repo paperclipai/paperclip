@@ -38,6 +38,7 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file injected at runtime
 - model (string, optional): Claude model id
+- fallbackModel (string, optional): Claude model id passed via --fallback-model; the CLI auto-switches to it when the primary model is overloaded or returns 529 in headless/print-mode runs, so a transient capacity blip bumps to the fallback instead of failing the run. Defaults to a lower-load model when a primary model is set; pass "none" to disable. Note the fallback shares the same Anthropic capacity pool, so it mitigates model-specific load, not a platform-wide incident.
 - effort (string, optional): reasoning effort passed via --effort (low|medium|high)
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template

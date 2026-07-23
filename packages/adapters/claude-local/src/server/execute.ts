@@ -88,6 +88,36 @@ import {
   resolveClaudeExecutionEngineForRun,
 } from "./acp.js";
 
+// Lower-load default fallback for the Claude CLI's --fallback-model flag. When a
+// primary model is pinned but no explicit fallback is configured, long runs still
+// get an overload escape hatch without per-agent configuration. See FUS-596.
+export const DEFAULT_CLAUDE_FALLBACK_MODEL = "claude-sonnet-4-6";
+
+const FALLBACK_MODEL_DISABLED_VALUES = new Set(["none", "off", "false", "disabled", "0"]);
+
+/**
+ * Resolve the model to pass via Claude Code's `--fallback-model` flag, which
+ * auto-switches when the primary model is overloaded / returns 529 in
+ * headless/print-mode runs (FUS-596).
+ *
+ * - An explicit `fallbackModel` config wins; "none"/"off"/etc. disables it.
+ * - Falling back to the same model is a no-op and is dropped.
+ * - With no explicit config but a pinned primary model, default to a lower-load
+ *   model so overloads bump to the fallback instead of failing the run.
+ */
+export function resolveClaudeFallbackModel(configuredFallbackModel: string, primaryModel: string): string {
+  const configured = configuredFallbackModel.trim();
+  const primary = primaryModel.trim();
+  if (configured.length > 0) {
+    if (FALLBACK_MODEL_DISABLED_VALUES.has(configured.toLowerCase())) return "";
+    return configured === primary ? "" : configured;
+  }
+  if (primary.length > 0 && primary !== DEFAULT_CLAUDE_FALLBACK_MODEL) {
+    return DEFAULT_CLAUDE_FALLBACK_MODEL;
+  }
+  return "";
+}
+
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
 
@@ -421,6 +451,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const model = asString(config.model, "");
+  // Pair the primary model with a fallback so a transient 529/overload on the
+  // primary auto-switches via Claude Code's --fallback-model instead of failing
+  // the whole run. The flag is honored in headless/print-mode (how Paperclip runs
+  // Claude) and ignored interactively, so it is always safe to pass. See FUS-596.
+  const fallbackModel = resolveClaudeFallbackModel(asString(config.fallbackModel, ""), model);
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
@@ -837,6 +872,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // on Bedrock, so skip them and let the CLI use its own configured model.
     if (model && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(model))) {
       args.push("--model", model);
+    }
+    // Same Bedrock guard as --model: Anthropic-style fallback IDs are invalid on
+    // Bedrock, so only pass --fallback-model when it is a usable identifier.
+    if (fallbackModel && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(fallbackModel))) {
+      args.push("--fallback-model", fallbackModel);
     }
     if (effectiveEffort) args.push("--effort", effectiveEffort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
