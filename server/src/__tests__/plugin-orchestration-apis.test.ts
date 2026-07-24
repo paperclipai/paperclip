@@ -1036,6 +1036,42 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     });
   });
 
+  it("respondInteraction rejects duplicate checkbox option ids at the plugin boundary", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const operatorUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: operatorUserId, status: "active", membershipRole: "operator",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Choose campaigns", status: "in_review", priority: "medium",
+    });
+    const interactionId = await seedInteraction(companyId, issueId, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Which spikes should become campaigns?",
+        options: [{ id: "spike-a", label: "Spike A" }],
+        defaultSelectedOptionIds: [],
+        minSelected: 0,
+        maxSelected: 1,
+      } as never,
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+    await expect(services.issues.respondInteraction({
+      issueId,
+      interactionId,
+      companyId,
+      action: "accept",
+      actorUserId: operatorUserId,
+      selectedOptionIds: ["spike-a", "spike-a"],
+    })).rejects.toThrow("selectedOptionIds must be unique");
+
+    const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+    expect(row?.status).toBe("pending");
+  });
+
   it("respondInteraction converges (applied:false) when the interaction is already resolved", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const humanUserId = randomUUID();
