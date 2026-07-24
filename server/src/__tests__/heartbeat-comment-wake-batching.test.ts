@@ -13,7 +13,10 @@ import {
   issues,
 } from "@paperclipai/db";
 import { runningProcesses } from "../adapters/index.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import {
+  allReferencedCommentsAreSelfAuthored,
+  heartbeatService,
+} from "../services/heartbeat.ts";
 import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
 import {
   getEmbeddedPostgresTestSupport,
@@ -29,6 +32,20 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres heartbeat comment wake batching tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+describe("self-authored deferred comment classification", () => {
+  it("does not suppress a batch when any referenced comment is missing", () => {
+    expect(
+      allReferencedCommentsAreSelfAuthored({
+        referencedCommentIds: ["self-comment", "missing-comment"],
+        resolvedComments: [
+          { id: "self-comment", createdByRunId: "closing-run" },
+        ],
+        runId: "closing-run",
+      }),
+    ).toBe(false);
+  });
+});
 
 async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 10_000, intervalMs = 50) {
   const startedAt = Date.now();
@@ -1040,7 +1057,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("does not reopen a finished issue when the deferred comment wake is self-authored by the closing run", async () => {
+  it("does not promote a same-agent deferred comment wake that is self-authored by the closing run", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1148,9 +1165,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       expect(deferredRun).toBeNull();
 
+      let deferredWakeId: string | null = null;
       await waitFor(async () => {
         const deferred = await db
-          .select()
+          .select({ id: agentWakeupRequests.id })
           .from(agentWakeupRequests)
           .where(
             and(
@@ -1160,8 +1178,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
             ),
           )
           .then((rows) => rows[0] ?? null);
-        return Boolean(deferred);
+        deferredWakeId = deferred?.id ?? null;
+        return Boolean(deferredWakeId);
       });
+      const targetWakeId = deferredWakeId!;
 
       await db
         .update(issues)
@@ -1177,17 +1197,36 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      // The deferred wake still promotes (so the agent gets the message), but
-      // the issue must remain `done` because the only referenced comment is
-      // self-authored by the run that is now ending.
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
-        const runs = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        const wake = await db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, targetWakeId))
+          .then((rows) => rows[0] ?? null);
+        return wake?.status !== "deferred_issue_execution";
       }, 90_000);
+
+      const deferredWake = await db
+        .select({
+          status: agentWakeupRequests.status,
+          error: agentWakeupRequests.error,
+        })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, targetWakeId))
+        .then((rows) => rows[0] ?? null);
+      expect(deferredWake).toMatchObject({
+        status: "cancelled",
+        error: "Deferred comment wake suppressed because every referenced comment was authored by the closing run",
+      });
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.status).toBe("succeeded");
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
+      await heartbeat.waitForRunExecutionDrain(firstRun!.id, { timeoutMs: 10_000 });
 
       const issueAfterPromotion = await db
         .select({
