@@ -112,8 +112,6 @@ describe("pluginLifecycleManager.startWorker", () => {
 
   it("uses the first config row's companyId when several are present", async () => {
     mockRegistry.getById.mockResolvedValue(pluginRecord);
-    // Ordered by companyId asc; the loader always passes configs sorted, so
-    // the first row is the canonical install origin.
     mockRegistry.listConfigs.mockResolvedValue([
       { companyId: "company-A", configJson: {} },
       { companyId: "company-B", configJson: {} },
@@ -162,10 +160,6 @@ describe("pluginLifecycleManager.startWorker", () => {
   });
 
   it("does not invent a scope when the plugin has no config rows", async () => {
-    // Pathological: an install that has not yet been configured for any
-    // company (e.g. install succeeded but no operator ever saved config).
-    // The lifecycle should not crash; it should pass options as-is and let
-    // downstream code surface the missing-scope error.
     mockRegistry.getById.mockResolvedValue(pluginRecord);
     mockRegistry.listConfigs.mockResolvedValue([]);
 
@@ -177,6 +171,30 @@ describe("pluginLifecycleManager.startWorker", () => {
 
     await lifecycle.startWorker("plugin-1", baseOptions);
 
+    const [, passedOptions] = (workerManager.startWorker as any).mock.calls[0];
+    expect(passedOptions.invocationScope).toBeUndefined();
+  });
+
+  it("does not abort when listConfigs rejects (transient DB blip)", async () => {
+    // Resilience regression: a registry.listConfigs rejection must NOT
+    // propagate into a hard activation failure. A transient DB blip
+    // during activation should leave the worker starting without a
+    // pre-seeded scope (same best-effort shape as plugin-loader). The
+    // worker's own init code will surface the missing-scope error if it
+    // really needs the company; we don't want activation to flip to
+    // status='error' here.
+    mockRegistry.getById.mockResolvedValue(pluginRecord);
+    mockRegistry.listConfigs.mockRejectedValue(new Error("DB unavailable"));
+
+    const { workerManager } = makeWorkerManagerStub();
+    const lifecycle = pluginLifecycleManager(
+      {} as never,
+      { loader: makeLoader(), workerManager },
+    );
+
+    await expect(lifecycle.startWorker("plugin-1", baseOptions)).resolves.toBeUndefined();
+
+    expect(workerManager.startWorker).toHaveBeenCalledTimes(1);
     const [, passedOptions] = (workerManager.startWorker as any).mock.calls[0];
     expect(passedOptions.invocationScope).toBeUndefined();
   });
