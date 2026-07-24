@@ -243,7 +243,9 @@ export const queryKeys = {
       ["environment-custom-image-setup-sessions", sessionId] as const,
   },
   projects: {
-    list: (companyId: string) => ["projects", companyId] as const,
+    all: (companyId: string) => ["projects", companyId] as const,
+    list: (companyId: string, opts: { includeArchived?: boolean } = {}) =>
+      ["projects", companyId, { includeArchived: opts.includeArchived === true }] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
   },
   cases: {

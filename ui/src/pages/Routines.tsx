@@ -357,8 +357,8 @@ export function Routines() {
     enabled: !!selectedCompanyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: companyMembers } = useQuery({
@@ -396,7 +396,7 @@ export function Routines() {
   const mentionOptions = useMemo<MentionOption[]>(() => {
     return buildMarkdownMentionOptions({
       agents,
-      projects,
+      projects: (projects ?? []).filter((project) => !project.archivedAt),
       members: companyMembers?.users,
     });
   }, [agents, companyMembers?.users, projects]);
@@ -602,7 +602,7 @@ export function Routines() {
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
-      (projects ?? []).map((project) => ({
+      (projects ?? []).filter((project) => !project.archivedAt).map((project) => ({
         id: project.id,
         label: project.name,
         searchText: project.description ?? "",

@@ -26,6 +26,7 @@ const markdownEditorRenderMock = vi.fn((props: { mentions?: Array<{ id: string; 
 const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
   <div data-testid="issues-list">{issues.map((issue) => issue.title).join(", ")}</div>
 ));
+const inlineEntitySelectorRenderMock = vi.fn((props: { options?: Array<{ id: string }> }) => props);
 
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string; children: ReactNode }) => (
@@ -180,6 +181,29 @@ vi.mock("../api/projects", () => ({
         createdAt: new Date("2026-04-01T00:00:00.000Z"),
         updatedAt: new Date("2026-04-01T00:00:00.000Z"),
       },
+      {
+        id: "project-archived",
+        companyId: "company-1",
+        urlKey: "project-archived",
+        goalId: null,
+        goalIds: [],
+        goals: [],
+        name: "Archived Project",
+        description: null,
+        status: "completed",
+        leadAgentId: null,
+        targetDate: null,
+        color: "#94a3b8",
+        pauseReason: null,
+        pausedAt: null,
+        archivedAt: new Date("2026-04-02T00:00:00.000Z"),
+        executionWorkspacePolicy: null,
+        codebase: null,
+        workspaces: [],
+        primaryWorkspace: null,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
     ]),
   },
 }));
@@ -237,7 +261,10 @@ vi.mock("../components/MarkdownEditor", () => ({
 }));
 
 vi.mock("../components/InlineEntitySelector", () => ({
-  InlineEntitySelector: () => <button type="button">selector</button>,
+  InlineEntitySelector: (props: { options?: Array<{ id: string }> }) => {
+    inlineEntitySelectorRenderMock(props);
+    return <button type="button">selector</button>;
+  },
 }));
 
 vi.mock("../components/RoutineRunVariablesDialog", () => ({
@@ -365,6 +392,7 @@ describe("Routines page", () => {
     issuesListMock.mockReset();
     markdownEditorRenderMock.mockClear();
     issuesListRenderMock.mockClear();
+    inlineEntitySelectorRenderMock.mockClear();
     localStorage.clear();
   });
 
@@ -786,6 +814,56 @@ describe("Routines page", () => {
 
     expect(runNowButton).toBeTruthy();
     expect(runNowButton?.getAttribute("data-variant")).toBe("outline");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("excludes archived projects from the create composer project selector", async () => {
+    routinesListMock.mockResolvedValue([]);
+    issuesListMock.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    let createButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Create routine"),
+    );
+    for (let attempts = 0; attempts < 5 && !createButton; attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+      createButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Create routine"),
+      );
+    }
+
+    await act(async () => {
+      createButton?.click();
+      await flush();
+    });
+
+    const projectSelectorCall = inlineEntitySelectorRenderMock.mock.calls.find(([props]) => {
+      const ids = (props.options ?? []).map((option) => option.id);
+      return ids.includes("project-1") && ids.includes("project-2");
+    });
+
+    expect(projectSelectorCall).toBeTruthy();
+    expect(projectSelectorCall?.[0].options?.map((option) => option.id)).toEqual(["project-1", "project-2"]);
 
     await act(async () => {
       root.unmount();

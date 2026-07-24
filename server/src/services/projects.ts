@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
@@ -589,8 +589,12 @@ export function projectService(db: Db) {
   };
 
   return {
-    list: async (companyId: string): Promise<ProjectWithGoals[]> => {
-      const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
+    list: async (companyId: string, opts: { includeArchived?: boolean } = {}): Promise<ProjectWithGoals[]> => {
+      const includeArchived = opts.includeArchived ?? true;
+      const where = includeArchived
+        ? eq(projects.companyId, companyId)
+        : and(eq(projects.companyId, companyId), isNull(projects.archivedAt));
+      const rows = await db.select().from(projects).where(where);
       const withGoals = await attachGoals(db, rows);
       const withWorkspaces = await attachWorkspaces(db, withGoals);
       return attachListMetrics(db, companyId, withWorkspaces);
