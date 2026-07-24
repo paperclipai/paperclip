@@ -1,7 +1,6 @@
 {
   "name": "@paperclipai/adapter-azure-openai",
   "version": "0.1.0",
-  "private": true,
   "description": "Paperclip adapter for Azure OpenAI and Azure AI Foundry serverless deployments (OpenAI-compatible /chat/completions with SSE streaming).",
   "type": "module",
   "license": "MIT",
