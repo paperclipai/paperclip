@@ -1247,7 +1247,8 @@ async function getProjectDefaultGoalId(
     .from(projects)
     .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
-  return row?.goalId ?? null;
+  if (!row) throw notFound("Project not found");
+  return row.goalId ?? null;
 }
 
 async function getWorkspaceInheritanceIssue(
