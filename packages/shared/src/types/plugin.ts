@@ -672,6 +672,30 @@ export interface PluginRecord {
   updatedAt: Date;
 }
 
+/**
+ * Minimal company-authorized view of one exact plugin registry key.
+ *
+ * This intentionally omits manifests, configuration, package locations,
+ * credentials, errors, and every form of list inventory. Consumers can compare
+ * two responses to prove the registry row did not change during a preflight.
+ */
+export interface CompanyPluginCurrentState {
+  /** Exact plugin registry key requested by the caller. */
+  pluginKey: string;
+  /** Explicitly distinguishes a missing registry row from every lifecycle status. */
+  presence: "present" | "absent";
+  /** Authoritative registry lifecycle status, or null when the key is absent. */
+  lifecycleStatus: PluginStatus | null;
+  /** Stable registry-row identity, or null when the key is absent. */
+  pluginId: string | null;
+  /** Installed plugin version, or null when the key is absent. */
+  version: string | null;
+  /** Plugin API version, or null when the key is absent. */
+  apiVersion: number | null;
+  /** Registry-row update timestamp used by two-read fingerprints. */
+  updatedAt: string | null;
+}
+
 export interface PluginDatabaseNamespaceRecord {
   id: string;
   pluginId: string;

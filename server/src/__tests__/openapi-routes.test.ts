@@ -191,6 +191,27 @@ describe("openapi routes", () => {
     );
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
+    const pluginCurrentState = res.body.paths["/api/companies/{companyId}/plugins/{pluginKey}/current"].get;
+    expect(pluginCurrentState.summary).toBe("Get the current registry state for one plugin key");
+    expect(pluginCurrentState.responses["200"].content["application/json"].schema).toMatchObject({
+      type: "object",
+      properties: {
+        pluginKey: { type: "string" },
+        presence: { type: "string", enum: ["present", "absent"] },
+        lifecycleStatus: { type: "string", enum: expect.arrayContaining(["ready", "disabled"]), nullable: true },
+        updatedAt: { type: "string", format: "date-time", nullable: true },
+      },
+      required: expect.arrayContaining([
+        "pluginKey",
+        "presence",
+        "lifecycleStatus",
+        "pluginId",
+        "version",
+        "apiVersion",
+        "updatedAt",
+      ]),
+    });
+    expect(JSON.stringify(pluginCurrentState)).not.toMatch(/manifest|config|credential|packagePath|lastError/);
   });
 
   it("covers the mounted server routes exactly", () => {
@@ -219,6 +240,14 @@ describe("openapi routes", () => {
       actor: "board",
       instanceAdmin: true,
     });
+    expect(spec.paths["/api/companies/{companyId}/plugins/{pluginKey}/current"].get.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+      { AgentBearerAuth: [] },
+    ]);
+    expect(spec.paths["/api/companies/{companyId}/plugins/{pluginKey}/current"].get[
+      "x-paperclip-authorization"
+    ]).toEqual({ actor: "board_or_agent" });
     expect(spec.paths["/api/execution-workspaces/{id}/reconcile-branch"].post.security).toEqual([
       { BoardSessionAuth: [] },
       { BoardApiKeyAuth: [] },

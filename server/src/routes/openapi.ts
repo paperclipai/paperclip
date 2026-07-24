@@ -199,6 +199,7 @@ import {
   importMcpJsonSchema,
   toolPolicyTestRequestSchema,
   createToolMcpGatewaySchema,
+  PLUGIN_STATUSES,
 } from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
@@ -4709,6 +4710,31 @@ registry.registerPath({
 });
 
 // ─── Plugins ──────────────────────────────────────────────────────────────────
+
+const companyPluginCurrentStateSchema = z.object({
+  pluginKey: z.string(),
+  presence: z.enum(["present", "absent"]),
+  lifecycleStatus: z.enum(PLUGIN_STATUSES).nullable(),
+  pluginId: z.string().nullable(),
+  version: z.string().nullable(),
+  apiVersion: z.number().int().nullable(),
+  updatedAt: z.string().datetime().nullable(),
+}).strict();
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/plugins/{pluginKey}/current",
+  tags: ["plugins"],
+  summary: "Get the current registry state for one plugin key",
+  request: {
+    params: z.object({ companyId: z.string(), pluginKey: z.string() }),
+  },
+  responses: {
+    200: r.ok(companyPluginCurrentStateSchema),
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
 
 registry.registerPath({
   method: "get",
