@@ -229,6 +229,42 @@ describe("useLiveRunTranscripts", () => {
     container.remove();
   });
 
+  it("does not request persisted logs until a queued run starts", async () => {
+    function Harness({ status }: { status: "queued" | "running" }) {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-queued", status, adapterType: "codex_local" }],
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness status="queued" />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+
+    await act(async () => {
+      root.render(<Harness status="running" />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(1);
+    expect(logMock).toHaveBeenCalledWith("run-queued", 0, 256_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
   it("can hydrate active runs without opening the live event socket", async () => {
     function Harness() {
       useLiveRunTranscripts({
