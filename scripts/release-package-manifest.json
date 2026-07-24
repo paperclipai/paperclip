@@ -7,7 +7,7 @@
   {
     "dir": "packages/adapters/azure-openai",
     "name": "@paperclipai/adapter-azure-openai",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/claude-local",
