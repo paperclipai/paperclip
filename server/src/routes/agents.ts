@@ -80,7 +80,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactAdapterConfig, redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import {
@@ -654,15 +654,23 @@ export function agentRoutes(
 
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
-    options?: { restricted?: boolean },
+    options?: { restricted?: boolean; redactSecrets?: boolean },
   ) {
     const [chainOfCommand, accessState] = await Promise.all([
       svc.getChainOfCommand(agent.id),
       buildAgentAccessState(agent),
     ]);
 
+    const agentData = options?.redactSecrets
+      ? {
+          ...agent,
+          // Agent-to-agent cross-read: redact every env value regardless of key name (ANT-885 Defect 1+2)
+          adapterConfig: redactAdapterConfig(agent.adapterConfig as Record<string, unknown> | null),
+          runtimeConfig: redactAdapterConfig(agent.runtimeConfig as Record<string, unknown> | null),
+        }
+      : agent;
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agentData),
       chainOfCommand,
       access: accessState,
     };
@@ -1646,8 +1654,8 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
-      runtimeConfig: redactEventPayload(agent.runtimeConfig),
+      adapterConfig: redactAdapterConfig(agent.adapterConfig as Record<string, unknown> | null),
+      runtimeConfig: redactAdapterConfig(agent.runtimeConfig as Record<string, unknown> | null),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
     };
@@ -1658,12 +1666,12 @@ export function agentRoutes(
     const record = snapshot as Record<string, unknown>;
     return {
       ...record,
-      adapterConfig: redactEventPayload(
+      adapterConfig: redactAdapterConfig(
         typeof record.adapterConfig === "object" && record.adapterConfig !== null
           ? (record.adapterConfig as Record<string, unknown>)
           : {},
       ),
-      runtimeConfig: redactEventPayload(
+      runtimeConfig: redactAdapterConfig(
         typeof record.runtimeConfig === "object" && record.runtimeConfig !== null
           ? (record.runtimeConfig as Record<string, unknown>)
           : {},
@@ -2219,7 +2227,9 @@ export function agentRoutes(
       res.json(await buildAgentDetail(agent, { restricted: true }));
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    // Agent-to-agent cross-read: redact env secrets (ANT-885). Human board/admin actors keep raw env.
+    const isAgentActor = req.actor.type === "agent" && !isSelf;
+    res.json(await buildAgentDetail(agent, { redactSecrets: isAgentActor }));
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {
@@ -2707,7 +2717,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildAgentDetail(agent, { redactSecrets: req.actor.type === "agent" }));
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
