@@ -7,11 +7,13 @@ import {
   buildFinishSuccessfulRunHandoffIdempotencyKey,
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffRequiredNotice,
+  classifySuccessfulRunReportedDisposition,
   decideSuccessfulRunHandoff,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
+  successfulRunHandoffDoneGateReason,
 } from "./successful-run-handoff.js";
 import { UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON } from "@paperclipai/adapter-utils/server-utils";
 
@@ -84,6 +86,9 @@ describe("successful run handoff decision", () => {
       allowDeliverableWork: false,
       allowDocumentUpdates: false,
       resumeRequiresNormalModel: true,
+      sourceReportedDisposition: null,
+      doneDispositionAllowed: true,
+      verificationEvidenceStatus: "not_recorded",
     });
     expect(decision.contextSnapshot).toMatchObject({
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -99,6 +104,77 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("Resolve the missing disposition before creating or revising any new artifacts");
     expect(decision.instruction).toContain("Choose **exactly one** outcome");
     expect(decision.instruction).toContain("record an explicit continuation path");
+  });
+
+  it("gates done when the source final message reports blocked work", () => {
+    const decision = decide({
+      livenessState: "blocked",
+      detectedProgressSummary: "**Blocked** — The benchmark target is not mounted in this environment.",
+    });
+
+    expect(classifySuccessfulRunReportedDisposition({
+      livenessState: "blocked",
+      detectedProgressSummary: "**Blocked** — The benchmark target is not mounted in this environment.",
+    })).toBe("blocked");
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.payload).toMatchObject({
+      sourceReportedDisposition: "blocked",
+      doneDispositionAllowed: false,
+      verificationEvidenceStatus: "not_recorded",
+    });
+    expect(decision.payload.validDispositionOptions).not.toContain("mark_done");
+    expect(decision.payload.validDispositionOptions).toContain("mark_cancelled");
+    expect(decision.instruction).toContain("must not mark this issue `done`");
+    expect(successfulRunHandoffDoneGateReason(decision.contextSnapshot)).toContain("reported blocked work");
+    expect(successfulRunHandoffDoneGateReason(decision.contextSnapshot, "another-issue")).toBeNull();
+  });
+
+  it("gates done when the source final message says verification could not run", () => {
+    const detectedProgressSummary = "coqc is not installed, so local compilation could not run.";
+    const decision = decide({ detectedProgressSummary });
+
+    expect(classifySuccessfulRunReportedDisposition({
+      livenessState: "advanced",
+      detectedProgressSummary,
+    })).toBe("unverified");
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.payload).toMatchObject({
+      sourceReportedDisposition: "unverified",
+      doneDispositionAllowed: false,
+      verificationEvidenceStatus: "reported_missing",
+    });
+    expect(decision.payload.validDispositionOptions).not.toContain("mark_done");
+    expect(decision.payload.validDispositionOptions).toContain("mark_cancelled");
+    expect(successfulRunHandoffDoneGateReason(decision.contextSnapshot)).toContain("reported unverified work");
+  });
+
+  it("gates done when a successful run produced no durable control-plane evidence", () => {
+    const decision = decide({
+      livenessState: "needs_followup",
+      detectedProgressSummary: "Implemented the change locally.",
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.payload).toMatchObject({
+      sourceReportedDisposition: "no_control_plane_evidence",
+      doneDispositionAllowed: false,
+      verificationEvidenceStatus: "control_plane_evidence_missing",
+    });
+    expect(decision.payload.validDispositionOptions).not.toContain("mark_done");
+    expect(decision.payload.validDispositionOptions).toContain("mark_cancelled");
+    expect(successfulRunHandoffDoneGateReason(decision.contextSnapshot, issue.id)).toContain(
+      "reported no control plane evidence work",
+    );
+  });
+
+  it("does not gate done for an intentional non-verification statement with durable evidence", () => {
+    expect(classifySuccessfulRunReportedDisposition({
+      livenessState: "advanced",
+      detectedProgressSummary: "The migration was not run by design because this change only updates documentation.",
+    })).toBeNull();
   });
 
   it("does not queue when the issue already has a valid disposition", () => {

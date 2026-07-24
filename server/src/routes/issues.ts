@@ -126,6 +126,7 @@ import {
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
+import { successfulRunHandoffDoneGateReason } from "../services/recovery/successful-run-handoff.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
   resolveTaskWatchdogMutationScope,
@@ -7685,6 +7686,22 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    if (req.actor.type === "agent" && actor.agentId && updateFields.status === "done" && actor.runId) {
+      const actorRun = await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.id, actor.runId),
+          eq(heartbeatRuns.companyId, existing.companyId),
+          eq(heartbeatRuns.agentId, actor.agentId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      const doneGateReason = successfulRunHandoffDoneGateReason(actorRun?.contextSnapshot, existing.id);
+      if (doneGateReason) {
+        res.status(422).json({ error: doneGateReason });
+        return;
+      }
+    }
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
