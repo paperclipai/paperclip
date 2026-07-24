@@ -30,6 +30,14 @@ describe("detectSandboxExecTimeout", () => {
     expect(detectSandboxExecTimeout("RPC call timed out")).toBe(false);
   });
 
+  it("does not match agent-authored output that echoes the watchdog phrase without the pod context", () => {
+    // A run that genuinely wall-clock-timed-out could have its own stderr
+    // contain text like this (e.g. the agent printing a log line it saw
+    // elsewhere). Without the "(pod=" context this must not be misattributed
+    // to a sandbox exec-channel timeout.
+    expect(detectSandboxExecTimeout("execInPod timed out after 5ms")).toBe(false);
+  });
+
   it("returns false for null/undefined/empty input", () => {
     expect(detectSandboxExecTimeout(null)).toBe(false);
     expect(detectSandboxExecTimeout(undefined)).toBe(false);
