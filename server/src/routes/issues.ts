@@ -8110,6 +8110,33 @@ export function issueRoutes(
       if (transition.decision && decisionId) {
         const decision = transition.decision;
         issue = await db.transaction(async (tx) => {
+          if (deliveryReceipt && deliveryReceiptSourceIssueId) {
+            // Keep receipt publication and its terminal transition atomic.
+            const [currentWorkProduct] = await tx.select({
+              id: issueWorkProducts.id,
+              companyId: issueWorkProducts.companyId,
+              issueId: issueWorkProducts.issueId,
+              updatedAt: issueWorkProducts.updatedAt,
+            }).from(issueWorkProducts).where(eq(issueWorkProducts.id, deliveryReceipt.primaryWorkProductKey));
+            if (
+              !currentWorkProduct ||
+              currentWorkProduct.companyId !== existing.companyId ||
+              currentWorkProduct.issueId !== existing.id
+            ) {
+              throw unprocessable("Delivery receipt must reference a durable work product produced by this issue");
+            }
+            if (currentWorkProduct.updatedAt.toISOString() !== deliveryReceipt.revision) {
+              throw unprocessable("Delivery receipt revision does not match the current delivered work product");
+            }
+            const publication = await deliveryReceiptsSvc.publish(tx, {
+              companyId: existing.companyId,
+              producerIssueId: existing.id,
+              sourceIssueId: deliveryReceiptSourceIssueId,
+              createdByRunId: actor.runId ?? null,
+              receipt: deliveryReceipt,
+            });
+            publishedDeliveryReceiptId = publication.id;
+          }
           const updated = await svc.update(
             id,
             {
@@ -8151,41 +8178,47 @@ export function issueRoutes(
           stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           return updated;
         });
-      } else {
+      } else if (deliveryReceipt && deliveryReceiptSourceIssueId) {
         issue = await db.transaction(async (tx) => {
-          if (deliveryReceipt && deliveryReceiptSourceIssueId) {
-            // Re-read inside the completion transaction so a receipt cannot
-            // authorize a work product changed after the preflight check.
-            const [currentWorkProduct] = await tx.select({
-              id: issueWorkProducts.id,
-              companyId: issueWorkProducts.companyId,
-              issueId: issueWorkProducts.issueId,
-              updatedAt: issueWorkProducts.updatedAt,
-            }).from(issueWorkProducts).where(eq(issueWorkProducts.id, deliveryReceipt.primaryWorkProductKey));
-            if (
-              !currentWorkProduct ||
-              currentWorkProduct.companyId !== existing.companyId ||
-              currentWorkProduct.issueId !== existing.id
-            ) {
-              throw unprocessable("Delivery receipt must reference a durable work product produced by this issue");
-            }
-            if (currentWorkProduct.updatedAt.toISOString() !== deliveryReceipt.revision) {
-              throw unprocessable("Delivery receipt revision does not match the current delivered work product");
-            }
-            const publication = await deliveryReceiptsSvc.publish(tx, {
-              companyId: existing.companyId,
-              producerIssueId: existing.id,
-              sourceIssueId: deliveryReceiptSourceIssueId,
-              createdByRunId: actor.runId ?? null,
-              receipt: deliveryReceipt,
-            });
-            publishedDeliveryReceiptId = publication.id;
+          // Re-read inside the completion transaction so a receipt cannot
+          // authorize a work product changed after the preflight check.
+          const [currentWorkProduct] = await tx.select({
+            id: issueWorkProducts.id,
+            companyId: issueWorkProducts.companyId,
+            issueId: issueWorkProducts.issueId,
+            updatedAt: issueWorkProducts.updatedAt,
+          }).from(issueWorkProducts).where(eq(issueWorkProducts.id, deliveryReceipt.primaryWorkProductKey));
+          if (
+            !currentWorkProduct ||
+            currentWorkProduct.companyId !== existing.companyId ||
+            currentWorkProduct.issueId !== existing.id
+          ) {
+            throw unprocessable("Delivery receipt must reference a durable work product produced by this issue");
           }
+          if (currentWorkProduct.updatedAt.toISOString() !== deliveryReceipt.revision) {
+            throw unprocessable("Delivery receipt revision does not match the current delivered work product");
+          }
+          const publication = await deliveryReceiptsSvc.publish(tx, {
+            companyId: existing.companyId,
+            producerIssueId: existing.id,
+            sourceIssueId: deliveryReceiptSourceIssueId,
+            createdByRunId: actor.runId ?? null,
+            receipt: deliveryReceipt,
+          });
+          publishedDeliveryReceiptId = publication.id;
           return svc.update(id, {
             ...updateFields,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
           }, tx);
+        });
+      } else {
+        // Avoid changing the established route/service contract for ordinary
+        // updates, including waiting and review transitions.
+        issue = await svc.update(id, {
+          ...updateFields,
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
         });
       }
     } catch (err) {

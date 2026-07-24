@@ -132,6 +132,7 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(issueDeliveryReceipts);
     await db.delete(issueWorkProducts);
+    await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -392,7 +393,7 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
       companyIds: [allowed.companyId],
       memberships: [{ companyId: allowed.companyId, membershipRole: "operator", status: "active" }],
       isInstanceAdmin: false,
-      source: "local_implicit",
+      source: "session",
     } as Express.Request["actor"])).get(`/api/issues/${denied.issueId}/delivery-receipts`);
 
     expect(response.status).toBe(403);
