@@ -259,6 +259,14 @@ import {
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
 import {
+  appendExecutionCausalRunEvent,
+  appendExecutionCausalTrace,
+  buildExecutionCausalWakePayload,
+  buildExecutionRecoveryContextPayload,
+  executionCausalEventType,
+  inferExecutionCausalTraceKind,
+} from "./execution-causal-trace.js";
+import {
   readHotRestartIntent,
   removeHotRestartIntent,
   shouldHonorHotRestartIntentForProcess,
@@ -4262,6 +4270,23 @@ function enrichWakeContextSnapshot(input: {
   }
   normalizeModelProfileWakeContext({ contextSnapshot, payload });
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
+  appendExecutionCausalTrace(contextSnapshot, {
+    kind: inferExecutionCausalTraceKind({
+      reason: readNonEmptyString(contextSnapshot["retryReason"]) ?? readNonEmptyString(contextSnapshot["wakeReason"]) ?? reason,
+      retryOfRunId: readNonEmptyString(contextSnapshot["retryOfRunId"]) ?? readNonEmptyString(payload?.["retryOfRunId"]),
+      recoveryActionId: readNonEmptyString(contextSnapshot["recoveryActionId"]) ?? readNonEmptyString(payload?.["recoveryActionId"]),
+      originKind: readNonEmptyString(contextSnapshot["source"]),
+    }),
+    reason: readNonEmptyString(contextSnapshot["retryReason"]) ?? readNonEmptyString(contextSnapshot["wakeReason"]) ?? reason,
+    source,
+    triggerDetail,
+    issueId: readNonEmptyString(contextSnapshot["issueId"]) ?? issueIdFromPayload,
+    taskId: readNonEmptyString(contextSnapshot["taskId"]) ?? issueIdFromPayload,
+    retryOfRunId: readNonEmptyString(contextSnapshot["retryOfRunId"]) ?? readNonEmptyString(payload?.["retryOfRunId"]),
+    recoveryActionId: readNonEmptyString(contextSnapshot["recoveryActionId"]) ?? readNonEmptyString(payload?.["recoveryActionId"]),
+    originKind: readNonEmptyString(contextSnapshot["source"]),
+    originId: readNonEmptyString(contextSnapshot["sourceIssueId"]),
+  });
 
   return {
     contextSnapshot,
@@ -8178,6 +8203,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       requestedByActorId: "heartbeat",
     });
     if (!handoffRun) return;
+    await appendExecutionCausalRunEvent(db, {
+      companyId: run.companyId,
+      runId: run.id,
+      agentId: run.agentId,
+      eventType: executionCausalEventType("handoff"),
+      message: "queued corrective handoff heartbeat",
+      payload: {
+        traceVersion: 1,
+        handoffKind: "successful_run_recovery",
+        sourceIssueId: issue.id,
+        sourceIssueIdentifier: issue.identifier,
+        sourceRunId: run.id,
+        targetRunId: handoffRun.id,
+        targetAgentId: decision.targetAgentId,
+        reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+        missingDisposition: "clear_next_step",
+      },
+    });
 
     await addSuccessfulRunHandoffCommentOnce({
       issue,
@@ -8430,13 +8473,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const retryContextSnapshot = withRecoveryModelProfileHint({
+    const retryContextSnapshot = appendExecutionCausalTrace(withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "missing_issue_comment",
       retryReason: "missing_issue_comment",
       missingIssueCommentForRunId: run.id,
-    }, "status_only");
+    }, "status_only"), {
+      kind: "retry",
+      reason: "missing_issue_comment",
+      source: "automation",
+      triggerDetail: "system",
+      issueId,
+      taskId: issueId,
+      runId: run.id,
+      retryOfRunId: run.id,
+    });
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
     const now = new Date();
 
@@ -8460,11 +8512,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source: "automation",
           triggerDetail: "system",
           reason: "missing_issue_comment",
-          payload: withRecoveryModelProfileHint({
+          payload: appendExecutionCausalTrace(withRecoveryModelProfileHint({
             issueId,
             retryOfRunId: run.id,
             retryReason: "missing_issue_comment",
-          }, "status_only"),
+          }, "status_only"), {
+            kind: "retry",
+            reason: "missing_issue_comment",
+            source: "automation",
+            triggerDetail: "system",
+            issueId,
+            taskId: issueId,
+            runId: run.id,
+            retryOfRunId: run.id,
+          }),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
@@ -8694,12 +8755,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : "process_lost";
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const retryContextSnapshot = withRecoveryModelProfileHint({
+    const retryContextSnapshot = appendExecutionCausalTrace(withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason,
-    }, "normal_model");
+    }, "normal_model"), {
+      kind: "retry",
+      reason: retryReason,
+      source: "automation",
+      triggerDetail: "system",
+      issueId,
+      taskId: readNonEmptyString(contextSnapshot.taskId) ?? issueId,
+      runId: run.id,
+      retryOfRunId: run.id,
+    });
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
     const queued = await db.transaction(async (tx) => {
@@ -8711,10 +8781,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source: "automation",
           triggerDetail: "system",
           reason: "process_lost_retry",
-          payload: withRecoveryModelProfileHint({
+          payload: appendExecutionCausalTrace(withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
-          }, "normal_model"),
+          }, "normal_model"), {
+            kind: "retry",
+            reason: retryReason,
+            source: "automation",
+            triggerDetail: "system",
+            issueId,
+            taskId: readNonEmptyString(contextSnapshot.taskId) ?? issueId,
+            runId: run.id,
+            retryOfRunId: run.id,
+          }),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
@@ -9705,7 +9784,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const shouldQuarantineWorkspaceForRetry =
       workspaceValidationRetryPayload !== null &&
       Object.keys(workspaceValidationRetryPayload).length > 0;
-    const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
+    const retryContextSnapshot: Record<string, unknown> = appendExecutionCausalTrace(withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason,
@@ -9729,7 +9808,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
         : {}),
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
-    }, "normal_model");
+    }, "normal_model"), {
+      kind: "retry",
+      reason: retryReason,
+      source: "automation",
+      triggerDetail: "system",
+      issueId,
+      taskId: readNonEmptyString(contextSnapshot.taskId) ?? issueId,
+      runId: run.id,
+      retryOfRunId: run.id,
+    });
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
     const continuationRetryIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
       ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
@@ -9948,7 +10036,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source: "automation",
           triggerDetail: "system",
           reason: wakeReason,
-          payload: withRecoveryModelProfileHint({
+          payload: appendExecutionCausalTrace(withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
             ...interactionContinuationPayload,
@@ -9961,7 +10049,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
               : {}),
             ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
-          }, "normal_model"),
+          }, "normal_model"), {
+            kind: "retry",
+            reason: retryReason,
+            source: "automation",
+            triggerDetail: "system",
+            issueId,
+            taskId: readNonEmptyString(contextSnapshot.taskId) ?? issueId,
+            runId: run.id,
+            retryOfRunId: run.id,
+          }),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
@@ -13197,6 +13294,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "info",
         message: "run started",
       });
+      await appendExecutionCausalRunEvent(db, {
+        companyId: currentRun.companyId,
+        runId: currentRun.id,
+        agentId: currentRun.agentId,
+        eventType: executionCausalEventType("wake"),
+        message: `wake received: ${readNonEmptyString(context.wakeReason) ?? "unspecified"}`,
+        payload: buildExecutionCausalWakePayload(context),
+      });
+      await appendExecutionCausalRunEvent(db, {
+        companyId: currentRun.companyId,
+        runId: currentRun.id,
+        agentId: currentRun.agentId,
+        eventType: executionCausalEventType("recoveryContext"),
+        message: "recovery context received for heartbeat execution",
+        payload: buildExecutionRecoveryContextPayload(context),
+      });
 
       handle = await runLogStore.begin({
         companyId: run.companyId,
@@ -15174,7 +15287,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
     const reason = opts.reason ?? null;
-    const payload = opts.payload ?? null;
+    const rawPayload = opts.payload ?? null;
     const {
       contextSnapshot: enrichedContextSnapshot,
       issueIdFromPayload,
@@ -15185,8 +15298,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       reason,
       source,
       triggerDetail,
-      payload,
+      payload: rawPayload,
     });
+    const payload = rawPayload
+      ? appendExecutionCausalTrace({ ...rawPayload }, {
+        kind: inferExecutionCausalTraceKind({
+          reason: readNonEmptyString(enrichedContextSnapshot.retryReason) ?? readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason,
+          retryOfRunId: readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ?? readNonEmptyString(rawPayload.retryOfRunId),
+          recoveryActionId: readNonEmptyString(enrichedContextSnapshot.recoveryActionId) ?? readNonEmptyString(rawPayload.recoveryActionId),
+          originKind: readNonEmptyString(enrichedContextSnapshot.source),
+        }),
+        reason: readNonEmptyString(enrichedContextSnapshot.retryReason) ?? readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason,
+        source,
+        triggerDetail,
+        issueId: readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload,
+        taskId: readNonEmptyString(enrichedContextSnapshot.taskId) ?? issueIdFromPayload,
+        retryOfRunId: readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ?? readNonEmptyString(rawPayload.retryOfRunId),
+        recoveryActionId: readNonEmptyString(enrichedContextSnapshot.recoveryActionId) ?? readNonEmptyString(rawPayload.recoveryActionId),
+        originKind: readNonEmptyString(enrichedContextSnapshot.source),
+        originId: readNonEmptyString(enrichedContextSnapshot.sourceIssueId),
+      })
+      : null;
     let issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
 
     const agent = await getAgent(agentId);
