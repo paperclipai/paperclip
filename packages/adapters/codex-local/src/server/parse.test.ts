@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
+  isCodexInvalidApiKeyError,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -90,6 +91,65 @@ describe("classifyCodexAuthRefreshFailure", () => {
   it("does not classify bare 401 or quota messages as auth-refresh failures", () => {
     expect(classifyCodexAuthRefreshFailure({ errorMessage: "chatgpt wham api returned 401" })).toBeNull();
     expect(classifyCodexAuthRefreshFailure({ errorMessage: "You've hit your usage limit for GPT-5." })).toBeNull();
+  });
+});
+
+describe("isCodexInvalidApiKeyError", () => {
+  it("detects OpenAI-distinctive invalid-key phrasings without further context", () => {
+    expect(
+      isCodexInvalidApiKeyError({
+        errorMessage:
+          "Incorrect API key provided: sk-proj-a***AA. You can find your API key at https://platform.openai.com/account/api-keys.",
+      }),
+    ).toBe(true);
+    expect(
+      isCodexInvalidApiKeyError({
+        stderr:
+          'unexpected status 401 Unauthorized: {"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}',
+      }),
+    ).toBe(true);
+    expect(isCodexInvalidApiKeyError({ stdout: "error code: invalid_api_key" })).toBe(true);
+  });
+
+  it("detects generic missing/invalid-key phrasings only near an OpenAI marker", () => {
+    expect(
+      isCodexInvalidApiKeyError({
+        errorMessage: "No API key provided. You can find your API key at https://platform.openai.com/account/api-keys.",
+      }),
+    ).toBe(true);
+    expect(
+      isCodexInvalidApiKeyError({
+        errorMessage: "You didn't provide an API key. Obtain one at https://platform.openai.com/account/api-keys.",
+      }),
+    ).toBe(true);
+    expect(isCodexInvalidApiKeyError({ stderr: "openai: api key is invalid" })).toBe(true);
+  });
+
+  it("detects a 401 anchored to api.openai.com", () => {
+    expect(
+      isCodexInvalidApiKeyError({
+        stderr: "request to https://api.openai.com/v1/responses failed: 401 Unauthorized",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify third-party invalid/missing-key errors", () => {
+    expect(isCodexInvalidApiKeyError({ errorMessage: "POST https://example.com/v1 failed: No API key provided" })).toBe(
+      false,
+    );
+    expect(isCodexInvalidApiKeyError({ errorMessage: "stripe: invalid api key" })).toBe(false);
+    expect(isCodexInvalidApiKeyError({ stderr: "weather-api: api key is expired" })).toBe(false);
+    expect(isCodexInvalidApiKeyError({ errorMessage: "You didn't provide an API key for the search tool." })).toBe(
+      false,
+    );
+  });
+
+  it("does not swallow unrelated failures", () => {
+    expect(isCodexInvalidApiKeyError({ errorMessage: "You've hit your usage limit for GPT-5." })).toBe(false);
+    expect(isCodexInvalidApiKeyError({ errorMessage: "server overloaded, try again later" })).toBe(false);
+    expect(isCodexInvalidApiKeyError({ errorMessage: "chatgpt wham api returned 401" })).toBe(false);
+    expect(isCodexInvalidApiKeyError({ stderr: "some tool call to https://example.com returned 401" })).toBe(false);
+    expect(isCodexInvalidApiKeyError({ errorMessage: "Codex exited with code 1" })).toBe(false);
   });
 });
 

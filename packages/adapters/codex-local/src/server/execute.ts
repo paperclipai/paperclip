@@ -53,6 +53,7 @@ import {
   parseCodexJsonl,
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
+  isCodexInvalidApiKeyError,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -1242,9 +1243,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
+      const invalidApiKey =
+        (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
+        isCodexInvalidApiKeyError({
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
       const providerQuota =
         (attempt.proc.exitCode ?? 0) !== 0 &&
         !authRefreshFailure &&
+        !invalidApiKey &&
         isCodexProviderQuotaError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1253,6 +1263,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
         !authRefreshFailure &&
+        !invalidApiKey &&
         !providerQuota &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
@@ -1272,6 +1283,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode:
           authRefreshFailure
             ? authRefreshFailure
+            : invalidApiKey
+            ? "codex_auth_required"
             : providerQuota
             ? "provider_quota"
             : transientUpstream
