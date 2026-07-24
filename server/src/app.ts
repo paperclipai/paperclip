@@ -137,6 +137,17 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   return req.accepts(["html"]) === "html";
 }
 
+// Non-hashed static files that must not outlive a deploy. `index.html` must
+// never outlive the asset hashes it points at, and `sw.js` must never outlive
+// the build that shipped it — a browser that satisfies the service worker
+// update check from its HTTP cache keeps the previous worker installed, which
+// then serves the pre-deploy UI from its own cache. Returns the override, or
+// null to leave the file on the middleware's default `maxAge`.
+export function staticCacheControlOverride(filePath: string): string | null {
+  const baseName = path.basename(filePath);
+  return baseName === "index.html" || baseName === "sw.js" ? "no-cache" : null;
+}
+
 export function shouldEnablePrivateHostnameGuard(opts: {
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
@@ -429,15 +440,15 @@ export async function createApp(
       );
       // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
       // short cache so operators who swap them out see the new version
-      // reasonably fast. Override for `index.html` specifically — it is
-      // served by this middleware for `/` and `/index.html`, and it must
-      // never outlive the asset hashes it points at.
+      // reasonably fast. See `staticCacheControlOverride` for the files that
+      // must not be cached at all.
       app.use(
         express.static(uiDist, {
           maxAge: "1h",
           setHeaders(res, filePath) {
-            if (path.basename(filePath) === "index.html") {
-              res.set("Cache-Control", "no-cache");
+            const override = staticCacheControlOverride(filePath);
+            if (override) {
+              res.set("Cache-Control", override);
             }
           },
         }),
