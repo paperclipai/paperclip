@@ -28,8 +28,8 @@ export type SuccessfulRunReportedDisposition = "blocked" | "unverified" | "no_co
 const EXPLICIT_BLOCKED_DISPOSITION_RE = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*{1,2})?blocked(?:\*{1,2})?\s*(?:[-—:：]|$)/im;
 const UNVERIFIED_WORK_RE = new RegExp([
   String.raw`\bunverified\b`,
-  String.raw`\b(?:could not|couldn't|cannot|can't|unable to|was not|wasn't|were not|weren't|not)\s+(?:be\s+)?(?:run|execute|compile|build|test(?:ed)?|verify|verified|validate|validated|check(?:ed)?)\b`,
-  String.raw`\b(?:tests?|verification|validation|compilation|build)\s+(?:could not|couldn't|cannot|can't|was not|wasn't|were not|weren't)\s+(?:be\s+)?(?:run|completed|performed|verified)\b`,
+  String.raw`\b(?:could not|couldn't|cannot|can't|unable to)\s+(?:be\s+)?(?:run|execute|compile|build|test(?:ed)?|verify|verified|validate|validated|check(?:ed)?)\b`,
+  String.raw`\b(?:tests?|verification|validation|compilation|build)\s+(?:could not|couldn't|cannot|can't)\s+(?:be\s+)?(?:run|completed|performed|verified)\b`,
   String.raw`\b(?:not installed|missing dependency|missing toolchain)\b.{0,120}\b(?:test|verify|validation|compil|build|run)\b`,
 ].join("|"), "i");
 
@@ -331,7 +331,8 @@ export function successfulRunHandoffDoneGateReason(contextSnapshot: unknown, iss
   if (issueId && contextIssueId !== issueId) return null;
   if (context.doneDispositionAllowed !== false) return null;
   const disposition = readString(context.sourceReportedDisposition) ?? "non_done";
-  return `Source run reported ${disposition} work; corrective handoff cannot mark the issue done`;
+  const dispositionLabel = disposition.replace(/_/g, " ");
+  return `Source run reported ${dispositionLabel} work; corrective handoff cannot mark the issue done`;
 }
 
 function isCorrectiveHandoffRun(run: HeartbeatRunRow) {

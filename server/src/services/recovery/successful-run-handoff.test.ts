@@ -134,7 +134,7 @@ describe("successful run handoff decision", () => {
     const decision = decide({ detectedProgressSummary });
 
     expect(classifySuccessfulRunReportedDisposition({
-      livenessState: "needs_followup",
+      livenessState: "advanced",
       detectedProgressSummary,
     })).toBe("unverified");
     expect(decision.kind).toBe("enqueue");
@@ -163,8 +163,15 @@ describe("successful run handoff decision", () => {
     });
     expect(decision.payload.validDispositionOptions).not.toContain("mark_done_or_cancelled");
     expect(successfulRunHandoffDoneGateReason(decision.contextSnapshot, issue.id)).toContain(
-      "reported no_control_plane_evidence work",
+      "reported no control plane evidence work",
     );
+  });
+
+  it("does not gate done for an intentional non-verification statement with durable evidence", () => {
+    expect(classifySuccessfulRunReportedDisposition({
+      livenessState: "advanced",
+      detectedProgressSummary: "The migration was not run by design because this change only updates documentation.",
+    })).toBeNull();
   });
 
   it("does not queue when the issue already has a valid disposition", () => {
