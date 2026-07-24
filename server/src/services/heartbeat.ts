@@ -2049,6 +2049,8 @@ type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  /** Cache-creation (write) tokens, a subset of inputTokens. */
+  cacheWriteInputTokens?: number;
 };
 
 type SessionCompactionDecision = {
@@ -2791,10 +2793,12 @@ export function buildExplicitResumeSessionOverride(input: {
 
 function normalizeUsageTotals(usage: UsageSummary | null | undefined): UsageTotals | null {
   if (!usage) return null;
+  const cacheWriteInputTokens = Math.max(0, Math.floor(asNumber(usage.cacheWriteInputTokens, 0)));
   return {
     inputTokens: Math.max(0, Math.floor(asNumber(usage.inputTokens, 0))),
     cachedInputTokens: Math.max(0, Math.floor(asNumber(usage.cachedInputTokens, 0))),
     outputTokens: Math.max(0, Math.floor(asNumber(usage.outputTokens, 0))),
+    ...(cacheWriteInputTokens > 0 ? { cacheWriteInputTokens } : {}),
   };
 }
 
@@ -2814,6 +2818,10 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
     0,
     Math.floor(asNumber(parsed.rawOutputTokens, asNumber(parsed.outputTokens, 0))),
   );
+  const cacheWriteInputTokens = Math.max(
+    0,
+    Math.floor(asNumber(parsed.rawCacheWriteInputTokens, asNumber(parsed.cacheWriteInputTokens, 0))),
+  );
 
   if (inputTokens <= 0 && cachedInputTokens <= 0 && outputTokens <= 0) {
     return null;
@@ -2823,6 +2831,7 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
     inputTokens,
     cachedInputTokens,
     outputTokens,
+    ...(cacheWriteInputTokens > 0 ? { cacheWriteInputTokens } : {}),
   };
 }
 
@@ -2839,11 +2848,15 @@ function deriveNormalizedUsageDelta(current: UsageTotals | null, previous: Usage
   const outputTokens = current.outputTokens >= previous.outputTokens
     ? current.outputTokens - previous.outputTokens
     : current.outputTokens;
+  const prevWrite = previous.cacheWriteInputTokens ?? 0;
+  const curWrite = current.cacheWriteInputTokens ?? 0;
+  const cacheWriteInputTokens = curWrite >= prevWrite ? curWrite - prevWrite : curWrite;
 
   return {
     inputTokens: Math.max(0, inputTokens),
     cachedInputTokens: Math.max(0, cachedInputTokens),
     outputTokens: Math.max(0, outputTokens),
+    ...(cacheWriteInputTokens > 0 ? { cacheWriteInputTokens: Math.max(0, cacheWriteInputTokens) } : {}),
   };
 }
 
@@ -13820,6 +13833,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 rawInputTokens: rawUsage.inputTokens,
                 rawCachedInputTokens: rawUsage.cachedInputTokens,
                 rawOutputTokens: rawUsage.outputTokens,
+                ...(rawUsage.cacheWriteInputTokens != null ? { rawCacheWriteInputTokens: rawUsage.cacheWriteInputTokens } : {}),
               } : {}),
               ...(sessionUsageResolution.derivedFromSessionTotals
                 ? { usageSource: "session_delta" }

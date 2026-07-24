@@ -26,6 +26,10 @@
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts"
   },
+  "bin": {
+    "paperclip-issue-update.sh": "skills/paperclip/scripts/paperclip-issue-update.sh",
+    "paperclip-upload-artifact.sh": "skills/paperclip/scripts/paperclip-upload-artifact.sh"
+  },
   "files": [
     "dist",
     "ui-dist",

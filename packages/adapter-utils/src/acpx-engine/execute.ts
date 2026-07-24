@@ -1105,7 +1105,8 @@ async function writePaperclipClaudeSettings(input: {
     "Bash(curl:*)",
     "Bash(env:*)",
     "Bash(env)",
-    `Bash(${input.cwd}/scripts/paperclip-issue-update.sh:*)`,
+    "Bash(paperclip-issue-update.sh:*)",
+    "Bash(paperclip-upload-artifact.sh:*)",
     `Bash(${input.cwd}/scripts/paperclip:*)`,
   ]);
 
@@ -2087,12 +2088,13 @@ export function summarizeAcpxTurnUsage(input: {
   const cachedWriteTokens = Math.max(0, Math.floor(asNumber(breakdown?.cachedWriteTokens, 0)));
   const hasTokens = inputTokens > 0 || outputTokens > 0 || cachedReadTokens > 0 || cachedWriteTokens > 0;
   // Cache-write tokens are prompt tokens the provider billed to create cache
-  // entries; UsageSummary has no dedicated field, so count them as input.
+  // entries; count them as input for cost purposes and also track separately.
   const usage: UsageSummary | null = hasTokens
     ? {
         inputTokens: inputTokens + cachedWriteTokens,
         outputTokens,
         cachedInputTokens: cachedReadTokens,
+        ...(cachedWriteTokens > 0 ? { cacheWriteInputTokens: cachedWriteTokens } : {}),
       }
     : null;
   const usageDetail = breakdown
