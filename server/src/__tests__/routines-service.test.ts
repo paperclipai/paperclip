@@ -1304,6 +1304,94 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
   });
 
+  it.each([
+    ["blocked", "coalesce_if_active", "coalesced"],
+    ["in_review", "coalesce_if_active", "coalesced"],
+    ["blocked", "skip_if_active", "skipped"],
+  ] as const)(
+    "%s scheduled routine issue without a live heartbeat is %s on the next tick",
+    async (issueStatus, concurrencyPolicy, expectedRunStatus) => {
+      const { companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+      await db
+        .update(routines)
+        .set({ concurrencyPolicy })
+        .where(eq(routines.id, routine.id));
+
+      const previousRunId = randomUUID();
+      const previousIssue = await issueSvc.create(companyId, {
+        projectId: routine.projectId,
+        title: routine.title,
+        description: routine.description,
+        status: issueStatus,
+        priority: routine.priority,
+        assigneeAgentId: routine.assigneeAgentId,
+        originKind: "routine_execution",
+        originId: routine.id,
+        originRunId: previousRunId,
+      });
+
+      await db.insert(routineRuns).values({
+        id: previousRunId,
+        companyId,
+        routineId: routine.id,
+        triggerId: null,
+        source: "schedule",
+        status: "issue_created",
+        triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+        linkedIssueId: previousIssue.id,
+        completedAt: new Date("2026-03-20T12:00:00.000Z"),
+      });
+
+      const { trigger } = await svc.createTrigger(
+        routine.id,
+        {
+          kind: "schedule",
+          label: "every two hours",
+          cronExpression: "0 */2 * * *",
+          timezone: "UTC",
+        },
+        {},
+      );
+      await db
+        .update(routineTriggers)
+        .set({ nextRunAt: new Date("2026-03-20T14:00:00.000Z") })
+        .where(eq(routineTriggers.id, trigger.id));
+
+      const result = await svc.tickScheduledTriggers(new Date("2026-03-20T14:00:00.000Z"));
+
+      expect(result.triggered).toBe(1);
+      expect(wakeups).toHaveLength(0);
+
+      const routineIssues = await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toEqual([{ id: previousIssue.id, status: issueStatus }]);
+
+      const runs = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toHaveLength(2);
+      const dedupedRun = runs.find((run) => run.id !== previousRunId);
+      expect(dedupedRun).toMatchObject({
+        source: "schedule",
+        status: expectedRunStatus,
+        linkedIssueId: previousIssue.id,
+        coalescedIntoRunId: previousRunId,
+      });
+
+      const [updatedTrigger] = await db
+        .select({ lastResult: routineTriggers.lastResult, nextRunAt: routineTriggers.nextRunAt })
+        .from(routineTriggers)
+        .where(eq(routineTriggers.id, trigger.id));
+      expect(updatedTrigger?.lastResult).toMatch(new RegExp(expectedRunStatus, "i"));
+      expect(updatedTrigger?.nextRunAt?.getTime()).toBeGreaterThan(
+        new Date("2026-03-20T14:00:00.000Z").getTime(),
+      );
+    },
+  );
+
   it("does not coalesce live routine runs with different resolved variables", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
     const variableRoutine = await svc.create(
