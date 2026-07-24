@@ -51,6 +51,10 @@ function isTerminalStatus(status: string): boolean {
   return status === "failed" || status === "timed_out" || status === "cancelled" || status === "interrupted" || status === "succeeded";
 }
 
+function canReadPersistedLog(run: RunTranscriptSource): boolean {
+  return run.status === "running" || isTerminalStatus(run.status);
+}
+
 function runKnownLogBytes(run: RunTranscriptSource): number | null {
   const bytes = run.status === "queued"
     ? run.logBytes
@@ -114,7 +118,7 @@ export function useLiveRunTranscripts({
 
   const runById = useMemo(() => new Map(normalizedRuns.map((run) => [run.id, run])), [normalizedRuns]);
   const activeRunIds = useMemo(
-    () => new Set(normalizedRuns.filter((run) => !isTerminalStatus(run.status)).map((run) => run.id)),
+    () => new Set(normalizedRuns.filter((run) => run.status === "running").map((run) => run.id)),
     [normalizedRuns],
   );
   const runIdsKey = useMemo(
@@ -193,7 +197,8 @@ export function useLiveRunTranscripts({
   }, [normalizedRuns]);
 
   useEffect(() => {
-    if (normalizedRuns.length === 0) return;
+    const readableRuns = normalizedRuns.filter(canReadPersistedLog);
+    if (readableRuns.length === 0) return;
 
     let cancelled = false;
 
@@ -232,11 +237,11 @@ export function useLiveRunTranscripts({
     };
 
     const readAll = async () => {
-      await Promise.all(normalizedRuns.map((run) => readRunLog(run)));
+      await Promise.all(readableRuns.map((run) => readRunLog(run)));
     };
 
     void readAll();
-    const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
+    const activeRuns = readableRuns.filter((run) => run.status === "running");
     // The realtime websocket is the primary live source when enabled, so the
     // recurring poll only needs to run as a slow fallback rather than doubling
     // the live update work every couple of seconds.
@@ -411,7 +416,7 @@ export function useLiveRunTranscripts({
 
   return {
     transcriptByRun,
-    isInitialHydrating: normalizedRuns.some((run) => !hydratedRunIds.has(run.id)),
+    isInitialHydrating: normalizedRuns.some((run) => canReadPersistedLog(run) && !hydratedRunIds.has(run.id)),
     hasOutputForRun(runId: string) {
       return (chunksByRun.get(runId)?.length ?? 0) > 0 || runById.get(runId)?.hasStoredOutput === true;
     },
