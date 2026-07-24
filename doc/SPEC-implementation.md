@@ -913,6 +913,7 @@ Allowed states are `joined` and `left`. Endpoints require a concrete board user 
 ## 10.8 Cost and Budgets
 
 - `POST /companies/:companyId/cost-events`
+- `GET /companies/:companyId/cost-events/lookup?idempotencyKey=:key`
 - `GET /companies/:companyId/costs/summary`
 - `GET /companies/:companyId/costs/by-agent`
 - `GET /companies/:companyId/costs/by-project`
@@ -1106,12 +1107,32 @@ Validation:
 
 - non-negative token counts
 - `costCents >= 0`
+- reject `occurredAt` values later than the server clock
 - company ownership checks for all linked entities
+
+`Idempotency-Key` is optional for legacy callers. When present, the server
+enforces uniqueness per company:
+
+- the first request stores the accepted event and a server-computed request digest
+- the same key and same request payload returns the original event without
+  adding cost or repeating mutation-side effects
+- the same key and a different request payload returns `409`
+- `payloadDigest` may carry a caller's logical payload digest for recovery; it
+  does not replace the server-computed request digest
+- raw lookup by the key requires `company_scope:read`, remains company-scoped,
+  and agent credentials can only retrieve their own event
+
+For clients that persist a logical `payloadDigest`, `billingCode` may be used as
+the idempotency key when the header is unavailable. The lookup endpoint accepts
+`billingCode` as a query alias for that persisted idempotency key; it is not a
+general lookup over legacy non-idempotent billing-code groups.
 
 ## 13.4 Rollups
 
 Read-time aggregate queries are acceptable for V1.
 Materialized rollups can be added later if query latency exceeds targets.
+Dashboard month-to-date spend and Costs range queries use the same inclusive
+upper timestamp boundary.
 
 ## 14. UI Requirements (Board App)
 

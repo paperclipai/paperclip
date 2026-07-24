@@ -2,7 +2,7 @@ import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
@@ -13,6 +13,16 @@ export interface CostDateRange {
 
 const METERED_BILLING_TYPE = "metered_api";
 const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overage"] as const;
+type CostEventCreateData = Omit<
+  typeof costEvents.$inferInsert,
+  "companyId" | "idempotencyKey" | "idempotencyDigest" | "payloadDigest"
+>;
+
+export interface CostEventIdempotency {
+  key: string;
+  digest: string;
+  payloadDigest?: string | null;
+}
 
 function sumAsNumber(column: typeof costEvents.costCents | typeof costEvents.inputTokens | typeof costEvents.cachedInputTokens | typeof costEvents.outputTokens) {
   return sql<number>`coalesce(sum(${column}), 0)::double precision`;
@@ -25,6 +35,16 @@ function currentUtcMonthWindow(now = new Date()) {
     start: new Date(Date.UTC(year, month, 1, 0, 0, 0, 0)),
     end: new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0)),
   };
+}
+
+export function assertCostOccurredAtNotFuture(occurredAt: Date, now = new Date()) {
+  if (occurredAt.getTime() > now.getTime()) {
+    throw unprocessable("Cost event occurredAt cannot be in the future", {
+      code: "cost_event_future_occurred_at",
+      occurredAt: occurredAt.toISOString(),
+      serverTime: now.toISOString(),
+    });
+  }
 }
 
 async function getMonthlySpendTotal(
@@ -51,56 +71,143 @@ async function getMonthlySpendTotal(
 
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
-  return {
-    createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
-      const agent = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, data.agentId))
-        .then((rows) => rows[0] ?? null);
 
-      if (!agent) throw notFound("Agent not found");
-      if (agent.companyId !== companyId) {
-        throw unprocessable("Agent does not belong to company");
-      }
+  async function assertAgentBelongsToCompany(companyId: string, agentId: string) {
+    const agent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!agent) throw notFound("Agent not found");
+    if (agent.companyId !== companyId) {
+      throw unprocessable("Agent does not belong to company");
+    }
+  }
+
+  function insertValues(companyId: string, data: CostEventCreateData) {
+    return {
+      ...data,
+      companyId,
+      biller: data.biller ?? data.provider,
+      billingType: data.billingType ?? "unknown",
+      cachedInputTokens: data.cachedInputTokens ?? 0,
+    };
+  }
+
+  async function applyCreatedEvent(
+    companyId: string,
+    event: typeof costEvents.$inferSelect,
+  ) {
+    const [agentMonthSpend, companyMonthSpend] = await Promise.all([
+      getMonthlySpendTotal(db, { companyId, agentId: event.agentId }),
+      getMonthlySpendTotal(db, { companyId }),
+    ]);
+
+    await db
+      .update(agents)
+      .set({
+        spentMonthlyCents: agentMonthSpend,
+        updatedAt: new Date(),
+      })
+      .where(eq(agents.id, event.agentId));
+
+    await db
+      .update(companies)
+      .set({
+        spentMonthlyCents: companyMonthSpend,
+        updatedAt: new Date(),
+      })
+      .where(eq(companies.id, companyId));
+
+    await budgets.evaluateCostEvent(event);
+  }
+
+  async function findByIdempotencyKey(
+    companyId: string,
+    key: string,
+    agentId?: string,
+  ) {
+    const conditions = [
+      eq(costEvents.companyId, companyId),
+      eq(costEvents.idempotencyKey, key),
+    ];
+    if (agentId) conditions.push(eq(costEvents.agentId, agentId));
+    return db
+      .select()
+      .from(costEvents)
+      .where(and(...conditions))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function resolveIdempotentReplay(
+    existing: typeof costEvents.$inferSelect,
+    idempotency: CostEventIdempotency,
+  ) {
+    if (existing.idempotencyDigest !== idempotency.digest) {
+      throw conflict("Idempotency-Key was already used with a different cost payload", {
+        code: "cost_event_idempotency_conflict",
+        idempotencyKey: idempotency.key,
+      });
+    }
+    return { event: existing, replayed: true as const };
+  }
+
+  return {
+    createEvent: async (companyId: string, data: CostEventCreateData) => {
+      assertCostOccurredAtNotFuture(data.occurredAt);
+      await assertAgentBelongsToCompany(companyId, data.agentId);
+
+      const event = await db
+        .insert(costEvents)
+        .values(insertValues(companyId, data))
+        .returning()
+        .then((rows) => rows[0]);
+
+      if (!event) throw new Error("Cost event insert returned no row");
+      await applyCreatedEvent(companyId, event);
+      return event;
+    },
+
+    createIdempotentEvent: async (
+      companyId: string,
+      data: CostEventCreateData,
+      idempotency: CostEventIdempotency,
+    ) => {
+      const stored = await findByIdempotencyKey(companyId, idempotency.key);
+      if (stored) return resolveIdempotentReplay(stored, idempotency);
+
+      assertCostOccurredAtNotFuture(data.occurredAt);
+      await assertAgentBelongsToCompany(companyId, data.agentId);
 
       const event = await db
         .insert(costEvents)
         .values({
-          ...data,
-          companyId,
-          biller: data.biller ?? data.provider,
-          billingType: data.billingType ?? "unknown",
-          cachedInputTokens: data.cachedInputTokens ?? 0,
+          ...insertValues(companyId, data),
+          idempotencyKey: idempotency.key,
+          idempotencyDigest: idempotency.digest,
+          payloadDigest: idempotency.payloadDigest ?? null,
+        })
+        .onConflictDoNothing({
+          target: [costEvents.companyId, costEvents.idempotencyKey],
         })
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
 
-      const [agentMonthSpend, companyMonthSpend] = await Promise.all([
-        getMonthlySpendTotal(db, { companyId, agentId: event.agentId }),
-        getMonthlySpendTotal(db, { companyId }),
-      ]);
+      if (event) {
+        await applyCreatedEvent(companyId, event);
+        return { event, replayed: false };
+      }
 
-      await db
-        .update(agents)
-        .set({
-          spentMonthlyCents: agentMonthSpend,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, event.agentId));
-
-      await db
-        .update(companies)
-        .set({
-          spentMonthlyCents: companyMonthSpend,
-          updatedAt: new Date(),
-        })
-        .where(eq(companies.id, companyId));
-
-      await budgets.evaluateCostEvent(event);
-
-      return event;
+      const existing = await findByIdempotencyKey(companyId, idempotency.key);
+      if (!existing) {
+        throw new Error("Idempotent cost event conflict did not resolve to a stored row");
+      }
+      return resolveIdempotentReplay(existing, idempotency);
     },
+
+    findByIdempotencyKey,
 
     summary: async (companyId: string, range?: CostDateRange) => {
       const company = await db

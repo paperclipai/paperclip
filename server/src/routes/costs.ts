@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import {
   createCostEventSchema,
@@ -43,6 +44,30 @@ export function parseCostLimit(query: Record<string, unknown>) {
     throw badRequest("invalid 'limit' value");
   }
   return limit;
+}
+
+export function parseCostIdempotencyKey(raw: unknown) {
+  if (raw == null || raw === "") return null;
+  if (Array.isArray(raw)) throw badRequest("Idempotency-Key must be a single value");
+  const key = String(raw).trim();
+  if (key.length === 0 || key.length > 200) {
+    throw badRequest("Idempotency-Key must contain 1 to 200 characters");
+  }
+  return key;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(",")}}`;
+}
+
+export function digestCostEventPayload(payload: unknown) {
+  return createHash("sha256").update(canonicalJson(payload)).digest("base64url");
 }
 
 export function costRoutes(
@@ -111,33 +136,93 @@ export function costRoutes(
     return false;
   }
 
-  router.post("/companies/:companyId/cost-events", validate(createCostEventSchema), async (req, res) => {
+  router.post(
+    "/companies/:companyId/cost-events",
+    (req, res, next) => {
+      res.locals.costEventPayloadDigest = digestCostEventPayload(req.body);
+      next();
+    },
+    validate(createCostEventSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
+        res.status(403).json({ error: "Agent can only report its own costs" });
+        return;
+      }
+
+      const headerKey = parseCostIdempotencyKey(req.header("Idempotency-Key"));
+      const bodyKey = req.body.payloadDigest
+        ? parseCostIdempotencyKey(req.body.billingCode)
+        : null;
+      if (req.body.payloadDigest && headerKey && bodyKey && headerKey !== bodyKey) {
+        throw badRequest("Idempotency-Key must match billingCode when payloadDigest is provided");
+      }
+      const idempotencyKey = headerKey ?? bodyKey;
+      if (req.body.payloadDigest && !idempotencyKey) {
+        throw badRequest("payloadDigest requires Idempotency-Key or billingCode");
+      }
+
+      const { payloadDigest, ...eventBody } = req.body;
+      const result = idempotencyKey
+        ? await costs.createIdempotentEvent(
+            companyId,
+            {
+              ...eventBody,
+              occurredAt: new Date(eventBody.occurredAt),
+            },
+            {
+              key: idempotencyKey,
+              digest: res.locals.costEventPayloadDigest as string,
+              payloadDigest,
+            },
+          )
+        : {
+            event: await costs.createEvent(companyId, {
+              ...eventBody,
+              occurredAt: new Date(eventBody.occurredAt),
+            }),
+            replayed: false,
+          };
+      const { event, replayed } = result;
+
+      if (!replayed) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "cost.reported",
+          entityType: "cost_event",
+          entityId: event.id,
+          details: { costCents: event.costCents, model: event.model },
+        });
+      }
+
+      res.status(replayed ? 200 : 201).json(event);
+    },
+  );
+
+  router.get("/companies/:companyId/cost-events/lookup", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const rawKey = req.query.idempotencyKey ?? req.query.billingCode;
+    const key = parseCostIdempotencyKey(rawKey);
+    if (!key) throw badRequest("billingCode or idempotencyKey is required");
 
-    if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
-      res.status(403).json({ error: "Agent can only report its own costs" });
+    const event = await costs.findByIdempotencyKey(
+      companyId,
+      key,
+      req.actor.type === "agent" ? req.actor.agentId : undefined,
+    );
+    if (!event) {
+      res.status(404).json({ error: "Cost event not found" });
       return;
     }
-
-    const event = await costs.createEvent(companyId, {
-      ...req.body,
-      occurredAt: new Date(req.body.occurredAt),
-    });
-
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "cost.reported",
-      entityType: "cost_event",
-      entityId: event.id,
-      details: { costCents: event.costCents, model: event.model },
-    });
-
-    res.status(201).json(event);
+    res.json(event);
   });
 
   router.post("/companies/:companyId/finance-events", validate(createFinanceEventSchema), async (req, res) => {

@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
@@ -15,6 +15,13 @@ export function getUtcMonthStart(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
 }
 
+export function getUtcMonthToDateWindow(date: Date) {
+  return {
+    from: getUtcMonthStart(date),
+    to: date,
+  };
+}
+
 function getRecentUtcDateKeys(now: Date, days: number): string[] {
   const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   return Array.from({ length: days }, (_, index) => {
@@ -23,8 +30,12 @@ function getRecentUtcDateKeys(now: Date, days: number): string[] {
   });
 }
 
-export function dashboardService(db: Db) {
+export function dashboardService(
+  db: Db,
+  options: { now?: () => Date } = {},
+) {
   const budgets = budgetService(db);
+  const now = options.now ?? (() => new Date());
   return {
     summary: async (companyId: string) => {
       const company = await db
@@ -80,9 +91,9 @@ export function dashboardService(db: Db) {
         if (row.status !== "done" && row.status !== "cancelled") taskCounts.open += count;
       }
 
-      const now = new Date();
-      const monthStart = getUtcMonthStart(now);
-      const runActivityDays = getRecentUtcDateKeys(now, DASHBOARD_RUN_ACTIVITY_DAYS);
+      const currentTime = now();
+      const monthWindow = getUtcMonthToDateWindow(currentTime);
+      const runActivityDays = getRecentUtcDateKeys(currentTime, DASHBOARD_RUN_ACTIVITY_DAYS);
       const runActivityStart = new Date(`${runActivityDays[0]}T00:00:00.000Z`);
       const [{ monthSpend }] = await db
         .select({
@@ -92,7 +103,8 @@ export function dashboardService(db: Db) {
         .where(
           and(
             eq(costEvents.companyId, companyId),
-            gte(costEvents.occurredAt, monthStart),
+            gte(costEvents.occurredAt, monthWindow.from),
+            lte(costEvents.occurredAt, monthWindow.to),
           ),
         );
 

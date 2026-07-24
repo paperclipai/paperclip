@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, costEvents, createDb, heartbeatRuns } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { dashboardService, getUtcMonthStart } from "../services/dashboard.ts";
+import {
+  dashboardService,
+  getUtcMonthStart,
+  getUtcMonthToDateWindow,
+} from "../services/dashboard.ts";
+import { costService } from "../services/costs.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -47,6 +52,7 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -54,6 +60,65 @@ describeEmbeddedPostgres("dashboard service", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("uses the same inclusive month-to-date boundary as Costs", async () => {
+    const boundary = new Date("2026-07-24T04:00:00.000Z");
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        provider: "anthropic",
+        model: "aggregate",
+        costCents: 10,
+        occurredAt: new Date("2026-07-01T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        provider: "anthropic",
+        model: "aggregate",
+        costCents: 20,
+        occurredAt: boundary,
+      },
+      {
+        companyId,
+        agentId,
+        provider: "anthropic",
+        model: "aggregate",
+        costCents: 40,
+        occurredAt: new Date(boundary.getTime() + 1),
+      },
+    ]);
+
+    const monthWindow = getUtcMonthToDateWindow(boundary);
+    const [dashboard, costs] = await Promise.all([
+      dashboardService(db, { now: () => boundary }).summary(companyId),
+      costService(db).summary(companyId, monthWindow),
+    ]);
+
+    expect(dashboard.costs.monthSpendCents).toBe(30);
+    expect(costs.spendCents).toBe(30);
   });
 
   it("aggregates the full 14-day run activity window without recent-run truncation", async () => {
