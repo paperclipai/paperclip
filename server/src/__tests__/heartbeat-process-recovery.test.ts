@@ -5312,7 +5312,106 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
-  it("escalates after repeated adapter_failed continuation retries with the cause in the comment", async () => {
+  it("does not reclaim an issue while its newer task-scoped checkout run is active", async () => {
+    const { companyId, agentId, issueId, runId: olderRunId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+    });
+    const activeRunId = randomUUID();
+    const activeWakeupRequestId = randomUUID();
+    const activeAt = new Date("2026-03-19T00:10:00.000Z");
+    await db.insert(agentWakeupRequests).values({
+      id: activeWakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { taskId: issueId },
+      status: "claimed",
+      runId: activeRunId,
+      claimedAt: activeAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: activeWakeupRequestId,
+      contextSnapshot: {
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+      startedAt: activeAt,
+      createdAt: activeAt,
+      updatedAt: activeAt,
+    });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: activeRunId,
+        executionRunId: activeRunId,
+        updatedAt: activeAt,
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: activeRunId,
+      executionRunId: activeRunId,
+    });
+
+    const activeRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, activeRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(activeRun).toMatchObject({
+      id: activeRunId,
+      status: "running",
+      agentId,
+    });
+    const activeWakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, activeWakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(activeWakeup).toMatchObject({
+      id: activeWakeupRequestId,
+      status: "claimed",
+      runId: activeRunId,
+    });
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+      ));
+    expect(actions).toHaveLength(0);
+
+    const olderRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, olderRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(olderRun?.status).toBe("succeeded");
+  });
+
+  it("routes stranded recovery exactly once after the retry threshold with no live path", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
@@ -5372,6 +5471,46 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain("3× attempts");
     expect(comments[0]?.body).toContain("Latest cause: `adapter_failed`");
+
+    const firstAction = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(firstAction).toBeTruthy();
+    const firstRoutedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    const repeatedResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(repeatedResult.escalated).toBe(0);
+    expect(repeatedResult.issueIds).not.toContain(issueId);
+
+    const repeatedActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+      ));
+    expect(repeatedActions).toHaveLength(1);
+    expect(repeatedActions[0]?.id).toBe(firstAction?.id);
+
+    const repeatedRoutedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(repeatedRoutedIssue).toMatchObject({
+      status: firstRoutedIssue?.status,
+      assigneeAgentId: firstRoutedIssue?.assigneeAgentId,
+      parentId: firstRoutedIssue?.parentId,
+    });
   });
 
   it("does not count mixed-cause continuation failures toward the transient cap", async () => {
