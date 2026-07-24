@@ -126,6 +126,7 @@ import {
   companySkillProjectScanResultSchema,
   companySkillRenameResultSchema,
   companySkillRenameSchema,
+  companySkillRiskTierOverrideSchema,
   companySkillTestInputCreateSchema,
   companySkillTestInputUpdateSchema,
   companySkillTestRunCreateSchema,
@@ -4714,6 +4715,18 @@ registry.registerPath({
     body: jsonBody(companySkillFileUpdateSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/skills/{skillId}/risk-tier",
+  tags: ["skills"],
+  summary: "Override a company skill's risk tier",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    body: jsonBody(companySkillRiskTierOverrideSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
