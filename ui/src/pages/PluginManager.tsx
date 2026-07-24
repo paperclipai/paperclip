@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
+import { AlertTriangle, FlaskConical, FolderOpen, Package, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
@@ -73,7 +73,7 @@ function ExperimentalBadge() {
  *
  * Provides a management UI for the Paperclip plugin system:
  * - Lists all installed plugins with their status, version, and category badges.
- * - Allows installing new plugins by npm package name.
+ * - Allows installing new plugins by npm package name or local path.
  * - Provides per-plugin actions: enable, disable, navigate to settings.
  * - Uninstall with a two-step confirmation dialog to prevent accidental removal.
  *
@@ -92,6 +92,7 @@ export function PluginManager() {
   const { pushToast } = useToastActions();
 
   const [installPackage, setInstallPackage] = useState("");
+  const [isLocalPath, setIsLocalPath] = useState(false);
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [uninstallPluginId, setUninstallPluginId] = useState<string | null>(null);
   const [uninstallPluginName, setUninstallPluginName] = useState<string>("");
@@ -129,6 +130,7 @@ export function PluginManager() {
       invalidatePluginQueries();
       setInstallDialogOpen(false);
       setInstallPackage("");
+      setIsLocalPath(false);
       pushToast({ title: "Plugin installed successfully", tone: "success" });
     },
     onError: (err: Error) => {
@@ -208,24 +210,58 @@ export function PluginManager() {
             <DialogHeader>
               <DialogTitle>Install Plugin</DialogTitle>
               <DialogDescription>
-                Enter the npm package name of the plugin you wish to install.
+                Install a plugin from npm or from an existing local package path.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors",
+                    !isLocalPath
+                      ? "border-foreground bg-accent text-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  )}
+                  onClick={() => setIsLocalPath(false)}
+                >
+                  <Package className="h-3.5 w-3.5" />
+                  npm package
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors",
+                    isLocalPath
+                      ? "border-foreground bg-accent text-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  )}
+                  onClick={() => setIsLocalPath(true)}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  Local path
+                </button>
+              </div>
               <div className="grid gap-2">
-                <Label htmlFor="packageName">npm Package Name</Label>
+                <Label htmlFor="packageName">{isLocalPath ? "Path to plugin package" : "npm Package Name"}</Label>
                 <Input
                   id="packageName"
-                  placeholder="@paperclipai/plugin-example"
+                  className={isLocalPath ? "font-mono text-xs" : undefined}
+                  placeholder={isLocalPath ? "/plugins/my-plugin" : "@paperclipai/plugin-example"}
                   value={installPackage}
                   onChange={(e) => setInstallPackage(e.target.value)}
                 />
+                {isLocalPath && (
+                  <p className="text-xs text-muted-foreground">
+                    The path is resolved on the Paperclip server and must contain a Paperclip plugin manifest.
+                  </p>
+                )}
               </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
               <Button
-                onClick={() => installMutation.mutate({ packageName: installPackage })}
+                onClick={() => installMutation.mutate({ packageName: installPackage, isLocalPath })}
                 disabled={!installPackage || installMutation.isPending}
               >
                 {installMutation.isPending ? "Installing..." : "Install"}
