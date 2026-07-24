@@ -102,7 +102,6 @@ export function createHostProcessRoutineExceptionCapabilityBroker(
     runtimeEnv.PAPERCLIP_ROUTINE_EXCEPTION_BROKER_SHA256?.trim().toLowerCase() ?? "";
   const verify = deps.verifyExecutable ?? verifyExecutable;
   const invoke = deps.invokeProcess ?? invokeProcess;
-  let verified: Promise<void> | null = null;
 
   return {
     async invoke(capabilityId, input, signal) {
@@ -112,8 +111,7 @@ export function createHostProcessRoutineExceptionCapabilityBroker(
       if (!command || !path.isAbsolute(command) || !SHA256_HEX.test(expectedDigest)) {
         throw new Error("CAPABILITY_BROKER_UNAVAILABLE");
       }
-      verified ??= verify(command, expectedDigest);
-      await verified;
+      await verify(command, expectedDigest);
       return invoke({ command, capabilityId, input, signal });
     },
   };

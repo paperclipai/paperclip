@@ -34,9 +34,13 @@ describe("host process routine exception capability broker", () => {
       capabilityId: "http.get:pol-runtime",
       ok: true,
     });
+    await expect(broker.invoke("http.get:pol-runtime", { routeIds: ["readiness"] })).resolves.toEqual({
+      capabilityId: "http.get:pol-runtime",
+      ok: true,
+    });
     await expect(broker.invoke("filesystem.write:anywhere", {})).rejects.toThrow("CAPABILITY_DENIED");
-    expect(verifyExecutable).toHaveBeenCalledOnce();
-    expect(invokeProcess).toHaveBeenCalledWith(expect.objectContaining({
+    expect(verifyExecutable).toHaveBeenCalledTimes(2);
+    expect(invokeProcess).toHaveBeenNthCalledWith(1, expect.objectContaining({
       command: COMMAND,
       capabilityId: "http.get:pol-runtime",
       input: { routeIds: ["status"] },
