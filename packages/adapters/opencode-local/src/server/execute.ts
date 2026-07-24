@@ -54,6 +54,12 @@ import {
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  OPENCODE_TRANSIENT_UPSTREAM_MODE_ENV,
+  detectOpenCodeTransientUpstream,
+  resolveOpenCodeTransientUpstreamMode,
+  resolveOpenCodeTransientUpstreamOutcome,
+} from "./transient.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -572,6 +578,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const printLogs = isTruthyEnvFlag(
       env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
     );
+    // GOL-4038 Layer A: classification mode for retryable upstream failures that
+    // OpenCode otherwise reports as a clean empty success. Default is shadow
+    // (annotate resultJson, change nothing); rollout flips agents to enforce.
+    const transientUpstreamMode = resolveOpenCodeTransientUpstreamMode(
+      env[OPENCODE_TRANSIENT_UPSTREAM_MODE_ENV] ?? process.env[OPENCODE_TRANSIENT_UPSTREAM_MODE_ENV],
+    );
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];
       if (printLogs) args.push("--print-logs");
@@ -656,17 +668,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
       const synthesizedExitCode = parsedError && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
+      const transientDetection = detectOpenCodeTransientUpstream({
+        stdout: attempt.proc.stdout,
+        stderr: attempt.proc.stderr,
+        errorMessage: parsedError || null,
+        exitCode: synthesizedExitCode,
+        timedOut: false,
+        hasOutput: attempt.parsed.summary.length > 0,
+      });
+      const transientOutcome = resolveOpenCodeTransientUpstreamOutcome({
+        mode: transientUpstreamMode,
+        detection: transientDetection,
+        exitCode: synthesizedExitCode,
+      });
+      const effectiveExitCode = transientOutcome.exitCode;
       const fallbackErrorMessage =
         parsedError ||
+        (transientOutcome.enforce ? transientDetection.evidence : null) ||
         stderrLine ||
-        `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
+        `OpenCode exited with code ${effectiveExitCode ?? -1}`;
       const modelId = model || null;
 
       return {
-        exitCode: synthesizedExitCode,
+        exitCode: effectiveExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+        errorMessage: (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+        errorCode: transientOutcome.errorCode,
+        errorFamily: transientOutcome.errorFamily,
+        retryNotBefore: transientOutcome.retryNotBefore,
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
@@ -683,10 +713,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
+          ...(transientOutcome.errorFamily ? { errorFamily: transientOutcome.errorFamily } : {}),
+          ...(transientOutcome.retryNotBefore
+            ? {
+                retryNotBefore: transientOutcome.retryNotBefore,
+                transientRetryNotBefore: transientOutcome.retryNotBefore,
+              }
+            : {}),
+          ...(transientOutcome.shadowRecord
+            ? { opencodeTransientUpstreamShadow: transientOutcome.shadowRecord }
+            : {}),
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
       };
+    };
+
+    const finalizeResult = async (result: AdapterExecutionResult): Promise<AdapterExecutionResult> => {
+      const shadow = parseObject(result.resultJson?.opencodeTransientUpstreamShadow);
+      if (Object.keys(shadow).length > 0) {
+        await onLog(
+          "stderr",
+          `[paperclip] OpenCode transient-upstream SHADOW: would set errorCode=opencode_transient_upstream retryNotBefore=${asString(shadow.wouldRetryNotBefore, "n/a")} (signature: ${asString(shadow.signature, "unknown")}). Outcome unchanged.\n`,
+        );
+      } else if (result.errorCode === "opencode_transient_upstream") {
+        await onLog(
+          "stderr",
+          `[paperclip] OpenCode transient-upstream ENFORCE: reporting backed-off failure, retryNotBefore=${result.retryNotBefore ?? "n/a"}.\n`,
+        );
+      }
+      return result;
     };
 
     try {
@@ -703,10 +759,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
-        return toResult(retry, true);
+        return await finalizeResult(toResult(retry, true));
       }
 
-      return toResult(initial);
+      return await finalizeResult(toResult(initial));
     } finally {
       await Promise.all([
         paperclipBridge?.stop(),
