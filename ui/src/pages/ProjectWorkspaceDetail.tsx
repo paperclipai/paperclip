@@ -21,6 +21,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
+import { findCompanyByUrlSegment } from "../lib/company-routes";
 
 type WorkspaceFormState = {
   name: string;
@@ -263,9 +264,7 @@ export function ProjectWorkspaceDetail() {
   const activeTab = useMemo(() => projectWorkspaceTabFromSearch(location.search), [location.search]);
 
   const routeCompanyId = useMemo(() => {
-    if (!companyPrefix) return null;
-    const requestedPrefix = companyPrefix.toUpperCase();
-    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix)?.id ?? null;
+    return findCompanyByUrlSegment(companies, companyPrefix)?.id ?? null;
   }, [companies, companyPrefix]);
 
   const lookupCompanyId = routeCompanyId ?? selectedCompanyId ?? undefined;

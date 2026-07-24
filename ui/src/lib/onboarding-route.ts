@@ -1,6 +1,9 @@
+import { findCompanyByUrlSegment } from "./company-routes";
+
 type OnboardingRouteCompany = {
   id: string;
   issuePrefix: string;
+  slugAliases?: string[];
 };
 
 export function isOnboardingPath(pathname: string): boolean {
@@ -30,11 +33,7 @@ export function resolveRouteOnboardingOptions(params: {
     return { initialStep: 1 };
   }
 
-  const matchedCompany =
-    companies.find(
-      (company) =>
-        company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase(),
-    ) ?? null;
+  const matchedCompany = findCompanyByUrlSegment(companies, companyPrefix);
 
   if (!matchedCompany) {
     return { initialStep: 1 };

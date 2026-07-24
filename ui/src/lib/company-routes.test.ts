@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyCompanyPrefix,
   extractCompanyPrefixFromPath,
+  findCompanyByUrlSegment,
   isBoardPathWithoutPrefix,
   toCompanyRelativePath,
 } from "./company-routes";
@@ -137,5 +138,41 @@ describe("company routes", () => {
     );
     // Already-prefixed paths are returned untouched.
     expect(applyCompanyPrefix("/PAP/artifacts", "PAP")).toBe("/PAP/artifacts");
+  });
+});
+
+describe("findCompanyByUrlSegment", () => {
+  const acme = { id: "c1", issuePrefix: "ACME" };
+  const beta = { id: "c2", issuePrefix: "BETA", slugAliases: ["beta-labs", "beta-inc"] };
+  const companies = [acme, beta];
+
+  it("matches the canonical issue prefix case-insensitively", () => {
+    expect(findCompanyByUrlSegment(companies, "ACME")).toBe(acme);
+    expect(findCompanyByUrlSegment(companies, "acme")).toBe(acme);
+    expect(findCompanyByUrlSegment(companies, "AcMe")).toBe(acme);
+  });
+
+  it("matches a slug alias case-insensitively", () => {
+    expect(findCompanyByUrlSegment(companies, "beta-labs")).toBe(beta);
+    expect(findCompanyByUrlSegment(companies, "BETA-LABS")).toBe(beta);
+    expect(findCompanyByUrlSegment(companies, "beta-inc")).toBe(beta);
+  });
+
+  it("prefers a canonical prefix over another company's alias", () => {
+    const shadowing = { id: "c3", issuePrefix: "OTHER", slugAliases: ["acme"] };
+    expect(findCompanyByUrlSegment([shadowing, ...companies], "acme")).toBe(acme);
+  });
+
+  it("returns null for unknown, empty, or missing segments", () => {
+    expect(findCompanyByUrlSegment(companies, "nope")).toBeNull();
+    expect(findCompanyByUrlSegment(companies, "")).toBeNull();
+    expect(findCompanyByUrlSegment(companies, null)).toBeNull();
+    expect(findCompanyByUrlSegment(companies, undefined)).toBeNull();
+    expect(findCompanyByUrlSegment([], "acme")).toBeNull();
+  });
+
+  it("leaves companies without aliases matched by prefix only", () => {
+    expect(findCompanyByUrlSegment([acme], "acme")).toBe(acme);
+    expect(findCompanyByUrlSegment([acme], "acme-inc")).toBeNull();
   });
 });

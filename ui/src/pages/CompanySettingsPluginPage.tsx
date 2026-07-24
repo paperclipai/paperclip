@@ -4,6 +4,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { NotFoundPage } from "./NotFound";
+import { findCompanyByUrlSegment } from "../lib/company-routes";
 
 export function CompanySettingsPluginPage() {
   const params = useParams<{
@@ -15,9 +16,7 @@ export function CompanySettingsPluginPage() {
   const { setBreadcrumbs } = useBreadcrumbs();
 
   const routeCompany = useMemo(() => {
-    if (!routeCompanyPrefix) return null;
-    const requested = routeCompanyPrefix.toUpperCase();
-    return companies.find((company) => company.issuePrefix.toUpperCase() === requested) ?? null;
+    return findCompanyByUrlSegment(companies, routeCompanyPrefix);
   }, [companies, routeCompanyPrefix]);
   const hasInvalidCompanyPrefix = Boolean(routeCompanyPrefix) && !routeCompany;
   const resolvedCompanyId = routeCompany?.id ?? (routeCompanyPrefix ? null : selectedCompanyId ?? null);
