@@ -3703,6 +3703,12 @@ function buildSessionConfigCategoryValues(input: {
   agentConfigRevision: unknown;
 }) {
   const sanitizedSecretManifest = sanitizeSecretManifestForConfigFingerprint(input.secretManifest);
+  const workspaceConfig = { ...parseObject(input.workspaceConfig) };
+  // issues.updatedAt also advances for comments and status changes. Those are
+  // wake deltas, not execution-workspace configuration changes, so including
+  // the timestamp here makes every comment invalidate an otherwise reusable
+  // task session.
+  delete workspaceConfig.issueConfigRevisionAt;
   return {
     adapter: {
       adapterType: input.adapterType,
@@ -3713,7 +3719,7 @@ function buildSessionConfigCategoryValues(input: {
     modelProfile: input.modelProfile,
     instructions: input.instructions,
     issueOverrides: input.issueOverrides,
-    workspaceConfig: input.workspaceConfig,
+    workspaceConfig,
     environment: input.environment,
     envBindings: {
       environment: { env: input.environmentEnv },
