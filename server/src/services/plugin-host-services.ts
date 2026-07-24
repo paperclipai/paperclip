@@ -2289,7 +2289,9 @@ export function buildHostServices(
           const result = await interactions.acceptInteraction(
             { id: issue.id, companyId, projectId: issue.projectId ?? null, goalId: issue.goalId ?? null },
             params.interactionId,
-            {},
+            params.selectedOptionIds === undefined
+              ? {}
+              : { selectedOptionIds: params.selectedOptionIds },
             actor,
           );
           resolved = result.interaction as typeof current;

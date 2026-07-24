@@ -1530,7 +1530,13 @@ export interface PluginIssuesClient {
   respondInteraction(
     issueId: string,
     interactionId: string,
-    input: { action: "accept" | "reject"; actorUserId?: string; reason?: string | null },
+    input: {
+      action: "accept" | "reject";
+      actorUserId?: string;
+      reason?: string | null;
+      /** Explicit checkbox selection; omit to accept the interaction defaults. */
+      selectedOptionIds?: string[];
+    },
     companyId: string,
   ): Promise<{ interaction: IssueThreadInteraction; applied: boolean }>;
   /** List attachment metadata for an issue. Requires `issue.attachments.read`. */
