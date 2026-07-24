@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Lock, type LucideIcon } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -38,6 +39,14 @@ export interface AgentSkillRowProps {
   /** Tooltip shown on a disabled toggle (unsupported adapter). */
   disabledReason?: string | null;
   onCheckedChange?: (checked: boolean) => void;
+  /** Small badge rendered inline after the name (e.g. an active release pin). */
+  badge?: ReactNode;
+  /**
+   * Interactive control rendered in the trailing area before the toggle (e.g.
+   * the release picker). Kept outside the name Link so it never triggers
+   * navigation.
+   */
+  accessory?: ReactNode;
 }
 
 /**
@@ -53,6 +62,8 @@ export function AgentSkillRow({
   disabled = false,
   disabledReason,
   onCheckedChange,
+  badge,
+  accessory,
 }: AgentSkillRowProps) {
   const readOnly = variant === "readonly";
   const SourceIcon = data.sourceMeta?.icon;
@@ -63,6 +74,7 @@ export function AgentSkillRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate text-sm font-medium text-foreground">{data.name}</span>
+          {badge ? <span className="shrink-0">{badge}</span> : null}
           {data.chip ? (
             <span className="hidden shrink-0 items-center rounded-full border border-border bg-muted/40 px-2 py-0.5 text-(length:--text-nano) capitalize text-muted-foreground sm:inline-flex">
               {data.chip}
@@ -133,6 +145,7 @@ export function AgentSkillRow({
   return (
     <div className={rowClass}>
       {body}
+      {accessory && !readOnly ? <div className="shrink-0">{accessory}</div> : null}
       {trailing}
     </div>
   );
