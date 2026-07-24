@@ -881,7 +881,27 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       .expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "todo" }).expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "in_review" }).expect(200);
-    await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "done" }).expect(200);
+    const [deliveryEvidence] = await db.insert(issueWorkProducts).values({
+      companyId: fixture.company.id,
+      issueId: fixture.issues.standardChild.id,
+      type: "artifact",
+      provider: "test",
+      title: "Standard-child delivery evidence",
+      status: "approved",
+      reviewState: "approved",
+      isPrimary: true,
+      healthStatus: "healthy",
+    }).returning();
+    await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({
+      status: "done",
+      deliveryReceipt: {
+        primaryWorkProductKey: deliveryEvidence!.id,
+        revision: deliveryEvidence!.updatedAt.toISOString(),
+        format: "inline_text",
+        summary: "Standard child terminal delivery.",
+        inlineText: "The standard child delivery is complete.",
+      },
+    }).expect(200);
 
     const relayComments = await db
       .select({ body: issueComments.body, authorType: issueComments.authorType })
