@@ -46,6 +46,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { runningProcesses } from "../adapters/index.ts";
+import { EXECUTION_CAUSAL_TRACE_KEY } from "../services/execution-causal-trace.js";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
@@ -2124,6 +2125,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.contextSnapshot).toMatchObject({
       codexTransientFallbackMode: "same_session",
     });
+    expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.[EXECUTION_CAUSAL_TRACE_KEY]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "retry",
+          reason: "transient_failure",
+          retryOfRunId: runId,
+          issueId,
+        }),
+      ]),
+    );
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
 
     const issue = await db

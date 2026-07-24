@@ -74,6 +74,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { appendExecutionCausalTrace } from "../execution-causal-trace.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -2923,12 +2924,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           source: "automation",
           triggerDetail: "system",
           reason: "provider_quota_recovery",
-          payload: withRecoveryModelProfileHint({
+          payload: appendExecutionCausalTrace(withRecoveryModelProfileHint({
             issueId: input.issue.id,
             retryOfRunId: input.latestRun?.id ?? null,
             retryReason: "provider_quota_recovery",
             providerQuotaRetryNotBefore: retryAt.toISOString(),
-          }, "normal_model"),
+          }, "normal_model"), {
+            kind: "recovery",
+            reason: "provider_quota_recovery",
+            source: "automation",
+            triggerDetail: "system",
+            issueId: input.issue.id,
+            taskId: input.issue.id,
+            runId: input.latestRun?.id ?? null,
+            retryOfRunId: input.latestRun?.id ?? null,
+            recoveryActionId: input.actionId,
+          }),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
@@ -2950,13 +2961,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           scheduledRetryAt: retryAt,
           scheduledRetryAttempt: 1,
           scheduledRetryReason: "provider_quota_recovery",
-          contextSnapshot: withRecoveryModelProfileHint({
+          contextSnapshot: appendExecutionCausalTrace(withRecoveryModelProfileHint({
             issueId: input.issue.id,
             taskId: input.issue.id,
             wakeReason: "provider_quota_recovery",
             retryReason: "provider_quota_recovery",
             providerQuotaRetryNotBefore: retryAt.toISOString(),
-          }, "normal_model"),
+          }, "normal_model"), {
+            kind: "recovery",
+            reason: "provider_quota_recovery",
+            source: "automation",
+            triggerDetail: "system",
+            issueId: input.issue.id,
+            taskId: input.issue.id,
+            runId: input.latestRun?.id ?? null,
+            retryOfRunId: input.latestRun?.id ?? null,
+            recoveryActionId: input.actionId,
+          }),
           updatedAt: now,
         })
         .returning()
