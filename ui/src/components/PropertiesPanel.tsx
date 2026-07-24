@@ -1,12 +1,38 @@
 import { X } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
+import { useSidebar } from "../context/SidebarContext";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 
 export function PropertiesPanel() {
-  const { panelContent, panelVisible, setPanelVisible } = usePanel();
+  const { panelContent, panelVisible, setPanelVisible, closePanel } = usePanel();
+  const { isMobile } = useSidebar();
 
   if (!panelContent) return null;
+
+  if (isMobile) {
+    return (
+      <Sheet
+        open={panelVisible}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPanelVisible(false);
+            closePanel();
+          }
+        }}
+      >
+        <SheetContent side="right" showCloseButton={false}>
+          <SheetHeader>
+            <SheetTitle>Properties</SheetTitle>
+          </SheetHeader>
+          <ScrollArea className="flex-1 overflow-auto">
+            <div className="px-4 pb-4">{panelContent}</div>
+          </ScrollArea>
+        </SheetContent>
+      </Sheet>
+    );
+  }
 
   return (
     <aside
