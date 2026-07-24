@@ -263,9 +263,13 @@ function buildHeaders(input: {
 }
 
 function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): string {
-  const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
-  const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const taskMarkdown = nonEmpty(ctx.context.paperclipTaskMarkdown);
+  const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
+    // The task-context markdown is the authoritative brief on this lane; keep
+    // the wake prompt's description copy out so the prompt carries it once.
+    suppressIssueDescription: Boolean(taskMarkdown),
+  });
+  const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
   const lines = [
