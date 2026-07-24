@@ -3548,6 +3548,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    requestedStatus?: string,
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3587,6 +3588,45 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
+      if (boundaryDecision.reason === "allow_company_ceo") {
+        const isTransitionToInProgress = issue.status !== "in_progress" && requestedStatus === "in_progress";
+        if (!isTransitionToInProgress) {
+          if (issue.status === "in_progress") {
+            res.status(409).json({
+              error: "Issue is checked out by another agent",
+              details: {
+                issueId: issue.id,
+                assigneeAgentId: issue.assigneeAgentId,
+                actorAgentId,
+              },
+            });
+            return false;
+          }
+          return true;
+        }
+        const runId = requireAgentRunId(req, res);
+        if (!runId) return false;
+        const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId);
+        if (ownership.adoptedFromRunId) {
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.checkout_lock_adopted",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              previousCheckoutRunId: ownership.adoptedFromRunId,
+              checkoutRunId: runId,
+              reason: "stale_checkout_run",
+            },
+          });
+        }
+        return true;
+      }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
@@ -7661,7 +7701,7 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, req.body.status))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
