@@ -493,10 +493,19 @@ function isSpawnLikeFailureMessage(value: unknown) {
 // transient and self-healing, so it must be treated as retryable
 // infrastructure rather than a terminal setup failure. See
 // resolveSandboxProviderPlugin's "worker_unavailable" message in
-// environment-runtime.ts.
+// environment-runtime.ts (":808"), e.g. 'Sandbox provider "kubernetes" is
+// installed via plugin "acme.kubernetes-sandbox-provider", but its worker is
+// not running.'
+//
+// This is anchored on both "is installed via plugin" and "but its worker is
+// not running" so it does not also match plugin-environment-driver.ts's
+// unrelated, permanent "provider not installed" message ('Sandbox provider
+// "X" is not installed or its plugin worker is not running.'), which
+// coincidentally contains the same "worker is not running" substring but
+// describes a terminal condition that must not be retried.
 function isSandboxProviderWorkerUnavailableFailureMessage(value: unknown) {
   if (typeof value !== "string") return false;
-  return /sandbox provider .* worker is not running/i.test(value);
+  return /sandbox provider .* is installed via plugin .* but its worker is not running/i.test(value);
 }
 
 function isRetryableInteractionContinuationInfrastructureFailure(
