@@ -1888,6 +1888,124 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.linkedIssueId).toBeTruthy();
   });
 
+  it("rejects an HMAC webhook replay inside the accepted timestamp window", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "hmac_sha256",
+        replayWindowSec: 300,
+      },
+      {},
+    );
+
+    const payload = { event: "acceptance" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(`${timestampSeconds}.`)
+      .update(rawBody)
+      .digest("hex")}`;
+    const request = {
+      signatureHeader: signature,
+      timestampHeader: timestampSeconds,
+      rawBody,
+      payload,
+    };
+
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).resolves.toMatchObject({
+      source: "webhook",
+      status: "issue_created",
+    });
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).rejects.toThrow(
+      "Webhook replay detected",
+    );
+
+    const runs = await db
+      .select({ id: routineRuns.id })
+      .from(routineRuns)
+      .where(eq(routineRuns.triggerId, trigger.id));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("serializes concurrent HMAC webhook replays", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "hmac_sha256",
+        replayWindowSec: 300,
+      },
+      {},
+    );
+
+    const payload = { event: "concurrent" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(`${timestampSeconds}.`)
+      .update(rawBody)
+      .digest("hex")}`;
+    const request = {
+      signatureHeader: signature,
+      timestampHeader: timestampSeconds,
+      rawBody,
+      payload,
+    };
+
+    const results = await Promise.allSettled([
+      svc.firePublicTrigger(trigger.publicId!, request),
+      svc.firePublicTrigger(trigger.publicId!, request),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({ status: "rejected" });
+    expect((rejected as PromiseRejectedResult).reason).toMatchObject({
+      message: "Webhook replay detected",
+    });
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id))).toHaveLength(1);
+  });
+
+  it("rejects an HMAC webhook replay when automatic execution is suppressed", async () => {
+    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
+    const { routine, svc } = await seedFixture({ runtimeEnv });
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "hmac_sha256",
+        replayWindowSec: 300,
+      },
+      {},
+    );
+
+    const payload = { event: "suppressed" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(`${timestampSeconds}.`)
+      .update(rawBody)
+      .digest("hex")}`;
+    const request = {
+      signatureHeader: signature,
+      timestampHeader: timestampSeconds,
+      rawBody,
+      payload,
+    };
+
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).resolves.toMatchObject({
+      status: "skipped",
+      failureReason: "worktree_execution_cutoff",
+    });
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).rejects.toThrow(
+      "Webhook replay detected",
+    );
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id))).toHaveLength(1);
+  });
+
   it("uses the configured provider for generated webhook trigger secrets", async () => {
     process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
     const originalGetSecretProvider = providerRegistry.getSecretProvider;
