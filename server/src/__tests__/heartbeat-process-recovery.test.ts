@@ -98,6 +98,7 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import {
+  appendHeartbeatRunEvent,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
@@ -465,6 +466,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processGroupId?: number | null;
     processLossRetryCount?: number;
     includeIssue?: boolean;
+    issueStatus?: "in_progress" | "done" | "cancelled";
     runErrorCode?: string | null;
     runError?: string | null;
     contextSnapshot?: Record<string, unknown>;
@@ -535,7 +537,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         id: issueId,
         companyId,
         title: "Recover local adapter after lost process",
-        status: "in_progress",
+        status: input?.issueStatus ?? "in_progress",
         priority: "medium",
         assigneeAgentId: agentId,
         checkoutRunId: runId,
@@ -1312,6 +1314,46 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
+
+  it.each(["done", "cancelled"] as const)(
+    "does not advertise or queue a process-loss retry after the issue is already %s",
+    async (issueStatus) => {
+      const { agentId, runId, wakeupRequestId, issueId } = await seedRunFixture({
+        agentStatus: "idle",
+        processPid: 999_999_999,
+        issueStatus,
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reapOrphanedRuns();
+      expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+      const [runs, wakeup, events, issue] = await Promise.all([
+        db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)),
+        db
+          .select({ error: agentWakeupRequests.error })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, wakeupRequestId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ message: heartbeatRunEvents.message })
+          .from(heartbeatRunEvents)
+          .where(eq(heartbeatRunEvents.runId, runId)),
+        db
+          .select({ status: issues.status, executionRunId: issues.executionRunId })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ id: runId, status: "failed", errorCode: "process_lost" });
+      expect(runs[0]?.error).not.toContain("retrying once");
+      expect(wakeup?.error).not.toContain("retrying once");
+      expect(events.some((event) => event.message?.includes("queued retry"))).toBe(false);
+      expect(issue).toEqual({ status: issueStatus, executionRunId: null });
+    },
+  );
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
@@ -3438,6 +3480,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
+  });
+
+  it("allocates cancellation events after existing run events", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      runId,
+      agentId,
+      seq: 1,
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: "run started",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.cancelRun(runId);
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId))
+      .orderBy(heartbeatRunEvents.seq);
+    expect(events.map((event) => event.seq)).toEqual([1, 2]);
+    await expect(heartbeat.listEvents(runId, 1, 100)).resolves.toHaveLength(1);
   });
 
   it("records operator interrupt cancellation metadata without changing terminal status", async () => {
@@ -6178,5 +6248,57 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  it("queues one process-loss retry when orphan reapers overlap", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 999_999_999,
+    });
+    const reapers = Array.from({ length: 20 }, () =>
+      heartbeatService(db, { runtimeEnv: { PAPERCLIP_IN_WORKTREE: "true" } }),
+    );
+
+    await Promise.all(reapers.map((heartbeat) => heartbeat.reapOrphanedRuns()));
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    const retries = runs.filter((row) => row.retryOfRunId === runId);
+
+    expect(retries).toHaveLength(1);
+    expect(runs.find((row) => row.id === runId)).toMatchObject({
+      status: "failed",
+      errorCode: "process_lost",
+    });
+  });
+
+  it("serializes concurrent run-event sequence allocation", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({ agentStatus: "idle" });
+
+    await Promise.all(
+      Array.from({ length: 20 }, (_, index) =>
+        appendHeartbeatRunEvent(db, 1, {
+          companyId,
+          runId,
+          agentId,
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: `concurrent event ${index}`,
+        }),
+      ),
+    );
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId))
+      .orderBy(heartbeatRunEvents.seq);
+    expect(events.map((event) => event.seq)).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+
+    const eventsAfterFirst = await heartbeatService(db).listEvents(runId, 1, 100);
+    expect(eventsAfterFirst).toHaveLength(19);
   });
 });

@@ -99,6 +99,7 @@ import {
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
+import { lockHeartbeatRunEventSequence } from "./heartbeat-run-events.js";
 import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
@@ -5430,6 +5431,36 @@ export function resolveNextSessionState(input: {
 
 export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeService>;
 
+type HeartbeatRunEventInsert = Omit<
+  typeof heartbeatRunEvents.$inferInsert,
+  "id" | "seq" | "createdAt"
+>;
+
+export async function appendHeartbeatRunEvent(
+  db: Db,
+  requestedSeq: number,
+  event: HeartbeatRunEventInsert,
+) {
+  return db.transaction(async (tx) => {
+    await lockHeartbeatRunEventSequence(tx, event.runId);
+
+    const [row] = await tx
+      .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, event.runId));
+    const nextSeq = Number(row?.maxSeq ?? 0) + 1;
+    const seq = Math.max(Number.isSafeInteger(requestedSeq) && requestedSeq > 0 ? requestedSeq : 1, nextSeq);
+
+    const inserted = await tx
+      .insert(heartbeatRunEvents)
+      .values({ ...event, seq })
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!inserted) throw new Error(`Failed to append heartbeat run event for ${event.runId}`);
+    return inserted;
+  });
+}
+
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
@@ -8238,11 +8269,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       at: eventAt,
     });
 
-    await db.insert(heartbeatRunEvents).values({
+    const insertedEvent = await appendHeartbeatRunEvent(db, seq, {
       companyId: run.companyId,
       runId: run.id,
       agentId: run.agentId,
-      seq,
       eventType: event.eventType,
       stream: event.stream,
       level: event.level,
@@ -8250,6 +8280,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       message: sanitizedMessage,
       payload: sanitizedPayload,
     });
+    const persistedSeq = insertedEvent.seq;
 
     publishLiveEvent({
       companyId: run.companyId,
@@ -8258,7 +8289,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         runId: run.id,
         agentId: run.agentId,
         issueId,
-        seq,
+        seq: persistedSeq,
         eventType: event.eventType,
         stream: event.stream ?? null,
         level: event.level ?? null,
@@ -8689,6 +8720,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (issueId) {
+      const issue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (issue?.status === "done" || issue?.status === "cancelled") {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: `Process-loss retry suppressed because issue reached terminal status (${issue.status})`,
+          payload: { issueId, issueStatus: issue.status },
+        });
+        return null;
+      }
+    }
     const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
       ? "issue_continuation_needed"
       : "process_lost";
@@ -10931,6 +10979,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
+    const isProcessLossRetry = wakeReason === "process_lost_retry" || retryReason === "process_lost";
     const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
     const hasResolvedInteractionEvidence = interactionResolvedAt !== null && !Number.isNaN(Date.parse(interactionResolvedAt));
 
@@ -10994,6 +11043,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           details: { issueId, currentStatus: issue.status },
         };
       }
+    }
+
+    if (issue.status === "in_review" && isProcessLossRetry && !resumeIntent) {
+      return {
+        stale: true,
+        errorCode: "issue_not_in_progress",
+        reason:
+          "Cancelled because the issue entered review before the process-loss retry could start; the review workflow now owns the next action",
+        details: { issueId, currentStatus: issue.status, wakeReason, retryReason },
+      };
     }
 
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
@@ -11493,8 +11552,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         : null;
 
-      let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+      const transition = await setRunStatusIfRunning(run.id, "failed", {
+        error: baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
         resultJson: (() => {
@@ -11504,7 +11563,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             {
               resultJson: parseObject(run.resultJson),
               errorCode: "process_lost",
-              errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+              errorMessage: baseMessage,
             },
           );
           return unmanagedBackgroundTaskEvidence
@@ -11516,12 +11575,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : result;
         })(),
       });
+      if (!transition.updated || !transition.run) continue;
+
+      let finalizedRun = transition.run;
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: baseMessage,
       });
-      if (!finalizedRun) finalizedRun = await getRun(run.id);
-      if (!finalizedRun) continue;
       finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
       await releaseEnvironmentLeasesForRun({
         runId: finalizedRun.id,
@@ -11550,9 +11610,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+        message: retriedRun ? `${baseMessage}; queued retry ${retriedRun.id}` : baseMessage,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
@@ -15583,6 +15641,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               .where(and(eq(issues.id, issue.id), eq(issues.executionRunId, scheduledRun.id)));
           }
 
+          await lockHeartbeatRunEventSequence(tx, cancelled.id);
           const [eventSeq] = await tx
             .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
             .from(heartbeatRunEvents)
