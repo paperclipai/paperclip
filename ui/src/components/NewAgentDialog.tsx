@@ -31,9 +31,9 @@ import { Badge } from "@/components/ui/badge";
 
 /**
  * Adapter types that are suitable for agent creation (excludes internal
- * system adapters like "process" and "http").
+ * system adapters like "process").
  */
-const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
+const SYSTEM_ADAPTER_TYPES = new Set(["process"]);
 
 type NewAgentDialogMode = "choices" | "runtime" | "invite" | "prompt";
 
