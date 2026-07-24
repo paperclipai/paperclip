@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { evaluatePreflight, SEVERITY } from "./preflight-server-update.mjs";
+import { evaluatePreflight, parseArgs, SEVERITY } from "./preflight-server-update.mjs";
 
 test("clean tree is safe to reset", () => {
   const r = evaluatePreflight({});
@@ -74,4 +74,16 @@ test("multiple divergence kinds are all reported; blocking drives the verdict", 
   assert.equal(r.findings.length, 4);
   assert.equal(r.blocking.length, 2);
   assert.equal(r.verdict, "blocked");
+});
+
+test("parseArgs: --tree without a value fails loudly instead of passing undefined to git", () => {
+  assert.throws(() => parseArgs(["--tree"]), /--tree requires a path argument/);
+});
+
+test("parseArgs: flags and values parse into opts", () => {
+  const opts = parseArgs(["--tree", "/srv/live", "--no-fetch", "--json", "--ack", "durable in PR #123"]);
+  assert.equal(opts.tree, "/srv/live");
+  assert.equal(opts.fetch, false);
+  assert.equal(opts.json, true);
+  assert.equal(opts.ack, "durable in PR #123");
 });

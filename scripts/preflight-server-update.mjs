@@ -150,11 +150,15 @@ function git(tree, args) {
   });
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const opts = { tree: DEFAULT_TREE, fetch: true, json: false, ack: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--tree") opts.tree = argv[++i];
+    if (a === "--tree") {
+      const v = argv[++i];
+      if (v === undefined) throw new Error("--tree requires a path argument");
+      opts.tree = v;
+    }
     else if (a === "--no-fetch") opts.fetch = false;
     else if (a === "--json") opts.json = true;
     else if (a === "--ack") opts.ack = argv[++i] ?? "";
