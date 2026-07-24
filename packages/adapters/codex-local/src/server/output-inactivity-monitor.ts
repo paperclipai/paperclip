@@ -145,11 +145,11 @@ export function createCodexOutputInactivityMonitor(
 
 /**
  * Format the inactivity monitor error message in the canonical
- * `monitor: no codex output for {N}m {S}s` shape consumed by NEE-81.
+ * `monitor: no codex activity for {N}m {S}s` shape consumed by NEE-81.
  */
 export function formatOutputInactivityMonitorErrorMessage(elapsedMs: number): string {
   const total = Math.max(0, Math.round(elapsedMs / 1000));
   const minutes = Math.floor(total / 60);
   const seconds = total - minutes * 60;
-  return `monitor: no codex output for ${minutes}m ${seconds}s`;
+  return `monitor: no codex activity (output or process) for ${minutes}m ${seconds}s`;
 }

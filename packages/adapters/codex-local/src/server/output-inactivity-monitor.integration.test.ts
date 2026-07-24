@@ -144,7 +144,7 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
         // The errorMessage shape mirrors the AdapterExecutionResult that
         // execute.ts will produce for this case.
         expect(formatOutputInactivityMonitorErrorMessage(elapsedMs)).toMatch(
-          /^monitor: no codex output for \d+m \d+s$/,
+          /^monitor: no codex activity \(output or process\) for \d+m \d+s$/,
         );
         // We should have observed exactly one parsed JSONL event before silence.
         expect(monitor.state().parsedEventCount).toBe(1);

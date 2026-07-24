@@ -99,10 +99,16 @@ describe("resolveCodexInactivityTimeout", () => {
 
 describe("formatOutputInactivityMonitorErrorMessage", () => {
   it("formats minutes and seconds", () => {
-    expect(formatOutputInactivityMonitorErrorMessage(0)).toBe("monitor: no codex output for 0m 0s");
-    expect(formatOutputInactivityMonitorErrorMessage(7 * 60 * 1000)).toBe("monitor: no codex output for 7m 0s");
-    expect(formatOutputInactivityMonitorErrorMessage(7 * 60 * 1000 + 12_000)).toBe("monitor: no codex output for 7m 12s");
-    expect(formatOutputInactivityMonitorErrorMessage(45_000)).toBe("monitor: no codex output for 0m 45s");
+    expect(formatOutputInactivityMonitorErrorMessage(0)).toBe("monitor: no codex activity (output or process) for 0m 0s");
+    expect(formatOutputInactivityMonitorErrorMessage(7 * 60 * 1000)).toBe(
+      "monitor: no codex activity (output or process) for 7m 0s",
+    );
+    expect(formatOutputInactivityMonitorErrorMessage(7 * 60 * 1000 + 12_000)).toBe(
+      "monitor: no codex activity (output or process) for 7m 12s",
+    );
+    expect(formatOutputInactivityMonitorErrorMessage(45_000)).toBe(
+      "monitor: no codex activity (output or process) for 0m 45s",
+    );
   });
 });
 
