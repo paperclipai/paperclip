@@ -115,6 +115,8 @@ export {
 export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
+  CompanySkillRiskTier,
+  CompanySkillRiskTierSource,
   CompanySkillCompatibility,
   CompanySkillSourceBadge,
   CompanySkillSharingScope,
@@ -142,6 +144,7 @@ export type {
   CompanySkillForkResult,
   CompanySkillForkPrecheckResult,
   CompanySkillUpdateRequest,
+  CompanySkillRiskTierOverrideRequest,
   CompanySkillUpdateStatus,
   CompanySkillAuditSeverity,
   CompanySkillAuditVerdict,

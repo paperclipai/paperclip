@@ -61,6 +61,9 @@ import type {
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillProjectScanSkipped,
+  CompanySkillRiskTier,
+  CompanySkillRiskTierOverrideRequest,
+  CompanySkillRiskTierSource,
   CompanySkillSharingScope,
   CompanySkillSourceBadge,
   CompanySkillSourceType,
@@ -98,6 +101,7 @@ import { toIssueWorkProduct } from "./work-products.js";
 import { projectService } from "./projects.js";
 import { normalizePortablePath } from "./portable-path.js";
 import { folderService } from "./folders.js";
+import { classifySkillRisk } from "./company-skill-risk-classifier.js";
 import {
   copyCatalogSkillFile,
   getCatalogPackageMetadata,
@@ -146,6 +150,12 @@ type CompanySkillListDbRow = Pick<
   | "forkCount"
   | "currentVersionId"
   | "metadata"
+  | "riskTier"
+  | "riskTierSource"
+  | "riskTierRationale"
+  | "riskTierUpdatedByAgentId"
+  | "riskTierUpdatedByUserId"
+  | "riskTierUpdatedAt"
   | "createdAt"
   | "updatedAt"
 >;
@@ -180,6 +190,12 @@ type CompanySkillListRow = Pick<
   | "forkCount"
   | "currentVersionId"
   | "metadata"
+  | "riskTier"
+  | "riskTierSource"
+  | "riskTierRationale"
+  | "riskTierUpdatedByAgentId"
+  | "riskTierUpdatedByUserId"
+  | "riskTierUpdatedAt"
   | "createdAt"
   | "updatedAt"
 >;
@@ -408,6 +424,12 @@ function selectCompanySkillColumns() {
     forkCount: companySkills.forkCount,
     currentVersionId: companySkills.currentVersionId,
     metadata: companySkills.metadata,
+    riskTier: companySkills.riskTier,
+    riskTierSource: companySkills.riskTierSource,
+    riskTierRationale: companySkills.riskTierRationale,
+    riskTierUpdatedByAgentId: companySkills.riskTierUpdatedByAgentId,
+    riskTierUpdatedByUserId: companySkills.riskTierUpdatedByUserId,
+    riskTierUpdatedAt: companySkills.riskTierUpdatedAt,
     createdAt: companySkills.createdAt,
     updatedAt: companySkills.updatedAt,
   };
@@ -1663,6 +1685,12 @@ function toCompanySkill(row: CompanySkillRow): CompanySkill {
     forkCount: Math.max(0, row.forkCount ?? 0),
     currentVersionId: row.currentVersionId ?? null,
     metadata: isPlainRecord(row.metadata) ? row.metadata : null,
+    riskTier: normalizeRiskTier(row.riskTier),
+    riskTierSource: normalizeRiskTierSource(row.riskTierSource),
+    riskTierRationale: isPlainRecord(row.riskTierRationale) ? row.riskTierRationale : null,
+    riskTierUpdatedByAgentId: row.riskTierUpdatedByAgentId ?? null,
+    riskTierUpdatedByUserId: row.riskTierUpdatedByUserId ?? null,
+    riskTierUpdatedAt: row.riskTierUpdatedAt ?? null,
   };
 }
 
@@ -1691,11 +1719,25 @@ function toCompanySkillListRow(row: CompanySkillListDbRow): CompanySkillListRow 
     forkCount: Math.max(0, row.forkCount ?? 0),
     currentVersionId: row.currentVersionId ?? null,
     metadata: isPlainRecord(row.metadata) ? row.metadata : null,
+    riskTier: normalizeRiskTier(row.riskTier),
+    riskTierSource: normalizeRiskTierSource(row.riskTierSource),
+    riskTierRationale: isPlainRecord(row.riskTierRationale) ? row.riskTierRationale : null,
+    riskTierUpdatedByAgentId: row.riskTierUpdatedByAgentId ?? null,
+    riskTierUpdatedByUserId: row.riskTierUpdatedByUserId ?? null,
+    riskTierUpdatedAt: row.riskTierUpdatedAt ?? null,
   };
 }
 
 function normalizeSharingScope(value: unknown): CompanySkillSharingScope {
   return value === "private" || value === "public_link" || value === "company" ? value : "company";
+}
+
+function normalizeRiskTier(value: unknown): CompanySkillRiskTier {
+  return value === 0 || value === 1 || value === 2 ? value : 2;
+}
+
+function normalizeRiskTierSource(value: unknown): CompanySkillRiskTierSource {
+  return value === "rule_engine" || value === "override" ? value : "unclassified";
 }
 
 function normalizeMutableSharingScope(value: unknown): CompanySkillSharingScope | null {
@@ -2998,6 +3040,12 @@ export function companySkillService(db: Db) {
         forkCount: companySkills.forkCount,
         currentVersionId: companySkills.currentVersionId,
         metadata: companySkills.metadata,
+        riskTier: companySkills.riskTier,
+        riskTierSource: companySkills.riskTierSource,
+        riskTierRationale: companySkills.riskTierRationale,
+        riskTierUpdatedByAgentId: companySkills.riskTierUpdatedByAgentId,
+        riskTierUpdatedByUserId: companySkills.riskTierUpdatedByUserId,
+        riskTierUpdatedAt: companySkills.riskTierUpdatedAt,
         createdAt: companySkills.createdAt,
         updatedAt: companySkills.updatedAt,
       })
@@ -4006,6 +4054,78 @@ export function companySkillService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) throw notFound("Skill not found");
     return toCompanySkill(row);
+  }
+
+  async function overrideRiskTier(
+    companyId: string,
+    skillId: string,
+    input: CompanySkillRiskTierOverrideRequest,
+    actor: SkillActor | null,
+  ): Promise<CompanySkill> {
+    const existing = await getById(companyId, skillId);
+    if (!existing) throw notFound("Skill not found");
+
+    const rationale = {
+      reason: input.reason,
+      previousTier: existing.riskTier,
+      previousSource: existing.riskTierSource,
+    };
+
+    const row = await db
+      .update(companySkills)
+      .set({
+        riskTier: input.riskTier,
+        riskTierSource: "override",
+        riskTierRationale: rationale,
+        riskTierUpdatedByAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
+        riskTierUpdatedByUserId: actor?.type === "user" ? actor.userId ?? null : null,
+        riskTierUpdatedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (!row) throw notFound("Skill not found");
+    return toCompanySkill(row);
+  }
+
+  async function runRiskClassifierForSkill(
+    companyId: string,
+    skillId: string,
+    actor: SkillActor | null,
+  ): Promise<{ skill: CompanySkill; skipped: boolean }> {
+    const existing = await getById(companyId, skillId);
+    if (!existing) throw notFound("Skill not found");
+
+    if (existing.riskTierSource === "override") {
+      return { skill: existing, skipped: true };
+    }
+
+    const classification = classifySkillRisk({
+      markdown: existing.markdown,
+      metadata: existing.metadata,
+      fileInventory: existing.fileInventory,
+      categories: existing.categories,
+    });
+
+    const row = await db
+      .update(companySkills)
+      .set({
+        riskTier: classification.tier,
+        riskTierSource: "rule_engine",
+        riskTierRationale: classification.rationale,
+        riskTierUpdatedByAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
+        riskTierUpdatedByUserId: actor?.type === "user" ? actor.userId ?? null : null,
+        riskTierUpdatedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (!row) throw notFound("Skill not found");
+    return { skill: toCompanySkill(row), skipped: false };
   }
 
   async function createLocalSkill(
@@ -5058,6 +5178,12 @@ export function companySkillService(db: Db) {
         catalogId: catalogSkill.id,
         originHash: catalogSkill.contentHash,
       },
+      riskTier: 2,
+      riskTierSource: "unclassified",
+      riskTierRationale: null,
+      riskTierUpdatedByAgentId: null,
+      riskTierUpdatedByUserId: null,
+      riskTierUpdatedAt: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -6489,6 +6615,8 @@ export function companySkillService(db: Db) {
     updateStatus,
     readFile,
     updateSkill,
+    overrideRiskTier,
+    runRiskClassifierForSkill,
     updateFile,
     deleteFile,
     createLocalSkill,
