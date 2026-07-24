@@ -993,7 +993,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async respondInteraction(
           issueId: string,
           interactionId: string,
-          input: { action: "accept" | "reject"; actorUserId?: string; reason?: string | null },
+          input: {
+            action: "accept" | "reject";
+            actorUserId?: string;
+            reason?: string | null;
+            selectedOptionIds?: string[];
+          },
           companyId: string,
         ) {
           return callHost("issues.respondInteraction", {
@@ -1003,6 +1008,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             action: input.action,
             actorUserId: input.actorUserId,
             reason: input.reason,
+            selectedOptionIds: input.selectedOptionIds,
           });
         },
 

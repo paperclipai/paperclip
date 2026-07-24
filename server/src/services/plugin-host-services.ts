@@ -28,7 +28,7 @@ import type {
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { acceptIssueThreadInteractionSchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -2286,10 +2286,13 @@ export function buildHostServices(
           status: issue.status,
         };
         if (params.action === "accept") {
+          const acceptInput = acceptIssueThreadInteractionSchema.parse({
+            selectedOptionIds: params.selectedOptionIds,
+          });
           const result = await interactions.acceptInteraction(
             { id: issue.id, companyId, projectId: issue.projectId ?? null, goalId: issue.goalId ?? null },
             params.interactionId,
-            {},
+            acceptInput,
             actor,
           );
           resolved = result.interaction as typeof current;
