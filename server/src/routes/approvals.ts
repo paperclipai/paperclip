@@ -193,7 +193,7 @@ export function approvalRoutes(
       return;
     }
     const decidedByUserId = req.actor.userId ?? "board";
-    const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
+    const { approval, applied, applyTask } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
@@ -211,6 +211,9 @@ export function approvalRoutes(
           type: approval.type,
           requestedByAgentId: approval.requestedByAgentId,
           linkedIssueIds,
+          ...(applyTask
+            ? { applyTaskIssueId: applyTask.issueId, applyTaskCreated: applyTask.created }
+            : {}),
         },
       });
 
