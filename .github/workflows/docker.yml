@@ -120,9 +120,46 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          # Pin the self-hosted image to the production stage explicitly:
+          # the Dockerfile now declares a later `cloud` stage, and without a
+          # target the default would silently become that stage.
+          target: production
           platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # The cloud variant carries built bundled plugins for managed
+      # deployments (see the `cloud` stage in the Dockerfile). Published
+      # under the same tag set with a `-cloud` suffix (sha-<short>-cloud,
+      # latest-cloud, <version>-cloud). Reuses the layer cache from the
+      # production build, so this mostly adds the plugin-build layers.
+      - name: Docker meta (cloud)
+        id: meta-cloud
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: |
+            suffix=-cloud,onlatest=true
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+          labels: |
+            io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
+            io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
+
+      - name: Build and push (cloud)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: cloud
+          platforms: linux/amd64,linux/arm64
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta-cloud.outputs.tags }}
+          labels: ${{ steps.meta-cloud.outputs.labels }}
