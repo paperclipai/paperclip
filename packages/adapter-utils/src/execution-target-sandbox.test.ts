@@ -71,6 +71,60 @@ describe("sandbox adapter execution targets", () => {
     };
   }
 
+  // Simulates transient sandbox shell failures for the process-session
+  // bridge's event polling: reading/removing a specific event file, or
+  // listing the events directory itself, can be made to fail on demand
+  // while every other shell call passes through to the real local runner.
+  function createProcessSessionEventFaultInjectingRunner(input: {
+    base: ReturnType<typeof createLocalSandboxRunner>;
+    failRead?: (fileName: string, attempt: number) => boolean;
+    failRemove?: (fileName: string, attempt: number) => boolean;
+    failList?: (attempt: number) => boolean;
+  }) {
+    const readAttempts = new Map<string, number>();
+    const removeAttempts = new Map<string, number>();
+    let listAttempts = 0;
+    const failResult = (message: string) => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: message,
+      pid: null,
+      startedAt: new Date().toISOString(),
+    });
+    return {
+      execute: async (execInput: Parameters<ReturnType<typeof createLocalSandboxRunner>["execute"]>[0]) => {
+        const script = (execInput.args?.[1] ?? "").trim();
+        const readMatch = /^base64 < '([^']*\/events\/[^']+\.json)'$/.exec(script);
+        if (readMatch) {
+          const fileName = path.posix.basename(readMatch[1]);
+          const attempt = (readAttempts.get(fileName) ?? 0) + 1;
+          readAttempts.set(fileName, attempt);
+          if (input.failRead?.(fileName, attempt)) {
+            return failResult(`simulated transient read failure for ${fileName}`);
+          }
+        }
+        const removeMatch = /^rm -rf '([^']*\/events\/[^']+\.json)'$/.exec(script);
+        if (removeMatch) {
+          const fileName = path.posix.basename(removeMatch[1]);
+          const attempt = (removeAttempts.get(fileName) ?? 0) + 1;
+          removeAttempts.set(fileName, attempt);
+          if (input.failRemove?.(fileName, attempt)) {
+            return failResult(`simulated remove failure for ${fileName}`);
+          }
+        }
+        if (/for file in '[^']*\/events'\/\*\.json;/.test(script)) {
+          listAttempts += 1;
+          if (input.failList?.(listAttempts)) {
+            return failResult("simulated event listing failure");
+          }
+        }
+        return input.base.execute(execInput);
+      },
+    };
+  }
+
   async function readRuntimeTextFiles(rootDir: string): Promise<string[]> {
     const entries = await readdir(rootDir, { withFileTypes: true }).catch(() => []);
     const contents: string[] = [];
@@ -485,6 +539,196 @@ describe("sandbox adapter execution targets", () => {
         child.kill("SIGKILL");
         await exitPromise.catch(() => undefined);
       }
+      await bridge?.stop();
+    }
+  });
+
+  it("skips a mid-batch event read failure without losing order and retries it next cycle", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-mid-batch-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "mid-batch-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('AAA\\n');",
+        "setTimeout(() => process.stdout.write('BBB\\n'), 20);",
+        "setTimeout(() => process.stdout.write('CCC\\n'), 40);",
+        "setTimeout(() => process.exit(0), 400);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    // Fail the very first read of the second event file (000000000002.json)
+    // exactly once. The poll loop must not throw, must not deliver the third
+    // event ahead of it, and must retry it (and anything after it) on the
+    // next cycle.
+    const runner = createProcessSessionEventFaultInjectingRunner({
+      base: createLocalSandboxRunner(),
+      failRead: (fileName, attempt) => fileName === "000000000002.json" && attempt === 1,
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-mid-batch",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("AAA\nBBB\nCCC\n");
+      expect(result.stderr).toBe("");
+      // A skipped-and-retried single file read must never surface as a
+      // poll-level failure (that log line, and the fatal escalation it
+      // gates, are reserved for failures the batch reader cannot recover
+      // from on its own, e.g. the directory listing itself failing).
+      expect(combinedStream(logs, "stderr")).not.toContain("ACP process session bridge poll failed");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("tolerates transient poll failures, resets the streak on success, and escalates only after 5 consecutive failures", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-poll-failures-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "silent-acp-child.mjs");
+    await writeFile(childPath, "setTimeout(() => process.exit(0), 10_000);", "utf8");
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    // Fail cycles 1-2, succeed cycle 3 (must reset the consecutive-failure
+    // counter back to 0), then fail 5 cycles in a row (4-8) to cross the
+    // escalation threshold on the 5th consecutive failure.
+    const failingCycles = new Set([1, 2, 4, 5, 6, 7, 8]);
+    const runner = createProcessSessionEventFaultInjectingRunner({
+      base: createLocalSandboxRunner(),
+      failList: (attempt) => failingCycles.has(attempt),
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-poll-failures",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      // A single transient failure (well under the threshold) must not tear
+      // the session down: the proxy connects and simply waits, since no
+      // fatal frame is delivered yet at cycle 1 or 2.
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("simulated event listing failure");
+
+      const failureLogLines = combinedStream(logs, "stderr")
+        .split("\n")
+        .filter((line) => line.includes("ACP process session bridge poll failed"));
+      expect(failureLogLines).toHaveLength(7);
+      expect(failureLogLines[0]).toContain("(attempt 1/5)");
+      expect(failureLogLines[1]).toContain("(attempt 2/5)");
+      // Cycle 3 succeeded, so the streak restarts from 1 rather than
+      // continuing to 3.
+      expect(failureLogLines[2]).toContain("(attempt 1/5)");
+      expect(failureLogLines[3]).toContain("(attempt 2/5)");
+      expect(failureLogLines[4]).toContain("(attempt 3/5)");
+      expect(failureLogLines[5]).toContain("(attempt 4/5)");
+      expect(failureLogLines[6]).toContain("(attempt 5/5)");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("logs a warning and never re-delivers an event whose remove call keeps failing", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-remove-failure-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "single-shot-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('hello\\n');",
+        "setTimeout(() => process.exit(0), 500);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    // The remove call always fails, so the event file is left on disk on
+    // every cycle. Without a delivery watermark this would cause the same
+    // event to be re-listed, re-read, and re-delivered indefinitely.
+    const runner = createProcessSessionEventFaultInjectingRunner({
+      base: createLocalSandboxRunner(),
+      failRemove: () => true,
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-remove-failure",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      // "hello" must be delivered exactly once even though its event file
+      // was never successfully removed and kept being re-listed.
+      expect(result.stdout).toBe("hello\n");
+      expect(combinedStream(logs, "stderr")).toMatch(
+        /failed to remove processed event file.*000000000001\.json/,
+      );
+    } finally {
       await bridge?.stop();
     }
   });
