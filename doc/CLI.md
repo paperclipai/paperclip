@@ -2,6 +2,7 @@
 
 Paperclip CLI now supports both:
 
+- installation and lifecycle management (`install`, `uninstall`, `update`, `upgrade`, `service`)
 - instance setup/diagnostics (`onboard`, `doctor`, `configure`, `env`, `allowed-hostname`, `env-lab`)
 - control-plane client operations (issues, approvals, agents, activity, dashboard)
 
@@ -13,7 +14,20 @@ Use repo script in development:
 pnpm paperclipai --help
 ```
 
-First-time local bootstrap + run:
+Recommended installation and interactive onboarding:
+
+```sh
+curl -fsSLO https://paperclip.ing/install.sh
+curl -fsSLO https://paperclip.ing/install.sh.sha256
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum -c install.sh.sha256
+else
+  shasum -a 256 -c install.sh.sha256
+fi
+bash install.sh
+```
+
+First-time local bootstrap from a source checkout:
 
 ```sh
 pnpm paperclipai run
@@ -24,6 +38,60 @@ Choose local instance:
 ```sh
 pnpm paperclipai run --instance dev
 ```
+
+## Install, Update, And Uninstall
+
+Managed installs keep CLI payloads under `~/.paperclip/cli`, expose a stable
+`~/.local/bin/paperclipai` shim, switch versions atomically, and retain two
+previous payloads for rollback.
+
+```sh
+paperclipai install
+paperclipai install --canary
+paperclipai install --version <version>
+paperclipai install --ref <branch|tag|sha> [--repo owner/repo]
+paperclipai update
+paperclipai update --latest|--canary|--version <version>
+paperclipai update --rollback
+paperclipai upgrade
+paperclipai uninstall
+```
+
+`upgrade` aliases `update`. `uninstall` removes managed code and the shim but
+preserves instance data under `~/.paperclip/instances/`. See
+`doc/INSTALLING.md` for installation methods, security notes, PATH setup, and
+the complete update and rollback behavior.
+
+## Onboarding And Service Management
+
+Interactive onboarding offers to install a background service on supported
+platforms. `--yes` never installs it implicitly; automation must opt in.
+
+```sh
+paperclipai onboard
+paperclipai onboard --yes
+paperclipai onboard --yes --install-service
+paperclipai onboard --yes --no-install-service
+```
+
+Service lifecycle commands remain under the `service` namespace:
+
+```sh
+paperclipai service install [--no-start-now] [--no-start-on-login]
+paperclipai service uninstall
+paperclipai service start
+paperclipai service stop
+paperclipai service restart [--wait]
+paperclipai service status [--json]
+paperclipai service logs [-f]
+```
+
+Every service verb supports `--instance <id>` and `--json`. Linux and WSL2 use
+a systemd user unit when available; macOS uses a LaunchAgent. Unsupported
+environments receive foreground `paperclipai run` guidance.
+
+`paperclipai doctor` includes managed-install and service-health diagnostics in
+addition to configuration, storage, database, logging, and port checks.
 
 ## Deployment Modes
 

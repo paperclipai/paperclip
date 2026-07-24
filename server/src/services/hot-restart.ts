@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolvePaperclipHomeDir } from "../home-paths.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 export const HOT_RESTART_INTENT_FILENAME = "hot-restart-intent.json";
 export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
@@ -56,7 +56,7 @@ export type HotRestartReport = {
 };
 
 function resolveHotRestartPath(filename: string, homeDir?: string) {
-  return path.join(resolvePaperclipHomeDir(homeDir), filename);
+  return path.join(resolvePaperclipInstanceRoot({ homeDir }), filename);
 }
 
 export function resolveHotRestartIntentPath(homeDir?: string) {
