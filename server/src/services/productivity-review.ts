@@ -142,6 +142,17 @@ function coerceDate(value: Date | string | null | undefined) {
   return value instanceof Date ? value : new Date(value);
 }
 
+// A future scheduled monitor means the assignee is intentionally parked waiting
+// for an external checkpoint, so a long active episode is expected rather than a
+// stall. Suppress only the long_active_duration signal while such a monitor is
+// pending; no_comment_streak and high_churn stay evaluated.
+function hasFutureScheduledMonitor(issue: IssueRow, now: Date) {
+  const monitor = (issue.executionState as { monitor?: { status?: unknown } } | null)?.monitor;
+  if (!monitor || monitor.status !== "scheduled") return false;
+  const nextCheckAt = coerceDate(issue.monitorNextCheckAt);
+  return nextCheckAt !== null && nextCheckAt.getTime() > now.getTime();
+}
+
 function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): ProductivityReviewThresholds {
   return {
     noCommentStreakRuns: readPositiveInteger(
@@ -533,7 +544,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const longActive =
+      elapsedMs !== null &&
+      elapsedMs >= thresholds.longActiveMs &&
+      !hasFutureScheduledMonitor(sourceIssue, now);
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
