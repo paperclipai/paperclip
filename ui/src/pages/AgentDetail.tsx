@@ -363,6 +363,10 @@ export function shouldPollRunShellLog(status: HeartbeatRun["status"]): boolean {
   return status === "running";
 }
 
+export function runDetailRefetchIntervalMs(status: HeartbeatRun["status"]): 5000 | false {
+  return status === "queued" ? 5000 : false;
+}
+
 export function RunInvocationCard({
   payload,
   censorUsernameInLogs,
@@ -2959,6 +2963,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     queryKey: queryKeys.runDetail(initialRun.id),
     queryFn: () => heartbeatsApi.get(initialRun.id),
     enabled: Boolean(initialRun.id),
+    refetchInterval: (query) => runDetailRefetchIntervalMs(
+      (query.state.data ?? initialRun).status,
+    ),
   });
   const run = hydratedRun ?? initialRun;
   const metrics = runMetrics(run);

@@ -5,6 +5,7 @@ import { queryKeys } from "../lib/queryKeys";
 import {
   buildHeartbeatProgressLogLine,
   heartbeatProgressLogLineKey,
+  runDetailRefetchIntervalMs,
   shouldPollRunShellLog,
   syncAgentRouteAfterRename,
 } from "./AgentDetail";
@@ -69,6 +70,14 @@ describe("shouldPollRunShellLog", () => {
     expect(shouldPollRunShellLog("queued")).toBe(false);
     expect(shouldPollRunShellLog("running")).toBe(true);
     expect(shouldPollRunShellLog("succeeded")).toBe(false);
+  });
+});
+
+describe("runDetailRefetchIntervalMs", () => {
+  it("polls run state only while the selected run remains queued", () => {
+    expect(runDetailRefetchIntervalMs("queued")).toBe(5_000);
+    expect(runDetailRefetchIntervalMs("running")).toBe(false);
+    expect(runDetailRefetchIntervalMs("succeeded")).toBe(false);
   });
 });
 
