@@ -3650,10 +3650,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         appendLogContent(result.content, result.nextOffset === undefined);
         const next = result.nextOffset ?? result.content.length;
         setLogOffset(next);
-        setHasMoreLog(!isLive && result.nextOffset !== undefined);
+        setHasMoreLog(!shouldPollShellLog && result.nextOffset !== undefined);
       } catch (err) {
         if (!cancelled) {
-          if (isLive && isRunLogUnavailable(err)) {
+          if (shouldPollShellLog && isRunLogUnavailable(err)) {
             setLogLoading(false);
             return;
           }
