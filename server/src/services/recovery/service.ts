@@ -3496,6 +3496,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const issue of candidates) {
+      if (issue.workMode === "pulse") {
+        result.skipped += 1;
+        continue;
+      }
+
       const executionState = issue.status === "in_review"
         ? parseIssueExecutionState(issue.executionState)
         : null;
