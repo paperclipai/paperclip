@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,6 +39,23 @@ describe("local process sandbox", () => {
       .toEqual(["api.openai.com", "api.anthropic.com", "gateway.test:8443"]);
     expect(() => parseLocalProcessNetworkAllowlist(["*.example.com"])).toThrow("exact hostname");
     expect(() => parseLocalProcessNetworkScope("public")).toThrow('"deny" or "allowlist"');
+  });
+
+  it("describes every valid allowlist input when no proxy rules remain", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-network-rules-"));
+    cleanup.push(workspace);
+
+    await expect(buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        networkScope: "allowlist",
+        networkAllowlist: [],
+        networkTrustedUrls: ["file:///not-a-network-target"],
+      },
+    })).rejects.toThrow("valid networkAllowlist hostname or HTTP(S) networkTrustedUrl");
   });
 
   it("builds a fresh-root bubblewrap command with workspace access", async () => {
@@ -129,6 +147,21 @@ describe("local process sandbox", () => {
         contentType: "application/json; charset=utf-8",
         body: '{"error":{"code":"network_target_denied","message":"Network target denied by Paperclip sandbox policy."}}\n',
       });
+      const connectResponse = await new Promise<string>((resolve, reject) => {
+        const socket = net.createConnection(socketPath, () => {
+          socket.end("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n");
+        });
+        let response = "";
+        socket.setEncoding("utf8");
+        socket.on("data", (chunk) => { response += chunk; });
+        socket.on("end", () => resolve(response));
+        socket.on("error", reject);
+      });
+      expect(connectResponse).toContain("HTTP/1.1 403 Forbidden\r\n");
+      expect(connectResponse).toContain("Content-Type: application/json; charset=utf-8\r\n");
+      expect(connectResponse).toContain(
+        '{"error":{"code":"network_target_denied","message":"Network target denied by Paperclip sandbox policy."}}\n',
+      );
     } finally {
       await target.cleanup?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));

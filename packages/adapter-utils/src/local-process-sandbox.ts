@@ -177,10 +177,10 @@ function writeProxyError(response: http.ServerResponse, status: number, code: st
   }).end(body);
 }
 
-function connectProxyError(status: number, code: string, message: string): string {
+function connectProxyError(code: string, message: string): string {
   const body = `${JSON.stringify({ error: { code, message } })}\n`;
   return [
-    `HTTP/1.1 ${status} Forbidden`,
+    "HTTP/1.1 403 Forbidden",
     "Connection: close",
     "Content-Type: application/json; charset=utf-8",
     `Content-Length: ${Buffer.byteLength(body)}`,
@@ -199,7 +199,9 @@ async function startNetworkAllowlistProxy(
     ...trustedUrls.map(parseTrustedNetworkUrl).filter((rule): rule is NetworkAllowlistRule => rule !== null),
   ];
   if (rules.length === 0) {
-    throw new Error('networkScope="allowlist" requires at least one networkAllowlist hostname.');
+    throw new Error(
+      'networkScope="allowlist" requires at least one valid networkAllowlist hostname or HTTP(S) networkTrustedUrl.',
+    );
   }
   const server = http.createServer((request, response) => {
     let target: URL;
@@ -234,7 +236,6 @@ async function startNetworkAllowlistProxy(
     const port = separator > 0 ? request.url!.slice(separator + 1) : "443";
     if (!hostname || !/^\d+$/.test(port) || !isNetworkTargetAllowed(hostname, port, rules)) {
       clientSocket.end(connectProxyError(
-        403,
         "network_target_denied",
         "Network target denied by Paperclip sandbox policy.",
       ));
