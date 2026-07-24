@@ -864,4 +864,12 @@ describeEmbeddedPostgres("companyService", () => {
       details: { agentsPaused: 1, runsCancelled: 1 },
     });
   });
+
+  it("getById returns null (not a query error) for non-UUID refs", async () => {
+    const svc = companyService(db);
+    await expect(svc.getById("tumbly-haus-creative")).resolves.toBeNull();
+    await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
+    await expect(svc.getById("")).resolves.toBeNull();
+  });
+
 });
