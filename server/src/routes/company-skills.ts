@@ -14,6 +14,7 @@ import {
   companySkillListQuerySchema,
   companySkillProjectScanRequestSchema,
   companySkillResetSchema,
+  companySkillRiskTierOverrideSchema,
   companySkillTestInputCreateSchema,
   companySkillTestInputUpdateSchema,
   companySkillTestRunTemplateCreateSchema,
@@ -231,6 +232,24 @@ export function companySkillRoutes(db: Db) {
     if (!policyDecision.allowed) {
       throw forbidden("Skill action denied by company policy", toSkillPolicyDenialResponse(policyDecision));
     }
+  }
+
+  async function assertCanAdministerRiskTier(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+      if (await access.canUser(companyId, req.actor.userId, "users:manage_permissions")) return;
+    } else if (
+      req.actor.type === "agent"
+      && req.actor.agentId
+      && await access.hasPermission(companyId, "agent", req.actor.agentId, "users:manage_permissions")
+    ) {
+      return;
+    }
+    throw forbidden("Risk-tier administration authority required", {
+      code: "skill_risk_tier_admin_required",
+      remediation: "Ask a company administrator to hand-correct this skill's risk tier.",
+    });
   }
 
   async function assertCanOrchestrateSkillTestHarness(
@@ -1016,6 +1035,33 @@ export function companySkillRoutes(db: Db) {
           categories: result.categories,
           sharingScope: result.sharingScope,
         },
+      });
+
+      res.json(result);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/skills/:skillId/risk-tier",
+    validate(companySkillRiskTierOverrideSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanAdministerRiskTier(req, companyId);
+      const result = await svc.overrideRiskTier(companyId, skillId, req.body, skillActor(req));
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "company.skill_risk_tier_overridden",
+        entityType: "company_skill",
+        entityId: result.id,
+        details: { skillId, riskTier: result.riskTier, reason: req.body.reason },
       });
 
       res.json(result);

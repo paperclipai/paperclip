@@ -13,6 +13,10 @@ export type CompanySkillSharingScope = "private" | "company" | "public_link";
 
 export type CompanySkillListSort = "alphabetical" | "recent" | "installs" | "stars" | "agents" | "forks";
 
+export type CompanySkillRiskTier = 0 | 1 | 2;
+
+export type CompanySkillRiskTierSource = "unclassified" | "rule_engine" | "override";
+
 export type CompanySkillListInclude = "lastEditor";
 
 export interface CompanySkillLastEditor {
@@ -62,6 +66,12 @@ export interface CompanySkill {
   forkCount: number;
   currentVersionId: string | null;
   metadata: Record<string, unknown> | null;
+  riskTier: CompanySkillRiskTier;
+  riskTierSource: CompanySkillRiskTierSource;
+  riskTierRationale: Record<string, unknown> | null;
+  riskTierUpdatedByAgentId: string | null;
+  riskTierUpdatedByUserId: string | null;
+  riskTierUpdatedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -253,6 +263,11 @@ export interface CompanySkillUpdateRequest {
   homepageUrl?: string | null;
   categories?: string[];
   sharingScope?: CompanySkillSharingScope;
+}
+
+export interface CompanySkillRiskTierOverrideRequest {
+  riskTier: CompanySkillRiskTier;
+  reason: string;
 }
 
 export interface CompanySkillUpdateStatus {
