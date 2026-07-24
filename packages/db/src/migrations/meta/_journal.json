@@ -1345,6 +1345,13 @@
       "when": 1785170000000,
       "tag": "0193_document_memberships",
       "breakpoints": true
+    },
+    {
+      "idx": 194,
+      "version": "7",
+      "when": 1784920485226,
+      "tag": "0194_company_skill_releases",
+      "breakpoints": true
     }
   ]
 }

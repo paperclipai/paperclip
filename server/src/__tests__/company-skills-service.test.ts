@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
@@ -331,6 +331,73 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const refreshedSkill = refreshedList.find((skill) => skill.id === bundledSkill.id);
 
     expect(refreshedSkill?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
+  });
+
+  it("seeds bundled skill releases idempotently and materializes the frozen champion snapshot", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const initialList = await svc.list(companyId);
+    await svc.list(companyId);
+    const paperclipSkill = initialList.find((skill) => skill.key === "paperclipai/paperclip/paperclip");
+    expect(paperclipSkill).toBeDefined();
+    if (!paperclipSkill) throw new Error("Expected bundled Paperclip skill");
+
+    const versions = await svc.listVersions(companyId, paperclipSkill.id);
+    expect(versions.map((version) => version.releaseId).sort()).toEqual(["v0", "v7-roster"]);
+    expect(versions).toHaveLength(2);
+    const storedSkill = await db
+      .select({ currentVersionId: companySkills.currentVersionId })
+      .from(companySkills)
+      .where(eq(companySkills.id, paperclipSkill.id))
+      .then((rows) => rows[0]);
+    expect(storedSkill?.currentVersionId).toBeNull();
+
+    const champion = versions.find((version) => version.releaseId === "v7-roster");
+    expect(champion).toMatchObject({
+      releaseName: "V7 — Roster champion",
+      releasedAt: new Date("2026-07-21T00:00:00.000Z"),
+    });
+    if (!champion) throw new Error("Expected seeded v7-roster release");
+    const championHashes = Object.fromEntries(champion.fileInventory.map((entry) => [
+      entry.path,
+      createHash("sha256").update(entry.content).digest("hex"),
+    ]));
+    expect(championHashes).toMatchObject({
+      "SKILL.md": "53ab290489684cbf116fdd1406a95f6b6f53c9c36358b1bf8bfeae481e253575",
+      "references/cases.md": "3b821f59064a7761091020a14819a8d787131f24029748563d6c0e1be7e6eaec",
+      "references/workflows.md": "69747bd6e05f7e3673d1e67b07ff295df1869c05e1fd029804d5fa9177db92cd",
+    });
+    expect(championHashes).not.toHaveProperty("EDITS.md");
+
+    const runtimeEntries = await svc.listRuntimeSkillEntries(companyId, {
+      versionSelections: new Map([[paperclipSkill.key, champion.id]]),
+    });
+    const materialized = runtimeEntries.find((entry) => entry.key === paperclipSkill.key);
+    expect(materialized).toMatchObject({ versionId: champion.id, sourceStatus: "available" });
+    if (!materialized) throw new Error("Expected materialized release entry");
+    const materializedHashes: Record<string, string> = {};
+    async function walk(root: string, current = root): Promise<void> {
+      for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+        const absolutePath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          await walk(root, absolutePath);
+          continue;
+        }
+        const relativePath = path.relative(root, absolutePath).split(path.sep).join("/");
+        materializedHashes[relativePath] = createHash("sha256")
+          .update(await fs.readFile(absolutePath))
+          .digest("hex");
+      }
+    }
+    await walk(materialized.source);
+    expect(materializedHashes).toEqual(championHashes);
+    expect(materializedHashes).not.toHaveProperty("EDITS.md");
   });
 
   it("repairs a squatted bundled root during bundled-skill list refresh", async () => {
