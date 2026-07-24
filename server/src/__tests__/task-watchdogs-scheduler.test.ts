@@ -675,4 +675,172 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     expect(result).toMatchObject({ checked: 0, triggered: 0 });
   });
+
+  // Drive a stopped source through its first watchdog trigger and mark that
+  // stop fingerprint reviewed, so the follow-up assertions only exercise
+  // whether a newly posted comment re-arms the already-reviewed subtree.
+  async function armReviewedStoppedWatchdog(status = "blocked") {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-NOOP", status });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const reviewedFingerprint = firstWatchdog!.lastObservedFingerprint!;
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, firstWatchdog!.watchdogIssueId!));
+    const reviewed = await service.reconcileTaskWatchdogs({ companyId });
+    expect(reviewed).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    return { companyId, sourceId, agentId, service, wakes, reviewedFingerprint };
+  }
+
+  it("does not re-arm a reviewed stopped subtree for a no-op heartbeat run-summary comment", async () => {
+    const { companyId, sourceId, agentId, service, wakes, reviewedFingerprint } =
+      await armReviewedStoppedWatchdog();
+    expect(wakes).toHaveLength(1);
+
+    // Reproduce the real recurrence: a scheduled-monitor dedup heartbeat posts
+    // no deliberate comment, so the harness auto-posts its run summary as an
+    // authorType=agent transcript echo. Its creating run produced no concrete
+    // action evidence (needs_followup), so the echo must not re-arm the source.
+    const [noopRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        status: "succeeded",
+        invocationSource: "automation",
+        livenessState: "needs_followup",
+      })
+      .returning();
+    const later = new Date(Date.now() + 60_000);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: sourceId,
+      authorType: "agent",
+      authorAgentId: agentId,
+      createdByRunId: noopRun!.id,
+      body: "Monitor still scheduled; approval pending; no state change.",
+      createdAt: later,
+      updatedAt: later,
+    });
+
+    const afterNoop = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(afterNoop).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastObservedFingerprint).toBe(reviewedFingerprint);
+    expect(watchdog?.triggerCount).toBe(1);
+  });
+
+  it("re-arms a reviewed stopped subtree for a meaningful agent work comment", async () => {
+    const { companyId, sourceId, agentId, service, wakes, reviewedFingerprint } =
+      await armReviewedStoppedWatchdog();
+    expect(wakes).toHaveLength(1);
+
+    // A deliberate agent work comment makes its run produce concrete action
+    // evidence (advanced); the same authorType=agent comment must still change
+    // the fingerprint and re-arm the watchdog as before.
+    const [workRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        status: "succeeded",
+        invocationSource: "automation",
+        livenessState: "advanced",
+      })
+      .returning();
+    const later = new Date(Date.now() + 60_000);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: sourceId,
+      authorType: "agent",
+      authorAgentId: agentId,
+      createdByRunId: workRun!.id,
+      body: "Found the root cause and filed a fix for the watched subtree.",
+      createdAt: later,
+      updatedAt: later,
+    });
+
+    const afterWork = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(afterWork).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(2);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastObservedFingerprint).not.toBe(reviewedFingerprint);
+    expect(watchdog?.triggerCount).toBe(2);
+  });
+
+  it("re-arms a reviewed stopped subtree for a meaningful comment from an interrupted run", async () => {
+    const { companyId, sourceId, agentId, service, wakes, reviewedFingerprint } =
+      await armReviewedStoppedWatchdog();
+    expect(wakes).toHaveLength(1);
+
+    // Counterexample to the run-summary exclusion: an agent posts a deliberate
+    // work comment and its run is then interrupted. `classifyRunLiveness` maps
+    // an interrupted run to `needs_followup`, i.e. the same no-concrete liveness
+    // bucket as a no-op auto-summary — but this is real work, not a harness
+    // echo. Because the run did not *succeed*, the comment must still change the
+    // fingerprint and re-arm the watchdog.
+    const [interruptedRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        status: "interrupted",
+        invocationSource: "automation",
+        livenessState: "needs_followup",
+      })
+      .returning();
+    const later = new Date(Date.now() + 60_000);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: sourceId,
+      authorType: "agent",
+      authorAgentId: agentId,
+      createdByRunId: interruptedRun!.id,
+      body: "Reproduced the watched-subtree bug and pushed a partial fix before the run was cut off.",
+      createdAt: later,
+      updatedAt: later,
+    });
+
+    const afterInterrupted = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(afterInterrupted).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(2);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastObservedFingerprint).not.toBe(reviewedFingerprint);
+    expect(watchdog?.triggerCount).toBe(2);
+  });
+
+  it("does not re-arm a reviewed stopped subtree for a system housekeeping comment", async () => {
+    const { companyId, sourceId, service, wakes, reviewedFingerprint } = await armReviewedStoppedWatchdog();
+    expect(wakes).toHaveLength(1);
+
+    // System-authored comments are housekeeping/notices, not watched-subtree
+    // work; they must not re-arm the reviewed stop fingerprint.
+    const later = new Date(Date.now() + 60_000);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: sourceId,
+      authorType: "system",
+      body: "Automated housekeeping notice.",
+      createdAt: later,
+      updatedAt: later,
+    });
+
+    const afterSystem = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(afterSystem).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastObservedFingerprint).toBe(reviewedFingerprint);
+  });
 });
