@@ -1127,6 +1127,48 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it.each(["resumeIntent", "followUpRequested"] as const)(
+    "preserves explicit %s wakes after the issue reaches a terminal status",
+    async (resumeMarker) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Explicitly resumed completed task",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      });
+
+      const { runId, wakeupRequestId } = await seedQueuedRun({
+        companyId,
+        agentId,
+        issueId,
+        wakeReason: "issue_commented",
+        contextExtras: { [resumeMarker]: true },
+      });
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      });
+
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(["claimed", "completed"]).toContain(wakeup?.status);
+      expect(countExecuteCallsForRun(runId)).toBe(1);
+    },
+  );
+
   it("cancels process-loss retries after the issue enters review", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

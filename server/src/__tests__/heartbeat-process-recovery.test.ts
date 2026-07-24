@@ -466,6 +466,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processGroupId?: number | null;
     processLossRetryCount?: number;
     includeIssue?: boolean;
+    issueStatus?: "in_progress" | "done" | "cancelled";
     runErrorCode?: string | null;
     runError?: string | null;
     contextSnapshot?: Record<string, unknown>;
@@ -536,7 +537,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         id: issueId,
         companyId,
         title: "Recover local adapter after lost process",
-        status: "in_progress",
+        status: input?.issueStatus ?? "in_progress",
         priority: "medium",
         assigneeAgentId: agentId,
         checkoutRunId: runId,
@@ -1313,6 +1314,46 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
+
+  it.each(["done", "cancelled"] as const)(
+    "does not advertise or queue a process-loss retry after the issue is already %s",
+    async (issueStatus) => {
+      const { agentId, runId, wakeupRequestId, issueId } = await seedRunFixture({
+        agentStatus: "idle",
+        processPid: 999_999_999,
+        issueStatus,
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reapOrphanedRuns();
+      expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+      const [runs, wakeup, events, issue] = await Promise.all([
+        db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)),
+        db
+          .select({ error: agentWakeupRequests.error })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, wakeupRequestId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ message: heartbeatRunEvents.message })
+          .from(heartbeatRunEvents)
+          .where(eq(heartbeatRunEvents.runId, runId)),
+        db
+          .select({ status: issues.status, executionRunId: issues.executionRunId })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ id: runId, status: "failed", errorCode: "process_lost" });
+      expect(runs[0]?.error).not.toContain("retrying once");
+      expect(wakeup?.error).not.toContain("retrying once");
+      expect(events.some((event) => event.message?.includes("queued retry"))).toBe(false);
+      expect(issue).toEqual({ status: issueStatus, executionRunId: null });
+    },
+  );
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
