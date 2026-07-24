@@ -620,6 +620,7 @@ Within the watched subtree, a watchdog run may perform only mutations that resto
 - reopen `done` or `cancelled` included issues only with explicit resume metadata and an audit comment when evidence shows the stopped disposition is wrong or incomplete
 - add, replace, or clear blockers on included issues when the blocker target is in the same company and the change makes the waiting path more accurate
 - set or refresh a one-shot monitor on an included issue when the current assignee owns the future check
+- explicitly refresh the run-scoped stopped fingerprint for the persisted watched root when new evidence has arrived
 - accept or reject eligible task-level plan confirmations as defined below
 - update the reusable watchdog issue itself to `done`, `in_review`, or `blocked` with the evidence for the watchdog decision
 
@@ -854,6 +855,7 @@ All endpoints are under `/api` and return JSON.
 - `GET /issues/:issueId/documents/:key/revisions`
 - `DELETE /issues/:issueId/documents/:key`
 - `POST /issues/:issueId/checkout`
+- `POST /issues/:issueId/watchdog/refresh` (task-watchdog run only; re-pins the current stopped fingerprint)
 - `POST /issues/:issueId/release`
 - `POST /issues/:issueId/admin/force-release` (board-only lock recovery)
 - `POST /issues/:issueId/comments`

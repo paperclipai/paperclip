@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agentWakeupRequests,
   agents,
   approvals,
@@ -22,7 +23,10 @@ import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
+import {
+  TASK_WATCHDOG_ORIGIN_KIND,
+  type TaskWatchdogMutationScope,
+} from "./task-watchdog-scope.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
@@ -53,6 +57,11 @@ export type IssueWatchdogUpsertInput = {
 
 type IssueWatchdogRow = typeof issueWatchdogs.$inferSelect;
 type IssueRow = typeof issues.$inferSelect;
+type WatchdogMutationScope = Extract<TaskWatchdogMutationScope, { kind: "watchdog" }>;
+type WatchdogMutationRun = Pick<
+  typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "contextSnapshot" | "createdAt" | "startedAt"
+>;
 
 export type TaskWatchdogClassifierIssue = Pick<
   IssueRow,
@@ -557,6 +566,7 @@ function watchdogWakeContext(input: {
       watchedIssueIdentifier: input.sourceIssue.identifier,
       watchedIssueTitle: input.sourceIssue.title,
       stopFingerprint: input.classification.stopFingerprint,
+      stopFingerprintPinnedAt: new Date().toISOString(),
       capabilities: {
         targetScope: {
           watchedIssueId: input.sourceIssue.id,
@@ -572,6 +582,7 @@ function watchdogWakeContext(input: {
           "create_child_issues_under_non_watchdog_watched_subtree",
           "create_product_bug_followups_outside_watched_subtree",
           "resolve_eligible_request_confirmation_plan_interactions",
+          "refresh_task_watchdog_stop_fingerprint",
           "update_reusable_watchdog_issue",
         ],
         deniedOperations: [
@@ -1449,13 +1460,192 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       ));
   }
 
-  async function revalidateMutationScope(scope: {
-    kind: "watchdog";
-    watchdogId: string;
-    companyId: string;
-    watchedIssueId: string;
-    stopFingerprint: string | null;
-  }) {
+  function readRunStopFingerprint(contextSnapshot: unknown) {
+    const context = parseObject(contextSnapshot);
+    const taskWatchdog = parseObject(context.taskWatchdog);
+    const nested = typeof taskWatchdog.stopFingerprint === "string"
+      ? taskWatchdog.stopFingerprint.trim()
+      : "";
+    if (nested) return nested;
+    const legacy = typeof context.stopFingerprint === "string"
+      ? context.stopFingerprint.trim()
+      : "";
+    return legacy || null;
+  }
+
+  function readRunWatchedIssueId(contextSnapshot: unknown) {
+    const context = parseObject(contextSnapshot);
+    const taskWatchdog = parseObject(context.taskWatchdog);
+    const nested = typeof taskWatchdog.watchedIssueId === "string"
+      ? taskWatchdog.watchedIssueId.trim()
+      : "";
+    if (nested) return nested;
+    const legacy = typeof context.watchedIssueId === "string"
+      ? context.watchedIssueId.trim()
+      : "";
+    return legacy || null;
+  }
+
+  function readRunStopFingerprintPinnedAt(contextSnapshot: unknown) {
+    const context = parseObject(contextSnapshot);
+    const taskWatchdog = parseObject(context.taskWatchdog);
+    const raw = typeof taskWatchdog.stopFingerprintPinnedAt === "string"
+      ? taskWatchdog.stopFingerprintPinnedAt
+      : typeof context.stopFingerprintPinnedAt === "string"
+        ? context.stopFingerprintPinnedAt
+        : "";
+    const parsed = raw ? new Date(raw) : null;
+    return parsed && Number.isFinite(parsed.getTime()) ? parsed : null;
+  }
+
+  function withRunStopFingerprint(
+    contextSnapshot: unknown,
+    stopFingerprint: string,
+    stopFingerprintPinnedAt: Date,
+  ) {
+    const context = parseObject(contextSnapshot);
+    const taskWatchdog = parseObject(context.taskWatchdog);
+    const pinnedAt = stopFingerprintPinnedAt.toISOString();
+    return {
+      ...context,
+      ...("stopFingerprint" in context ? { stopFingerprint } : {}),
+      ...("stopFingerprintPinnedAt" in context ? { stopFingerprintPinnedAt: pinnedAt } : {}),
+      taskWatchdog: {
+        ...taskWatchdog,
+        stopFingerprint,
+        stopFingerprintPinnedAt: pinnedAt,
+      },
+    };
+  }
+
+  async function loadMutationRun(scope: WatchdogMutationScope): Promise<WatchdogMutationRun | null> {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        createdAt: heartbeatRuns.createdAt,
+        startedAt: heartbeatRuns.startedAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, scope.runId),
+        eq(heartbeatRuns.companyId, scope.companyId),
+      ))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function repinMutationRun(
+    scope: WatchdogMutationScope,
+    run: WatchdogMutationRun,
+    stopFingerprint: string,
+  ) {
+    if (readRunWatchedIssueId(run.contextSnapshot) !== scope.watchedIssueId) return false;
+    const persistedFingerprint = readRunStopFingerprint(run.contextSnapshot);
+    if (persistedFingerprint === stopFingerprint) return true;
+    if (persistedFingerprint !== scope.stopFingerprint) return false;
+
+    const repinnedAt = new Date();
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: withRunStopFingerprint(run.contextSnapshot, stopFingerprint, repinnedAt),
+        updatedAt: repinnedAt,
+      })
+      .where(and(
+        eq(heartbeatRuns.id, scope.runId),
+        eq(heartbeatRuns.companyId, scope.companyId),
+        sql`COALESCE(
+          ${heartbeatRuns.contextSnapshot}->'taskWatchdog'->>'stopFingerprint',
+          ${heartbeatRuns.contextSnapshot}->>'stopFingerprint'
+        ) = ${scope.stopFingerprint}`,
+      ))
+      .returning({ id: heartbeatRuns.id });
+    return updated.length > 0;
+  }
+
+  async function fingerprintDriftBelongsToRun(
+    scope: WatchdogMutationScope,
+    run: WatchdogMutationRun,
+    classification: Extract<TaskWatchdogClassifierResult, { state: "stopped" }>,
+  ) {
+    if (classification.includedIssueIds.length === 0) return false;
+    const pinTime = readRunStopFingerprintPinnedAt(run.contextSnapshot) ?? run.startedAt ?? run.createdAt;
+    const rows = await db
+      .select({
+        runId: activityLog.runId,
+      })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, scope.companyId),
+        eq(activityLog.entityType, "issue"),
+        inArray(activityLog.entityId, classification.includedIssueIds),
+        gte(activityLog.createdAt, pinTime),
+      ));
+    return rows.length > 0 && rows.every((row) => row.runId === scope.runId);
+  }
+
+  async function refreshMutationScope(scope: WatchdogMutationScope) {
+    if (!scope.stopFingerprint) {
+      return {
+        allowed: false as const,
+        reason: "Task-watchdog run context is missing the stopped fingerprint required for mutation revalidation.",
+      };
+    }
+
+    const watchdog = await db
+      .select()
+      .from(issueWatchdogs)
+      .where(and(
+        eq(issueWatchdogs.id, scope.watchdogId),
+        eq(issueWatchdogs.companyId, scope.companyId),
+        eq(issueWatchdogs.issueId, scope.watchedIssueId),
+        eq(issueWatchdogs.status, "active"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!watchdog) {
+      return {
+        allowed: false as const,
+        reason: "Task-watchdog run context is not backed by an active persisted watchdog.",
+      };
+    }
+
+    const run = await loadMutationRun(scope);
+    if (!run) {
+      return {
+        allowed: false as const,
+        reason: "Task-watchdog run context is not backed by an active persisted heartbeat run.",
+      };
+    }
+
+    const input = await collectClassifierInput(watchdog.companyId, watchdog);
+    const classification = classifyTaskWatchdogSubtree(input);
+    if (classification.state !== "stopped") {
+      return {
+        allowed: false as const,
+        reason:
+          "Task-watchdog review cannot be refreshed because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path.",
+        classification,
+      };
+    }
+
+    const repinned = await repinMutationRun(scope, run, classification.stopFingerprint);
+    if (repinned) {
+      return {
+        allowed: true as const,
+        classification,
+        previousStopFingerprint: scope.stopFingerprint,
+        stopFingerprint: classification.stopFingerprint,
+      };
+    }
+    return {
+      allowed: false as const,
+      reason: "Task-watchdog run context changed while refreshing the watched subtree stop fingerprint.",
+      classification,
+    };
+  }
+
+  async function revalidateMutationScope(scope: WatchdogMutationScope) {
     if (!scope.stopFingerprint) {
       return {
         allowed: false as const,
@@ -1484,6 +1674,23 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const classification = classifyTaskWatchdogSubtree(input);
     if (classification.state === "stopped" && classification.stopFingerprint === scope.stopFingerprint) {
       return { allowed: true as const, classification };
+    }
+
+    if (classification.state === "stopped") {
+      const run = await loadMutationRun(scope);
+      if (
+        run &&
+        await fingerprintDriftBelongsToRun(scope, run, classification) &&
+        await repinMutationRun(scope, run, classification.stopFingerprint)
+      ) {
+        return {
+          allowed: true as const,
+          classification,
+          previousStopFingerprint: scope.stopFingerprint,
+          stopFingerprint: classification.stopFingerprint,
+          repinned: true as const,
+        };
+      }
     }
 
     return {
@@ -1649,5 +1856,6 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     },
 
     revalidateMutationScope,
+    refreshMutationScope,
   };
 }

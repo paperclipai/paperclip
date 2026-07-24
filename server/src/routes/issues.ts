@@ -351,6 +351,10 @@ function noopTaskWatchdogService(): TaskWatchdogService {
         stoppedLeaves: [],
       },
     }),
+    refreshMutationScope: async () => ({
+      allowed: false,
+      reason: "Task watchdog service unavailable in this route context.",
+    }),
   };
 }
 
@@ -5459,6 +5463,81 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     res.json(await taskWatchdogsSvc.getActiveForIssue(issue.companyId, issue.id));
+  });
+
+  router.post("/issues/:id/watchdog/refresh", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Only task-watchdog agent runs can refresh a watchdog stop fingerprint." });
+      return;
+    }
+
+    const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (scope.kind !== "watchdog") {
+      res.status(403).json({
+        error: scope.kind === "invalid"
+          ? scope.detail
+          : "Only task-watchdog agent runs can refresh a watchdog stop fingerprint.",
+      });
+      return;
+    }
+    if (scope.companyId !== issue.companyId || scope.watchedIssueId !== issue.id) {
+      res.status(403).json({
+        error: "Task-watchdog runs can refresh only their persisted watched issue.",
+        details: {
+          watchedIssueId: scope.watchedIssueId,
+          requestedIssueId: issue.id,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return;
+    }
+
+    const refreshed = await taskWatchdogsSvc.refreshMutationScope(scope);
+    if (!refreshed.allowed) {
+      res.status(409).json({
+        error: refreshed.reason,
+        details: {
+          watchedIssueId: scope.watchedIssueId,
+          watchdogId: scope.watchdogId,
+          runStopFingerprint: scope.stopFingerprint,
+          currentState: refreshed.classification?.state ?? null,
+          currentStopFingerprint:
+            refreshed.classification && "stopFingerprint" in refreshed.classification
+              ? refreshed.classification.stopFingerprint
+              : null,
+        },
+      });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.task_watchdog_fingerprint_refreshed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        watchdogId: scope.watchdogId,
+        previousStopFingerprint: refreshed.previousStopFingerprint,
+        stopFingerprint: refreshed.stopFingerprint,
+      },
+    });
+    res.json({
+      state: refreshed.classification.state,
+      previousStopFingerprint: refreshed.previousStopFingerprint,
+      stopFingerprint: refreshed.stopFingerprint,
+      repinned: refreshed.previousStopFingerprint !== refreshed.stopFingerprint,
+    });
   });
 
   router.put("/issues/:id/watchdog", validate(upsertIssueWatchdogSchema), async (req, res) => {
