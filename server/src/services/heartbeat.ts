@@ -5430,6 +5430,37 @@ export function resolveNextSessionState(input: {
 
 export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeService>;
 
+type HeartbeatRunEventInsert = Omit<
+  typeof heartbeatRunEvents.$inferInsert,
+  "id" | "seq" | "createdAt"
+>;
+
+export async function appendHeartbeatRunEvent(
+  db: Db,
+  requestedSeq: number,
+  event: HeartbeatRunEventInsert,
+) {
+  return db.transaction(async (tx) => {
+    const lockKey = `heartbeat-run-events:${event.runId}`;
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+
+    const [row] = await tx
+      .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, event.runId));
+    const nextSeq = Number(row?.maxSeq ?? 0) + 1;
+    const seq = Math.max(Number.isSafeInteger(requestedSeq) && requestedSeq > 0 ? requestedSeq : 1, nextSeq);
+
+    const inserted = await tx
+      .insert(heartbeatRunEvents)
+      .values({ ...event, seq })
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!inserted) throw new Error(`Failed to append heartbeat run event for ${event.runId}`);
+    return inserted;
+  });
+}
+
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
@@ -8238,11 +8269,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       at: eventAt,
     });
 
-    await db.insert(heartbeatRunEvents).values({
+    const insertedEvent = await appendHeartbeatRunEvent(db, seq, {
       companyId: run.companyId,
       runId: run.id,
       agentId: run.agentId,
-      seq,
       eventType: event.eventType,
       stream: event.stream,
       level: event.level,
@@ -8250,6 +8280,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       message: sanitizedMessage,
       payload: sanitizedPayload,
     });
+    const persistedSeq = insertedEvent.seq;
 
     publishLiveEvent({
       companyId: run.companyId,
@@ -8258,7 +8289,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         runId: run.id,
         agentId: run.agentId,
         issueId,
-        seq,
+        seq: persistedSeq,
         eventType: event.eventType,
         stream: event.stream ?? null,
         level: event.level ?? null,
@@ -11510,7 +11541,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         : null;
 
-      let finalizedRun = await setRunStatus(run.id, "failed", {
+      const transition = await setRunStatusIfRunning(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
@@ -11533,12 +11564,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : result;
         })(),
       });
+      if (!transition.updated || !transition.run) continue;
+
+      let finalizedRun = transition.run;
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
       });
-      if (!finalizedRun) finalizedRun = await getRun(run.id);
-      if (!finalizedRun) continue;
       finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
       await releaseEnvironmentLeasesForRun({
         runId: finalizedRun.id,

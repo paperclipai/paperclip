@@ -98,6 +98,7 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import {
+  appendHeartbeatRunEvent,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
@@ -1312,6 +1313,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("queues one process-loss retry when orphan reapers overlap", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 999_999_999,
+    });
+    const reapers = Array.from({ length: 20 }, () =>
+      heartbeatService(db, { runtimeEnv: { PAPERCLIP_IN_WORKTREE: "true" } }),
+    );
+
+    await Promise.all(reapers.map((heartbeat) => heartbeat.reapOrphanedRuns()));
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    const retries = runs.filter((row) => row.retryOfRunId === runId);
+
+    expect(retries).toHaveLength(1);
+    expect(runs.find((row) => row.id === runId)).toMatchObject({
+      status: "failed",
+      errorCode: "process_lost",
+    });
+  });
+
+  it("serializes concurrent run-event sequence allocation", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({ agentStatus: "idle" });
+
+    await Promise.all(
+      Array.from({ length: 20 }, (_, index) =>
+        appendHeartbeatRunEvent(db, 1, {
+          companyId,
+          runId,
+          agentId,
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: `concurrent event ${index}`,
+        }),
+      ),
+    );
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId))
+      .orderBy(heartbeatRunEvents.seq);
+    expect(events.map((event) => event.seq)).toEqual(Array.from({ length: 20 }, (_, index) => index + 1));
+
+    const eventsAfterFirst = await heartbeatService(db).listEvents(runId, 1, 100);
+    expect(eventsAfterFirst).toHaveLength(19);
   });
 
   it("does not queue a process-loss retry after the issue is already done", async () => {
