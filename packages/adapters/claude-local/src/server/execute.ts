@@ -928,14 +928,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return { proc, parsedStream, parsed };
   };
 
-  const toAdapterResult = (
+  const toAdapterResult = async (
     attempt: {
       proc: RunProcessResult;
       parsedStream: ReturnType<typeof parseClaudeStreamJson>;
       parsed: Record<string, unknown> | null;
     },
     opts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean },
-  ): AdapterExecutionResult => {
+  ): Promise<AdapterExecutionResult> => {
     const { proc, parsedStream, parsed } = attempt;
     const loginMeta = detectClaudeLoginRequired({
       parsed,
@@ -983,13 +983,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage: fallbackErrorMessage,
         });
       const transientRetryNotBefore = providerQuota || transientUpstream
-        ? extractClaudeRetryNotBefore({
-            parsed: null,
-            stdout: proc.stdout,
-            stderr: proc.stderr,
-            errorMessage: fallbackErrorMessage,
-          })
+        ? extractClaudeRetryNotBefore(
+            {
+              parsed: null,
+              stdout: proc.stdout,
+              stderr: proc.stderr,
+              errorMessage: fallbackErrorMessage,
+            },
+            undefined,
+            providerQuota ? { sessionExhaustionFallbackResetHourUtc: 22 } : undefined,
+          )
         : null;
+      if (providerQuota && transientRetryNotBefore) {
+        await onLog(
+          "stdout",
+          `[paperclip] Session/daily usage limit reached; scheduling retry after ${transientRetryNotBefore.toISOString()}.\n`,
+        );
+      }
       const errorCode = loginMeta.requiresLogin
         ? "claude_auth_required"
         : isClaudeModelNotFoundError({
@@ -1116,13 +1126,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage,
       });
     const transientRetryNotBefore = providerQuota || transientUpstream
-      ? extractClaudeRetryNotBefore({
-          parsed,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage,
-        })
+      ? extractClaudeRetryNotBefore(
+          {
+            parsed,
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            errorMessage,
+          },
+          undefined,
+          providerQuota ? { sessionExhaustionFallbackResetHourUtc: 22 } : undefined,
+        )
       : null;
+    if (providerQuota && transientRetryNotBefore) {
+      await onLog(
+        "stdout",
+        `[paperclip] Session/daily usage limit reached; scheduling retry after ${transientRetryNotBefore.toISOString()}.\n`,
+      );
+    }
     const resolvedErrorCode = loginMeta.requiresLogin
       ? "claude_auth_required"
       : failed && isClaudeModelNotFoundError({
@@ -1241,10 +1261,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
       const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+      return await toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    return await toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();
