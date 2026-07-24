@@ -95,11 +95,11 @@ describe("classifyCodexAuthRefreshFailure", () => {
 });
 
 describe("isCodexInvalidApiKeyError", () => {
-  it("detects OpenAI invalid-key 401 phrasings", () => {
+  it("detects OpenAI-distinctive invalid-key phrasings without further context", () => {
     expect(
       isCodexInvalidApiKeyError({
         errorMessage:
-          "Incorrect API key provided: sk-ant-a***AA. You can find your API key at https://platform.openai.com/account/api-keys.",
+          "Incorrect API key provided: sk-proj-a***AA. You can find your API key at https://platform.openai.com/account/api-keys.",
       }),
     ).toBe(true);
     expect(
@@ -109,12 +109,20 @@ describe("isCodexInvalidApiKeyError", () => {
       }),
     ).toBe(true);
     expect(isCodexInvalidApiKeyError({ stdout: "error code: invalid_api_key" })).toBe(true);
-    expect(isCodexInvalidApiKeyError({ errorMessage: "No API key provided." })).toBe(true);
+  });
+
+  it("detects generic missing/invalid-key phrasings only near an OpenAI marker", () => {
     expect(
       isCodexInvalidApiKeyError({
-        errorMessage: "You didn't provide an API key. You need to provide your API key in an Authorization header.",
+        errorMessage: "No API key provided. You can find your API key at https://platform.openai.com/account/api-keys.",
       }),
     ).toBe(true);
+    expect(
+      isCodexInvalidApiKeyError({
+        errorMessage: "You didn't provide an API key. Obtain one at https://platform.openai.com/account/api-keys.",
+      }),
+    ).toBe(true);
+    expect(isCodexInvalidApiKeyError({ stderr: "openai: api key is invalid" })).toBe(true);
   });
 
   it("detects a 401 anchored to api.openai.com", () => {
@@ -123,6 +131,17 @@ describe("isCodexInvalidApiKeyError", () => {
         stderr: "request to https://api.openai.com/v1/responses failed: 401 Unauthorized",
       }),
     ).toBe(true);
+  });
+
+  it("does not classify third-party invalid/missing-key errors", () => {
+    expect(isCodexInvalidApiKeyError({ errorMessage: "POST https://example.com/v1 failed: No API key provided" })).toBe(
+      false,
+    );
+    expect(isCodexInvalidApiKeyError({ errorMessage: "stripe: invalid api key" })).toBe(false);
+    expect(isCodexInvalidApiKeyError({ stderr: "weather-api: api key is expired" })).toBe(false);
+    expect(isCodexInvalidApiKeyError({ errorMessage: "You didn't provide an API key for the search tool." })).toBe(
+      false,
+    );
   });
 
   it("does not swallow unrelated failures", () => {

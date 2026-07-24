@@ -25,10 +25,23 @@ const CODEX_OAUTH_INVALID_GRANT_RE = /\binvalid_grant\b/i;
 // map this to errorCode "codex_auth_required" (the codex analog of
 // claude-local's claude_auth_required) so a bad or missing API key surfaces
 // as a distinct auth failure instead of a generic error that gets retried.
-// The bare-401 alternatives are anchored to api.openai.com so unrelated 401s
-// (e.g. a tool the agent ran against some other service) are not swallowed.
-const CODEX_INVALID_API_KEY_RE =
-  /(?:incorrect\s+api\s+key\s+provided|\binvalid_api_key\b|invalid\s+api\s+key|no\s+api\s+key\s+provided|you\s+didn(?:'|’)?t\s+provide\s+an\s+api\s+key|api\s+key\s+(?:is\s+)?(?:invalid|incorrect|expired|revoked|disabled)|(?:\b401\b|\bunauthori[sz]ed\b)[\s\S]{0,120}?api\.openai\.com|api\.openai\.com[\s\S]{0,120}?(?:\b401\b|\bunauthori[sz]ed\b))/i;
+// Only these two phrasings are distinctive enough to match on their own:
+// "Incorrect API key provided" and the invalid_api_key error code are
+// OpenAI's exact wordings.
+const CODEX_INVALID_API_KEY_DISTINCTIVE_RE =
+  /(?:incorrect\s+api\s+key\s+provided|\binvalid_api_key\b)/i;
+// Generic invalid/missing-key phrasings and bare 401s appear verbatim in
+// third-party API errors too (an agent's tool call against some other
+// service returning "No API key provided" must not masquerade as a Codex
+// credential failure), so they only classify when an OpenAI marker appears
+// within a bounded window of the phrase.
+const CODEX_INVALID_API_KEY_GENERIC_SRC =
+  "(?:invalid\\s+api\\s+key|no\\s+api\\s+key\\s+provided|you\\s+didn(?:'|’)?t\\s+provide\\s+an\\s+api\\s+key|api\\s+key\\s+(?:is\\s+)?(?:invalid|incorrect|expired|revoked|disabled))";
+const OPENAI_MARKER_SRC = "(?:api\\.openai\\.com|\\bopenai\\b)";
+const CODEX_CONTEXTUAL_INVALID_API_KEY_RE = new RegExp(
+  `(?:${CODEX_INVALID_API_KEY_GENERIC_SRC}[\\s\\S]{0,120}?${OPENAI_MARKER_SRC}|${OPENAI_MARKER_SRC}[\\s\\S]{0,120}?${CODEX_INVALID_API_KEY_GENERIC_SRC}|(?:\\b401\\b|\\bunauthori[sz]ed\\b)[\\s\\S]{0,120}?api\\.openai\\.com|api\\.openai\\.com[\\s\\S]{0,120}?(?:\\b401\\b|\\bunauthori[sz]ed\\b))`,
+  "i",
+);
 const CODEX_CONTEXTUAL_REFRESH_AUTH_INVALIDATED_RE =
   /(?:(?:oauth|refresh|access[_\s-]?token|bearer|credential).{0,80}(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b)|(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b).{0,80}(?:oauth|refresh|access[_\s-]?token|bearer|credential))/i;
 
@@ -148,7 +161,10 @@ export function isCodexInvalidApiKeyError(input: {
   errorMessage?: string | null;
 }): boolean {
   const haystack = buildCodexErrorHaystack(input);
-  return CODEX_INVALID_API_KEY_RE.test(haystack);
+  return (
+    CODEX_INVALID_API_KEY_DISTINCTIVE_RE.test(haystack) ||
+    CODEX_CONTEXTUAL_INVALID_API_KEY_RE.test(haystack)
+  );
 }
 
 function readTimeZoneParts(date: Date, timeZone: string) {

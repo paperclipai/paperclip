@@ -820,7 +820,7 @@ describe("codex execute", () => {
     await fs.mkdir(workspace, { recursive: true });
     await writeFailingCodexCommand(
       commandPath,
-      "unexpected status 401 Unauthorized: Incorrect API key provided: sk-ant-a***AA.",
+      "unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-a***AA.",
     );
 
     const previousHome = process.env.HOME;

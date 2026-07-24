@@ -1002,7 +1002,7 @@ describe("codex_local ACP lane", () => {
         [],
         {
           status: "failed",
-          error: { message: "unexpected status 401 Unauthorized: Incorrect API key provided: sk-ant-a***AA." },
+          error: { message: "unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-a***AA." },
         } as unknown as FakeRuntimeTurnResult,
       ) as never,
     });
