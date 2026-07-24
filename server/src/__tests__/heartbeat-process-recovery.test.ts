@@ -3441,6 +3441,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("allocates cancellation events after existing run events", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      runId,
+      agentId,
+      seq: 1,
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: "run started",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.cancelRun(runId);
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId))
+      .orderBy(heartbeatRunEvents.seq);
+    expect(events.map((event) => event.seq)).toEqual([1, 2]);
+    await expect(heartbeat.listEvents(runId, 1, 100)).resolves.toHaveLength(1);
+  });
+
   it("records operator interrupt cancellation metadata without changing terminal status", async () => {
     const { runId, issueId } = await seedRunFixture({
       agentStatus: "running",
