@@ -1339,9 +1339,23 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   };
 }
 
-export function stringifyPaperclipWakePayload(value: unknown): string | null {
+export function stringifyPaperclipWakePayload(
+  value: unknown,
+  options: {
+    // For prompt-embedded copies of the payload on lanes where another prompt
+    // section already carries the issue description; the env-var copy should
+    // stay complete.
+    omitIssueDescription?: boolean;
+  } = {},
+): string | null {
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return null;
+  if (options.omitIssueDescription === true && normalized.issue) {
+    return JSON.stringify({
+      ...normalized,
+      issue: { ...normalized.issue, description: null, descriptionTruncated: false },
+    });
+  }
   return JSON.stringify(normalized);
 }
 

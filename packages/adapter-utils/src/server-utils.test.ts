@@ -762,6 +762,14 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).not.toContain("Issue description:");
     expect(prompt).not.toContain("omitted from this resume delta");
     expect(prompt).toContain("- issue: PAP-15271 Preserve the task brief");
+
+    const promptJson = stringifyPaperclipWakePayload(payload, { omitIssueDescription: true });
+    expect(JSON.parse(promptJson ?? "{}")).toMatchObject({
+      issue: { description: null, descriptionTruncated: false, identifier: "PAP-15271" },
+    });
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      issue: { description: "Update launch-card.svg and change the CTA to Try Team free." },
+    });
   });
 
   it("omits the issue description from non-assignment resume deltas and leaves a fetch breadcrumb", () => {
