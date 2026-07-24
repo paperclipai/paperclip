@@ -800,6 +800,26 @@ function rowIsBuiltInAgent(row: typeof agents.$inferSelect, key: string) {
   return marker?.key === key;
 }
 
+// Partial unique index (migration 0192) that guarantees one active built-in
+// agent per (company, marker key). A losing provisioning race raises this as a
+// 23505; provision()/ensure() catch it and re-resolve to the winning row.
+const BUILT_IN_AGENT_MARKER_UNIQUE_INDEX = "agents_company_built_in_agent_key_unique_idx";
+
+function isBuiltInAgentMarkerConflict(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const maybe = current as { code?: string; constraint?: string; constraint_name?: string; cause?: unknown };
+    const constraint = maybe.constraint ?? maybe.constraint_name;
+    if (maybe.code === "23505" && constraint === BUILT_IN_AGENT_MARKER_UNIQUE_INDEX) {
+      return true;
+    }
+    current = maybe.cause;
+  }
+  return false;
+}
+
 export function builtInAgentService(db: Db) {
   const agentSvc = agentService(db);
   const accessSvc = accessService(db);
@@ -1526,17 +1546,50 @@ export function builtInAgentService(db: Db) {
       .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.id.localeCompare(right.id));
   }
 
-  async function findSingleAgent(companyId: string, definition: BuiltInAgentDefinition) {
-    const markedRows = await findMarkedRows(companyId, definition.key);
-    if (markedRows.length > 1) {
-      throw conflict(`Multiple built-in agents found for ${definition.key}`, {
-        code: "built_in_agent_duplicate_instance",
-        key: definition.key,
-        agentIds: markedRows.map((row) => row.id),
+  // Self-heal duplicate built-in agents. `findMarkedRows` already sorts oldest
+  // first, so the first row is authoritative: keep it, terminate the rest, and
+  // cancel each duplicate's orphan pending hire_agent approval. Idempotent, so
+  // concurrent callers converge on the same surviving row.
+  async function resolveDuplicateMarkedRows(
+    companyId: string,
+    definition: BuiltInAgentDefinition,
+    markedRows: Array<typeof agents.$inferSelect>,
+  ) {
+    const [keep, ...duplicates] = markedRows;
+    for (const duplicate of duplicates) {
+      const openApproval = await approvalSvc.findOpenHireApprovalForAgent(companyId, duplicate.id);
+      await agentSvc.terminate(duplicate.id);
+      if (openApproval) {
+        await approvalSvc.cancel(
+          openApproval.id,
+          `Cancelled: duplicate built-in ${definition.key} agent resolved during reconciliation.`,
+        );
+      }
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "built-in-agents",
+        action: "built_in_agent.duplicate_resolved",
+        entityType: "agent",
+        entityId: duplicate.id,
+        details: {
+          key: definition.key,
+          keptAgentId: keep!.id,
+          terminatedAgentId: duplicate.id,
+          cancelledApprovalId: openApproval?.id ?? null,
+        },
       });
     }
+    return keep!;
+  }
+
+  async function findSingleAgent(companyId: string, definition: BuiltInAgentDefinition) {
+    const markedRows = await findMarkedRows(companyId, definition.key);
     if (markedRows.length === 0) return null;
-    const agent = await agentSvc.getById(markedRows[0]!.id);
+    const survivor = markedRows.length > 1
+      ? await resolveDuplicateMarkedRows(companyId, definition, markedRows)
+      : markedRows[0]!;
+    const agent = await agentSvc.getById(survivor.id);
     return agent as Agent | null;
   }
 
@@ -1561,7 +1614,12 @@ export function builtInAgentService(db: Db) {
     return state(definition, await findSingleAgent(companyId, definition));
   }
 
-  async function ensure(companyId: string, key: string, input: BuiltInAgentProvisionInput = {}) {
+  async function ensure(
+    companyId: string,
+    key: string,
+    input: BuiltInAgentProvisionInput = {},
+    options: { isRaceRetry?: boolean } = {},
+  ) {
     const definition = requireBuiltInAgentDefinition(key);
     await ensureCompany(companyId);
     const existing = await findSingleAgent(companyId, definition);
@@ -1619,20 +1677,31 @@ export function builtInAgentService(db: Db) {
     const reportsTo = definition.defaultManager === "single_root_agent"
       ? await findSingleRootManager(companyId)
       : null;
-    const created = await agentSvc.create(companyId, {
-      ...definitionPatch(definition, resolvedInput),
-      status: definition.defaultStatus ?? "idle",
-      pauseReason: definition.defaultStatus === "paused"
-        ? `Built-in ${definition.displayName} is disabled until explicitly configured.`
-        : null,
-      pausedAt: definition.defaultStatus === "paused" ? new Date() : null,
-      reportsTo,
-      metadata: builtInMetadata(definition),
-      runtimeConfig: definition.defaultRuntimeConfig ?? {},
-      permissions: definition.defaultPermissions ?? {},
-      spentMonthlyCents: 0,
-      lastHeartbeatAt: null,
-    }, { allowBuiltInAgentMetadata: true }) as Agent;
+    let created: Agent;
+    try {
+      created = await agentSvc.create(companyId, {
+        ...definitionPatch(definition, resolvedInput),
+        status: definition.defaultStatus ?? "idle",
+        pauseReason: definition.defaultStatus === "paused"
+          ? `Built-in ${definition.displayName} is disabled until explicitly configured.`
+          : null,
+        pausedAt: definition.defaultStatus === "paused" ? new Date() : null,
+        reportsTo,
+        metadata: builtInMetadata(definition),
+        runtimeConfig: definition.defaultRuntimeConfig ?? {},
+        permissions: definition.defaultPermissions ?? {},
+        spentMonthlyCents: 0,
+        lastHeartbeatAt: null,
+      }, { allowBuiltInAgentMetadata: true }) as Agent;
+    } catch (error) {
+      // Lost the provisioning race: a concurrent writer inserted the row first
+      // and the partial unique index rejected ours. Re-run once; the winning
+      // row now exists, so we take the update path instead of inserting again.
+      if (!options.isRaceRetry && isBuiltInAgentMarkerConflict(error)) {
+        return ensure(companyId, key, input, { isRaceRetry: true });
+      }
+      throw error;
+    }
 
     await logActivity(db, {
       companyId,
@@ -1713,16 +1782,34 @@ export function builtInAgentService(db: Db) {
     const reportsTo = definition.defaultManager === "single_root_agent"
       ? await findSingleRootManager(companyId)
       : null;
-    const pending = await agentSvc.create(companyId, {
-      ...definitionPatch(definition, input),
-      status: "pending_approval",
-      reportsTo,
-      metadata: builtInMetadata(definition),
-      runtimeConfig: definition.defaultRuntimeConfig ?? {},
-      permissions: definition.defaultPermissions ?? {},
-      spentMonthlyCents: 0,
-      lastHeartbeatAt: null,
-    }, { allowBuiltInAgentMetadata: true }) as Agent;
+    let pending: Agent;
+    try {
+      pending = await agentSvc.create(companyId, {
+        ...definitionPatch(definition, input),
+        status: "pending_approval",
+        reportsTo,
+        metadata: builtInMetadata(definition),
+        runtimeConfig: definition.defaultRuntimeConfig ?? {},
+        permissions: definition.defaultPermissions ?? {},
+        spentMonthlyCents: 0,
+        lastHeartbeatAt: null,
+      }, { allowBuiltInAgentMetadata: true }) as Agent;
+    } catch (error) {
+      // Lost the provisioning race: a concurrent writer inserted the row (and
+      // its own hire approval) first, and the partial unique index rejected
+      // ours before we created a paired approval. Re-resolve to the winner and
+      // return its pending state + open approval instead of surfacing the 23505.
+      if (isBuiltInAgentMarkerConflict(error)) {
+        const winner = await findSingleAgent(companyId, definition);
+        if (winner) {
+          const winnerApproval = winner.status === "pending_approval"
+            ? await approvalSvc.findOpenHireApprovalForAgent(companyId, winner.id)
+            : null;
+          return { state: await state(definition, winner), approval: winnerApproval as Approval | null };
+        }
+      }
+      throw error;
+    }
 
     const approval = await approvalSvc.create(companyId, {
       type: "hire_agent",
@@ -1906,11 +1993,22 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
   let autoEnsured = 0;
   let pendingApprovals = 0;
   let defaultGrantsEnsured = 0;
+  // Isolate per-company failures so one bad company (e.g. an unresolvable data
+  // problem) can no longer abort reconciliation for every company after it.
+  let companyFailures = 0;
   for (const company of companyRows) {
-    const result = await svc.autoProvisionBundledAgents(company.id);
-    autoEnsured += result.autoEnsured;
-    pendingApprovals += result.pendingApprovals;
-    defaultGrantsEnsured += result.defaultGrantsEnsured;
+    try {
+      const result = await svc.autoProvisionBundledAgents(company.id);
+      autoEnsured += result.autoEnsured;
+      pendingApprovals += result.pendingApprovals;
+      defaultGrantsEnsured += result.defaultGrantsEnsured;
+    } catch (err) {
+      companyFailures += 1;
+      console.error(
+        `built-in agent auto-provisioning failed for company ${company.id}; continuing with remaining companies`,
+        err,
+      );
+    }
   }
   const rows = await db
     .select({
@@ -1940,9 +2038,17 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
       continue;
     }
     seen.add(instanceKey);
-    await svc.reconcileDefinitionDefaults(row.companyId, marker.key);
-    reconciled += 1;
+    try {
+      await svc.reconcileDefinitionDefaults(row.companyId, marker.key);
+      reconciled += 1;
+    } catch (err) {
+      companyFailures += 1;
+      console.error(
+        `built-in agent default reconciliation failed for company ${row.companyId} key ${marker.key}; continuing`,
+        err,
+      );
+    }
   }
 
-  return { scanned, reconciled, unknown, duplicates, autoEnsured, pendingApprovals, defaultGrantsEnsured };
+  return { scanned, reconciled, unknown, duplicates, autoEnsured, pendingApprovals, defaultGrantsEnsured, companyFailures };
 }

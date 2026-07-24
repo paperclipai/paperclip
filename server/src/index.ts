@@ -829,7 +829,13 @@ export async function startServer(): Promise<StartedServer> {
 
   void reconcileBuiltInAgentsOnStartup(db as any)
     .then((result) => {
-      if (result.reconciled > 0 || result.unknown > 0 || result.duplicates > 0 || result.autoEnsured > 0) {
+      if (
+        result.reconciled > 0
+        || result.unknown > 0
+        || result.duplicates > 0
+        || result.autoEnsured > 0
+        || result.companyFailures > 0
+      ) {
         logger.warn(
           result,
           "startup reconciliation of built-in agents complete",
