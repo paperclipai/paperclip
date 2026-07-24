@@ -76,7 +76,7 @@ describe("shouldPollRunShellLog", () => {
 describe("runDetailRefetchIntervalMs", () => {
   it("polls run state only while the selected run remains queued", () => {
     expect(runDetailRefetchIntervalMs("queued")).toBe(5_000);
-    expect(runDetailRefetchIntervalMs("running")).toBe(false);
+    expect(runDetailRefetchIntervalMs("running")).toBe(15_000);
     expect(runDetailRefetchIntervalMs("succeeded")).toBe(false);
   });
 });

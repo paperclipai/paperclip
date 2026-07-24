@@ -143,6 +143,25 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("refreshes the selected run detail after lifecycle events", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+    };
+
+    __liveUpdatesTestUtils.invalidateHeartbeatQueries(
+      queryClient as never,
+      "company-1",
+      { runId: "run-1", agentId: "agent-1" },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.runDetail("run-1"),
+    });
+  });
+
   it("applies heartbeat progress payloads directly to cached visible issue runs", () => {
     const cache = new Map<string, unknown>([
       [JSON.stringify(queryKeys.liveRuns("company-1")), [{ id: "run-1", currentStatusMessage: null }]],
@@ -1107,14 +1126,26 @@ describe("applyRunLifecycleToCompanyLiveRuns", () => {
   }
 
   it("removes a run on a terminal status (patched, no refetch needed)", () => {
-    const { client, read } = makeClient([{ id: "run-1", status: "running" }, { id: "run-2", status: "running" }]);
+    const { client, read, readDetail } = makeClient([{ id: "run-1", status: "running" }, { id: "run-2", status: "running" }]);
     const patched = __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(
       client as never,
       "company-1",
-      { runId: "run-1", status: "succeeded" },
+      {
+        runId: "run-1",
+        status: "succeeded",
+        finishedAt: "2026-07-24T10:00:00.000Z",
+        error: null,
+        errorCode: null,
+      },
     );
     expect(patched).toBe(true);
     expect(read()).toEqual([{ id: "run-2", status: "running" }]);
+    expect(readDetail()).toEqual(expect.objectContaining({
+      status: "succeeded",
+      finishedAt: "2026-07-24T10:00:00.000Z",
+      error: null,
+      errorCode: null,
+    }));
   });
 
   it("patches status in place for a run already in the list", () => {
@@ -1134,10 +1165,22 @@ describe("applyRunLifecycleToCompanyLiveRuns", () => {
     __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(
       client as never,
       "company-1",
-      { runId: "run-1", status: "running" },
+      {
+        runId: "run-1",
+        status: "running",
+        startedAt: "2026-07-24T09:59:00.000Z",
+        error: null,
+        errorCode: null,
+      },
     );
 
-    expect(readDetail()).toEqual({ id: "run-1", status: "running" });
+    expect(readDetail()).toEqual(expect.objectContaining({
+      id: "run-1",
+      status: "running",
+      startedAt: "2026-07-24T09:59:00.000Z",
+      error: null,
+      errorCode: null,
+    }));
   });
 
   it("reports not-patched for a genuinely new run so the caller refetches", () => {

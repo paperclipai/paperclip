@@ -870,9 +870,22 @@ function applyRunLifecycleToCompanyLiveRuns(
 
   queryClient.setQueryData(
     queryKeys.runDetail(runId),
-    (current: HeartbeatRun | undefined) => current
-      ? { ...current, status: status as HeartbeatRun["status"] }
-      : current,
+    (current: HeartbeatRun | undefined) => {
+      if (!current) return current;
+      const has = (key: string) => Object.prototype.hasOwnProperty.call(payload, key);
+      return {
+        ...current,
+        status: status as HeartbeatRun["status"],
+        ...(has("invocationSource")
+          ? { invocationSource: readString(payload.invocationSource) ?? current.invocationSource }
+          : {}),
+        ...(has("triggerDetail") ? { triggerDetail: readString(payload.triggerDetail) } : {}),
+        ...(has("error") ? { error: readString(payload.error) } : {}),
+        ...(has("errorCode") ? { errorCode: readString(payload.errorCode) } : {}),
+        ...(has("startedAt") ? { startedAt: readString(payload.startedAt) } : {}),
+        ...(has("finishedAt") ? { finishedAt: readString(payload.finishedAt) } : {}),
+      };
+    },
   );
 
   if (TERMINAL_RUN_STATUSES.has(status)) {
@@ -915,6 +928,10 @@ function invalidateHeartbeatQueries(
   if (agentId) {
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
+  }
+  const runId = readString(payload.runId);
+  if (runId) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(runId) });
   }
 }
 
@@ -1294,6 +1311,7 @@ export const __liveUpdatesTestUtils = {
   applyRunLiveStatusPatchToCaches,
   hydrateVisibleIssueComment,
   invalidateActivityQueries,
+  invalidateHeartbeatQueries,
   invalidateHeartbeatProgressQueries,
   invalidateVisibleIssueRunQueries,
   readRunLiveStatusPatchFromPayload,

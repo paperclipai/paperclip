@@ -363,8 +363,10 @@ export function shouldPollRunShellLog(status: HeartbeatRun["status"]): boolean {
   return status === "running";
 }
 
-export function runDetailRefetchIntervalMs(status: HeartbeatRun["status"]): 5000 | false {
-  return status === "queued" ? 5000 : false;
+export function runDetailRefetchIntervalMs(status: HeartbeatRun["status"]): 5000 | 15000 | false {
+  if (status === "queued") return 5000;
+  if (status === "running") return 15000;
+  return false;
 }
 
 export function RunInvocationCard({
