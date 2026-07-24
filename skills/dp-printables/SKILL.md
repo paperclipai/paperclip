@@ -20,12 +20,15 @@ exemplar-studio printable generate --spec <spec.yaml> [options] [--json]
 exemplar-studio printable generate-catalogue [--out <dir>] [--json]
 exemplar-studio printable verify <candidate-dir> [--json]
 exemplar-studio printable diff <candidate> <live|approved|path> [--json]
+exemplar-studio printable handoff-bundle approved --out <dir> [--json]
 ```
 
 Agents may not seal or approve a release, accept editorial review, replace live
-Etsy files, publish listing assets, set live/approved pointers, or retire the
-legacy pipeline. The CLI hard-refuses `seal`, `approve`, `replace-live`, and
-`retire-legacy`. Do not work around this boundary.
+Etsy files, publish listing assets, set or roll back lifecycle pointers, prune
+Candidates, or retire the legacy pipeline. Managed Codex, Paperclip and CI
+identities are hard-refused from `seal`, `approve`, `promote-live`, `rollback`,
+and `prune`; `replace-live` and `retire-legacy` remain unavailable. Never unset
+or spoof identity variables to cross this boundary.
 
 Exit codes are contractual:
 
@@ -63,8 +66,10 @@ profanity-free. Sharper language in a sweary edition is permitted only in the
 subtitle, strapline, or a divider body—never titles, headers, listing metadata,
 or filenames.
 
-The brand is locked to Dastardly Print maroon `#620306`, a checksum-pinned
-foreground logo, RGB, no bleed/crop marks, and a 13 mm home-print margin.
+Every printable brand is locked to maroon `#620306`, a checksum-pinned
+foreground logo and original source, RGB, no bleed/crop marks, and a 13 mm
+home-print margin. Dastardly Print and AroidAtlas use the identical shared
+template system; never fork templates by brand.
 
 ## Required flow
 
@@ -79,8 +84,16 @@ foreground logo, RGB, no bleed/crop marks, and a 13 mm home-print margin.
 5. Run `verify <candidate-dir> --json` independently.
 6. Run `diff` against the requested approved/live/path comparison when one is
    available.
-7. Hand off the Candidate directory, portal, build fingerprint, checksums, and
+7. When an approved pointer exists and the operator requests Etsy staging, run
+   `handoff-bundle approved --out <dir>`. Require one folder per SKU, both buyer
+   sizes, four exact-Candidate listing tiles and a valid `listing.json`.
+8. Hand off the Candidate directory, portal, build fingerprint, checksums, and
    any unavailable comparison pointer to the human operator. Stop there.
 
 Never edit an immutable Candidate. Revise YAML or governed module source and
 generate a new fingerprint.
+
+Run `npm run test:isolated` for printable regression or determinism work. Do not
+run the complete Exemplar test suite concurrently with `printable generate` or
+`generate-catalogue`; the renderer queue is single-flight and intentionally
+waits rather than racing a busy machine.
