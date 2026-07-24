@@ -122,6 +122,13 @@ export const issueExecutionWorkspaceSettingsSchema = z
     environmentId: z.string().uuid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
+    networkEgress: z.object({
+      allowFqdns: z.array(z.string().trim().toLowerCase().regex(
+        /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/,
+        "Network egress FQDNs must be hostnames without a URL scheme or path",
+      ).max(253)).max(100).optional(),
+      allowCidrs: z.array(z.string().trim().regex(/^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/, "Invalid IPv4 CIDR").max(64)).max(100).optional(),
+    }).strict().optional().nullable(),
   })
   .strict();
 

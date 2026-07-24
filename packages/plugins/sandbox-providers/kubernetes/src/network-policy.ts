@@ -13,6 +13,10 @@ export interface BuildNetworkPolicyInput {
    * "cilium"` for exact FQDN allow-listing in production.
    */
   egressAllowFqdns?: string[];
+  name?: string;
+  podSelector?: Record<string, string>;
+  includeBaseRules?: boolean;
+  ownerReferences?: Record<string, unknown>[];
 }
 
 /**
@@ -64,10 +68,10 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
       labels: { "paperclip.io/managed-by": "paperclip-k8s-plugin" },
     },
     spec: {
-      podSelector: { matchLabels: { "paperclip.io/role": "agent" } },
+      podSelector: { matchLabels: input.podSelector ?? { "paperclip.io/role": "agent" } },
       policyTypes: ["Egress"],
       egress: [
-        {
+        ...(input.includeBaseRules === false ? [] : [{
           to: [
             {
               namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } },
@@ -78,8 +82,8 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
             { protocol: "UDP", port: 53 },
             { protocol: "TCP", port: 53 },
           ],
-        },
-        {
+        }]),
+        ...(input.includeBaseRules === false ? [] : [{
           to: [
             {
               namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": input.paperclipServerNamespace } },
@@ -87,7 +91,7 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
             },
           ],
           ports: [{ protocol: "TCP", port: 3100 }],
-        },
+        }]),
         // NOTE: operator-supplied CIDRs are intentionally NOT port-scoped —
         // operators may need them for non-HTTP services (e.g. private VCS
         // mirrors, S3 endpoints, internal artifact registries). Operators
@@ -127,6 +131,11 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
       ],
     },
   };
+
+  (egressAllow.metadata as Record<string, unknown>).name = input.name ?? "paperclip-egress-allow";
+  if (input.ownerReferences) {
+    (egressAllow.metadata as Record<string, unknown>).ownerReferences = input.ownerReferences;
+  }
 
   return [denyAll, egressAllow];
 }

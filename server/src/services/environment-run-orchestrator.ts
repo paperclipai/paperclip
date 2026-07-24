@@ -23,6 +23,7 @@ import type {
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
+  IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import {
@@ -202,6 +203,7 @@ export function environmentRunOrchestrator(
     agentId: string;
     heartbeatRunId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+    executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
     adapterType: string | null;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
@@ -262,6 +264,7 @@ export function environmentRunOrchestrator(
     heartbeatRunId: string;
     agentId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+    executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   }): Promise<EnvironmentAcquisitionResult> {
     // Step 1: Resolve environment
     const environment = await resolveEnvironment({
@@ -278,6 +281,7 @@ export function environmentRunOrchestrator(
       agentId: input.agentId,
       heartbeatRunId: input.heartbeatRunId,
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
+      executionWorkspaceSettings: input.executionWorkspaceSettings,
       adapterType: input.adapterType ?? null,
     });
 
@@ -299,6 +303,8 @@ export function environmentRunOrchestrator(
         provider: leaseRecord.lease.provider,
         executionWorkspaceId: leaseRecord.leaseContext.executionWorkspaceId,
         issueId: input.issueId,
+        networkEgress:
+          (input.executionWorkspaceSettings as { networkEgress?: unknown } | null)?.networkEgress ?? null,
       },
     });
 

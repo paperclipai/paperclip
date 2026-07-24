@@ -613,6 +613,7 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
    * per-run sandbox should use this to select the runtime image and per-run env.
    */
   adapterType?: string;
+  executionWorkspaceSettings?: Record<string, unknown> | null;
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {

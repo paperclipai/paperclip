@@ -11928,8 +11928,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           )
         : null;
     const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+    const parsedIssueExecutionWorkspaceSettings = parseIssueExecutionWorkspaceSettings(
+      issueContext?.executionWorkspaceSettings,
+    );
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
-      ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings)
+      ? parsedIssueExecutionWorkspaceSettings
       : null;
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueContext?.projectId ?? contextProjectId;
@@ -12810,6 +12813,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       heartbeatRunId: run.id,
       agentId: agent.id,
       persistedExecutionWorkspace,
+      executionWorkspaceSettings: parsedIssueExecutionWorkspaceSettings,
     });
     const selectedEnvironment = acquiredEnvironment.environment;
     // Defense-in-depth: re-check the actually-acquired environment against the

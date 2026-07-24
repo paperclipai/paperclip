@@ -291,6 +291,21 @@ describe("execution workspace policy helpers", () => {
       mode: "shared_workspace",
       environmentId: "11111111-1111-4111-8111-111111111111",
     });
+    expect(
+      parseIssueExecutionWorkspaceSettings({
+        mode: "isolated_workspace",
+        networkEgress: {
+          allowFqdns: ["github.com", "pypi.org"],
+          allowCidrs: ["203.0.113.0/24"],
+        },
+      }),
+    ).toEqual({
+      mode: "isolated_workspace",
+      networkEgress: {
+        allowFqdns: ["github.com", "pypi.org"],
+        allowCidrs: ["203.0.113.0/24"],
+      },
+    });
   });
 
   it("prefers the agent default environment", () => {
