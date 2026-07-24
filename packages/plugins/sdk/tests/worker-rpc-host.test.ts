@@ -146,6 +146,29 @@ describe("worker performAction context", () => {
         },
         companyId: null,
       });
+
+      await expect(callWorker("performAction", {
+        key: "inspect",
+        companyId: "authorized-company",
+        params: { companyId: "plugin-owned-company" },
+        actorContext: {
+          type: "user",
+          userId: "user-1",
+          agentId: null,
+          runId: null,
+          companyId: "authorized-company",
+        },
+      })).resolves.toEqual({
+        paramsCompanyId: "plugin-owned-company",
+        actor: {
+          type: "user",
+          userId: "user-1",
+          agentId: null,
+          runId: null,
+          companyId: "authorized-company",
+        },
+        companyId: "authorized-company",
+      });
     } finally {
       worker.stop();
       hostReadline.close();
