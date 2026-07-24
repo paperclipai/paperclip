@@ -590,6 +590,11 @@ export function projectService(db: Db) {
 
   return {
     list: async (companyId: string, opts: { includeArchived?: boolean } = {}): Promise<ProjectWithGoals[]> => {
+      // NOTE: this service default is intentionally the inverse of the HTTP route default.
+      // The route (`GET /companies/:companyId/projects`) defaults `includeArchived` to `false`
+      // (active-only) for its callers, but the service defaults to `true` so that existing
+      // server-internal callers that pass no opts keep their pre-existing "return everything,
+      // including archived" behaviour. Pass `{ includeArchived: false }` explicitly for active-only.
       const includeArchived = opts.includeArchived ?? true;
       const where = includeArchived
         ? eq(projects.companyId, companyId)
