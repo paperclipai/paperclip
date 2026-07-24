@@ -10,6 +10,34 @@ const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url)
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
 
+/**
+ * Connection-pool resilience options for the long-lived application pool.
+ *
+ * Without these, postgres-js keeps pooled connections open indefinitely. When
+ * the database briefly goes away — e.g. an embedded-Postgres restart/flap, or a
+ * race during startup before Postgres is fully accepting connections — a
+ * half-open/dead socket can linger in the pool. Plain queries are often retried
+ * transparently by postgres-js, but a multi-statement `db.transaction()`
+ * (BEGIN/…/COMMIT) is not retryable and surfaces the dead connection to the
+ * caller as an intermittent connection-level error (a 500). Recycling idle and
+ * old connections lets the pool shed stale sockets instead of harbouring them.
+ *
+ * Regression context: SCR-4 — intermittent 500s on POST /projects/:id/workspaces
+ * (the only project route that uses a transaction) after an embedded-Postgres flap.
+ */
+export const APP_POOL_OPTIONS = {
+  // Bound how long establishing a fresh TCP connection may take (seconds).
+  // Note: postgres-js has no option to limit how long a query waits for an
+  // idle pooled connection; that is governed by the `max` pool cap instead.
+  connect_timeout: 30,
+  // Close connections after this many seconds idle so stale/half-open sockets
+  // do not sit in the pool waiting to be handed to the next transaction.
+  idle_timeout: 60,
+  // Proactively rotate connections so a long-lived pool keeps refreshing its
+  // sockets rather than reusing ones that may have silently died (seconds).
+  max_lifetime: 60 * 30,
+} as const;
+
 function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
 }
@@ -46,7 +74,7 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url);
+  const sql = postgres(url, APP_POOL_OPTIONS);
   return drizzlePg(sql, { schema });
 }
 
