@@ -39,6 +39,24 @@ describe("scoped network egress", () => {
     }));
   });
 
+  it("caps scoped policy names while preserving the workload tail", async () => {
+    const createNamespacedNetworkPolicy = vi.fn().mockResolvedValue({});
+    const workloadName = `pc-${"a".repeat(260)}-unique-tail`;
+
+    const name = await createScopedNetworkEgressPolicy({
+      clients: { networking: { createNamespacedNetworkPolicy } } as never,
+      namespace: "paperclip-acme",
+      mode: "standard",
+      runId: "run-123",
+      workloadName,
+      ownerReference: { apiVersion: "batch/v1", kind: "Job", name: workloadName, uid: "uid-1" },
+      grant: { allowFqdns: ["github.com"], allowCidrs: [] },
+    });
+
+    expect(name).toHaveLength(253);
+    expect(name).toMatch(/unique-tail-egress$/);
+  });
+
   it("adds the policy and grant path to likely network denials", () => {
     expect(appendNetworkEgressDenyHint("curl: Could not resolve host: example.com", {
       allowFqdns: ["github.com"],

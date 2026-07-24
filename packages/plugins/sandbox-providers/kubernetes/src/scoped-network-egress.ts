@@ -37,7 +37,12 @@ export async function createScopedNetworkEgressPolicy(input: {
   grant: ScopedNetworkEgressGrant;
 }): Promise<string | null> {
   if (input.grant.allowFqdns.length === 0 && input.grant.allowCidrs.length === 0) return null;
-  const name = `${input.workloadName}-egress`;
+  const suffix = "-egress";
+  const maxWorkloadLength = 253 - suffix.length;
+  const workloadName = input.workloadName.length <= maxWorkloadLength
+    ? input.workloadName
+    : `${input.workloadName.slice(0, maxWorkloadLength - 26)}-${input.workloadName.slice(-25)}`;
+  const name = `${workloadName}${suffix}`;
   if (input.mode === "cilium") {
     const manifest = buildCiliumNetworkPolicyManifest({
       namespace: input.namespace,
