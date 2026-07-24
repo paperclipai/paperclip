@@ -20,6 +20,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(async () => true),
     decide: vi.fn(async (input: { action?: string }) => ({

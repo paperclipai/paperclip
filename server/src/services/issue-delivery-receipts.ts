@@ -73,14 +73,20 @@ export function issueDeliveryReceiptService(db: Db) {
       documentOnly: input.receipt.documentOnly ?? false,
       metadata: input.receipt.metadata ?? {},
       createdByRunId: input.createdByRunId ?? null,
-    }).returning({ id: issueDeliveryReceipts.id }).then((rows) => rows[0]);
-    return { id: created!.id, sourceIssueId: input.sourceIssueId, outputDigest, reused: false };
-  }
+    }).onConflictDoNothing().returning({ id: issueDeliveryReceipts.id }).then((rows) => rows[0] ?? null);
+    if (created) return { id: created.id, sourceIssueId: input.sourceIssueId, outputDigest, reused: false };
 
-  async function hasReceipt(companyId: string, sourceIssueId: string) {
-    return Boolean(await db.select({ id: issueDeliveryReceipts.id }).from(issueDeliveryReceipts).where(and(
-      eq(issueDeliveryReceipts.companyId, companyId), eq(issueDeliveryReceipts.sourceIssueId, sourceIssueId),
-    )).limit(1).then((rows) => rows[0]));
+    // A concurrent matching publish may win between the initial lookup and insert.
+    // Re-read after the conflict so callers receive the same idempotent result.
+    const concurrent = await tx.select({ id: issueDeliveryReceipts.id }).from(issueDeliveryReceipts).where(and(
+      eq(issueDeliveryReceipts.companyId, input.companyId),
+      eq(issueDeliveryReceipts.sourceIssueId, input.sourceIssueId),
+      eq(issueDeliveryReceipts.primaryWorkProductKey, input.receipt.primaryWorkProductKey),
+      eq(issueDeliveryReceipts.revision, input.receipt.revision),
+      eq(issueDeliveryReceipts.outputDigest, outputDigest),
+    )).then((rows) => rows[0] ?? null);
+    if (concurrent) return { id: concurrent.id, sourceIssueId: input.sourceIssueId, outputDigest, reused: true };
+    throw new Error("Delivery receipt insert conflicted without a matching receipt");
   }
 
   /** Requester-visible receipt projection, scoped by the source issue's company. */
@@ -132,7 +138,7 @@ export function issueDeliveryReceiptService(db: Db) {
     });
   }
 
-  return { publish, hasReceipt, listForSource, openMissingReceiptRecovery };
+  return { publish, listForSource, openMissingReceiptRecovery };
 }
 
 /** Canonical, order-independent identity for all requester-visible output fields. */
