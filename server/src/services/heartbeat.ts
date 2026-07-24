@@ -5385,6 +5385,39 @@ function isTruthyRuntimeEnvValue(value: string | undefined) {
   return value === "true" || value === "1" || value === "yes" || value === "on";
 }
 
+// On SIGTERM (every k8s rollout of the single-replica server) we first quiesce
+// new-run dispatch and then WAIT for in-flight runs to finish on their own,
+// bounded by this timeout, before interrupting anything. Keep the default well
+// under the pod terminationGracePeriod so the wait can never be SIGKILL'd
+// mid-drain (the operator is given a matching, longer grace period).
+export const SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS = 3 * 60 * 1000;
+export const SHUTDOWN_DRAIN_POLL_INTERVAL_MS = 500;
+
+// Shared across ALL heartbeatService instances (routes and the scheduler each
+// construct their own) so that once graceful shutdown begins EVERY instance's
+// dispatch-suppression check observes the quiesce. If this lived in a single
+// service closure, a dispatch path on a different instance would keep starting
+// new runs mid-drain (only to be interrupted immediately or outlive cleanup).
+// Mirrors activeRunExecutions above, which is module-scoped for the same
+// cross-instance reason. It never resets in production (the process is exiting);
+// resetShutdownDrainingForTests() clears it between test cases.
+let shutdownDraining = false;
+
+/** Test-only: clears the shared graceful-shutdown quiesce flag between cases. */
+export function resetShutdownDrainingForTests(): void {
+  shutdownDraining = false;
+}
+
+export function resolveShutdownDrainTimeoutMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env.PAPERCLIP_SHUTDOWN_DRAIN_TIMEOUT_MS;
+  if (raw == null || raw.trim() === "") return SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS;
+  return parsed;
+}
+
 export function resolveHeartbeatSchedulingSuppression(
   env: Record<string, string | undefined> = process.env,
   overrides: { allowWorktreeRunExecution?: boolean } = {},
@@ -5443,7 +5476,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     return cachedWorktreeRunExecutionOverride;
   };
+  // shutdownDraining is module-scoped (declared above) so that once graceful
+  // shutdown begins, every heartbeatService instance's suppression check below
+  // observes the quiesce, not just the instance that ran the drain.
   const getSchedulingSuppression = async () => {
+    if (shutdownDraining) {
+      return { suppressed: true, reason: "server_shutdown" as const };
+    }
     const override = await resolveWorktreeRunExecutionOverride();
     return resolveHeartbeatSchedulingSuppression(runtimeEnv, {
       allowWorktreeRunExecution: override.allowed,
@@ -9037,7 +9076,66 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  async function drainRunningRunsForShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
+  async function drainRunningRunsForShutdown(
+    signal: "SIGINT" | "SIGTERM",
+    now = new Date(),
+    options: {
+      /** Max time to wait for in-flight runs to finish before interrupting. */
+      drainTimeoutMs?: number;
+      /** How often to re-check for in-flight completion while waiting. */
+      pollIntervalMs?: number;
+      /** Injectable sleep (tests). Defaults to a real setTimeout. */
+      sleep?: (ms: number) => Promise<void>;
+      /** Injectable clock (tests) for the wall-clock drain bound. */
+      nowMs?: () => number;
+      /**
+       * Predicate for whether any run is still executing in THIS process.
+       * Defaults to the local in-process execution set; DB-only "running" rows
+       * with no local execution (orphans) are NOT waited for; they can never
+       * finish on their own and are interrupted immediately as before.
+       */
+      hasInflightRuns?: () => boolean;
+    } = {},
+  ) {
+    // 1. Quiesce: stop the scheduler from dispatching NEW runs. Every dispatch/
+    //    execution entrypoint gates on getSchedulingSuppression(), so flipping
+    //    this makes them all no-op for the remainder of the process lifetime.
+    shutdownDraining = true;
+
+    // 2. Soft-drain: give in-flight runs a bounded window to finish on their
+    //    own. Only runs still running at the deadline get interrupted below, so
+    //    a normal rollout no longer interrupts every in-flight run.
+    const drainTimeoutMs = options.drainTimeoutMs ?? resolveShutdownDrainTimeoutMs(runtimeEnv);
+    const pollIntervalMs = Math.max(1, options.pollIntervalMs ?? SHUTDOWN_DRAIN_POLL_INTERVAL_MS);
+    const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const clock = options.nowMs ?? (() => Date.now());
+    const hasInflightRuns = options.hasInflightRuns ?? (() => activeRunExecutions.size > 0);
+
+    if (drainTimeoutMs > 0 && hasInflightRuns()) {
+      const deadline = clock() + drainTimeoutMs;
+      logger.info(
+        { signal, drainTimeoutMs, pollIntervalMs },
+        "soft-draining in-flight heartbeat runs before shutdown",
+      );
+      while (hasInflightRuns() && clock() < deadline) {
+        // Cap each wait to the remaining budget so a sub-interval remainder can
+        // never sleep a full poll interval past the deadline. Overrunning would
+        // push the drain (plus the interrupt+retry cleanup that follows) beyond
+        // the timeout and risk a SIGKILL mid-cleanup.
+        const remainingMs = deadline - clock();
+        if (remainingMs <= 0) break;
+        await sleep(Math.min(pollIntervalMs, remainingMs));
+      }
+      if (hasInflightRuns()) {
+        logger.warn(
+          { signal, drainTimeoutMs },
+          "soft-drain deadline reached with in-flight runs remaining; interrupting for restart recovery",
+        );
+      } else {
+        logger.info({ signal }, "in-flight heartbeat runs drained gracefully before shutdown");
+      }
+    }
+
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -9089,6 +9187,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       interrupted = await classifyAndPersistRunLiveness(interrupted, parseObject(interrupted.resultJson)) ?? interrupted;
 
+      // TODO(keep-lease-resume): ideally we would KEEP the sandbox lease here so
+      // restart recovery could reattach to the existing sandbox instead of
+      // provisioning a fresh one and losing partial work. The current retry path
+      // (enqueueProcessLossRetry) starts a brand-new run that provisions its own
+      // environment, so keeping the lease without a reattach-on-retry path would
+      // leak/double-lease the sandbox. Until the resume/reattach path exists we
+      // release the lease and retry from scratch (the safe, correct subset). The
+      // soft-drain above already makes this the rare exception, not the default.
       await releaseEnvironmentLeasesForRun({
         runId: interrupted.id,
         companyId: interrupted.companyId,
