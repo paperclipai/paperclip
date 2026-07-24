@@ -1496,6 +1496,8 @@ export interface WorkerToHostMethods {
        */
       actorUserId?: string;
       reason?: string | null;
+      /** Explicit checkbox selection for request_checkbox_confirmation accepts. */
+      selectedOptionIds?: string[];
     },
     result: { interaction: IssueThreadInteraction; applied: boolean },
   ];

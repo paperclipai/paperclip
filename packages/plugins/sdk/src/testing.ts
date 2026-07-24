@@ -1810,6 +1810,16 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const resolved: IssueThreadInteraction = {
           ...current,
           status: input.action === "accept" ? "accepted" : "rejected",
+          ...(input.action === "accept"
+            && current.kind === "request_checkbox_confirmation"
+            && input.selectedOptionIds !== undefined
+            ? {
+              result: {
+                outcome: "accepted",
+                selectedOptionIds: input.selectedOptionIds,
+              },
+            }
+            : {}),
           updatedAt: new Date(),
         } as IssueThreadInteraction;
         const index = list.indexOf(current);

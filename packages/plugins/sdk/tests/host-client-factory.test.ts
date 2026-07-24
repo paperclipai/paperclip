@@ -337,10 +337,22 @@ describe("createHostClientHandlers capability gating for LOOA-641 methods", () =
     });
     await expect(
       handlers["issues.respondInteraction"]({
-        issueId: "issue-a", interactionId: "int-a", companyId: "company-a", action: "accept", actorUserId: "user-a",
+        issueId: "issue-a",
+        interactionId: "int-a",
+        companyId: "company-a",
+        action: "accept",
+        actorUserId: "user-a",
+        selectedOptionIds: ["spike-b"],
       }, context),
     ).resolves.toEqual({ interaction: { id: "i" }, applied: true });
-    expect(respondInteraction).toHaveBeenCalledOnce();
+    expect(respondInteraction).toHaveBeenCalledWith({
+      issueId: "issue-a",
+      interactionId: "int-a",
+      companyId: "company-a",
+      action: "accept",
+      actorUserId: "user-a",
+      selectedOptionIds: ["spike-b"],
+    });
   });
 
   it("denies approvals.decide without approvals.respond", async () => {
