@@ -67,6 +67,9 @@ export type ExecutionWorkspaceBranchReconcileInspection = {
   ancestryVerdict: GitWorktreeBranchAncestryVerdict;
   cleanliness: "clean" | "dirty" | "unknown";
   statusEntryCount: number | null;
+  registeredBranchRef: string | null;
+  registeredPathFound: boolean;
+  registeredBranchMatchesHead: boolean;
   plainLanguageReason: string;
 };
 
@@ -304,6 +307,8 @@ async function inspectExecutionWorkspaceBranchForReconcile(
     expectedHeadSha: fromSha,
     actualHeadSha: toSha,
   });
+  const registeredBranchRef = await readRegisteredGitWorktreeBranchRef(repoRoot, worktreePath);
+  const toBranchRef = `refs/heads/${toBranch}`;
 
   return {
     fingerprint: fingerprintWorkspaceBranchIncoherence({
@@ -325,6 +330,9 @@ async function inspectExecutionWorkspaceBranchForReconcile(
     ancestryVerdict,
     cleanliness,
     statusEntryCount: statusLines?.length ?? null,
+    registeredBranchRef,
+    registeredPathFound: registeredBranchRef !== null,
+    registeredBranchMatchesHead: registeredBranchRef === toBranchRef,
     plainLanguageReason: explainGitWorktreeBranchReconcileInspection({
       fromBranch,
       toBranch,
@@ -333,6 +341,41 @@ async function inspectExecutionWorkspaceBranchForReconcile(
       ancestryVerdict,
     }),
   };
+}
+
+async function readRegisteredGitWorktreeBranchRef(repoRoot: string, worktreePath: string): Promise<string | null> {
+  const raw = await readGitStdout(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
+  if (!raw) return null;
+
+  const expectedPath = await resolvePathForWorktreeComparison(worktreePath);
+  let currentWorktree: string | null = null;
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      currentWorktree = await resolvePathForWorktreeComparison(line.slice("worktree ".length));
+      continue;
+    }
+    if (line.startsWith("branch ") && currentWorktree === expectedPath) {
+      return line.slice("branch ".length);
+    }
+    if (line === "") currentWorktree = null;
+  }
+  return null;
+}
+
+async function resolvePathForWorktreeComparison(value: string): Promise<string> {
+  const resolved = path.resolve(value);
+  return fs.realpath(resolved).then((realPath) => path.resolve(realPath)).catch(() => resolved);
+}
+
+function isForwardBranchReconcileInspectionSafe(inspection: ExecutionWorkspaceBranchReconcileInspection) {
+  if (inspection.ancestryVerdict === "ancestor") return true;
+  return Boolean(
+    inspection.cleanliness === "clean" &&
+      !inspection.fromSha &&
+      inspection.toSha &&
+      inspection.registeredPathFound &&
+      inspection.registeredBranchMatchesHead,
+  );
 }
 
 function formatBranchReconcileAuditComment(input: {
@@ -1627,9 +1670,9 @@ export function executionWorkspaceService(db: Db) {
       }
 
       const inspection = await inspectExecutionWorkspaceBranchForReconcile(existing);
-      if (input.mode === "forward" && inspection.ancestryVerdict !== "ancestor") {
+      if (input.mode === "forward" && !isForwardBranchReconcileInspectionSafe(inspection)) {
         throw unprocessable(
-          "Forward branch reconciliation requires the recorded branch to be an ancestor of the checked-out branch",
+          "Forward branch reconciliation requires the recorded branch to be an ancestor of the checked-out branch or a missing recorded branch with a registered checked-out worktree branch",
           { inspection },
         );
       }

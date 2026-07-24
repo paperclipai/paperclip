@@ -7,6 +7,14 @@ import { runAgentPrompt, runBoardPrompt } from "../commands/client/prompt.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
+function clearPaperclipEnv() {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("PAPERCLIP_")) {
+      delete process.env[key];
+    }
+  }
+}
+
 function createTempContextPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-prompt-"));
   return path.join(dir, "context.json");
@@ -27,7 +35,7 @@ function agent(overrides: Record<string, unknown> = {}) {
 describe("prompt handoff", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
-    delete process.env.PAPERCLIP_API_KEY;
+    clearPaperclipEnv();
     vi.restoreAllMocks();
   });
 
@@ -58,18 +66,21 @@ describe("prompt handoff", () => {
   });
 
   it("fails when the supplied agent key belongs to a different agent", async () => {
+    const contextPath = createTempContextPath();
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(agent()), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(runAgentPrompt("other-agent", "Do the work", {
+      context: contextPath,
       apiBase: "http://localhost:3100",
       apiKey: "agent-token",
     })).rejects.toThrow(/Agent key belongs to Worker/);
   });
 
   it("creates an assigned issue and wakes the authenticated agent", async () => {
+    const contextPath = createTempContextPath();
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(agent()), { status: 200 }))
@@ -85,6 +96,7 @@ describe("prompt handoff", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await runAgentPrompt("worker", "Investigate queue lag", {
+      context: contextPath,
       apiBase: "http://localhost:3100",
       apiKey: "agent-token",
     });

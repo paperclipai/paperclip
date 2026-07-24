@@ -1016,7 +1016,9 @@ async function inspectGitWorktreeBranchIncoherence(input: {
     !sameHead &&
     registeredBranchMatchesHead;
   const eligible =
-    canCheckoutRecordedBranch || canAdoptForwardActualBranch || canAttachRecordedBranchToDetachedHead;
+    canCheckoutRecordedBranch ||
+    canAdoptForwardActualBranch ||
+    canAttachRecordedBranchToDetachedHead;
   const safeRepairReason = eligible
     ? canCheckoutRecordedBranch
       ? "clean worktree and expected branch points at the current HEAD"
@@ -1747,11 +1749,16 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   if (
     input.enableWorkspaceBranchReconcileForward === true &&
     evidence.provenance.ancestryVerdict === "ancestor" &&
-    !evidence.provenance.sameHead &&
+    (
+      !evidence.provenance.sameHead ||
+      input.reconcileOperationPhase !== "workspace_finalize"
+    ) &&
     evidence.cleanliness === "clean" &&
     currentBranch
   ) {
-    const reason = "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.";
+    const reason = evidence.provenance.sameHead
+      ? "Automatic branch provenance reconciliation: recorded branch and checked-out branch resolve to the same commit."
+      : "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.";
     if (input.executionWorkspaceId && input.persistForwardReconcile !== false) {
       if (!input.db) {
         evidence.safeRepair.reason = "forward reconciliation requires database access to update the execution workspace record";

@@ -1351,6 +1351,90 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(comments).toHaveLength(0);
   }, 20_000);
 
+  it("rejects forward reconciliation for a dirty registered branch when the recorded branch is missing", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-dirty-missing-recorded-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    await runGit(repoRoot, ["branch", "feature/recorded"]);
+    await runGit(repoRoot, ["worktree", "add", "-b", "feature/current", worktreePath, "feature/recorded"]);
+    await runGit(repoRoot, ["branch", "-D", "feature/recorded"]);
+    await fs.writeFile(path.join(worktreePath, "dirty.txt"), "not safe to reconcile\n", "utf8");
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Branch reconcile",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "feature/recorded",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+
+    await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+      mode: "forward",
+      reason: "recorded branch was deleted",
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Forward branch reconciliation requires the recorded branch to be an ancestor of the checked-out branch or a missing recorded branch with a registered checked-out worktree branch",
+      details: {
+        inspection: expect.objectContaining({
+          cleanliness: "dirty",
+          statusEntryCount: 1,
+          fromBranch: "feature/recorded",
+          toBranch: "feature/current",
+          fromSha: null,
+          registeredPathFound: true,
+          registeredBranchMatchesHead: true,
+        }),
+      },
+    });
+
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    expect(workspace?.branchName).toBe("feature/recorded");
+  }, 20_000);
+
   it("rejects branch reconciliation while the workspace lifecycle is active", async () => {
     const repoRoot = await createTempRepo();
     tempDirs.add(repoRoot);
@@ -2042,7 +2126,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(comments).toHaveLength(0);
   }, 20_000);
 
-  it("rejects forward branch reconciliation when branch ancestry is unknown", async () => {
+  it("allows forward reconciliation when a clean registered branch replaces a missing recorded branch", async () => {
     const repoRoot = await createTempRepo();
     tempDirs.add(repoRoot);
     const worktreePath = path.join(path.dirname(repoRoot), `paperclip-unknown-${randomUUID()}`);
@@ -2092,7 +2176,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       baseRef: "main",
     });
 
-    await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+    const result = await svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
       mode: "forward",
       reason: null,
       actor: {
@@ -2101,20 +2185,20 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         agentId: null,
         runId: null,
       },
-    })).rejects.toMatchObject({
-      status: 422,
-      details: {
-        inspection: expect.objectContaining({
-          ancestryVerdict: "unknown",
-          fromBranch: "feature/missing-recorded",
-          toBranch: "feature/current",
-          fromSha: null,
-        }),
-      },
+    });
+    expect(result.workspace.branchName).toBe("feature/current");
+    expect(result.inspection).toMatchObject({
+      ancestryVerdict: "unknown",
+      cleanliness: "clean",
+      fromBranch: "feature/missing-recorded",
+      toBranch: "feature/current",
+      fromSha: null,
+      registeredPathFound: true,
+      registeredBranchMatchesHead: true,
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(0);
+    expect(comments).toHaveLength(1);
   }, 20_000);
 
   it("returns a bounded company-scoped workspace overview with service and linked issue summaries", async () => {
