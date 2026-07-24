@@ -49,8 +49,20 @@ import {
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { redactCurrentUserText } from "../log-redaction.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
+
+// Decline/cancel-reason comments carry user-typed text, so they must honor the
+// same `censorUsernameInLogs` redaction that issueService.addComment applies via
+// redactCurrentUserText. Writing the reason straight into issueComments would
+// silently bypass the redaction policy (ALAA-1967 P1). Best-effort: callers wrap
+// this in the same try/catch that guards the insert.
+const redactReasonBody = async (dbOrTx: Db, body: string): Promise<string> => {
+  const { censorUsernameInLogs } = await instanceSettingsService(dbOrTx).getGeneral();
+  return redactCurrentUserText(body, { enabled: censorUsernameInLogs });
+};
 
 type InteractionActor = {
   agentId?: string | null;
@@ -1104,6 +1116,26 @@ export function issueThreadInteractionService(db: Db) {
       throw conflict("Interaction has already been resolved");
     }
     await touchIssue(db, args.issue.id);
+    // Surface the decline reason as a first-class thread comment so the resolution
+    // is visible in the issue history, not buried in the interaction result JSON.
+    const trimmedReason = reason?.trim();
+    if (trimmedReason) {
+      try {
+        await db.insert(issueComments).values({
+          companyId: args.issue.companyId,
+          issueId: args.issue.id,
+          authorAgentId: args.actor.agentId ?? null,
+          authorUserId: args.actor.userId ?? null,
+          authorType: args.actor.userId ? "user" : args.actor.agentId ? "agent" : "system",
+          body: await redactReasonBody(
+            db,
+            `**Board resolution — confirmation declined** (interaction ${args.current.id.slice(0, 8)}): ${trimmedReason}`,
+          ),
+        });
+      } catch (e) {
+        console.error("Failed to surface confirmation-decline reason as a comment", e);
+      }
+    }
     const rejected = hydrateInteraction(updated);
     await emitInteractionResolvedTelemetry(db, rejected);
     return rejected;
@@ -1597,6 +1629,24 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
+      const trimmedReason = input.reason?.trim();
+      if (trimmedReason) {
+        try {
+          await db.insert(issueComments).values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            authorAgentId: actor.agentId ?? null,
+            authorUserId: actor.userId ?? null,
+            authorType: actor.userId ? "user" : actor.agentId ? "agent" : "system",
+            body: await redactReasonBody(
+              db,
+              `**Board resolution — suggested tasks declined** (interaction ${interactionId.slice(0, 8)}): ${trimmedReason}`,
+            ),
+          });
+        } catch (e) {
+          console.error("Failed to surface suggested-tasks-decline reason as a comment", e);
+        }
+      }
       const rejected = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, rejected);
       return rejected;
@@ -1989,6 +2039,24 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
+      const trimmedReason = data.reason?.trim();
+      if (trimmedReason) {
+        try {
+          await db.insert(issueComments).values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            authorAgentId: actor.agentId ?? null,
+            authorUserId: actor.userId ?? null,
+            authorType: actor.userId ? "user" : actor.agentId ? "agent" : "system",
+            body: await redactReasonBody(
+              db,
+              `**Board resolution — questions cancelled** (interaction ${interactionId.slice(0, 8)}): ${trimmedReason}`,
+            ),
+          });
+        } catch (e) {
+          console.error("Failed to surface questions-cancellation reason as a comment", e);
+        }
+      }
       const cancelled = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, cancelled);
       return cancelled;

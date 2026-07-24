@@ -180,6 +180,17 @@ describe("issue validators", () => {
     expect(parsed.body).toBe("Progress update\n\nNext action.");
   });
 
+  it("rejects whitespace-only issue comment bodies", () => {
+    for (const body of ["", "   ", "\n\t ", "\\r\\n\\r\\n"]) {
+      expect(addIssueCommentSchema.safeParse({ body }).success).toBe(false);
+    }
+  });
+
+  it("rejects whitespace-only update-issue comment field", () => {
+    expect(updateIssueSchema.safeParse({ comment: "   " }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({ comment: "real comment" }).success).toBe(true);
+  });
+
   it("accepts structured issue comment presentation and metadata", () => {
     const parsed = addIssueCommentSchema.parse({
       body: "Paperclip needs a disposition before this issue can continue.",
