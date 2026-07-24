@@ -102,13 +102,17 @@ describe("local process sandbox", () => {
     });
     const delimiterIndex = target.args.indexOf("--");
     const socketPath = target.args[delimiterIndex + 3];
-    const request = (url: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const request = (url: string) => new Promise<{ status: number; contentType: string | null; body: string }>((resolve, reject) => {
       const outgoing = http.request({ socketPath, path: url, headers: { host: new URL(url).host } }, (response) => {
         let body = "";
         response.on("data", (chunk) => {
           body += chunk;
         });
-        response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
+        response.on("end", () => resolve({
+          status: response.statusCode ?? 0,
+          contentType: typeof response.headers["content-type"] === "string" ? response.headers["content-type"] : null,
+          body,
+        }));
       });
       outgoing.on("error", reject);
       outgoing.end();
@@ -117,12 +121,56 @@ describe("local process sandbox", () => {
     try {
       await expect(request(`http://127.0.0.1:${address.port}/canary`)).resolves.toEqual({
         status: 200,
+        contentType: null,
         body: "allowed-response",
       });
       await expect(request("http://example.com/")).resolves.toEqual({
         status: 403,
-        body: "Network target denied by Paperclip sandbox policy.\n",
+        contentType: "application/json; charset=utf-8",
+        body: '{"error":{"code":"network_target_denied","message":"Network target denied by Paperclip sandbox policy."}}\n',
       });
+    } finally {
+      await target.cleanup?.();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("always permits trusted Paperclip control-plane URLs", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-network-trusted-"));
+    cleanup.push(workspace);
+    const server = http.createServer((_request, response) => response.end("control-plane-response"));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP test server address.");
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        networkScope: "allowlist",
+        networkAllowlist: ["api.openai.com"],
+        networkTrustedUrls: [`http://127.0.0.1:${address.port}/api/issues/issue-1`],
+      },
+    });
+    const delimiterIndex = target.args.indexOf("--");
+    const socketPath = target.args[delimiterIndex + 3];
+
+    try {
+      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const outgoing = http.request({
+          socketPath,
+          path: `http://127.0.0.1:${address.port}/api/issues/issue-1`,
+          headers: { host: `127.0.0.1:${address.port}` },
+        }, (incoming) => {
+          let body = "";
+          incoming.on("data", (chunk) => { body += chunk; });
+          incoming.on("end", () => resolve({ status: incoming.statusCode ?? 0, body }));
+        });
+        outgoing.on("error", reject);
+        outgoing.end();
+      });
+      expect(response).toEqual({ status: 200, body: "control-plane-response" });
     } finally {
       await target.cleanup?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));

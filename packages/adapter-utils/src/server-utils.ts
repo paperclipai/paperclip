@@ -2115,6 +2115,7 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
 
 export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
+  delete env.PAPERCLIPAI_CMD;
   for (const key of Object.keys(env)) {
     if (!key.startsWith("PAPERCLIP_")) continue;
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
