@@ -121,6 +121,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
+import { issueResourceReferenceService } from "../services/issue-resource-references.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 import { appendExecutionCausalRunEventForExistingRun, executionCausalEventType } from "../services/execution-causal-trace.js";
 import {
@@ -2599,6 +2600,7 @@ export function issueRoutes(
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
+  const issueResourceRefs = issueResourceReferenceService(db);
   const companySkillsSvc = companySkillService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
   const decisionTrainingSvc = decisionTrainingService(db);
@@ -5127,6 +5129,18 @@ export function issueRoutes(
       continuationSummary && redactLowTrust
         ? redactQuarantinedBodyForHigherTrust(continuationSummary)
         : continuationSummary;
+    const [issueReferencedResources, wakeCommentReferencedResources] = await issueResourceRefs.resolveForTexts([
+      {
+        companyId: issue.companyId,
+        text: issue.description,
+        fallbackIssuePathId: issue.identifier ?? issue.id,
+      },
+      {
+        companyId: issue.companyId,
+        text: safeWakeComment?.body ?? null,
+        fallbackIssuePathId: issue.identifier ?? issue.id,
+      },
+    ]);
     const planReviewContext = await buildPlanReviewContext({
       db,
       companyId: issue.companyId,
@@ -5143,6 +5157,7 @@ export function issueRoutes(
         description: issue.description,
         status: issue.status,
         workMode: issue.workMode,
+        referencedResources: issueReferencedResources,
         ...(blockerAttention ? { blockerAttention } : {}),
         productivityReview,
         scheduledRetry,
@@ -5184,7 +5199,12 @@ export function issueRoutes(
           }
         : null,
       commentCursor,
-      wakeComment: safeWakeComment,
+      wakeComment: safeWakeComment
+        ? {
+            ...safeWakeComment,
+            referencedResources: wakeCommentReferencedResources,
+          }
+        : null,
       attachments: attachments.map((a) => ({
         id: a.id,
         filename: a.originalFilename,

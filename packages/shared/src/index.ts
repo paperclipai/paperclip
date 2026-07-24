@@ -41,6 +41,15 @@ export {
   type OriginatingActor,
 } from "./issue-attribution.js";
 export {
+  extractIssueResourceLinks,
+  parseIssueResourceLink,
+  type ExtractedIssueResourceLink,
+  type IssueDocumentReference,
+  type IssueResourceReference,
+  type IssueResourceReferenceKind,
+  type IssueWorkProductReference,
+} from "./issue-resource-links.js";
+export {
   RESPONSIBLE_USER_DENIAL_CODES,
   describeResponsibleUserDenial,
   isResponsibleUserDenialCode,

@@ -249,6 +249,7 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
+import { issueResourceReferenceService } from "./issue-resource-references.js";
 import {
   clearHeartbeatRunRuntimeStatus,
   getHeartbeatRunRuntimeStatus,
@@ -4950,6 +4951,17 @@ export function buildPaperclipTaskMarkdown(input: {
     title: string;
     workMode?: string | null;
     description?: string | null;
+    referencedResources?: Array<{
+      kind: "issue_document" | "work_product";
+      issueIdentifier: string | null;
+      issueTitle: string | null;
+      documentKey?: string;
+      documentTitle?: string | null;
+      latestRevisionNumber?: number | null;
+      workProductTitle?: string;
+      workProductType?: string;
+      workProductStatus?: string;
+    }>;
   } | null;
   ancestors?: Array<{
     id: string;
@@ -4961,6 +4973,17 @@ export function buildPaperclipTaskMarkdown(input: {
   wakeComment?: {
     id: string;
     body: string;
+    referencedResources?: Array<{
+      kind: "issue_document" | "work_product";
+      issueIdentifier: string | null;
+      issueTitle: string | null;
+      documentKey?: string;
+      documentTitle?: string | null;
+      latestRevisionNumber?: number | null;
+      workProductTitle?: string;
+      workProductType?: string;
+      workProductStatus?: string;
+    }>;
   } | null;
   interaction?: {
     kind?: string | null;
@@ -4968,7 +4991,22 @@ export function buildPaperclipTaskMarkdown(input: {
   } | null;
   acceptedPlanContinuation?: boolean;
 }) {
+  type TaskResourceReference = NonNullable<NonNullable<typeof input.issue>["referencedResources"]>[number];
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
+  const formatResourceReference = (reference: TaskResourceReference) => {
+    const issueLabel = reference.issueIdentifier ?? "issue";
+    if (reference.kind === "issue_document") {
+      const docTitle = reference.documentTitle?.trim() || reference.documentKey;
+      const revision = typeof reference.latestRevisionNumber === "number"
+        ? ` (rev ${reference.latestRevisionNumber})`
+        : "";
+      return `- Document ref: ${quoteTaskScalar(`${issueLabel} / ${docTitle}${revision}`)}`;
+    }
+    const productTitle = reference.workProductTitle?.trim() || reference.workProductType || "work product";
+    const status = reference.workProductStatus ? ` [${reference.workProductStatus}]` : "";
+    const type = reference.workProductType ? ` (${reference.workProductType})` : "";
+    return `- Work product ref: ${quoteTaskScalar(`${issueLabel} / ${productTitle}${type}${status}`)}`;
+  };
   const fenceTaskText = (value: string) => {
     const longestBacktickRun = Math.max(
       2,
@@ -5037,6 +5075,12 @@ export function buildPaperclipTaskMarkdown(input: {
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
     }
+    if ((issue.referencedResources?.length ?? 0) > 0) {
+      lines.push("", "Issue-linked references:");
+      for (const reference of issue.referencedResources ?? []) {
+        lines.push(formatResourceReference(reference));
+      }
+    }
   }
   if (ancestors.length > 0) {
     lines.push("", "Authoritative parent / ancestor context:");
@@ -5051,8 +5095,15 @@ export function buildPaperclipTaskMarkdown(input: {
       lines.push(`- [ancestor context truncated after ${ancestors.length} entries]`);
     }
   }
-  if (wakeComment?.body.trim()) {
-    lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
+  const wakeCommentBody = wakeComment?.body?.trim();
+  if (wakeCommentBody) {
+    lines.push("", "Latest wake comment:", fenceTaskText(wakeCommentBody));
+  }
+  if ((wakeComment?.referencedResources?.length ?? 0) > 0) {
+    lines.push("", "Wake comment references:");
+    for (const reference of wakeComment.referencedResources ?? []) {
+      lines.push(formatResourceReference(reference));
+    }
   }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
@@ -12149,6 +12200,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
+    const [issueReferencedResources, wakeCommentReferencedResources] = issueRef
+      ? await issueResourceReferenceService(db).resolveForTexts([
+        {
+          companyId: agent.companyId,
+          text: issueRef.description,
+          fallbackIssuePathId: issueRef.identifier ?? issueRef.id,
+        },
+        {
+          companyId: agent.companyId,
+          text: safeWakeCommentContext?.body ?? null,
+          fallbackIssuePathId: issueRef.identifier ?? issueRef.id,
+        },
+      ])
+      : [[], []];
     const taskMarkdown = buildPaperclipTaskMarkdown({
       issue: issueRef
         ? {
@@ -12157,10 +12222,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             title: issueRef.title,
             workMode: issueRef.workMode,
             description: issueRef.description,
+            referencedResources: issueReferencedResources,
           }
         : null,
       ancestors: issueAncestors,
-      wakeComment: safeWakeCommentContext,
+      wakeComment: safeWakeCommentContext
+        ? {
+            ...safeWakeCommentContext,
+            referencedResources: wakeCommentReferencedResources,
+          }
+        : null,
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
         status: readNonEmptyString(context.interactionStatus),
@@ -12176,12 +12247,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         title: issueRef.title,
         description: issueRef.description,
         workMode: issueRef.workMode,
+        referencedResources: issueReferencedResources,
       };
     } else {
       delete context.paperclipIssue;
     }
     if (wakeCommentContext) {
-      context.paperclipWakeComment = safeWakeCommentContext;
+      context.paperclipWakeComment = {
+        ...safeWakeCommentContext,
+        referencedResources: wakeCommentReferencedResources,
+      };
     } else {
       delete context.paperclipWakeComment;
     }

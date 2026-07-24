@@ -516,6 +516,7 @@ function createCommentMessage(args: {
     followUpRequested: comment.followUpRequested === true,
     presentation: comment.presentation ?? null,
     commentMetadata: comment.metadata ?? null,
+    referencedResources: comment.referencedResources ?? [],
     deletedAt: comment.deletedAt ? toDate(comment.deletedAt).toISOString() : null,
     deletedByType: comment.deletedByType ?? null,
     deletedByAgentId: comment.deletedByAgentId ?? null,
