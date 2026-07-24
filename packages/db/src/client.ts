@@ -46,7 +46,15 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url);
+  // prepare: false disables named/cached prepared statements. This avoids an
+  // intermittent crash in postgres@3.4.x's prepared-statement bind path
+  // (ParameterDescription -> Bind), where a Date parameter can reach
+  // Buffer.byteLength and throw `ERR_INVALID_ARG_TYPE: ... Received an instance
+  // of Date` (observed on GET /issues/:id/comments?after=&order=asc). Parameters
+  // are still sent as out-of-band bind values, so this changes nothing about
+  // SQL-injection safety; the only effect is skipping per-statement plan caching,
+  // which is negligible for this workload.
+  const sql = postgres(url, { prepare: false });
   return drizzlePg(sql, { schema });
 }
 
