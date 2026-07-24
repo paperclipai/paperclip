@@ -99,6 +99,7 @@ import {
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
+import { lockHeartbeatRunEventSequence } from "./heartbeat-run-events.js";
 import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
@@ -5441,8 +5442,7 @@ export async function appendHeartbeatRunEvent(
   event: HeartbeatRunEventInsert,
 ) {
   return db.transaction(async (tx) => {
-    const lockKey = `heartbeat-run-events:${event.runId}`;
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    await lockHeartbeatRunEventSequence(tx, event.runId);
 
     const [row] = await tx
       .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
@@ -15632,6 +15632,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               .where(and(eq(issues.id, issue.id), eq(issues.executionRunId, scheduledRun.id)));
           }
 
+          await lockHeartbeatRunEventSequence(tx, cancelled.id);
           const [eventSeq] = await tx
             .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
             .from(heartbeatRunEvents)
