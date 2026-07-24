@@ -1230,6 +1230,31 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("keeps the current archived project visible in the project property", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      createProject({
+        id: "archived-project",
+        name: "Archived Project",
+        archivedAt: new Date("2026-04-08T00:00:00.000Z"),
+      }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "archived-project" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(mockProjectsApi.list).toHaveBeenCalledWith("company-1", { includeArchived: true });
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Project")?.textContent).toContain("Archived Project");
+    });
+
+    act(() => root.unmount());
+  });
+
   it("shows a green service link above the workspace row for a live non-main workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const serviceUrl = "http://127.0.0.1:62475";
