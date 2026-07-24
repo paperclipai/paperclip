@@ -82,7 +82,8 @@ import {
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
-import { measureStartupStep } from "./startup-timing.js";
+import { measureStartupStep, type StartupStepMeasureOptions } from "./startup-timing.js";
+import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
@@ -381,6 +382,12 @@ interface AcpxPreparedRuntime {
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
   mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]>;
   mcpIdentity: Array<{ name: string; url: string; connectionId: string }>;
+  // Per-step round-trip / provider-duration readers sourced from the sandbox
+  // runner's counters (Open Q1). Empty for local runs and the runner-less
+  // fallback, where no host→sandbox exec seam exists. Threaded into the
+  // `acp.handshake` `measureStartupStep` call in the executor (the other six
+  // boundaries live inside `buildRuntime` and read it directly).
+  stepMetrics: StartupStepMeasureOptions;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -838,6 +845,11 @@ async function prepareCodexSkillRuntime(input: {
   // `onEvent`), so the codex skill prep behaves identically when unmeasured.
   onEvent?: AdapterExecutionContext["onEvent"];
   now?: () => number;
+  // Round-trip / provider-duration readers for the nested `skills.reconcile`
+  // boundary (Open Q1). Threaded from `buildRuntime` so the step reports the
+  // same host→sandbox counters as its siblings (0 here — skill prep is
+  // host-only — which is itself the answer to "does this step exec?").
+  stepMetrics?: StartupStepMeasureOptions;
 }): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
   const now = input.now ?? (() => Date.now());
   const envConfig = parseObject(input.config.env);
@@ -870,6 +882,7 @@ async function prepareCodexSkillRuntime(input: {
       selectedSkills,
       onLog: input.onLog,
     }),
+    input.stepMetrics ?? {},
   );
 
   for (const entry of selectedSkills) {
@@ -1216,6 +1229,22 @@ async function stageAcpRemoteRuntime(input: {
   });
 }
 
+// Bind a startup-step round-trip/provider-duration reader set to a runner's
+// cumulative counters (Open Q1). Only the sandbox runner instruments the exec
+// seam, so a runner without `execCount` (SSH, or none) yields an empty option
+// set and the affected steps omit the fields entirely. Reader closures are
+// passed — not the runner — so `measureStartupStep` stays runner-agnostic.
+function buildStartupStepMetrics(
+  runner: CommandManagedRuntimeRunner | undefined,
+): StartupStepMeasureOptions {
+  if (!runner) return {};
+  return {
+    ...(runner.execCount ? { roundTrips: () => runner.execCount!() } : {}),
+    ...(runner.providerExecMs ? { providerExecMs: () => runner.providerExecMs!() } : {}),
+    ...(runner.providerGetMs ? { providerGetMs: () => runner.providerGetMs!() } : {}),
+  };
+}
+
 async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
   engine: AcpxEngineSettings;
@@ -1252,6 +1281,17 @@ async function buildRuntime(input: {
       ? remoteExecutionIdentity.remoteCwd
       : cwd;
   const executionTargetIsRemote = remoteExecutionIdentity !== null;
+  // Round-trip / provider-duration readers for per-step attribution (Open Q1),
+  // sourced from the sandbox runner's cumulative counters. `measureStartupStep`
+  // reads each as a `() => number` closure (never the runner itself, Risk R1)
+  // and emits the per-step delta. Empty when there is no runner (local runs,
+  // the runner-less ACP→CLI fallback, or an SSH runner that does not
+  // instrument the seam), so those steps simply omit the fields.
+  const stepMetrics = buildStartupStepMetrics(
+    executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
+      ? executionTarget.runner
+      : undefined,
+  );
   const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
     workspaceWorktreePath,
@@ -1262,6 +1302,7 @@ async function buildRuntime(input: {
   // here on the awaited directory materialization.
   await measureStartupStep(input.ctx, nowMs, "workspace.resolve", () =>
     ensureAbsoluteDirectory(cwd, { createIfMissing: true }),
+    stepMetrics,
   );
 
   const acpxAgent = normalizeAgent(config);
@@ -1422,7 +1463,9 @@ async function buildRuntime(input: {
         onLog: input.ctx.onLog,
         onEvent: input.ctx.onEvent,
         now: nowMs,
+        stepMetrics,
       }),
+      stepMetrics,
     );
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
@@ -1675,7 +1718,7 @@ async function buildRuntime(input: {
           };
         }
         return { stagedRuntime: await stage([]), teardown: null, dispose: null };
-      });
+      }, stepMetrics);
       const delta: Record<string, string> = {};
       for (const [key, value] of Object.entries(env)) {
         if (envBeforeStage[key] !== value) delta[key] = value;
@@ -1715,6 +1758,7 @@ async function buildRuntime(input: {
           hostApiToken: env.PAPERCLIP_API_KEY,
           onLog: input.ctx.onLog,
         }),
+        stepMetrics,
       );
       if (paperclipBridge) {
         Object.assign(env, paperclipBridge.env);
@@ -1741,6 +1785,7 @@ async function buildRuntime(input: {
             timeoutSec,
             onLog: input.ctx.onLog,
           }),
+          stepMetrics,
         )
       : null;
   } catch (err) {
@@ -1813,6 +1858,7 @@ async function buildRuntime(input: {
     paperclipClaudeSettings,
     mcpServers,
     mcpIdentity,
+    stepMetrics,
   };
 }
 
@@ -2594,7 +2640,22 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         ? (chunk) => routeChildStderr(childStderrState, chunk)
         : undefined,
     };
-    const runtime = cached?.runtime ?? createRuntime(runtimeOptions);
+    // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
+    // sub-phases — the ACP runtime construction (`createRuntime`) vs the session
+    // establishment envelope (`ensureSession`). The finer spawn/`initialize`/
+    // `session/new` split lives inside external `acpx` and is gated on an
+    // upstream lifecycle hook (not bundled here). `createRuntime` runs once and
+    // only on a cold start; a warm-handle hit reuses `cached.runtime`, so
+    // `createRuntimeMs` stays undefined and the split reports nothing for it.
+    let createRuntimeMs: number | undefined;
+    let runtime: AcpRuntime;
+    if (cached?.runtime) {
+      runtime = cached.runtime;
+    } else {
+      const createRuntimeStart = now();
+      runtime = createRuntime(runtimeOptions);
+      createRuntimeMs = now() - createRuntimeStart;
+    }
     if (cached) clearWarmHandleTimer(cached);
     if (!canResume && asString(previousParams.runtimeSessionName, "")) {
       await ctx.onLog(
@@ -2612,17 +2673,29 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         try {
           // Step 7 — acp.handshake: ACP session establishment (session/new or
           // resume). A throwing handshake still reports its duration before the
-          // resume-retry path below runs.
-          handle = await measureStartupStep(ctx, now, "acp.handshake", () =>
-            runtime.ensureSession({
+          // resume-retry path below runs. `roundTrips` is expected to be 0 (the
+          // ACP client is external, not the host exec seam); the payload also
+          // carries the createRuntime/ensureSession sub-split (Open Q2).
+          let ensureSessionMs: number | undefined;
+          handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
+            const ensureSessionStart = now();
+            const established = await runtime.ensureSession({
               sessionKey: prepared.sessionKey,
               agent: prepared.acpxAgent,
               mode: prepared.mode,
               cwd: prepared.cwd,
               resumeSessionId,
               sessionOptions: { env: prepared.env },
+            });
+            ensureSessionMs = now() - ensureSessionStart;
+            return established;
+          }, {
+            ...prepared.stepMetrics,
+            extra: () => ({
+              ...(createRuntimeMs !== undefined ? { createRuntimeMs } : {}),
+              ...(ensureSessionMs !== undefined ? { ensureSessionMs } : {}),
             }),
-          );
+          });
         } catch (err) {
           if (!resumeSessionId || !isResumeFailure(err)) throw err;
           clearSession = true;
@@ -2631,15 +2704,27 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             "stdout",
             `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
           );
-          handle = await measureStartupStep(ctx, now, "acp.handshake", () =>
-            runtime.ensureSession({
+          // Fresh-session retry: the runtime was already constructed on the
+          // first attempt (never re-created), so this event reports only its
+          // own `ensureSessionMs` — no `createRuntimeMs`.
+          let retryEnsureSessionMs: number | undefined;
+          handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
+            const ensureSessionStart = now();
+            const established = await runtime.ensureSession({
               sessionKey: prepared.sessionKey,
               agent: prepared.acpxAgent,
               mode: prepared.mode,
               cwd: prepared.cwd,
               sessionOptions: { env: prepared.env },
+            });
+            retryEnsureSessionMs = now() - ensureSessionStart;
+            return established;
+          }, {
+            ...prepared.stepMetrics,
+            extra: () => ({
+              ...(retryEnsureSessionMs !== undefined ? { ensureSessionMs: retryEnsureSessionMs } : {}),
             }),
-          );
+          });
         }
       }
     } catch (err) {

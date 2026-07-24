@@ -39,6 +39,24 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import { performSyncIn, performSyncOut } from "./file-sync.js";
 
+// Injectable monotonic clock for provider-boundary timing (Open Q1). Defaults
+// to the real wall clock; `plugin.test.ts` overrides it via
+// `setDaytonaTimingClockForTest` so the measured `durationMs`/`getDurationMs`
+// are deterministic. The timing path never calls `Date.now()` directly.
+let timingNow: () => number = () => Date.now();
+
+/**
+ * Test seam: override the provider-timing clock and return a restore function.
+ * Not used in production, where the default wall clock always applies.
+ */
+export function setDaytonaTimingClockForTest(now: () => number): () => void {
+  const previous = timingNow;
+  timingNow = now;
+  return () => {
+    timingNow = previous;
+  };
+}
+
 interface DaytonaDriverConfig {
   apiKey: string | null;
   apiUrl: string | null;
@@ -760,13 +778,19 @@ async function executeOneShot(
     // profile sourcing when params.cwd is set, and the Daytona executor's own
     // cwd argument runs before our login-shell init, which is the wrong order
     // (env from .bashrc would override caller env).
+    // Time only the `executeCommand` REST round-trip (Open Q1) — the ~600ms
+    // login-shell wrapper — so the caller can attribute a step's exec time to
+    // the provider boundary via the free-form `metadata.durationMs`.
+    const execStart = timingNow();
     const result = await sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds);
+    const durationMs = timingNow() - execStart;
 
     return {
       exitCode: typeof result.exitCode === "number" ? result.exitCode : 1,
       timedOut: false,
       stdout: result.result ?? result.artifacts?.stdout ?? "",
       stderr: "",
+      metadata: { durationMs },
     };
   } catch (error) {
     if (error instanceof DaytonaTimeoutError) {
@@ -1256,9 +1280,19 @@ const plugin = definePlugin({
     }
 
     const config = parseDriverConfig(params.config);
+    // Time the `client.get` sandbox re-fetch (Open Q1) separately from the
+    // `executeCommand` round-trip so telemetry can split the per-call REST-get
+    // cost from the exec cost. `ensureSandboxStarted` is a no-op for an
+    // already-started sandbox, so it is excluded from the get measurement.
+    const getStart = timingNow();
     const sandbox = await getSandbox(config, params.lease.providerLeaseId);
+    const getDurationMs = timingNow() - getStart;
     await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
-    return await executeOneShot(sandbox, params, config);
+    const result = await executeOneShot(sandbox, params, config);
+    return {
+      ...result,
+      metadata: { ...(result.metadata ?? {}), getDurationMs },
+    };
   },
 
   // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)

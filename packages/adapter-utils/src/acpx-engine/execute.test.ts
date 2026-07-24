@@ -80,7 +80,16 @@ function createLocalSandboxRunner(
   }) => void,
 ) {
   let counter = 0;
+  // Synthetic provider-duration accumulators so per-step payload assertions can
+  // verify the `providerExecMs`/`providerGetMs` threading end-to-end (the real
+  // sandbox runner sources these from the Daytona plugin's result metadata; this
+  // double stands in for that with a fixed per-exec cost).
+  let providerExecMs = 0;
+  let providerGetMs = 0;
   return {
+    execCount: () => counter,
+    providerExecMs: () => providerExecMs,
+    providerGetMs: () => providerGetMs,
     execute: async (input: {
       command: string;
       args?: string[];
@@ -92,6 +101,8 @@ function createLocalSandboxRunner(
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
+      providerExecMs += 600;
+      providerGetMs += 15;
       onExecute?.(input);
       const command = input.command === "bash" ? "/bin/bash" : input.command;
       return await runChildProcess(`acpx-sandbox-run-${counter}`, command, input.args ?? [], {
@@ -2771,6 +2782,125 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     ]) {
       expect(emitted.has(step), `expected a run.startup.step event for "${step}"`).toBe(true);
     }
+  });
+
+  it("carries per-step roundTrips + provider durations sourced from the sandbox runner counter", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const { events } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget },
+    );
+
+    const steps = stepEvents(events);
+    const seen = new Map(steps.map((event) => [String(event.payload?.step), event]));
+
+    // Every timed boundary carries a numeric roundTrips (the runner exposes
+    // execCount), even the ones that never exec.
+    for (const event of steps) {
+      expect(typeof event.payload?.roundTrips).toBe("number");
+    }
+    // workspace.resolve is host-only → zero host→sandbox execs.
+    expect(seen.get("workspace.resolve")?.payload?.roundTrips).toBe(0);
+    // stage.sync ships the workspace over the exec seam → at least one round-trip,
+    // and the accumulated provider durations scale with it.
+    const stageSync = seen.get("stage.sync");
+    expect(stageSync?.payload?.roundTrips as number).toBeGreaterThan(0);
+    expect(stageSync?.payload?.providerExecMs).toBe(
+      (stageSync?.payload?.roundTrips as number) * 600,
+    );
+    expect(stageSync?.payload?.providerGetMs).toBe(
+      (stageSync?.payload?.roundTrips as number) * 15,
+    );
+    // The external ACP client crosses no host exec seam.
+    expect(seen.get("acp.handshake")?.payload?.roundTrips).toBe(0);
+  });
+
+  it("splits acp.handshake into createRuntimeMs and ensureSessionMs sub-phases", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const { events } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget },
+    );
+
+    const handshake = stepEvents(events).find((event) => event.payload?.step === "acp.handshake");
+    expect(handshake).toBeTruthy();
+    expect(typeof handshake!.payload?.createRuntimeMs).toBe("number");
+    expect(handshake!.payload?.createRuntimeMs as number).toBeGreaterThanOrEqual(0);
+    expect(typeof handshake!.payload?.ensureSessionMs).toBe("number");
+    expect(handshake!.payload?.ensureSessionMs as number).toBeGreaterThanOrEqual(0);
+  });
+
+  it("emits no acp.handshake event when a warm-handle hit skips the handshake", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const warmHandles = new Map();
+    const secondEvents: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles,
+      createRuntime: () => buildRuntime() as never,
+    });
+    const config = {
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+      mode: "persistent",
+      warmHandleIdleMs: 60_000,
+    };
+    const first = await execute({
+      runId: "run-warm-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config,
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onEvent: async () => {},
+    } as never);
+    // The second run reuses the warm handle, so the whole handshake block is
+    // skipped — it must emit NO acp.handshake event (not a zero-duration one).
+    await execute({
+      runId: "run-warm-2",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: { sessionParams: (first as { sessionParams?: unknown }).sessionParams },
+      config,
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onEvent: async (event: { eventType: string; payload?: Record<string, unknown> }) => {
+        secondEvents.push(event);
+      },
+    } as never);
+
+    const handshakeEmitted = secondEvents.some(
+      (event) => event.eventType === "run.startup.step" && event.payload?.step === "acp.handshake",
+    );
+    expect(handshakeEmitted).toBe(false);
   });
 
   it("does not emit startup-step events on a local (non-sandbox) run except workspace.resolve", async () => {
