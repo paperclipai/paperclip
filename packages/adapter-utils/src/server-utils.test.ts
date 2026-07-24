@@ -708,6 +708,37 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("preserves and renders the issue description in structured wake payloads", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-15271",
+        title: "Preserve the task brief",
+        description: "Update launch-card.svg and change the CTA to Try Team free.",
+        descriptionTruncated: false,
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      issue: {
+        description: "Update launch-card.svg and change the CTA to Try Team free.",
+        descriptionTruncated: false,
+      },
+    });
+    expect(renderPaperclipWakePrompt(payload)).toContain(
+      "Issue description:\n```text\nUpdate launch-card.svg and change the CTA to Try Team free.\n```",
+    );
+  });
+
   it("keeps the default local-agent prompt action-oriented", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Start actionable work in this heartbeat");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");

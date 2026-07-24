@@ -438,6 +438,8 @@ type PaperclipWakeIssue = {
   id: string | null;
   identifier: string | null;
   title: string | null;
+  description: string | null;
+  descriptionTruncated: boolean;
   status: string | null;
   workMode: string | null;
   priority: string | null;
@@ -727,6 +729,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   const id = asString(issue.id, "").trim() || null;
   const identifier = asString(issue.identifier, "").trim() || null;
   const title = asString(issue.title, "").trim() || null;
+  const description = typeof issue.description === "string" ? issue.description : null;
   const status = asString(issue.status, "").trim() || null;
   const workMode = asString(issue.workMode, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
@@ -735,6 +738,8 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
     id,
     identifier,
     title,
+    description,
+    descriptionTruncated: asBoolean(issue.descriptionTruncated, false),
     status,
     workMode,
     priority,
@@ -1487,6 +1492,12 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.issue?.description !== null && normalized.issue?.description !== undefined) {
+    lines.push("", "Issue description:", markdownFencedText(normalized.issue.description));
+    if (normalized.issue.descriptionTruncated) {
+      lines.push("[issue description truncated; fetch the issue for the full brief]");
+    }
   }
   if (normalized.checkboxSelection) {
     if (normalized.checkboxSelection.prompt) {
