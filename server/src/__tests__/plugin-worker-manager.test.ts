@@ -617,6 +617,51 @@ describe("plugin proactive company scope (LOOA-629)", () => {
     }
   });
 
+  it("never injects a scope into a call that references no company (direct-companyId branch)", async () => {
+    // The "never a wildcard" invariant (#10103 review gap), direct-companyId
+    // derivation branch: a proactive call with no company reference must reach
+    // the gate scope-less. The gate classifies it as instance-level
+    // (kind "none") and passes params through verbatim — so the handler seeing
+    // NO companyId proves the manager did not inject one of its authorized
+    // companies into the call.
+    const { handle, companiesGet } = makeHandle();
+    try {
+      await handle.start();
+      handle.setProactiveCompanyScopes(["company-1"]);
+      await handle.call("getData", {
+        params: { mode: "omit", hostMethod: "companies.get" },
+      } as unknown as HostToWorkerMethods["getData"][0]);
+      expect(companiesGet).toHaveBeenCalledTimes(1);
+      const receivedParams = companiesGet.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+      expect(receivedParams?.companyId).toBeUndefined();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("never grants a wildcard: company-scoped state.get with an empty scopeId stays denied scope-less", async () => {
+    // Same invariant via the scopeKind:"company" derivation branch — an empty
+    // scopeId must resolve to null (no proactive grant). The gate then
+    // escalates the empty-scopeId request to kind "all", which is denied. The
+    // message assertion is load-bearing: "company context is required" proves
+    // NO scope was granted, whereas a wrongly-injected grant would fail with
+    // 'the current invocation is scoped to company "company-1"' instead.
+    const { handle, stateGet } = makeHandle();
+    try {
+      await handle.start();
+      handle.setProactiveCompanyScopes(["company-1"]);
+      await expect(handle.call("getData", {
+        params: { mode: "omit", hostMethod: "state.get" },
+      } as unknown as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        message: expect.stringContaining("company context is required"),
+      });
+      expect(stateGet).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("revokes proactive access when the authorized set is cleared", async () => {
     const { handle, companiesGet } = makeHandle();
     try {
