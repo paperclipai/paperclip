@@ -2,6 +2,9 @@ import { z } from "zod";
 
 export const companySkillSourceTypeSchema = z.enum(["local_path", "github", "url", "catalog", "skills_sh"]);
 export const companySkillTrustLevelSchema = z.enum(["markdown_only", "assets", "scripts_executables"]);
+export const companySkillRiskTierSchema = z.union([z.literal(0), z.literal(1), z.literal(2)]);
+export const companySkillRiskTierSourceSchema = z.enum(["unclassified", "rule_engine", "override"]);
+export const companySkillRiskTierRationaleSchema = z.record(z.string(), z.unknown()).nullable();
 export const companySkillCompatibilitySchema = z.enum(["compatible", "unknown", "invalid"]);
 export const companySkillSourceBadgeSchema = z.enum(["paperclip", "github", "local", "url", "catalog", "skills_sh"]);
 export const companySkillSharingScopeSchema = z.enum(["private", "company", "public_link"]);
@@ -48,6 +51,12 @@ export const companySkillSchema = z.object({
   forkCount: z.number().int().nonnegative(),
   currentVersionId: z.string().uuid().nullable(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
+  riskTier: companySkillRiskTierSchema,
+  riskTierSource: companySkillRiskTierSourceSchema,
+  riskTierRationale: companySkillRiskTierRationaleSchema,
+  riskTierUpdatedByAgentId: z.string().uuid().nullable(),
+  riskTierUpdatedByUserId: z.string().nullable(),
+  riskTierUpdatedAt: z.coerce.date().nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });
@@ -552,6 +561,12 @@ export const companySkillInstallCatalogResultSchema = z.object({
   catalogSkill: catalogSkillSchema,
   warnings: z.array(z.string()),
 });
+
+export const companySkillRiskTierOverrideSchema = z.object({
+  riskTier: companySkillRiskTierSchema,
+  reason: z.string().min(1).max(2000),
+});
+export type CompanySkillRiskTierOverrideInput = z.infer<typeof companySkillRiskTierOverrideSchema>;
 
 export type CompanySkillImport = z.infer<typeof companySkillImportSchema>;
 export type CompanySkillListQuery = z.infer<typeof companySkillListQuerySchema>;
