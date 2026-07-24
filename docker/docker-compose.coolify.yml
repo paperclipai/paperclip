@@ -1,0 +1,71 @@
+# Coolify deployment — Docker Compose resource.
+#
+# In Coolify: New Resource -> Docker Compose -> point at this repo, set
+# "Base Directory" to /docker and "Docker Compose Location" to this file
+# (or just this path from the repo root: docker/docker-compose.coolify.yml).
+#
+# Required environment variables (set in Coolify's Environment Variables tab):
+#   POSTGRES_PASSWORD    - password for the bundled Postgres instance
+#   BETTER_AUTH_SECRET    - `openssl rand -base64 32`
+#   PAPERCLIP_PUBLIC_URL   - the https domain Coolify assigns to the `app` service
+#
+# Optional:
+#   ANTHROPIC_API_KEY, OPENAI_API_KEY, GITHUB_TOKEN
+#
+# After assigning a domain to the `app` service in Coolify, set
+# PAPERCLIP_PUBLIC_URL to that domain (e.g. https://paperclip.example.com)
+# and redeploy so auth callback URLs resolve correctly.
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3100"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3100/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      NODE_ENV: "production"
+      SERVE_UI: "true"
+      DATABASE_URL: "postgres://paperclip:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/paperclip"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:?PAPERCLIP_PUBLIC_URL must be set}"
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public"
+      PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+      HEARTBEAT_SCHEDULER_ENABLED: "true"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+    volumes:
+      - paperclip-data:/paperclip
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
+      POSTGRES_DB: paperclip
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+  paperclip-data:
