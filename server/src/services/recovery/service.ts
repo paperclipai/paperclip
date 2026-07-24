@@ -24,6 +24,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routineRuns,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -84,6 +85,24 @@ export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+
+// Whitelist of (agentId, routineId) pairs that are exempt from the stale-active-run
+// suspicious/critical silence detector. Entries here are for legitimately quiet routines
+// where long I/O pauses are expected and do not indicate a stalled run.
+//
+// Key on stable UUIDs — not names — so a rename never silently drops an exemption.
+// To add a new pair: append `{ agentId: "...", routineId: "..." }` here.
+export const STALE_ACTIVE_RUN_WATCHDOG_WHITELIST: ReadonlyArray<{
+  agentId: string;
+  routineId: string;
+}> = [
+  // Memory Keeper × Nightly Memory Sync — legitimately quiet during Obsidian I/O.
+  // Source: OPE-278 / OPE-276.
+  {
+    agentId: "97bf7323-02d2-4311-a7cc-04d4fdccc047",
+    routineId: "c61abe92-50f9-4646-ac5d-5a48ec8fc229",
+  },
+];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
@@ -2164,6 +2183,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { kind: "created" as const, evaluationIssueId: evaluation.id };
   }
 
+  async function isRunWhitelistedFromSilenceDetector(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "agentId" | "contextSnapshot">,
+  ): Promise<{ whitelisted: boolean; routineId: string | null }> {
+    if (STALE_ACTIVE_RUN_WATCHDOG_WHITELIST.length === 0) return { whitelisted: false, routineId: null };
+    const matchingAgentEntries = STALE_ACTIVE_RUN_WATCHDOG_WHITELIST.filter(
+      (entry) => entry.agentId === run.agentId,
+    );
+    if (matchingAgentEntries.length === 0) return { whitelisted: false, routineId: null };
+
+    const context = parseObject(run.contextSnapshot);
+    const issueId = typeof context.issueId === "string" && context.issueId.length > 0
+      ? context.issueId
+      : typeof context.taskId === "string" && context.taskId.length > 0
+        ? context.taskId
+        : null;
+    if (!issueId) return { whitelisted: false, routineId: null };
+
+    const routineRunRow = await db
+      .select({ routineId: routineRuns.routineId })
+      .from(routineRuns)
+      .where(eq(routineRuns.linkedIssueId, issueId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!routineRunRow) return { whitelisted: false, routineId: null };
+
+    const whitelisted = matchingAgentEntries.some(
+      (entry) => entry.routineId === routineRunRow.routineId,
+    );
+    return { whitelisted, routineId: routineRunRow.routineId };
+  }
+
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string; issueCreatedAtGte?: Date | null }) {
     const now = opts?.now ?? new Date();
     const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
@@ -2215,6 +2265,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const run of candidates) {
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
+        continue;
+      }
+      const whitelistCheck = await isRunWhitelistedFromSilenceDetector(run);
+      if (whitelistCheck.whitelisted) {
+        logger.info(
+          { runId: run.id, agentId: run.agentId, routineId: whitelistCheck.routineId },
+          "stale-active-run watchdog: skipping whitelisted (agentId, routineId) pair",
+        );
+        result.skipped += 1;
         continue;
       }
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
