@@ -231,8 +231,8 @@ export function IssueProperties({
     enabled: !!companyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId!),
-    queryFn: () => projectsApi.list(companyId!),
+    queryKey: queryKeys.projects.list(companyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(companyId!, { includeArchived: true }),
     enabled: !!companyId,
   });
   const activeProjects = useMemo(

@@ -18,7 +18,12 @@ function projectPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const projectsApi = {
-  list: (companyId: string) => api.get<Project[]>(`/companies/${companyId}/projects`),
+  list: (companyId: string, opts: { includeArchived?: boolean } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.includeArchived) params.set("includeArchived", "true");
+    const query = params.toString();
+    return api.get<Project[]>("/companies/" + encodeURIComponent(companyId) + "/projects" + (query ? "?" + query : ""));
+  },
   get: (id: string, companyId?: string) => api.get<Project>(projectPath(id, companyId)),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Project>(`/companies/${companyId}/projects`, data),
