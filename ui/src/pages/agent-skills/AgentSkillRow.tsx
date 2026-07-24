@@ -101,7 +101,10 @@ export function AgentSkillRow({
   );
 
   const rowClass = cn(
-    "flex min-h-11 items-center gap-3 border-b border-border px-3 py-2.5 last:border-b-0",
+    // Below `sm` the trailing area can't share a line with the leading content,
+    // so the row wraps and the picker accessory drops onto its own full-width
+    // line under the name/description (see the `order-last` accessory below).
+    "flex min-h-11 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-3 py-2.5 last:border-b-0 sm:flex-nowrap sm:gap-y-3",
     readOnly ? "bg-muted/20" : "transition-colors hover:bg-accent/50",
   );
 
@@ -145,7 +148,11 @@ export function AgentSkillRow({
   return (
     <div className={rowClass}>
       {body}
-      {accessory && !readOnly ? <div className="shrink-0">{accessory}</div> : null}
+      {accessory && !readOnly ? (
+        // `order-last` + `w-full` push the picker below the name/toggle line on
+        // mobile; on `sm+` it sits inline between the leading area and the toggle.
+        <div className="order-last w-full shrink-0 sm:order-none sm:w-auto">{accessory}</div>
+      ) : null}
       {trailing}
     </div>
   );

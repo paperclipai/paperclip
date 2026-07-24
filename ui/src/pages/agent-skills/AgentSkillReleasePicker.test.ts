@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { CompanySkillVersion } from "@paperclipai/shared";
 import {
   formatReleaseDate,
+  releaseName,
   releaseOptionLabel,
   releaseShortLabel,
 } from "./AgentSkillReleasePicker";
@@ -47,6 +48,21 @@ describe("releaseOptionLabel", () => {
 
   it("falls back gracefully without a date", () => {
     expect(releaseOptionLabel(makeRelease({ releasedAt: null }))).toBe("V7 — Roster champion");
+  });
+});
+
+describe("releaseName", () => {
+  it("returns the full release name without the date suffix", () => {
+    expect(releaseName(makeRelease())).toBe("V7 — Roster champion");
+  });
+
+  it("falls back through label and releaseId", () => {
+    expect(releaseName(makeRelease({ releaseName: null, label: "Fallback label" }))).toBe(
+      "Fallback label",
+    );
+    expect(
+      releaseName(makeRelease({ releaseName: null, label: null, releaseId: "raw-id" })),
+    ).toBe("raw-id");
   });
 });
 

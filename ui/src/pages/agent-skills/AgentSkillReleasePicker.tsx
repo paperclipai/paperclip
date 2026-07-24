@@ -30,9 +30,14 @@ export function formatReleaseDate(value: CompanySkillVersion["releasedAt"]): str
   return `${year}-${month}-${day}`;
 }
 
+/** Release display name, e.g. `V7 — Roster champion` (no date). */
+export function releaseName(release: CompanySkillVersion): string {
+  return release.releaseName ?? release.label ?? release.releaseId ?? "Release";
+}
+
 /** Full option label, e.g. `V7 — Roster champion · released 2026-07-21`. */
 export function releaseOptionLabel(release: CompanySkillVersion): string {
-  const name = release.releaseName ?? release.label ?? release.releaseId ?? "Release";
+  const name = releaseName(release);
   const date = formatReleaseDate(release.releasedAt);
   return date ? `${name} · released ${date}` : name;
 }
@@ -63,6 +68,11 @@ export function AgentSkillReleasePicker({
   disabled = false,
   onChange,
 }: AgentSkillReleasePickerProps) {
+  const selected = value ? releases.find((release) => release.id === value) ?? null : null;
+  // Closed trigger shows the release name only; the `· released <date>` suffix
+  // lives in the open menu, where dates are meaningful for comparing options.
+  const triggerLabel = selected ? releaseName(selected) : DEFAULT_LABEL;
+
   return (
     <Select
       value={value ?? RELEASE_DEFAULT_VALUE}
@@ -74,7 +84,7 @@ export function AgentSkillReleasePicker({
         className="w-full max-w-[16rem] sm:w-[16rem]"
         aria-label="Skill release"
       >
-        <SelectValue placeholder={DEFAULT_LABEL} />
+        <SelectValue placeholder={DEFAULT_LABEL}>{triggerLabel}</SelectValue>
       </SelectTrigger>
       <SelectContent align="end" className="max-w-[20rem]">
         <SelectItem value={RELEASE_DEFAULT_VALUE}>{DEFAULT_LABEL}</SelectItem>
@@ -82,8 +92,8 @@ export function AgentSkillReleasePicker({
           <SelectItem key={release.id} value={release.id}>
             <span className="flex items-center gap-2">
               <span className="truncate">{releaseOptionLabel(release)}</span>
-              <Badge variant="secondary" className="shrink-0 text-(length:--text-nano) uppercase">
-                beta
+              <Badge variant="secondary" className="shrink-0 text-(length:--text-nano)">
+                Beta
               </Badge>
             </span>
           </SelectItem>
