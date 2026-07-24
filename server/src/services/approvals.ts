@@ -130,6 +130,7 @@ export function approvalService(db: Db) {
       );
 
       let hireApprovedAgentId: string | null = null;
+      let verifiedApproval = updated;
       const now = new Date();
       if (applied && updated.type === "hire_agent") {
         const payload = updated.payload as Record<string, unknown>;
@@ -178,6 +179,15 @@ export function approvalService(db: Db) {
               decidedByUserId,
             );
           }
+          const stamped = await db
+            .update(approvals)
+            .set({ verifiedAt: now, updatedAt: now })
+            .where(eq(approvals.id, id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (stamped) {
+            verifiedApproval = stamped;
+          }
           void notifyHireApproved(db, {
             companyId: updated.companyId,
             agentId: hireApprovedAgentId,
@@ -188,7 +198,7 @@ export function approvalService(db: Db) {
         }
       }
 
-      return { approval: updated, applied };
+      return { approval: verifiedApproval, applied };
     },
 
     reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
