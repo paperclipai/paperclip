@@ -248,6 +248,7 @@ import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.j
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
+import { isAdapterRuntimeImageMismatchError } from "@paperclipai/adapter-utils/execution-target";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
   clearHeartbeatRunRuntimeStatus,
@@ -11764,6 +11765,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     activeRunExecutions.add(run.id);
     let runScratch: HeartbeatRunScratch | null = null;
+    // Self-heal guard for AdapterRuntimeImageMismatchError (a run landed on a
+    // sandbox pod whose runtime image does not carry the harness CLI). Flip
+    // to true the first time recovery is attempted so a second mismatch on
+    // the SAME run surfaces the original typed error terminally instead of
+    // looping.
+    let imageMismatchRecoveryAttempted = false;
 
     try {
     const agent = await getAgent(run.agentId);
@@ -12785,9 +12792,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       lease: realizationResult.lease,
     };
     persistedExecutionWorkspace = realizationResult.persistedExecutionWorkspace;
-    const workspaceRealization = realizationResult.workspaceRealization;
-    const executionTarget = realizationResult.executionTarget;
-    const remoteExecution = realizationResult.remoteExecution;
+    // `let`, not `const`: a first-attempt AdapterRuntimeImageMismatchError
+    // re-acquires and re-realizes the environment (see
+    // recoverEnvironmentLeaseAfterImageMismatch below), which replaces these
+    // with the values from the fresh lease.
+    let workspaceRealization = realizationResult.workspaceRealization;
+    let executionTarget = realizationResult.executionTarget;
+    let remoteExecution = realizationResult.remoteExecution;
+    // Shared with the AdapterRuntimeImageMismatchError self-heal below: both
+    // the initial setup and the post-recovery re-realization publish the
+    // same contextSnapshot shape, so the field list only lives in one place.
+    const buildPaperclipEnvironmentContext = () => ({
+      id: selectedEnvironment.id,
+      name: selectedEnvironment.name,
+      driver: selectedEnvironment.driver,
+      leaseId: activeEnvironmentLease.lease.id,
+      workspaceRealization,
+      ...(typeof activeEnvironmentLease.lease.metadata?.remoteCwd === "string"
+        ? {
+            remoteCwd: activeEnvironmentLease.lease.metadata.remoteCwd,
+            host:
+              typeof activeEnvironmentLease.lease.metadata?.host === "string"
+                ? activeEnvironmentLease.lease.metadata.host
+                : undefined,
+            port:
+              typeof activeEnvironmentLease.lease.metadata?.port === "number"
+                ? activeEnvironmentLease.lease.metadata.port
+                : undefined,
+            username:
+              typeof activeEnvironmentLease.lease.metadata?.username === "string"
+                ? activeEnvironmentLease.lease.metadata.username
+                : undefined,
+          }
+        : {}),
+    });
     if (!executionTarget || executionTarget.kind === "local") {
       try {
         runScratch = await prepareHeartbeatRunScratch({
@@ -12829,30 +12867,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipScratch;
     }
-    context.paperclipEnvironment = {
-      id: selectedEnvironment.id,
-      name: selectedEnvironment.name,
-      driver: selectedEnvironment.driver,
-      leaseId: activeEnvironmentLease.lease.id,
-      workspaceRealization,
-      ...(typeof activeEnvironmentLease.lease.metadata?.remoteCwd === "string"
-        ? {
-            remoteCwd: activeEnvironmentLease.lease.metadata.remoteCwd,
-            host:
-              typeof activeEnvironmentLease.lease.metadata?.host === "string"
-                ? activeEnvironmentLease.lease.metadata.host
-                : undefined,
-            port:
-              typeof activeEnvironmentLease.lease.metadata?.port === "number"
-                ? activeEnvironmentLease.lease.metadata.port
-                : undefined,
-            username:
-              typeof activeEnvironmentLease.lease.metadata?.username === "string"
-                ? activeEnvironmentLease.lease.metadata.username
-                : undefined,
-          }
-        : {}),
-    };
+    context.paperclipEnvironment = buildPaperclipEnvironmentContext();
     await db
       .update(heartbeatRuns)
       .set({
@@ -13535,8 +13550,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adapterFinalizeOutcome = status;
       };
 
-      let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
-      try {
+      // Runs the adapter once against the CURRENT (possibly re-acquired)
+      // lease/executionTarget. Extracted so the AdapterRuntimeImageMismatchError
+      // self-heal below can call it a second time, after
+      // recoverEnvironmentLeaseAfterImageMismatch has refreshed the closed-over
+      // executionTarget/remoteExecution, without duplicating the MCP/context
+      // setup.
+      const runAdapterExecuteAttempt = async (): Promise<Awaited<ReturnType<typeof adapter.execute>>> => {
         const adapterContext = { ...context };
         const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
           db,
@@ -13555,7 +13575,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (managedMcpConfig) {
           adapterContext.paperclipManagedMcp = managedMcpConfig;
         }
-        adapterResult = await adapter.execute({
+        return await adapter.execute({
           runId: run.id,
           agent,
           runtime: runtimeForAdapter,
@@ -13594,6 +13614,101 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           authToken: authToken ?? undefined,
         });
+      };
+
+      // Gap-2 self-heal (closes what #9950's fail-fast gate left open): the
+      // gate detects a run on the wrong runtime image but does not recover.
+      // Destroy the mismatched lease and re-acquire + re-realize the
+      // environment ONCE so the retried adapter.execute has a chance to land
+      // on a pod carrying the right harness. There is no existing in-run
+      // setup-retry seam in heartbeat.ts to hook (EnvironmentRunError from
+      // acquireForRun/realizeForRun is not retried anywhere today); this is
+      // the narrowest insertion point available short of restructuring the
+      // ~800-line acquire/realize/execute sequence into a generic retry loop.
+      const recoverEnvironmentLeaseAfterImageMismatch = async (): Promise<void> => {
+        logger.warn(
+          {
+            runId: run.id,
+            issueId,
+            agentId: agent.id,
+            environmentId: selectedEnvironment.id,
+            leaseId: activeEnvironmentLease.lease.id,
+          },
+          "adapter runtime image mismatch on sandbox lease; destroying lease and re-acquiring once",
+        );
+        try {
+          await envOrchestrator.runtime.destroyRunLease({
+            environment: activeEnvironmentLease.environment,
+            lease: activeEnvironmentLease.lease,
+            failureReason: "adapter_runtime_image_mismatch",
+          });
+        } catch (destroyErr) {
+          logger.warn(
+            { err: destroyErr, runId: run.id, leaseId: activeEnvironmentLease.lease.id },
+            "failed to destroy mismatched sandbox lease before re-acquiring; continuing with re-acquire",
+          );
+        }
+
+        const reacquiredEnvironment = await envOrchestrator.acquireForRun({
+          companyId: agent.companyId,
+          selectedEnvironmentId,
+          localEnvironmentId: localEnvironment.id,
+          adapterType: agent.adapterType,
+          issueId: issueId ?? null,
+          heartbeatRunId: run.id,
+          agentId: agent.id,
+          persistedExecutionWorkspace,
+        });
+        activeEnvironmentLease = {
+          environment: reacquiredEnvironment.environment,
+          lease: reacquiredEnvironment.lease,
+          leaseContext: reacquiredEnvironment.leaseContext,
+        };
+        const rerealizationResult = await envOrchestrator.realizeForRun({
+          environment: selectedEnvironment,
+          lease: activeEnvironmentLease.lease,
+          adapterType: agent.adapterType,
+          companyId: agent.companyId,
+          issueId: issueId ?? null,
+          heartbeatRunId: run.id,
+          executionWorkspace,
+          effectiveExecutionWorkspaceMode,
+          persistedExecutionWorkspace,
+        });
+        activeEnvironmentLease = {
+          ...activeEnvironmentLease,
+          lease: rerealizationResult.lease,
+        };
+        persistedExecutionWorkspace = rerealizationResult.persistedExecutionWorkspace;
+        workspaceRealization = rerealizationResult.workspaceRealization;
+        executionTarget = rerealizationResult.executionTarget;
+        remoteExecution = rerealizationResult.remoteExecution;
+        context.paperclipEnvironment = buildPaperclipEnvironmentContext();
+        await db
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: context,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, run.id));
+      };
+
+      const recordAdapterFinalizeFailure = async (err: unknown) => {
+        try {
+          await recordWorkspaceFinalize("failed", {
+            errorMessage: err instanceof Error ? err.message : String(err),
+          });
+        } catch (recordErr) {
+          logger.warn(
+            { err: recordErr, runId: run.id, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
+            "failed to record workspace_finalize=failed operation; dependents may remain gated",
+          );
+        }
+      };
+
+      let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      try {
+        adapterResult = await runAdapterExecuteAttempt();
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
         // barrier so dependents that share this executionWorkspace can wake.
@@ -13602,22 +13717,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // finalize row.
         await recordWorkspaceFinalize("succeeded");
       } catch (adapterErr) {
-        // Adapter (or its restore finally) threw — or the finalize record
-        // write itself threw. Either way the workspace may be in a partial
-        // state. Best-effort record finalize=failed so the dependent readiness
-        // check keeps the gate closed instead of waking on stale local state,
-        // and surface the original error to the caller.
-        try {
-          await recordWorkspaceFinalize("failed", {
-            errorMessage: adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
-          });
-        } catch (recordErr) {
-          logger.warn(
-            { err: recordErr, runId: run.id, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
-            "failed to record workspace_finalize=failed operation; dependents may remain gated",
-          );
+        if (isAdapterRuntimeImageMismatchError(adapterErr) && !imageMismatchRecoveryAttempted) {
+          imageMismatchRecoveryAttempted = true;
+          try {
+            await recoverEnvironmentLeaseAfterImageMismatch();
+            adapterResult = await runAdapterExecuteAttempt();
+            await recordWorkspaceFinalize("succeeded");
+          } catch (retryErr) {
+            // Either recovery itself failed (e.g. the re-acquire could not
+            // find a healthy lease) or the retried adapter.execute mismatched
+            // again. Either way this run gets exactly one recovery attempt:
+            // surface whatever the second attempt threw as the terminal
+            // failure (the same AdapterRuntimeImageMismatchError on a repeat
+            // mismatch; a different error if recovery infrastructure itself
+            // failed).
+            await recordAdapterFinalizeFailure(retryErr);
+            throw retryErr;
+          }
+        } else {
+          // Adapter (or its restore finally) threw, or the finalize record
+          // write itself threw. Either way the workspace may be in a partial
+          // state. Best-effort record finalize=failed so the dependent readiness
+          // check keeps the gate closed instead of waking on stale local state,
+          // and surface the original error to the caller.
+          await recordAdapterFinalizeFailure(adapterErr);
+          throw adapterErr;
         }
-        throw adapterErr;
       } finally {
         try {
           await revokeHeartbeatRunGatewayTokens({
@@ -14004,10 +14129,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode((await getRun(run.id).catch(() => null))?.errorCode);
+      // A repeat adapter_runtime_image_mismatch (the one-shot self-heal above
+      // already destroyed+re-acquired once and still landed on the wrong
+      // image) surfaces its own typed error code instead of the generic
+      // adapter_failed, so operators see the real cause on the terminal run.
+      const adapterRuntimeImageMismatchFailure = isAdapterRuntimeImageMismatchError(err) ? err : null;
       const failureErrorCode =
         workspaceValidationFailure?.code
         ?? configurationIncompleteFailure?.code
         ?? recordedResponsibleUserDenialCode
+        ?? adapterRuntimeImageMismatchFailure?.code
         ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 
