@@ -729,7 +729,8 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   const id = asString(issue.id, "").trim() || null;
   const identifier = asString(issue.identifier, "").trim() || null;
   const title = asString(issue.title, "").trim() || null;
-  const description = typeof issue.description === "string" ? issue.description : null;
+  const rawDescription = typeof issue.description === "string" ? issue.description : null;
+  const description = rawDescription?.trim() ? rawDescription : null;
   const status = asString(issue.status, "").trim() || null;
   const workMode = asString(issue.workMode, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
