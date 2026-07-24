@@ -157,6 +157,10 @@ jobs:
         with:
           context: .
           target: cloud
+          # Space-separated sandbox-provider directory names to build into
+          # the variant; add here when managed deployments need another.
+          build-args: |
+            CLOUD_BUNDLED_PLUGINS=daytona
           platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha

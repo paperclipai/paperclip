@@ -107,9 +107,17 @@ CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/di
 # README prescribes. Installing in a `build`-based stage (not `production`)
 # keeps devDependencies available for tsc: `production` sets
 # NODE_ENV=production, which would make pnpm skip them.
+#
+# CLOUD_BUNDLED_PLUGINS is the space-separated list of sandbox-provider
+# directory names to build into the variant. Only what managed deployments
+# actually auto-install belongs here — every entry adds its node_modules
+# to the image. Growing the list is a one-line workflow change.
 FROM build AS cloud-plugins
+ARG CLOUD_BUNDLED_PLUGINS="daytona"
 RUN set -eu; \
-  for dir in packages/plugins/sandbox-providers/*/; do \
+  for name in $CLOUD_BUNDLED_PLUGINS; do \
+    dir="packages/plugins/sandbox-providers/$name"; \
+    test -d "$dir" || { echo "ERROR: unknown sandbox provider '$name'" >&2; exit 1; }; \
     pnpm -C "$dir" install --ignore-workspace --no-lockfile; \
     pnpm -C "$dir" build; \
     test -f "$dir/dist/manifest.js" || { echo "ERROR: $dir is missing dist/manifest.js after build" >&2; exit 1; }; \
