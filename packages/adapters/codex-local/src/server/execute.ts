@@ -53,6 +53,7 @@ import {
   parseCodexJsonl,
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
+  isCodexHarnessCrash,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -1283,7 +1284,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: attempt.proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
-      const errorFamily = authRefreshFailure ?? (providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null);
+      const harnessCrash =
+        !authRefreshFailure &&
+        !providerQuota &&
+        !transientUpstream &&
+        isCodexHarnessCrash({
+          exitCode: attempt.proc.exitCode,
+          sawProtocolEvent: attempt.parsed.sawProtocolEvent,
+          sawProtocolTerminalEvent: attempt.parsed.sawProtocolTerminalEvent,
+        });
+      const errorFamily =
+        authRefreshFailure ??
+        (providerQuota ? "provider_quota" : transientUpstream || harnessCrash ? "transient_upstream" : null);
 
       return {
         exitCode: attempt.proc.exitCode,
@@ -1300,6 +1312,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? "provider_quota"
             : transientUpstream
             ? "codex_transient_upstream"
+            : harnessCrash
+            ? "codex_harness_crash"
             : null,
         errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
