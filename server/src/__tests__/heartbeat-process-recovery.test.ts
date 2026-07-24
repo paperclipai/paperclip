@@ -4114,6 +4114,98 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(run?.errorCode).toBeNull();
   });
 
+  it("cancels an issue-linked queue-expired run and releases the issue's execution lock via the same-sweep reconciliation", async () => {
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+      // includeIssue defaults to true: the fixture links the issue's
+      // executionRunId (and checkoutRunId) to this run, per the wiring at
+      // seedRunFixture's `includeIssue !== false` branch above.
+    });
+    const staleCreatedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: staleCreatedAt })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const issueBeforeReap = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueBeforeReap?.status).toBe("in_progress");
+    expect(issueBeforeReap?.executionRunId).toBe(runId);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({ maxQueuedAgeMs: 60_000 });
+
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("queue_expired");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+
+    // The queue-expiry backstop itself does not touch the issue: it only
+    // cancels the run and its wakeup (see heartbeat.ts's queue-expired reap
+    // block). The issue's executionRunId lock is expected to still point at
+    // the now-cancelled run until the reconciliation self-heal runs.
+    const issueImmediatelyAfterReap = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueImmediatelyAfterReap?.executionRunId).toBe(runId);
+
+    // Mirror the periodic scheduler sweep order in server/src/index.ts
+    // (reapOrphanedRuns -> promoteDueScheduledRetries -> resumeQueuedRuns ->
+    // reconcileStrandedAssignedIssues) so the self-heal path that owns
+    // releasing the issue lock actually runs.
+    await heartbeat.promoteDueScheduledRetries();
+    await heartbeat.resumeQueuedRuns();
+    const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(reconciled.continuationRequeued).toBe(1);
+    expect(reconciled.issueIds).toEqual([issueId]);
+
+    await waitForHeartbeatIdle(db);
+
+    const replacementRun = await waitForValue(async () =>
+      db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))
+        .then((rows) => rows[0] ?? null),
+    );
+    if (!replacementRun) throw new Error("Expected the reconciliation self-heal to queue a replacement run");
+    expect(replacementRun.agentId).toBe(agentId);
+    expect(["queued", "running", "succeeded"]).toContain(replacementRun.status);
+
+    const issueAfterReconcile = await waitForValue(async () =>
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row && row.executionRunId !== runId ? row : null;
+        }),
+    );
+    if (!issueAfterReconcile) throw new Error("Expected the issue's executionRunId to move off the cancelled run");
+    // Terminal pointer state: the stale lock on the cancelled run must be
+    // gone. It either points at the fresh replacement run, or has been
+    // cleared entirely pending the replacement run starting (Fix A lazy
+    // locking stamps it once the run actually starts).
+    expect([replacementRun.id, null]).toContain(issueAfterReconcile.executionRunId);
+    expect(issueAfterReconcile.status).not.toBe("blocked");
+  });
+
   it("blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {
     mockAdapterExecute.mockClear();
     const { companyId, agentId, runId, issueId } =

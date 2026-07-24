@@ -17482,6 +17482,12 @@ export function heartbeatService(
 
     // Backstop for any cause of queue stranding (pause races, concurrency starvation,
     // invokability edge cases): a run should never wait in "queued" forever.
+    // This loop only cancels the run and its wakeup; for issue-linked runs it
+    // deliberately does not touch the issue's checkoutRunId/executionRunId
+    // lock columns. Releasing that lock is left to the same-sweep
+    // reconcileStrandedAssignedIssues() (and the enqueueWakeup self-heal it
+    // triggers), mirroring how sweepStaleIssueLocks documents its own
+    // reliance on that same reconciliation pass.
     const expiredQueuedRuns = await db
       .select()
       .from(heartbeatRuns)
