@@ -24,14 +24,6 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
 }));
 
-const mockBuiltInAgentsApi = vi.hoisted(() => ({
-  list: vi.fn(),
-}));
-
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
-}));
-
 const mockResourceMembershipsApi = vi.hoisted(() => ({
   listMine: vi.fn(),
   updateAgent: vi.fn(),
@@ -107,14 +99,6 @@ vi.mock("../api/auth", () => ({
 
 vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
-}));
-
-vi.mock("../api/builtInAgents", () => ({
-  builtInAgentsApi: mockBuiltInAgentsApi,
-}));
-
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../api/resourceMemberships", () => ({
@@ -243,8 +227,6 @@ describe("SidebarAgents", () => {
       user: { id: "user-1" },
     });
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
-    mockBuiltInAgentsApi.list.mockResolvedValue([]);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableBuiltInAgents: true });
     memberships = {
       projectMemberships: {},
       agentMemberships: {},
@@ -355,14 +337,6 @@ describe("SidebarAgents", () => {
     });
     await flushReact();
   }
-
-  it("does not query built-in agents when the feature flag is off", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableBuiltInAgents: false });
-
-    await renderSidebarAgents();
-
-    expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
-  });
 
   it("renders icon-only agent rows with tooltips and no row actions in the rail", async () => {
     mockAgentsApi.list.mockResolvedValue([makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" })]);
