@@ -50,9 +50,10 @@ Geräten. Damit fängt die Studio beide Löcher (RTX-Nacht, MacBook-mobil) ab.
 | `gemma-4-31b-it-mlx` | 33,8 | 65k | 4 | Kreativ/Admin-Primär (22 Agenten) + Universal-Fallback |
 | `google/gemma-4-12b` | 7,6 | 65k | 4 | PII-Nacht-Fallback + Agent-Light-Fallback + n8n/Digest |
 | `qwen/qwen3-coder-30b` | 17,2 | 90k | 4 | Coder-Ultimativ-Backstop (RTX+MacBook zugleich weg) |
+| `openbiollm-8b` | 5,7 | 8k | 4 | Dr-Knowledge (biomedizinisch spezialisiert) |
 | `text-embedding-bge-m3` | 0,6 | 8k | — | Embeddings |
 
-≈ 59 GB Gewichte + KV-Cache → reichlich Luft.
+≈ 65 GB Gewichte + KV-Cache → reichlich Luft.
 
 ### MacBook (128 GB, Workhorse — läuft ausschließlich LM Studio)
 
@@ -60,9 +61,10 @@ Geräten. Damit fängt die Studio beide Löcher (RTX-Nacht, MacBook-mobil) ab.
 |---|---|---|---|---|
 | `qwen3.6-35b-a3b-mlx` | 37,7 | 98k | 4 | Reasoner-Primär (10× C-Suite/PM/Strategie) |
 | `qwen/qwen3-coder-next` | 48,5 | **65k** | 4 | Coder-**Nacht-Fallback** (bewusst 65k, nicht 131k) |
-| `openbiollm-8b` | 5,7 | 8k | 4 | Dr-Knowledge |
 
-≈ 92 GB Gewichte + KV. **Empirisch zu verifizieren vor JIT-aus** (siehe Risiken).
+≈ 86 GB Gewichte + KV. **Empirisch zu verifizieren vor JIT-aus** (siehe Risiken).
+Nur noch die zwei großen Modelle → mehr KV-Luft als in der Erstfassung
+(openbiollm nach Studio verschoben).
 
 ### RTX Pro 6000 (96 GB VRAM, Tages-Boost, nachts aus)
 
@@ -96,7 +98,7 @@ erste Prüfung klären, bevor darauf gebaut wird.
 | `qwen3.6-35b` (MacBook) | `gemma-4-31b` (Studio) | MacBook-mobil |
 | `coder-next` (RTX) | `coder-next` (MacBook) → `coder-30b` (Studio) | RTX-Nacht (+ MacBook-mobil) |
 | `gemma-4-12b-qat` (RTX) | `gemma-4-12b` (Studio) | RTX-Nacht |
-| `openbiollm-8b` (MacBook) | `gemma-4-31b` (Studio) | MacBook-mobil |
+| `openbiollm-8b` (Studio) | `gemma-4-31b` (Studio) | Modell-Crash (Wärter heilt; Studio always-on) |
 | `gemma-4-31b` (Studio) | `gemma-4-12b` (Studio) | Modell-Crash (Wärter heilt) |
 
 ### Aus dem Resident-Set entfernt
@@ -185,10 +187,10 @@ Agent  ──► model/fallbackModel ──► (Audit garantiert: ∈ Resident-S
 
 ## Risiken / offene Verifikationen
 
-- **MacBook-RAM (Hauptrisiko):** qwen3.6-35b (98k) + coder-next (65k) +
-  openbiollm ≈ 92 GB Gewichte + KV. Ziel < ~115 GB. **Muss empirisch gemessen
-  werden**, bevor JIT aus. Fällt es zu knapp aus: coder-next-ctx weiter senken
-  oder qwen3.6-ctx senken.
+- **MacBook-RAM (Hauptrisiko):** qwen3.6-35b (98k) + coder-next (65k)
+  ≈ 86 GB Gewichte + KV (openbiollm nach Studio verschoben → 5,7 GB + KV-Luft
+  gewonnen). Ziel < ~115 GB. **Muss empirisch gemessen werden**, bevor JIT aus.
+  Fällt es zu knapp aus: coder-next-ctx weiter senken oder qwen3.6-ctx senken.
 - **LM-Link-Routing** bei Geräteausfall (Coder-Kette) — Punkt 3 oben.
 - **GUI-Config-Reset** setzt JIT ggf. zurück — Wärter/Doku.
 - **`lms ps`-Parsing** stabil gegen LM-Studio-Versionen (JSON-Flag prüfen).
