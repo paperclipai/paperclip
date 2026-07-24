@@ -8,6 +8,14 @@ export interface Company {
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   issuePrefix: string;
+  /**
+   * Optional alternate URL slugs that also resolve to this company in the web
+   * app. Not persisted on the company row: a deployment may attach aliases
+   * when serving the company (for example a hosting gateway's tenant slug).
+   * `issuePrefix` stays the canonical URL prefix; the SPA redirects alias URLs
+   * to it. Matching is case-insensitive, like prefix matching.
+   */
+  slugAliases?: string[];
   issueCounter: number;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;

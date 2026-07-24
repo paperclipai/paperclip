@@ -36,6 +36,34 @@ export function normalizeCompanyPrefix(prefix: string): string {
   return prefix.trim().toUpperCase();
 }
 
+export interface UrlAddressableCompany {
+  issuePrefix: string;
+  /** Optional alternate URL slugs that also resolve to this company (Company.slugAliases). */
+  slugAliases?: string[];
+}
+
+/**
+ * Resolve the company addressed by a URL's first path segment. A segment
+ * matches a company's canonical `issuePrefix` or any of its optional
+ * `slugAliases`, case-insensitively. Canonical prefixes always win over
+ * aliases so an alias can never shadow another company's prefix; callers that
+ * canonicalize the URL should redirect alias matches to `issuePrefix`.
+ */
+export function findCompanyByUrlSegment<T extends UrlAddressableCompany>(
+  companies: readonly T[],
+  segment: string | null | undefined,
+): T | null {
+  if (!segment) return null;
+  const requested = segment.toUpperCase();
+  const byPrefix = companies.find((company) => company.issuePrefix.toUpperCase() === requested);
+  if (byPrefix) return byPrefix;
+  return (
+    companies.find((company) =>
+      (company.slugAliases ?? []).some((alias) => alias.toUpperCase() === requested),
+    ) ?? null
+  );
+}
+
 function splitPath(path: string): { pathname: string; search: string; hash: string } {
   const match = path.match(/^([^?#]*)(\?[^#]*)?(#.*)?$/);
   return {
