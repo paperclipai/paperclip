@@ -49,6 +49,8 @@ import type { DecisionServiceOptions } from "./services/decisions.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
+import { pushSubscriptionRoutes } from "./routes/push-subscriptions.js";
+import { configurePushFanout } from "./services/push-fanout.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
@@ -272,6 +274,9 @@ export async function createApp(
     managedPluginAutoInstall?: readonly string[] | null;
     /** Test override for the bundled plugin catalog root. */
     bundledPluginCatalogRoot?: string;
+    vapidPublicKey?: string;
+    vapidPrivateKey?: string;
+    vapidSubject?: string;
   },
 ) {
   const app = express();
@@ -414,6 +419,12 @@ export async function createApp(
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
+  api.use(pushSubscriptionRoutes(db));
+  configurePushFanout({
+    vapidPublicKey: opts.vapidPublicKey,
+    vapidPrivateKey: opts.vapidPrivateKey,
+    vapidSubject: opts.vapidSubject,
+  });
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));

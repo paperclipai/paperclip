@@ -10,6 +10,7 @@ import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { firePushFanoutForActivity } from "./push-fanout.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
@@ -172,6 +173,19 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });
+
+  // Fanout is best effort: a failed delivery must not fail activity logging.
+  void firePushFanoutForActivity(db, {
+    companyId: input.companyId,
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    responsibleUserId,
+    activityLogId: activity.id,
+    details: redactedDetails,
+  }).catch((err) => {
+    logger.warn({ err, activityLogId: activity.id }, "push-fanout: unhandled fanout rejection");
+  });
 
   const payload = {
     actorType: input.actorType,
