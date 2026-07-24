@@ -654,17 +654,45 @@ export function agentRoutes(
 
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
-    options?: { restricted?: boolean },
+    options?: { restricted?: boolean; self?: boolean },
   ) {
     const [chainOfCommand, accessState] = await Promise.all([
       svc.getChainOfCommand(agent.id),
       buildAgentAccessState(agent),
     ]);
 
+    // RIP-1313/RIP-1315/RIP-1265: three redaction tiers.
+    //   restricted   -> blank adapterConfig + runtimeConfig entirely
+    //                  (used when caller lacks config-read for this company)
+    //   self         -> mask secrets via redactEventPayload, preserve non-secret
+    //                  fields (url, agentId, sessionKey, timeoutSec). Used for
+    //                  /agents/me so an agent can read its own runtime config
+    //                  without seeing the plaintext secrets it uses.
+    //   neither set  -> raw agent. Used when an instance admin / board user
+    //                  with config-read permission is inspecting an agent for
+    //                  ops/troubleshooting. They legitimately need to see
+    //                  plaintext (e.g. verify a key, debug a connection).
+    let base;
+    if (options?.restricted) {
+      base = redactForRestrictedAgentView(agent);
+    } else if (options?.self) {
+      base = redactAgentSelfView(agent);
+    } else {
+      base = agent;
+    }
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...base,
       chainOfCommand,
       access: accessState,
+    };
+  }
+
+  function redactAgentSelfView(agent: Awaited<ReturnType<typeof svc.getById>>) {
+    if (!agent) return null;
+    return {
+      ...agent,
+      adapterConfig: redactEventPayload(agent.adapterConfig),
+      runtimeConfig: redactEventPayload(agent.runtimeConfig),
     };
   }
 
@@ -1984,12 +2012,12 @@ export function agentRoutes(
       return;
     }
     const result = await filterAgentsForActor(req, await svc.list(companyId));
-    const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs) {
-      res.json(result);
-      return;
-    }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    // RIP-1315: always redact adapterConfig/runtimeConfig secrets on the list
+    // endpoint, even when the caller has config-read permission. Without this,
+    // any agent with canCreateAgents (which implies canReadConfigs) can read
+    // every agent's password, authToken, and devicePrivateKeyPem via this list.
+    // Non-secret fields (url, agentId, sessionKey, timeoutSec) are preserved.
+    res.json(result.map((agent) => redactAgentConfiguration(agent)));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -2125,7 +2153,7 @@ export function agentRoutes(
       });
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildAgentDetail(agent, { self: true }));
   });
 
   router.get("/agents/me/inbox-lite", async (req, res) => {
