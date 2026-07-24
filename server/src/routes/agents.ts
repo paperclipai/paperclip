@@ -67,6 +67,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
@@ -104,6 +105,7 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import { logger } from "../middleware/logger.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
   agentInstructionsChangeTargetKey,
@@ -1107,7 +1109,24 @@ export function agentRoutes(
     };
   }
 
-  function normalizeNewAgentRuntimeConfig(runtimeConfig: unknown): Record<string, unknown> {
+  async function listNewAgentAdapterModelProfiles(
+    adapterType: string,
+  ): Promise<AdapterModelProfileDefinition[]> {
+    try {
+      return await listAdapterModelProfiles(adapterType);
+    } catch (error) {
+      logger.warn(
+        { err: error, adapterType },
+        "Failed to discover adapter model profiles while normalizing a new agent; continuing without profile defaults",
+      );
+      return [];
+    }
+  }
+
+  async function normalizeNewAgentRuntimeConfig(
+    adapterType: string,
+    runtimeConfig: unknown,
+  ): Promise<Record<string, unknown>> {
     const parsedRuntimeConfig = asRecord(runtimeConfig);
     const normalizedRuntimeConfig = parsedRuntimeConfig ? { ...parsedRuntimeConfig } : {};
     const parsedHeartbeat = asRecord(normalizedRuntimeConfig.heartbeat);
@@ -1121,6 +1140,19 @@ export function agentRoutes(
     }
 
     normalizedRuntimeConfig.heartbeat = heartbeat;
+
+    const parsedModelProfiles = asRecord(normalizedRuntimeConfig.modelProfiles);
+    const modelProfiles = parsedModelProfiles ? { ...parsedModelProfiles } : {};
+    if (!Object.prototype.hasOwnProperty.call(modelProfiles, "cheap")) {
+      const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
+      if (adapterModelProfiles.some((profile) => profile.key === "cheap")) {
+        modelProfiles.cheap = { enabled: false };
+      }
+    }
+    if (Object.keys(modelProfiles).length > 0) {
+      normalizedRuntimeConfig.modelProfiles = modelProfiles;
+    }
+
     return normalizedRuntimeConfig;
   }
 
@@ -1191,7 +1223,7 @@ export function agentRoutes(
   ): Promise<Record<string, unknown>> {
     const entries = listRuntimeModelProfileAdapterConfigs(runtimeConfig);
     if (entries.length === 0) return runtimeConfig;
-    const adapterModelProfiles = await listAdapterModelProfiles(adapterType);
+    const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
 
     const normalizedRuntimeConfig = { ...runtimeConfig };
     const modelProfiles = asRecord(runtimeConfig.modelProfiles) ?? {};
@@ -2391,7 +2423,7 @@ export function agentRoutes(
     const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
       companyId,
       hireInput.adapterType,
-      normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig),
+      await normalizeNewAgentRuntimeConfig(hireInput.adapterType, hireInput.runtimeConfig),
       normalizedAdapterConfig,
     );
     const normalizedHireInput = {
@@ -2586,7 +2618,7 @@ export function agentRoutes(
     const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
       companyId,
       createInput.adapterType,
-      normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
+      await normalizeNewAgentRuntimeConfig(createInput.adapterType, createInput.runtimeConfig),
       normalizedAdapterConfig,
     );
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
