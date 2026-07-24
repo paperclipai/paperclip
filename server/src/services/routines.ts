@@ -51,6 +51,7 @@ import {
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
   isValidRoutineDateString,
+  normalizeAgentUrlKey,
   pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
@@ -639,6 +640,25 @@ export function routineService(
       .from(routines)
       .where(eq(routines.id, id))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getRoutineAgentSummary(
+    companyId: string,
+    agentId: string,
+  ): Promise<RoutineDetail["assignee"]> {
+    return db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        role: agents.role,
+        title: agents.title,
+      })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)))
+      .then((rows) => {
+        const row = rows[0];
+        return row ? { ...row, urlKey: normalizeAgentUrlKey(row.name) ?? row.id } : null;
+      });
   }
 
   async function getManagedRoutineBinding(routine: typeof routines.$inferSelect) {
@@ -1981,7 +2001,7 @@ export function routineService(
           ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null)
           : null,
         row.assigneeAgentId
-          ? db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null)
+          ? getRoutineAgentSummary(row.companyId, row.assigneeAgentId)
           : null,
         row.parentIssueId ? issueSvc.getById(row.parentIssueId) : null,
         getRoutineDescriptionDocument(row.id),
