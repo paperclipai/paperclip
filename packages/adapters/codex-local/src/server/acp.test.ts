@@ -994,6 +994,26 @@ describe("codex_local ACP lane", () => {
     expect(result.resultJson).not.toHaveProperty("codexCredentialTelemetry");
   });
 
+  it("classifies an ACP rejected OpenAI API key as codex_auth_required", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-invalid-api-key-");
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(
+        options,
+        [],
+        {
+          status: "failed",
+          error: { message: "unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-a***AA." },
+        } as unknown as FakeRuntimeTurnResult,
+      ) as never,
+    });
+
+    const result = await execute(buildContext(root));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("codex_auth_required");
+    expect(result.errorFamily ?? null).toBeNull();
+  });
+
   it("resumes compatible ACP sessions on later Codex ACP runs", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-resume-");
     const runtimes: FakeRuntime[] = [];
