@@ -73,6 +73,12 @@ const companySkill = {
     catalogId: catalogSkill.id,
     originHash: catalogSkill.contentHash,
   },
+  riskTier: 2,
+  riskTierSource: "unclassified",
+  riskTierRationale: null,
+  riskTierUpdatedByAgentId: null,
+  riskTierUpdatedByUserId: null,
+  riskTierUpdatedAt: null,
   createdAt: "2026-05-26T00:00:00.000Z",
   updatedAt: "2026-05-26T00:00:00.000Z",
 };
