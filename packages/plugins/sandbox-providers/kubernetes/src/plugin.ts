@@ -41,7 +41,7 @@ import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.j
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
   appendNetworkEgressDenyHint,
-  createScopedNetworkEgressPolicy,
+  createScopedNetworkEgressPolicyOrReleaseWorkload,
   NETWORK_EGRESS_GRANT_PATH,
   parseScopedNetworkEgressGrant,
 } from "./scoped-network-egress.js";
@@ -399,22 +399,25 @@ const plugin = definePlugin({
 
     const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest);
     const scopedNetworkEgress = parseScopedNetworkEgressGrant(params.executionWorkspaceSettings);
-    const scopedNetworkPolicyName = await createScopedNetworkEgressPolicy({
-      clients,
-      namespace,
-      mode: config.egressMode,
-      runId: params.runId,
-      workloadName: jobName,
-      ownerReference: {
-        apiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
-        kind: isSandboxCrBackend ? "Sandbox" : "Job",
-        name: jobName,
-        uid: ownerUid,
-        controller: false,
-        blockOwnerDeletion: false,
+    const scopedNetworkPolicyName = await createScopedNetworkEgressPolicyOrReleaseWorkload(
+      {
+        clients,
+        namespace,
+        mode: config.egressMode,
+        runId: params.runId,
+        workloadName: jobName,
+        ownerReference: {
+          apiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
+          kind: isSandboxCrBackend ? "Sandbox" : "Job",
+          name: jobName,
+          uid: ownerUid,
+          controller: false,
+          blockOwnerDeletion: false,
+        },
+        grant: scopedNetworkEgress,
       },
-      grant: scopedNetworkEgress,
-    });
+      () => orchestrator.release(clients, namespace, jobName),
+    );
 
     // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
     // the process-env secrets named by envKeys override it.

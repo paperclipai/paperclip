@@ -116,6 +116,8 @@ const executionWorkspaceStrategySchema = z
   })
   .strict();
 
+const ipv4CidrPattern = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\/(?:3[0-2]|[12]?\d)$/;
+
 export const issueExecutionWorkspaceSettingsSchema = z
   .object({
     mode: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional(),
@@ -127,7 +129,10 @@ export const issueExecutionWorkspaceSettingsSchema = z
         /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/,
         "Network egress FQDNs must be hostnames without a URL scheme or path",
       ).max(253)).max(100).optional(),
-      allowCidrs: z.array(z.string().trim().regex(/^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/, "Invalid IPv4 CIDR").max(64)).max(100).optional(),
+      allowCidrs: z.array(z.string().trim().regex(
+        ipv4CidrPattern,
+        "Invalid IPv4 CIDR (must use octets 0-255 and prefix 0-32)",
+      ).max(64)).max(100).optional(),
     }).strict().optional().nullable(),
   })
   .strict();

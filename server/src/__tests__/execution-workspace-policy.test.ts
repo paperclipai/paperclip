@@ -10,6 +10,7 @@ import {
   resolveExecutionWorkspaceEnvironmentId,
   resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
+  selectEnvironmentExecutionWorkspaceSettings,
 } from "../services/execution-workspace-policy.ts";
 
 describe("execution workspace policy helpers", () => {
@@ -306,6 +307,23 @@ describe("execution workspace policy helpers", () => {
         allowCidrs: ["203.0.113.0/24"],
       },
     });
+  });
+
+  it("keeps egress grants independent from isolated workspace mode", () => {
+    const parsedSettings = {
+      mode: "isolated_workspace" as const,
+      workspaceRuntime: { image: "example/image" },
+      networkEgress: {
+        allowFqdns: ["github.com"],
+        allowCidrs: ["203.0.113.0/24"],
+      },
+    };
+
+    expect(selectEnvironmentExecutionWorkspaceSettings(parsedSettings, false)).toEqual({
+      networkEgress: parsedSettings.networkEgress,
+    });
+    expect(selectEnvironmentExecutionWorkspaceSettings(parsedSettings, true)).toEqual(parsedSettings);
+    expect(selectEnvironmentExecutionWorkspaceSettings({ mode: "isolated_workspace" }, false)).toBeNull();
   });
 
   it("prefers the agent default environment", () => {

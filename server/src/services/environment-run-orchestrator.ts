@@ -303,8 +303,7 @@ export function environmentRunOrchestrator(
         provider: leaseRecord.lease.provider,
         executionWorkspaceId: leaseRecord.leaseContext.executionWorkspaceId,
         issueId: input.issueId,
-        networkEgress:
-          (input.executionWorkspaceSettings as { networkEgress?: unknown } | null)?.networkEgress ?? null,
+        networkEgress: input.executionWorkspaceSettings?.networkEgress ?? null,
       },
     });
 

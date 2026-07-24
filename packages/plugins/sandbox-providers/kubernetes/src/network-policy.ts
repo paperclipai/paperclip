@@ -63,7 +63,6 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
     apiVersion: "networking.k8s.io/v1",
     kind: "NetworkPolicy",
     metadata: {
-      name: "paperclip-egress-allow",
       namespace: input.namespace,
       labels: { "paperclip.io/managed-by": "paperclip-k8s-plugin" },
     },

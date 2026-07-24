@@ -72,6 +72,25 @@ export async function createScopedNetworkEgressPolicy(input: {
   return name;
 }
 
+export async function createScopedNetworkEgressPolicyOrReleaseWorkload(
+  input: Parameters<typeof createScopedNetworkEgressPolicy>[0],
+  releaseWorkload: () => Promise<void>,
+): Promise<string | null> {
+  try {
+    return await createScopedNetworkEgressPolicy(input);
+  } catch (policyError) {
+    try {
+      await releaseWorkload();
+    } catch (releaseError) {
+      throw new AggregateError(
+        [policyError, releaseError],
+        "Failed to create scoped network egress policy and release its workload",
+      );
+    }
+    throw policyError;
+  }
+}
+
 export function appendNetworkEgressDenyHint(stderr: string, grant: ScopedNetworkEgressGrant): string {
   if (!/(could not resolve host|network is unreachable|connection timed out|failed to connect|temporary failure in name resolution)/i.test(stderr)) {
     return stderr;

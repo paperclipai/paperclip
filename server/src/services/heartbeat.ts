@@ -174,6 +174,7 @@ import {
   resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
+  selectEnvironmentExecutionWorkspaceSettings,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
@@ -11934,6 +11935,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
       ? parsedIssueExecutionWorkspaceSettings
       : null;
+    const environmentExecutionWorkspaceSettings = selectEnvironmentExecutionWorkspaceSettings(
+      parsedIssueExecutionWorkspaceSettings,
+      isolatedWorkspacesEnabled,
+    );
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueContext?.projectId ?? contextProjectId;
     const projectContext = executionProjectId
@@ -12813,7 +12818,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       heartbeatRunId: run.id,
       agentId: agent.id,
       persistedExecutionWorkspace,
-      executionWorkspaceSettings: parsedIssueExecutionWorkspaceSettings,
+      executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
     });
     const selectedEnvironment = acquiredEnvironment.environment;
     // Defense-in-depth: re-check the actually-acquired environment against the

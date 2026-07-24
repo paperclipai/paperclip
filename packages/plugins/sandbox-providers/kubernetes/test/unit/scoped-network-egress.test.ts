@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   appendNetworkEgressDenyHint,
   createScopedNetworkEgressPolicy,
+  createScopedNetworkEgressPolicyOrReleaseWorkload,
   parseScopedNetworkEgressGrant,
 } from "../../src/scoped-network-egress.js";
 
@@ -43,5 +44,25 @@ describe("scoped network egress", () => {
       allowFqdns: ["github.com"],
       allowCidrs: [],
     })).toContain("executionWorkspaceSettings.networkEgress");
+  });
+
+  it("releases the workload when scoped policy creation fails", async () => {
+    const policyError = new Error("policy denied");
+    const releaseWorkload = vi.fn().mockResolvedValue(undefined);
+
+    await expect(createScopedNetworkEgressPolicyOrReleaseWorkload({
+      clients: {
+        networking: {
+          createNamespacedNetworkPolicy: vi.fn().mockRejectedValue(policyError),
+        },
+      } as never,
+      namespace: "paperclip-acme",
+      mode: "standard",
+      runId: "run-123",
+      workloadName: "pc-workload",
+      ownerReference: { apiVersion: "batch/v1", kind: "Job", name: "pc-workload", uid: "uid-1" },
+      grant: { allowFqdns: ["github.com"], allowCidrs: [] },
+    }, releaseWorkload)).rejects.toBe(policyError);
+    expect(releaseWorkload).toHaveBeenCalledOnce();
   });
 });

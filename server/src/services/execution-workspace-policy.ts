@@ -210,6 +210,17 @@ export function parseIssueExecutionWorkspaceSettings(
   };
 }
 
+export function selectEnvironmentExecutionWorkspaceSettings(
+  parsedSettings: IssueExecutionWorkspaceSettings | null,
+  isolatedWorkspacesEnabled: boolean,
+): IssueExecutionWorkspaceSettings | null {
+  if (!parsedSettings) return null;
+  if (isolatedWorkspacesEnabled) return parsedSettings;
+  return parsedSettings.networkEgress
+    ? { networkEgress: parsedSettings.networkEgress }
+    : null;
+}
+
 export type ExecutionWorkspaceEnvironmentSource =
   | "agent"
   | "instance"
