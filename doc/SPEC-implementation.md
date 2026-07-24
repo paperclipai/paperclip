@@ -1198,6 +1198,7 @@ A release candidate is blocked unless these pass:
 3. hard budget stop test
 4. agent pause/resume test
 5. dashboard summary consistency test
+6. successful-heartbeat completion gate test: blocked, unverified, or no-control-plane-evidence output cannot transition an issue to `done`
 
 ## 18. Delivery Plan
 
@@ -1221,6 +1222,7 @@ Current implementation note: the milestones below describe the original V1 seque
 - ship `process` adapter with cancel semantics
 - ship `http` adapter with timeout/error handling
 - persist heartbeat runs and statuses
+- treat successful process exit and issue completion as separate facts: `done` requires an explicit agent disposition, and corrective handoff runs must reject `done` when the source run reported blocked/unverified work or produced no durable control-plane evidence
 
 ## Milestone 4: Cost and Budget Controls
 

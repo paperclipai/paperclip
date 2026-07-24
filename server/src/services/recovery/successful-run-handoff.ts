@@ -23,6 +23,16 @@ export const SUCCESSFUL_RUN_HANDOFF_OPTIONS = [
   "delegate_or_continue_from_checkpoint",
 ] as const;
 
+export type SuccessfulRunReportedDisposition = "blocked" | "unverified" | "no_control_plane_evidence" | null;
+
+const EXPLICIT_BLOCKED_DISPOSITION_RE = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*{1,2})?blocked(?:\*{1,2})?\s*(?:[-—:：]|$)/im;
+const UNVERIFIED_WORK_RE = new RegExp([
+  String.raw`\bunverified\b`,
+  String.raw`\b(?:could not|couldn't|cannot|can't|unable to|was not|wasn't|were not|weren't|not)\s+(?:be\s+)?(?:run|execute|compile|build|test(?:ed)?|verify|verified|validate|validated|check(?:ed)?)\b`,
+  String.raw`\b(?:tests?|verification|validation|compilation|build)\s+(?:could not|couldn't|cannot|can't|was not|wasn't|were not|weren't)\s+(?:be\s+)?(?:run|completed|performed|verified)\b`,
+  String.raw`\b(?:not installed|missing dependency|missing toolchain)\b.{0,120}\b(?:test|verify|validation|compil|build|run)\b`,
+].join("|"), "i");
+
 const PRODUCTIVE_SUCCESS_LIVENESS_STATES = new Set<RunLivenessState>([
   "advanced",
   "completed",
@@ -302,6 +312,28 @@ function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+export function classifySuccessfulRunReportedDisposition(input: {
+  livenessState: RunLivenessState | null;
+  detectedProgressSummary: string | null;
+}): SuccessfulRunReportedDisposition {
+  if (input.livenessState === "blocked") return "blocked";
+  const summary = input.detectedProgressSummary ?? "";
+  if (EXPLICIT_BLOCKED_DISPOSITION_RE.test(summary)) return "blocked";
+  if (UNVERIFIED_WORK_RE.test(summary)) return "unverified";
+  if (input.livenessState === "needs_followup") return "no_control_plane_evidence";
+  return null;
+}
+
+export function successfulRunHandoffDoneGateReason(contextSnapshot: unknown, issueId?: string) {
+  const context = readRecord(contextSnapshot);
+  if (readString(context.wakeReason) !== FINISH_SUCCESSFUL_RUN_HANDOFF_REASON) return null;
+  const contextIssueId = readString(context.issueId) ?? readString(context.taskId);
+  if (issueId && contextIssueId !== issueId) return null;
+  if (context.doneDispositionAllowed !== false) return null;
+  const disposition = readString(context.sourceReportedDisposition) ?? "non_done";
+  return `Source run reported ${disposition} work; corrective handoff cannot mark the issue done`;
+}
+
 function isCorrectiveHandoffRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
   return context.handoffRequired === true ||
@@ -334,18 +366,34 @@ function isProductiveSuccessfulRun(input: {
 export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   sourceRunId: string;
+  sourceReportedDisposition?: SuccessfulRunReportedDisposition;
 }) {
   const issueLabel = input.issueIdentifier ?? "this issue";
+  const doneAllowed = input.sourceReportedDisposition == null;
   return [
     `Your previous run on ${issueLabel} succeeded, but the issue is still in \`in_progress\` and Paperclip cannot identify a valid issue disposition.`,
+    ...(doneAllowed
+      ? []
+      : [
+        "",
+        input.sourceReportedDisposition === "blocked"
+          ? "The source run reported that work is blocked. You must not mark this issue `done`; record a valid blocked or continuation disposition."
+          : input.sourceReportedDisposition === "unverified"
+            ? "The source run reported that verification could not be completed. You must not mark this issue `done`; keep it active or blocked until verification can occur."
+            : "The source run produced no durable control-plane evidence. You must not mark this issue `done`; keep it active or blocked and record a verifiable continuation path.",
+      ]),
     "",
     "This is a status-only retry to the original agent. Record a disposition; do not start new work.",
     "",
     "Resolve the missing disposition before creating or revising any new artifacts. Choose **exactly one** outcome and perform the matching Paperclip action:",
     "",
-    "**Is the issue finished?**",
-    "1. Mark it `done` (scope complete) or `cancelled` (intentionally stopped).",
-    "",
+    ...(doneAllowed
+      ? [
+        "**Is the issue finished?**",
+        "1. Mark it `done` (scope complete) or `cancelled` (intentionally stopped).",
+        "",
+      ]
+      : []),
     "**Does someone else need to look at it?**",
     "2. Move it to `in_review` with a real reviewer path — `executionState.currentParticipant`, a human owner via `assigneeUserId`, a pending issue-thread interaction, or a linked pending approval.",
     "",
@@ -420,9 +468,16 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "corrective handoff wake already exists for this source run" };
   }
 
+  const sourceReportedDisposition = classifySuccessfulRunReportedDisposition(input);
+  const doneDispositionAllowed = sourceReportedDisposition == null;
+  const validDispositionOptions = doneDispositionAllowed
+    ? [...SUCCESSFUL_RUN_HANDOFF_OPTIONS]
+    : SUCCESSFUL_RUN_HANDOFF_OPTIONS.filter((option) => option !== "mark_done_or_cancelled");
+
   const instruction = buildSuccessfulRunHandoffInstruction({
     issueIdentifier: issue.identifier,
     sourceRunId: run.id,
+    sourceReportedDisposition,
   });
   const payload = withRecoveryModelProfileHint({
     issueId: issue.id,
@@ -432,8 +487,15 @@ export function decideSuccessfulRunHandoff(input: {
     handoffRequired: true,
     handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
     missingDisposition: "clear_next_step",
-    validDispositionOptions: [...SUCCESSFUL_RUN_HANDOFF_OPTIONS],
+    validDispositionOptions,
     detectedProgressSummary: input.detectedProgressSummary,
+    sourceReportedDisposition,
+    doneDispositionAllowed,
+    verificationEvidenceStatus: sourceReportedDisposition === "unverified"
+      ? "reported_missing"
+      : sourceReportedDisposition === "no_control_plane_evidence"
+        ? "control_plane_evidence_missing"
+        : "not_recorded",
     handoffAttempt: 1,
     maxHandoffAttempts: DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
     resumeIntent: true,
