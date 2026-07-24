@@ -89,6 +89,33 @@ describe("redaction", () => {
     expect(result).not.toContain(jwt);
   });
 
+  it("preserves serialized JSON when redacting secrets inside string values", () => {
+    const input = JSON.stringify({
+      type: "result",
+      result: 'TOKEN=live-token "quoted output"',
+    });
+
+    const result = redactSensitiveText(input);
+    const parsed = JSON.parse(result) as { result: string };
+
+    expect(parsed.result).toBe(`TOKEN=${REDACTED_EVENT_VALUE} "quoted output"`);
+  });
+
+  it("redacts Windows-path secrets that contain literal backslashes", () => {
+    const input = "env TOKEN=C:\\private\\credential next";
+    const result = redactSensitiveText(input);
+    expect(result).toBe(`env TOKEN=${REDACTED_EVENT_VALUE} next`);
+    expect(result).not.toContain("private");
+    expect(result).not.toContain("credential");
+  });
+
+  it("redacts quoted secrets that contain literal backslashes", () => {
+    const input = String.raw`TOKEN="C:\private\credential" safe`;
+    const result = redactSensitiveText(input);
+    expect(result).toBe(`TOKEN="${REDACTED_EVENT_VALUE}" safe`);
+    expect(result).not.toContain("private");
+  });
+
   it("redacts inline secrets from command metadata without hiding safe command text", () => {
     const input = {
       command: "custom-acp --token ghp_example_secret env OPENAI_API_KEY=sk-live-example custom-acp",
