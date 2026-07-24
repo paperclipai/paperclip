@@ -194,6 +194,48 @@ describe("sandbox adapter execution targets", () => {
     });
   });
 
+  it("preserves stdin when wrapping sandbox adapter commands for run-log streaming", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-run-log-stdin-"));
+    cleanupDirs.push(rootDir);
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      streamRunLogs: true,
+      runner: createLocalSandboxRunner(),
+    };
+    const logsDir = path.posix.join(rootDir, ".paperclip-runtime", "bridge", "logs");
+    const runLogTail = createSandboxRunLogTailFactory({
+      runner: target.runner!,
+      remoteCwd: rootDir,
+      logsDir,
+      shellCommand: "bash",
+    }).create();
+    const events: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+
+    const result = await runAdapterExecutionTargetProcess(
+      "run-log-stdin",
+      target,
+      process.execPath,
+      ["-e", "process.stdin.setEncoding('utf8'); let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => process.stdout.write('stdin=' + s));"],
+      {
+        cwd: rootDir,
+        env: {},
+        stdin: "hello-through-wrapper",
+        timeoutSec: 5,
+        graceSec: 1,
+        runLogTail: { create: () => runLogTail },
+        onLog: async (stream, chunk) => { events.push({ stream, chunk }); },
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("stdin=hello-through-wrapper");
+    expect(combinedStream(events, "stdout")).toContain("stdin=hello-through-wrapper");
+  });
+
   it("bridges bidirectional sandbox process sessions through a local ACPX-spawnable proxy", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-"));
     cleanupDirs.push(rootDir);
