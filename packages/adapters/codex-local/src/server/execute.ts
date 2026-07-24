@@ -809,6 +809,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             homeDir: filesystemScope ? effectiveCodexHome : null,
             networkScope,
             networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+            networkTrustedUrls: [
+              paperclipBaseEnv.PAPERCLIP_API_URL,
+              ...runtimeMcpGateways.map((gateway) => gateway.endpointPath),
+            ],
             command: asString(config.filesystemSandboxCommand, "bwrap"),
           }
         : null;
