@@ -197,6 +197,19 @@ create or reuse a high-priority incident keyed by evaluator, contract,
 root-cause code, and affected resource. Disable the global or per-binding gate
 to restore issue-per-run dispatch without deleting run or incident history.
 
+Before enabling either pilot, configure the host-owned capability broker:
+
+- `PAPERCLIP_ROUTINE_EXCEPTION_BROKER_EXECUTABLE` — absolute path to the
+  broker executable. Paperclip invokes it directly without a shell and sends
+  one versioned JSON request on stdin.
+- `PAPERCLIP_ROUTINE_EXCEPTION_BROKER_SHA256` — lowercase SHA-256 digest of
+  that executable. Paperclip verifies the digest before the first invocation
+  and fails closed if configuration or verification is missing.
+
+The broker receives only compiled capability IDs and structured inputs. It must
+implement the per-capability path, host, query, and command restrictions; return
+one JSON value on stdout; and never return credentials or unrestricted paths.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:

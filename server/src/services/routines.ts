@@ -84,13 +84,13 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./is
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import {
-  createDenyAllRoutineExceptionCapabilityBroker,
   createRoutineExceptionEvidenceDigest,
   createRoutineExceptionEvaluatorRegistry,
   createRoutineExceptionFingerprint,
   type RoutineExceptionEvaluation,
   type RoutineExceptionEvaluatorRegistry,
 } from "./routine-exception-evaluation.js";
+import { createHostProcessRoutineExceptionCapabilityBroker } from "./routine-exception-capability-broker.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -652,11 +652,11 @@ export function routineService(
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
   const instanceSettings = instanceSettingsService(db);
+  const runtimeEnv = deps.runtimeEnv ?? process.env;
   const exceptionEvaluatorRegistry = deps.exceptionEvaluatorRegistry ?? createRoutineExceptionEvaluatorRegistry({
-    capabilityBroker: createDenyAllRoutineExceptionCapabilityBroker(),
+    capabilityBroker: createHostProcessRoutineExceptionCapabilityBroker({ runtimeEnv }),
   });
   const exceptionPilotRoutineIds = new Set(deps.exceptionPilotRoutineIds ?? POL_EXCEPTION_ROUTINE_IDS);
-  const runtimeEnv = deps.runtimeEnv ?? process.env;
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
   });
