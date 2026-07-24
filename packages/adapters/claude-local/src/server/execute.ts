@@ -1195,17 +1195,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const initial = await runAttempt(sessionId ?? null);
+    // When the CLI fails without parseable JSON output (e.g. `--resume` of a session id
+    // that no longer exists in the session store), the unknown-session signature still
+    // appears in the raw stdout/stderr text. Without this fallback check the failure is
+    // classified as transient upstream and retried with the same dead session id forever,
+    // instead of retrying once with a fresh session.
     const sessionErrorKind =
       sessionId &&
       !initial.proc.timedOut &&
-      (initial.proc.exitCode ?? 0) !== 0 &&
-      initial.parsed
-        ? isClaudeUnknownSessionError(initial.parsed)
+      (initial.proc.exitCode ?? 0) !== 0
+        ? initial.parsed
+          ? isClaudeUnknownSessionError(initial.parsed)
+            ? "unknown"
+            : isClaudePoisonedPreviousMessageIdError(initial.parsed)
+            ? "poisoned"
+            : isClaudeImageProcessingError(initial.parsed)
+            ? "image"
+            : null
+          : isClaudeUnknownSessionError({
+              result: [initial.proc.stdout, initial.proc.stderr].filter(Boolean).join("\n"),
+            })
           ? "unknown"
-          : isClaudePoisonedPreviousMessageIdError(initial.parsed)
-          ? "poisoned"
-          : isClaudeImageProcessingError(initial.parsed)
-          ? "image"
           : null
         : null;
 
