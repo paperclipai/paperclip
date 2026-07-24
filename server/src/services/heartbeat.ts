@@ -11072,6 +11072,21 @@ export function heartbeatService(
     return terminalRun ?? run;
   }
 
+  // Mirrors setRunStatusIfRunning for the queued -> cancelled transition: the
+  // UPDATE itself carries the precondition (status = 'queued') so a concurrent
+  // claim of the same row (another scheduler pass, or a manual resume flipping
+  // it to "running") between the SELECT and this UPDATE cannot be clobbered
+  // back to "cancelled". `updated: false` tells the caller the row had already
+  // moved on, so it must not touch the run's wakeup or append a lifecycle
+  // event.
+  async function setRunStatusIfQueued(
+    runId: string,
+    status: string,
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
+    return setRunStatusFromLive(runId, status, ["queued"], patch);
+  }
+
   function publishRunLifecyclePluginEvent(
     run: typeof heartbeatRuns.$inferSelect,
   ) {
@@ -17505,17 +17520,25 @@ export function heartbeatService(
     const queueExpiredMessage = `Cancelled because the run waited in queue longer than ${maxQueuedAgeHoursLabel} hours`;
 
     for (const run of expiredQueuedRuns) {
-      const cancelledRun = await setRunStatus(run.id, "cancelled", {
+      // Guard the cancellation on the row still being "queued": another
+      // scheduler pass or a manual resume can claim this exact run (queued ->
+      // running) between the SELECT above and this UPDATE. Without the guard
+      // we would blindly stamp a now-running/finished run back to
+      // "cancelled" and cancel its wakeup out from under it. Only touch the
+      // wakeup and append the lifecycle event when the guarded update
+      // actually transitioned the row.
+      const cancelResult = await setRunStatusIfQueued(run.id, "cancelled", {
         finishedAt: now,
         error: queueExpiredMessage,
         errorCode: "queue_expired",
       });
-      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      if (!cancelResult.updated || !cancelResult.run) continue;
+      const cancelledRun = cancelResult.run;
+      await setWakeupStatus(cancelledRun.wakeupRequestId, "cancelled", {
         finishedAt: now,
         error: queueExpiredMessage,
       });
-      if (!cancelledRun) continue;
-      await appendRunEvent(cancelledRun, await nextRunEventSeq(cancelledRun.id), {
+      await appendRunEvent(cancelledRun, {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
