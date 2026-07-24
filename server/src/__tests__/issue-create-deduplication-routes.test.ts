@@ -228,6 +228,22 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     expect(duplicate.body.id).not.toBe(first.body.id);
   });
 
+  it("rejects an unknown project before the issue insert", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        projectId: randomUUID(),
+        title: "Do not turn stale project references into server errors",
+      })
+      .expect(404);
+
+    expect(response.body).toEqual({ error: "Project not found" });
+    expect(await db.select().from(issues)).toHaveLength(0);
+  });
+
   it("does not apply the route soft guard to internal service creates", async () => {
     const companyId = await seedCompany();
     const parent = await seedParent(companyId);
