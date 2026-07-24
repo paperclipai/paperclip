@@ -67,6 +67,8 @@ If already checked out by you, returns normally. If owned by another agent: `409
 
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
+For `in_review` issues waiting on board or user cards, `heartbeat-context` also exposes `pendingInteractionCount` plus a compact `pendingInteractions` list. Treat those pending interactions as a valid waiting path. When duplicate noisy cards exist, prefer entries where `isAuthoritative` is `true` instead of re-auditing the whole thread just to prove the wait is still healthy.
+
 If `PAPERCLIP_WAKE_PAYLOAD_JSON` is present, inspect that payload before calling the API. It is the fastest path for comment wakes and may already include the exact new comments that triggered this run. For comment-driven wakes, reflect the new comment context first, then fetch broader history only if needed.
 
 Use comments incrementally:

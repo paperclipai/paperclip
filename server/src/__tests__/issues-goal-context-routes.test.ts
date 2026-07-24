@@ -33,6 +33,10 @@ const mockDocumentsService = vi.hoisted(() => ({
   getIssueDocumentByKey: vi.fn(),
 }));
 
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  listForIssue: vi.fn(),
+}));
+
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
@@ -122,7 +126,7 @@ vi.mock("../services/index.js", () => ({
     listActiveForIssues: vi.fn(async () => new Map()),
   }),
   issueThreadInteractionService: () => ({
-    listForIssue: vi.fn(async () => []),
+    ...mockIssueThreadInteractionService,
     expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
     expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
   }),
@@ -213,6 +217,7 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.getActiveInboxArchiveFields.mockResolvedValue({});
     mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
@@ -442,6 +447,8 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+    expect(res.body.pendingInteractionCount).toBe(0);
+    expect(res.body.pendingInteractions).toEqual([]);
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {
@@ -536,5 +543,161 @@ describe.sequential("issue goal context routes", () => {
         }),
       ],
     }));
+  });
+
+  it("surfaces pending interactions and marks the oldest duplicate as authoritative", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      status: "in_review",
+    });
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([
+      {
+        id: "interaction-1",
+        companyId: "company-1",
+        issueId: legacyProjectLinkedIssue.id,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: "confirmation:merge-pr-147:v1",
+        sourceCommentId: null,
+        sourceRunId: "run-1",
+        title: "Approve merge for blog packet 138",
+        summary: null,
+        payload: {
+          version: 1,
+          prompt: "Approve merge of PR #147?",
+          supersedeOnUserComment: true,
+          target: null,
+        },
+        result: null,
+        createdAt: new Date("2026-06-17T13:15:49.462Z"),
+        updatedAt: new Date("2026-06-17T13:15:49.462Z"),
+      },
+      {
+        id: "interaction-2",
+        companyId: "company-1",
+        issueId: legacyProjectLinkedIssue.id,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: "confirmation:merge-pr-147:v2",
+        sourceCommentId: null,
+        sourceRunId: "run-2",
+        title: "Approve merge for blog packet 138",
+        summary: null,
+        payload: {
+          version: 1,
+          prompt: "Approve merge for PR #147 on repaired head 56363f4?",
+          supersedeOnUserComment: true,
+          target: null,
+        },
+        result: null,
+        createdAt: new Date("2026-06-25T01:29:34.336Z"),
+        updatedAt: new Date("2026-06-25T01:29:34.336Z"),
+      },
+    ]);
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.pendingInteractionCount).toBe(2);
+    expect(mockIssueThreadInteractionService.listForIssue).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "pending" },
+    );
+    expect(res.body.pendingInteractions).toEqual([
+      expect.objectContaining({
+        id: "interaction-1",
+        kind: "request_confirmation",
+        isAuthoritative: true,
+        authoritativeInteractionId: "interaction-1",
+        duplicatePendingCount: 1,
+        idempotencyKey: "confirmation:merge-pr-147:v1",
+      }),
+      expect.objectContaining({
+        id: "interaction-2",
+        kind: "request_confirmation",
+        isAuthoritative: false,
+        authoritativeInteractionId: "interaction-1",
+        duplicatePendingCount: 1,
+        idempotencyKey: "confirmation:merge-pr-147:v2",
+      }),
+    ]);
+  });
+
+  it("does not group same-title confirmations when only the prompt distinguishes them", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      status: "in_review",
+    });
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([
+      {
+        id: "interaction-1",
+        companyId: "company-1",
+        issueId: legacyProjectLinkedIssue.id,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-1",
+        title: "Please review",
+        summary: null,
+        payload: {
+          version: 1,
+          prompt: "Please review the production deploy checklist",
+          supersedeOnUserComment: true,
+          target: null,
+        },
+        result: null,
+        createdAt: new Date("2026-06-17T13:15:49.462Z"),
+        updatedAt: new Date("2026-06-17T13:15:49.462Z"),
+      },
+      {
+        id: "interaction-2",
+        companyId: "company-1",
+        issueId: legacyProjectLinkedIssue.id,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-2",
+        title: "Please review",
+        summary: null,
+        payload: {
+          version: 1,
+          prompt: "Please review the payroll export backfill",
+          supersedeOnUserComment: true,
+          target: null,
+        },
+        result: null,
+        createdAt: new Date("2026-06-25T01:29:34.336Z"),
+        updatedAt: new Date("2026-06-25T01:29:34.336Z"),
+      },
+    ]);
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.pendingInteractionCount).toBe(2);
+    expect(res.body.pendingInteractions).toEqual([
+      expect.objectContaining({
+        id: "interaction-1",
+        isAuthoritative: true,
+        authoritativeInteractionId: "interaction-1",
+        duplicatePendingCount: 0,
+      }),
+      expect.objectContaining({
+        id: "interaction-2",
+        isAuthoritative: true,
+        authoritativeInteractionId: "interaction-2",
+        duplicatePendingCount: 0,
+      }),
+    ]);
   });
 });

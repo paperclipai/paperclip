@@ -1224,6 +1224,8 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/stop` | Stop workspace runtime services |
 
+`GET /api/issues/:issueId/heartbeat-context` now includes `pendingInteractionCount` and `pendingInteractions` for `in_review` waits. The list is sorted oldest first. If multiple pending cards describe the same waiting path, the oldest one is marked with `isAuthoritative: true` and newer duplicates point back to it through `authoritativeInteractionId`.
+
 ### Companies, Projects, Goals
 
 | Method | Path                                 | Description        |
