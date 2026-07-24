@@ -8689,6 +8689,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (issueId) {
+      const issue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (issue?.status === "done" || issue?.status === "cancelled") {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: `Process-loss retry suppressed because issue reached terminal status (${issue.status})`,
+          payload: { issueId, issueStatus: issue.status },
+        });
+        return null;
+      }
+    }
     const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
       ? "issue_continuation_needed"
       : "process_lost";
@@ -10986,7 +11003,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
+      if (!resumeIntent) {
         return {
           stale: true,
           errorCode: "issue_terminal_status",

@@ -465,6 +465,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processGroupId?: number | null;
     processLossRetryCount?: number;
     includeIssue?: boolean;
+    issueStatus?: "in_progress" | "done" | "cancelled";
     runErrorCode?: string | null;
     runError?: string | null;
     contextSnapshot?: Record<string, unknown>;
@@ -535,7 +536,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         id: issueId,
         companyId,
         title: "Recover local adapter after lost process",
-        status: "in_progress",
+        status: input?.issueStatus ?? "in_progress",
         priority: "medium",
         assigneeAgentId: agentId,
         checkoutRunId: runId,
@@ -1311,6 +1312,37 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("does not queue a process-loss retry after the issue is already done", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      issueStatus: "done",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: runId,
+      status: "failed",
+      errorCode: "process_lost",
+    });
+
+    const issue = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("done");
+    expect(issue?.executionRunId).toBeNull();
   });
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
