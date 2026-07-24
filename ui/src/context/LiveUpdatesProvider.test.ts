@@ -1088,8 +1088,10 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
 
 describe("applyRunLifecycleToCompanyLiveRuns", () => {
   function makeClient(initial: Array<{ id: string; status: string }>) {
+    const initialDetail = initial.find((run) => run.id === "run-1");
     const cache = new Map<string, unknown>([
       [JSON.stringify(queryKeys.liveRuns("company-1")), initial],
+      [JSON.stringify(queryKeys.runDetail("run-1")), initialDetail],
     ]);
     const client = {
       getQueryData: (key: unknown) => cache.get(JSON.stringify(key)),
@@ -1100,7 +1102,8 @@ describe("applyRunLifecycleToCompanyLiveRuns", () => {
       },
     };
     const read = () => cache.get(JSON.stringify(queryKeys.liveRuns("company-1")));
-    return { client, read };
+    const readDetail = () => cache.get(JSON.stringify(queryKeys.runDetail("run-1")));
+    return { client, read, readDetail };
   }
 
   it("removes a run on a terminal status (patched, no refetch needed)", () => {
@@ -1123,6 +1126,18 @@ describe("applyRunLifecycleToCompanyLiveRuns", () => {
     );
     expect(patched).toBe(true);
     expect(read()).toEqual([{ id: "run-1", status: "running" }]);
+  });
+
+  it("patches the selected run detail when a queued run starts", () => {
+    const { client, readDetail } = makeClient([{ id: "run-1", status: "queued" }]);
+
+    __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(
+      client as never,
+      "company-1",
+      { runId: "run-1", status: "running" },
+    );
+
+    expect(readDetail()).toEqual({ id: "run-1", status: "running" });
   });
 
   it("reports not-patched for a genuinely new run so the caller refetches", () => {

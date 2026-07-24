@@ -10,7 +10,7 @@ import {
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { createCoalescingQueryClient, createInvalidationBatcher } from "../lib/query-invalidation-batcher";
 import { patchRunStatusInList, removeRunFromList } from "../lib/live-runs-cache";
-import type { Agent, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
+import type { Agent, HeartbeatRun, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import type { CompanyUserDirectoryResponse } from "../api/access";
@@ -867,6 +867,13 @@ function applyRunLifecycleToCompanyLiveRuns(
   const runId = readString(payload.runId);
   const status = readString(payload.status);
   if (!runId || !status) return false;
+
+  queryClient.setQueryData(
+    queryKeys.runDetail(runId),
+    (current: HeartbeatRun | undefined) => current
+      ? { ...current, status: status as HeartbeatRun["status"] }
+      : current,
+  );
 
   if (TERMINAL_RUN_STATUSES.has(status)) {
     queryClient.setQueryData(
