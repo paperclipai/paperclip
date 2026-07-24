@@ -6,6 +6,7 @@ import {
   agents,
   companies,
   createDb,
+  executionReceipts,
   heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
@@ -503,6 +504,13 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .from(heartbeatRunEvents)
       .where(eq(heartbeatRunEvents.runId, runId));
     expect(event?.message).toContain("Source-resolved watchdog fold");
+
+    // Regression: the source-resolved watchdog fold is a third terminal-status
+    // write site for heartbeatRuns (alongside heartbeat.ts's two direct-cancel
+    // sites) and must not bypass receipt emission (SAG-7667 review finding #1).
+    const [receipt] = await db.select().from(executionReceipts).where(eq(executionReceipts.runId, runId));
+    expect(receipt).toBeDefined();
+    expect(receipt?.outcome).toBe("succeeded");
   });
 
   it("still escalates terminal source issues without same-run terminal evidence", async () => {

@@ -30,6 +30,7 @@ import { runningProcesses } from "../../adapters/index.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
 import { forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
+import { emitExecutionReceipt } from "../execution-receipts.js";
 import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local-service-supervisor.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
@@ -1627,6 +1628,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return updatedRun;
     });
     if (!finalizedRun) return { kind: "skipped" as const };
+
+    // This is a third terminal-status write site for `heartbeatRuns`, alongside
+    // heartbeat.ts's shared `finalizeHeartbeatRunStatusUpdate` finalizer — emission
+    // can't be duplicated (unique index on runId) but must not be skipped here either.
+    emitExecutionReceipt(db, finalizedRun.id).catch((error) => {
+      logger.error(
+        { runId: finalizedRun.id, error: error instanceof Error ? error.message : String(error) },
+        "failed to emit execution receipt for source-resolved watchdog fold",
+      );
+    });
 
     if (input.existingEvaluation && !isTerminalIssueStatus(input.existingEvaluation.status)) {
       await issuesSvc.update(input.existingEvaluation.id, { status: "done" });
