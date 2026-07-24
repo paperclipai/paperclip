@@ -249,6 +249,7 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
+import { issueResourceReferenceService } from "./issue-resource-references.js";
 import {
   clearHeartbeatRunRuntimeStatus,
   getHeartbeatRunRuntimeStatus,
@@ -258,6 +259,14 @@ import {
   sweepExpiredHeartbeatRunRuntimeStatuses,
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
+import {
+  appendExecutionCausalRunEvent,
+  appendExecutionCausalTrace,
+  buildExecutionCausalWakePayload,
+  buildExecutionRecoveryContextPayload,
+  executionCausalEventType,
+  inferExecutionCausalTraceKind,
+} from "./execution-causal-trace.js";
 import {
   readHotRestartIntent,
   removeHotRestartIntent,
@@ -4262,6 +4271,23 @@ function enrichWakeContextSnapshot(input: {
   }
   normalizeModelProfileWakeContext({ contextSnapshot, payload });
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
+  appendExecutionCausalTrace(contextSnapshot, {
+    kind: inferExecutionCausalTraceKind({
+      reason: readNonEmptyString(contextSnapshot["retryReason"]) ?? readNonEmptyString(contextSnapshot["wakeReason"]) ?? reason,
+      retryOfRunId: readNonEmptyString(contextSnapshot["retryOfRunId"]) ?? readNonEmptyString(payload?.["retryOfRunId"]),
+      recoveryActionId: readNonEmptyString(contextSnapshot["recoveryActionId"]) ?? readNonEmptyString(payload?.["recoveryActionId"]),
+      originKind: readNonEmptyString(contextSnapshot["source"]),
+    }),
+    reason: readNonEmptyString(contextSnapshot["retryReason"]) ?? readNonEmptyString(contextSnapshot["wakeReason"]) ?? reason,
+    source,
+    triggerDetail,
+    issueId: readNonEmptyString(contextSnapshot["issueId"]) ?? issueIdFromPayload,
+    taskId: readNonEmptyString(contextSnapshot["taskId"]) ?? issueIdFromPayload,
+    retryOfRunId: readNonEmptyString(contextSnapshot["retryOfRunId"]) ?? readNonEmptyString(payload?.["retryOfRunId"]),
+    recoveryActionId: readNonEmptyString(contextSnapshot["recoveryActionId"]) ?? readNonEmptyString(payload?.["recoveryActionId"]),
+    originKind: readNonEmptyString(contextSnapshot["source"]),
+    originId: readNonEmptyString(contextSnapshot["sourceIssueId"]),
+  });
 
   return {
     contextSnapshot,
@@ -4996,6 +5022,17 @@ export function buildPaperclipTaskMarkdown(input: {
     title: string;
     workMode?: string | null;
     description?: string | null;
+    referencedResources?: Array<{
+      kind: "issue_document" | "work_product";
+      issueIdentifier: string | null;
+      issueTitle: string | null;
+      documentKey?: string;
+      documentTitle?: string | null;
+      latestRevisionNumber?: number | null;
+      workProductTitle?: string;
+      workProductType?: string;
+      workProductStatus?: string;
+    }>;
   } | null;
   ancestors?: Array<{
     id: string;
@@ -5007,6 +5044,17 @@ export function buildPaperclipTaskMarkdown(input: {
   wakeComment?: {
     id: string;
     body: string;
+    referencedResources?: Array<{
+      kind: "issue_document" | "work_product";
+      issueIdentifier: string | null;
+      issueTitle: string | null;
+      documentKey?: string;
+      documentTitle?: string | null;
+      latestRevisionNumber?: number | null;
+      workProductTitle?: string;
+      workProductType?: string;
+      workProductStatus?: string;
+    }>;
   } | null;
   interaction?: {
     kind?: string | null;
@@ -5014,7 +5062,22 @@ export function buildPaperclipTaskMarkdown(input: {
   } | null;
   acceptedPlanContinuation?: boolean;
 }) {
+  type TaskResourceReference = NonNullable<NonNullable<typeof input.issue>["referencedResources"]>[number];
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
+  const formatResourceReference = (reference: TaskResourceReference) => {
+    const issueLabel = reference.issueIdentifier ?? "issue";
+    if (reference.kind === "issue_document") {
+      const docTitle = reference.documentTitle?.trim() || reference.documentKey;
+      const revision = typeof reference.latestRevisionNumber === "number"
+        ? ` (rev ${reference.latestRevisionNumber})`
+        : "";
+      return `- Document ref: ${quoteTaskScalar(`${issueLabel} / ${docTitle}${revision}`)}`;
+    }
+    const productTitle = reference.workProductTitle?.trim() || reference.workProductType || "work product";
+    const status = reference.workProductStatus ? ` [${reference.workProductStatus}]` : "";
+    const type = reference.workProductType ? ` (${reference.workProductType})` : "";
+    return `- Work product ref: ${quoteTaskScalar(`${issueLabel} / ${productTitle}${type}${status}`)}`;
+  };
   const fenceTaskText = (value: string) => {
     const longestBacktickRun = Math.max(
       2,
@@ -5083,6 +5146,12 @@ export function buildPaperclipTaskMarkdown(input: {
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
     }
+    if ((issue.referencedResources?.length ?? 0) > 0) {
+      lines.push("", "Issue-linked references:");
+      for (const reference of issue.referencedResources ?? []) {
+        lines.push(formatResourceReference(reference));
+      }
+    }
   }
   if (ancestors.length > 0) {
     lines.push("", "Authoritative parent / ancestor context:");
@@ -5097,8 +5166,15 @@ export function buildPaperclipTaskMarkdown(input: {
       lines.push(`- [ancestor context truncated after ${ancestors.length} entries]`);
     }
   }
-  if (wakeComment?.body.trim()) {
-    lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
+  const wakeCommentBody = wakeComment?.body?.trim();
+  if (wakeCommentBody) {
+    lines.push("", "Latest wake comment:", fenceTaskText(wakeCommentBody));
+  }
+  if ((wakeComment?.referencedResources?.length ?? 0) > 0) {
+    lines.push("", "Wake comment references:");
+    for (const reference of wakeComment.referencedResources ?? []) {
+      lines.push(formatResourceReference(reference));
+    }
   }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
@@ -8178,6 +8254,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       requestedByActorId: "heartbeat",
     });
     if (!handoffRun) return;
+    await appendExecutionCausalRunEvent(db, {
+      companyId: run.companyId,
+      runId: run.id,
+      agentId: run.agentId,
+      eventType: executionCausalEventType("handoff"),
+      message: "queued corrective handoff heartbeat",
+      payload: {
+        traceVersion: 1,
+        handoffKind: "successful_run_recovery",
+        sourceIssueId: issue.id,
+        sourceIssueIdentifier: issue.identifier,
+        sourceRunId: run.id,
+        targetRunId: handoffRun.id,
+        targetAgentId: decision.targetAgentId,
+        reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+        missingDisposition: "clear_next_step",
+      },
+    });
 
     await addSuccessfulRunHandoffCommentOnce({
       issue,
@@ -8430,13 +8524,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const retryContextSnapshot = withRecoveryModelProfileHint({
+    const retryContextSnapshot = appendExecutionCausalTrace(withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "missing_issue_comment",
       retryReason: "missing_issue_comment",
       missingIssueCommentForRunId: run.id,
-    }, "status_only");
+    }, "status_only"), {
+      kind: "retry",
+      reason: "missing_issue_comment",
+      source: "automation",
+      triggerDetail: "system",
+      issueId,
+      taskId: issueId,
+      runId: run.id,
+      retryOfRunId: run.id,
+    });
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
     const now = new Date();
 
@@ -8460,11 +8563,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source: "automation",
           triggerDetail: "system",
           reason: "missing_issue_comment",
-          payload: withRecoveryModelProfileHint({
+          payload: appendExecutionCausalTrace(withRecoveryModelProfileHint({
             issueId,
             retryOfRunId: run.id,
             retryReason: "missing_issue_comment",
-          }, "status_only"),
+          }, "status_only"), {
+            kind: "retry",
+            reason: "missing_issue_comment",
+            source: "automation",
+            triggerDetail: "system",
+            issueId,
+            taskId: issueId,
+            runId: run.id,
+            retryOfRunId: run.id,
+          }),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
@@ -8694,12 +8806,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : "process_lost";
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const retryContextSnapshot = withRecoveryModelProfileHint({
+    const retryContextSnapshot = appendExecutionCausalTrace(withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason,
-    }, "normal_model");
+    }, "normal_model"), {
+      kind: "retry",
+      reason: retryReason,
+      source: "automation",
+      triggerDetail: "system",
+      issueId,
+      taskId: readNonEmptyString(contextSnapshot.taskId) ?? issueId,
+      runId: run.id,
+      retryOfRunId: run.id,
+    });
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
     const queued = await db.transaction(async (tx) => {
@@ -8711,10 +8832,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source: "automation",
           triggerDetail: "system",
           reason: "process_lost_retry",
-          payload: withRecoveryModelProfileHint({
+          payload: appendExecutionCausalTrace(withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
-          }, "normal_model"),
+          }, "normal_model"), {
+            kind: "retry",
+            reason: retryReason,
+            source: "automation",
+            triggerDetail: "system",
+            issueId,
+            taskId: readNonEmptyString(contextSnapshot.taskId) ?? issueId,
+            runId: run.id,
+            retryOfRunId: run.id,
+          }),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
@@ -9705,7 +9835,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const shouldQuarantineWorkspaceForRetry =
       workspaceValidationRetryPayload !== null &&
       Object.keys(workspaceValidationRetryPayload).length > 0;
-    const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
+    const retryContextSnapshot: Record<string, unknown> = appendExecutionCausalTrace(withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason,
@@ -9729,7 +9859,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
         : {}),
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
-    }, "normal_model");
+    }, "normal_model"), {
+      kind: "retry",
+      reason: retryReason,
+      source: "automation",
+      triggerDetail: "system",
+      issueId,
+      taskId: readNonEmptyString(contextSnapshot.taskId) ?? issueId,
+      runId: run.id,
+      retryOfRunId: run.id,
+    });
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
     const continuationRetryIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
       ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
@@ -9948,7 +10087,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source: "automation",
           triggerDetail: "system",
           reason: wakeReason,
-          payload: withRecoveryModelProfileHint({
+          payload: appendExecutionCausalTrace(withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
             ...interactionContinuationPayload,
@@ -9961,7 +10100,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
               : {}),
             ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
-          }, "normal_model"),
+          }, "normal_model"), {
+            kind: "retry",
+            reason: retryReason,
+            source: "automation",
+            triggerDetail: "system",
+            issueId,
+            taskId: readNonEmptyString(contextSnapshot.taskId) ?? issueId,
+            runId: run.id,
+            retryOfRunId: run.id,
+          }),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
@@ -12124,6 +12272,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
+    const [issueReferencedResources, wakeCommentReferencedResources] = issueRef
+      ? await issueResourceReferenceService(db).resolveForTexts([
+        {
+          companyId: agent.companyId,
+          text: issueRef.description,
+          fallbackIssuePathId: issueRef.identifier ?? issueRef.id,
+        },
+        {
+          companyId: agent.companyId,
+          text: safeWakeCommentContext?.body ?? null,
+          fallbackIssuePathId: issueRef.identifier ?? issueRef.id,
+        },
+      ])
+      : [[], []];
     const taskMarkdown = buildPaperclipTaskMarkdown({
       issue: issueRef
         ? {
@@ -12132,10 +12294,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             title: issueRef.title,
             workMode: issueRef.workMode,
             description: issueRef.description,
+            referencedResources: issueReferencedResources,
           }
         : null,
       ancestors: issueAncestors,
-      wakeComment: safeWakeCommentContext,
+      wakeComment: safeWakeCommentContext
+        ? {
+            ...safeWakeCommentContext,
+            referencedResources: wakeCommentReferencedResources,
+          }
+        : null,
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
         status: readNonEmptyString(context.interactionStatus),
@@ -12151,12 +12319,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         title: issueRef.title,
         description: issueRef.description,
         workMode: issueRef.workMode,
+        referencedResources: issueReferencedResources,
       };
     } else {
       delete context.paperclipIssue;
     }
     if (wakeCommentContext) {
-      context.paperclipWakeComment = safeWakeCommentContext;
+      context.paperclipWakeComment = {
+        ...safeWakeCommentContext,
+        referencedResources: wakeCommentReferencedResources,
+      };
     } else {
       delete context.paperclipWakeComment;
     }
@@ -13196,6 +13368,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         stream: "system",
         level: "info",
         message: "run started",
+      });
+      await appendExecutionCausalRunEvent(db, {
+        companyId: currentRun.companyId,
+        runId: currentRun.id,
+        agentId: currentRun.agentId,
+        eventType: executionCausalEventType("wake"),
+        message: `wake received: ${readNonEmptyString(context.wakeReason) ?? "unspecified"}`,
+        payload: buildExecutionCausalWakePayload(context),
+      });
+      await appendExecutionCausalRunEvent(db, {
+        companyId: currentRun.companyId,
+        runId: currentRun.id,
+        agentId: currentRun.agentId,
+        eventType: executionCausalEventType("recoveryContext"),
+        message: "recovery context received for heartbeat execution",
+        payload: buildExecutionRecoveryContextPayload(context),
       });
 
       handle = await runLogStore.begin({
@@ -15174,7 +15362,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
     const reason = opts.reason ?? null;
-    const payload = opts.payload ?? null;
+    const rawPayload = opts.payload ?? null;
     const {
       contextSnapshot: enrichedContextSnapshot,
       issueIdFromPayload,
@@ -15185,8 +15373,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       reason,
       source,
       triggerDetail,
-      payload,
+      payload: rawPayload,
     });
+    const payload = rawPayload
+      ? appendExecutionCausalTrace({ ...rawPayload }, {
+        kind: inferExecutionCausalTraceKind({
+          reason: readNonEmptyString(enrichedContextSnapshot.retryReason) ?? readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason,
+          retryOfRunId: readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ?? readNonEmptyString(rawPayload.retryOfRunId),
+          recoveryActionId: readNonEmptyString(enrichedContextSnapshot.recoveryActionId) ?? readNonEmptyString(rawPayload.recoveryActionId),
+          originKind: readNonEmptyString(enrichedContextSnapshot.source),
+        }),
+        reason: readNonEmptyString(enrichedContextSnapshot.retryReason) ?? readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason,
+        source,
+        triggerDetail,
+        issueId: readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload,
+        taskId: readNonEmptyString(enrichedContextSnapshot.taskId) ?? issueIdFromPayload,
+        retryOfRunId: readNonEmptyString(enrichedContextSnapshot.retryOfRunId) ?? readNonEmptyString(rawPayload.retryOfRunId),
+        recoveryActionId: readNonEmptyString(enrichedContextSnapshot.recoveryActionId) ?? readNonEmptyString(rawPayload.recoveryActionId),
+        originKind: readNonEmptyString(enrichedContextSnapshot.source),
+        originId: readNonEmptyString(enrichedContextSnapshot.sourceIssueId),
+      })
+      : null;
     let issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
 
     const agent = await getAgent(agentId);

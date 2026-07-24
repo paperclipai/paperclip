@@ -39,6 +39,7 @@ import type {
   IssueBlockerAttention,
   IssueRecoveryAction,
   IssueRelationIssueSummary,
+  IssueResourceReference,
   IssueScheduledRetry,
   SuccessfulRunHandoffState,
   IssueWorkMode,
@@ -171,7 +172,7 @@ import { nextWorkMode, titleForPendingWorkMode, workModeMetaFor, workModeMetaLis
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, FileText, Hammer, Loader2, MoreHorizontal, Package, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import {
@@ -1334,6 +1335,68 @@ const IssueChatTextParts = memo(function IssueChatTextParts({
   );
 });
 
+function isIssueResourceReference(value: unknown): value is IssueResourceReference {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (record.kind === "issue_document") {
+    return typeof record.issueId === "string" && typeof record.href === "string" && typeof record.documentKey === "string";
+  }
+  if (record.kind === "work_product") {
+    return (
+      typeof record.issueId === "string" &&
+      typeof record.href === "string" &&
+      typeof record.workProductId === "string" &&
+      typeof record.workProductTitle === "string"
+    );
+  }
+  return false;
+}
+
+function IssueChatResourceReferences({ references }: { references: IssueResourceReference[] }) {
+  if (references.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <div className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+        References
+      </div>
+      <div className="space-y-1.5">
+        {references.map((reference) => {
+          const issuePathId = reference.issueIdentifier ?? reference.issueId;
+          const href = reference.kind === "issue_document"
+            ? `/issues/${issuePathId}#document-${encodeURIComponent(reference.documentKey)}`
+            : `/issues/${issuePathId}#work-product-${reference.workProductId}`;
+          return (
+            <Link
+              key={reference.kind === "issue_document"
+                ? `doc:${reference.issueId}:${reference.documentKey}`
+                : `wp:${reference.issueId}:${reference.workProductId}`}
+              to={href}
+              className="flex items-start gap-2 rounded-lg border border-border/70 bg-background/70 px-2.5 py-2 text-left transition-colors hover:bg-accent/40"
+            >
+              <span className="mt-0.5 shrink-0 text-muted-foreground">
+                {reference.kind === "issue_document" ? <FileText className="h-4 w-4" /> : <Package className="h-4 w-4" />}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium text-foreground">
+                  {reference.kind === "issue_document"
+                    ? reference.documentTitle?.trim() || reference.documentKey
+                    : reference.workProductTitle}
+                </span>
+                <span className="block text-(length:--text-micro) text-muted-foreground">
+                  {reference.issueIdentifier ?? "Issue"}
+                  {reference.kind === "issue_document"
+                    ? ` · document:${reference.documentKey}`
+                    : ` · ${reference.workProductType}${reference.workProductStatus ? ` · ${reference.workProductStatus}` : ""}`}
+                </span>
+              </span>
+            </Link>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function groupAssistantParts(
   content: readonly ThreadMessage["content"][number][],
 ): Array<
@@ -1428,6 +1491,9 @@ function IssueChatUserMessage({
   const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
   const pending = custom.clientStatus === "pending";
   const deleted = Boolean(custom.deletedAt);
+  const referencedResources = Array.isArray(custom.referencedResources)
+    ? custom.referencedResources.filter(isIssueResourceReference)
+    : [];
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -1520,6 +1586,7 @@ function IssueChatUserMessage({
         ) : (
           <div className="min-w-0 max-w-full space-y-3">
             <IssueChatTextParts message={message} onAccent={isCurrentUser && !queued} />
+            <IssueChatResourceReferences references={referencedResources} />
           </div>
         )}
       </div>
@@ -1668,6 +1735,9 @@ function IssueChatAssistantMessage({
   const sourceTrust = isSourceTrustMetadata(custom.sourceTrust) ? custom.sourceTrust : null;
   const notices = Array.isArray(custom.notices)
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
+    : [];
+  const referencedResources = Array.isArray(custom.referencedResources)
+    ? custom.referencedResources.filter(isIssueResourceReference)
     : [];
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
@@ -1874,6 +1944,7 @@ function IssueChatAssistantMessage({
             ) : (
               <div className="min-w-0 max-w-full space-y-3">
                 <IssueChatAssistantParts message={message} hasCoT={false} />
+                <IssueChatResourceReferences references={referencedResources} />
                 {notices.length > 0 ? (
                   <div className="space-y-2">
                     {notices.map((notice, index) => (
@@ -1952,6 +2023,7 @@ function IssueChatAssistantMessage({
             <>
               <div className="space-y-3">
                 <IssueChatAssistantParts message={message} hasCoT={hasCoT} />
+                <IssueChatResourceReferences references={referencedResources} />
                 {message.content.length === 0 && waitingText ? (
                   <div className="rounded-lg px-1 py-2">
                     <div className="flex min-w-0 items-center gap-2.5">

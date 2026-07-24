@@ -101,6 +101,7 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
+import { issueResourceReferenceService } from "./issue-resource-references.js";
 import {
   parseIssueGraphLivenessIncidentKey,
   RECOVERY_ORIGIN_KINDS,
@@ -3801,6 +3802,7 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
 
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
+  const issueResourceRefs = issueResourceReferenceService(db);
   const treeControlSvc = issueTreeControlService(db);
 
   function normalizeCreateIssueTitle(title: string) {
@@ -3929,6 +3931,37 @@ export function issueService(db: Db) {
       presentation: issueCommentPresentationSchema.nullable().catch(null).parse(comment.presentation ?? null),
       metadata: issueCommentMetadataSchema.nullable().catch(null).parse(comment.metadata ?? null),
     };
+  }
+
+  async function withCommentResourceReferences<T extends {
+    companyId: string;
+    issueId: string;
+    body: string;
+    deletedAt?: Date | string | null;
+  }>(comments: readonly T[]) {
+    if (comments.length === 0) return [];
+    const issueIds = [...new Set(comments.map((comment) => comment.issueId))];
+    const issueRows = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+      })
+      .from(issues)
+      .where(inArray(issues.id, issueIds));
+    const issueIdentifierById = new Map(issueRows.map((row) => [row.id, row.identifier ?? row.id]));
+    const companyId = comments[0]?.companyId ?? null;
+    if (!companyId) return comments.map((comment) => ({ ...comment, referencedResources: [] }));
+    const resolved = await issueResourceRefs.resolveForTexts(
+      comments.map((comment) => ({
+        companyId,
+        text: comment.deletedAt ? null : comment.body,
+        fallbackIssuePathId: issueIdentifierById.get(comment.issueId) ?? comment.issueId,
+      })),
+    );
+    return comments.map((comment, index) => ({
+      ...comment,
+      referencedResources: resolved[index] ?? [],
+    }));
   }
 
   async function readRunLogText(run: {
@@ -7419,7 +7452,8 @@ export function issueService(db: Db) {
       const comments = limit ? await query.limit(limit) : await query;
       const { censorUsernameInLogs } = await instanceSettings.getGeneral();
       const enrichedComments = await enrichCommentsWithDerivedAgentAttribution(comments);
-      return enrichedComments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
+      const commentsWithRefs = await withCommentResourceReferences(enrichedComments);
+      return commentsWithRefs.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
     },
 
     getCommentCursor: async (issueId: string) => {
@@ -7459,7 +7493,8 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!comment) return null;
       const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([comment]);
-      return redactIssueComment(enrichedComment ?? comment, censorUsernameInLogs);
+      const [commentWithRefs] = await withCommentResourceReferences([enrichedComment ?? comment]);
+      return redactIssueComment(commentWithRefs ?? enrichedComment ?? comment, censorUsernameInLogs);
     },
 
     removeComment: async (commentId: string) => {
@@ -7480,7 +7515,8 @@ export function issueService(db: Db) {
           .set({ updatedAt: new Date() })
           .where(eq(issues.id, comment.issueId));
 
-        return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+        const [commentWithRefs] = await withCommentResourceReferences([comment]);
+        return redactIssueComment(commentWithRefs ?? comment, currentUserRedactionOptions.enabled);
       });
     },
 
@@ -7595,7 +7631,8 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
-      return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+      const [commentWithRefs] = await withCommentResourceReferences([comment]);
+      return redactIssueComment(commentWithRefs ?? comment, currentUserRedactionOptions.enabled);
     },
 
     createAttachment: async (input: {

@@ -65,6 +65,11 @@ import {
 } from "./tool-runtime-supervisor.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 import {
+  appendExecutionCausalRunEvent,
+  buildExecutionToolSpanPayload,
+  executionCausalEventType,
+} from "./execution-causal-trace.js";
+import {
   canonicalToolArguments,
   readSignedToolArgumentsPayload,
   signToolArguments,
@@ -1350,7 +1355,7 @@ export function createToolGatewayService(
     resultSummary?: ReturnType<typeof summarizeToolValue> | null;
     metadata?: Record<string, unknown> | null;
     tool?: ToolGatewayDescriptor | null;
-  }) {
+    }) {
     const metadata = input.tool ? toolAuditMetadata(input.tool) : {};
     await db.insert(toolCallEvents).values({
       companyId: input.session.companyId,
@@ -1385,6 +1390,86 @@ export function createToolGatewayService(
           }
         : null,
     });
+    if (input.session.runId && input.session.agentId) {
+      if (input.eventType === "call_started") {
+        await appendExecutionCausalRunEvent(db, {
+          companyId: input.session.companyId,
+          runId: input.session.runId,
+          agentId: input.session.agentId,
+          eventType: executionCausalEventType("toolSpan"),
+          message: `tool started: ${input.toolName}`,
+          payload: buildExecutionToolSpanPayload({
+            invocationId: input.invocationId ?? null,
+            actionRequestId: input.actionRequestId ?? null,
+            toolName: input.toolName,
+            phase: "start",
+            resultClass: "started",
+            outcome: input.outcome,
+            reasonCode: input.reasonCode,
+          }),
+        });
+      }
+
+      if (input.eventType === "call_completed" || input.eventType === "call_failed") {
+        await appendExecutionCausalRunEvent(db, {
+          companyId: input.session.companyId,
+          runId: input.session.runId,
+          agentId: input.session.agentId,
+          eventType: executionCausalEventType("toolSpan"),
+          level: input.eventType === "call_failed" ? "warn" : "info",
+          message: input.eventType === "call_completed"
+            ? `tool completed: ${input.toolName}`
+            : `tool failed: ${input.toolName}`,
+          payload: buildExecutionToolSpanPayload({
+            invocationId: input.invocationId ?? null,
+            actionRequestId: input.actionRequestId ?? null,
+            toolName: input.toolName,
+            phase: "end",
+            resultClass: input.eventType === "call_completed" ? "succeeded" : "failed",
+            errorClass: input.eventType === "call_failed" ? input.reasonCode ?? "tool_execution_failed" : null,
+            outcome: input.outcome,
+            reasonCode: input.reasonCode,
+          }),
+        });
+      }
+
+      if (
+        input.eventType === "approval_requested" ||
+        input.eventType === "approval_resolved" ||
+        input.eventType === "call_denied"
+      ) {
+        await appendExecutionCausalRunEvent(db, {
+          companyId: input.session.companyId,
+          runId: input.session.runId,
+          agentId: input.session.agentId,
+          eventType: executionCausalEventType("guardrail"),
+          level: input.eventType === "call_denied" ? "warn" : "info",
+          message: input.eventType === "approval_requested"
+            ? `approval requested for tool: ${input.toolName}`
+            : input.eventType === "approval_resolved"
+              ? `approval resolved for tool: ${input.toolName}`
+              : `tool denied by guardrail: ${input.toolName}`,
+          payload: {
+            ...buildExecutionToolSpanPayload({
+              invocationId: input.invocationId ?? null,
+              actionRequestId: input.actionRequestId ?? null,
+              toolName: input.toolName,
+              phase: input.eventType === "call_denied" ? "end" : "start",
+              resultClass: input.eventType === "approval_requested"
+                ? "approval_requested"
+                : input.eventType === "approval_resolved"
+                  ? "approval_resolved"
+                  : "denied",
+              errorClass: input.eventType === "call_denied" ? input.reasonCode ?? "guardrail_denied" : null,
+              outcome: input.outcome,
+              reasonCode: input.reasonCode,
+            }),
+            guardrailEventType: input.eventType,
+            policyDecision: input.policyDecision ?? null,
+          },
+        });
+      }
+    }
   }
 
   async function reflectToolActionInteractionLifecycle(input: {
@@ -5730,6 +5815,18 @@ export function createToolGatewayService(
           argumentsSummary: effectiveArgumentsSummary,
         },
       });
+      await writeToolCallEvent({
+        invocationId,
+        actionRequestId: input.approvedActionRequestId ?? null,
+        session,
+        eventType: "call_started",
+        outcome: "pending",
+        toolName: tool.name,
+        policyDecision: input.approvedActionRequestId ? "allow" : "allow",
+        reasonCode: input.approvedActionRequestId ? "approved_action_request" : "profile_allows_tool",
+        argumentsSummary: effectiveArgumentsSummary,
+        tool,
+      });
 
       try {
         const executionTimeoutMs = timeoutMs(input.timeoutMs);
@@ -6048,6 +6145,17 @@ export function createToolGatewayService(
           ...toolAuditMetadata(tool),
           argumentsSummary: argumentValidation.summary,
         },
+      });
+      await writeToolCallEvent({
+        invocationId,
+        session: sessionLike,
+        eventType: "call_started",
+        outcome: "pending",
+        toolName: tool.name,
+        policyDecision: "allow",
+        reasonCode: "profile_allows_tool",
+        argumentsSummary: argumentValidation.summary,
+        tool,
       });
 
       const startedAt = Date.now();

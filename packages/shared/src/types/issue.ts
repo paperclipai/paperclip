@@ -31,6 +31,7 @@ import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
+import type { IssueResourceReference } from "../issue-resource-links.js";
 import type {
   LowTrustReviewPresetPolicy,
   SourceTrustMetadata,
@@ -875,6 +876,7 @@ export interface IssueComment {
   derivedCreatedByRunId?: string | null;
   derivedAuthorSource?: IssueCommentDerivedAuthorSource | null;
   body: string;
+  referencedResources?: IssueResourceReference[];
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
   deletedAt?: Date | null;
