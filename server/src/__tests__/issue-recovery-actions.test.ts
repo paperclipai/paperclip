@@ -396,7 +396,7 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
       source: "session",
     } as Express.Request["actor"])).get(`/api/issues/${denied.issueId}/delivery-receipts`);
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
   });
 
   it("packages oversized text as an inspectable document and preserves binary inspection URLs", async () => {

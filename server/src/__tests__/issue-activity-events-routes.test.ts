@@ -62,7 +62,7 @@ const mockWorkProductService = vi.hoisted(() => ({
 }));
 
 const deliveryReceipt = {
-  primaryWorkProductKey: "delivery-evidence",
+  primaryWorkProductKey: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   revision: "2026-05-01T00:00:00.000Z",
   format: "inline_text",
   summary: "The requested delivery is available.",
@@ -410,7 +410,7 @@ describe("issue activity event routes", () => {
         select: () => ({
           from: () => ({
             where: async () => [{
-              id: "delivery-evidence",
+              id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
               companyId: "company-1",
               issueId: issue.id,
               updatedAt: new Date("2026-05-01T00:00:00.000Z"),

@@ -13,7 +13,7 @@ const mockWorkProductService = vi.hoisted(() => ({
   getById: vi.fn(async (id: string) => ({
     id,
     companyId: "company-1",
-    issueId: id.replace(/-evidence$/, ""),
+    issueId: id === "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" ? "child-1" : "issue-1",
     updatedAt: new Date("2026-05-01T00:00:00.000Z"),
   })),
   listForIssue: vi.fn(async () => []),
@@ -116,7 +116,10 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
   };
 });
 
-async function createApp(receiptIssueId = "issue-1") {
+async function createApp(
+  receiptIssueId = "issue-1",
+  receiptWorkProductId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+) {
   const emptyRows: unknown[] = [];
   const whereResult = {
     limit: vi.fn(async () => emptyRows),
@@ -133,7 +136,7 @@ async function createApp(receiptIssueId = "issue-1") {
       select: () => ({
         from: () => ({
           where: async () => [{
-            id: `${receiptIssueId}-evidence`,
+            id: receiptWorkProductId,
             companyId: "company-1",
             issueId: receiptIssueId,
             updatedAt: new Date("2026-05-01T00:00:00.000Z"),
@@ -238,7 +241,7 @@ describe("issue dependency wakeups in issue routes", () => {
     const res = await request(await createApp()).patch("/api/issues/issue-1").send({
       status: "done",
       deliveryReceipt: {
-        primaryWorkProductKey: "issue-1-evidence",
+        primaryWorkProductKey: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         revision: "2026-05-01T00:00:00.000Z",
         format: "inline_text",
         summary: "The blocker completion is available.",
@@ -400,10 +403,10 @@ describe("issue dependency wakeups in issue routes", () => {
       childIssueSummaryTruncated: false,
     });
 
-    const res = await request(await createApp("child-1")).patch("/api/issues/child-1").send({
+    const res = await request(await createApp("child-1", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")).patch("/api/issues/child-1").send({
       status: "done",
       deliveryReceipt: {
-        primaryWorkProductKey: "child-1-evidence",
+        primaryWorkProductKey: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         revision: "2026-05-01T00:00:00.000Z",
         format: "inline_text",
         summary: "The child completion is available.",

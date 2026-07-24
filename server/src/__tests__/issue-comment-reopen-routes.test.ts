@@ -39,7 +39,38 @@ const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsert = vi.hoisted(() => vi.fn(() => ({ values: mockTxInsertValues })));
 const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
+  select: () => ({
+    from: () => ({
+      where: async () => [{
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        issueId: "11111111-1111-4111-8111-111111111111",
+        updatedAt: new Date("2026-05-01T00:00:00.000Z"),
+      }],
+    }),
+  }),
 }));
+const mockDeliveryReceiptService = vi.hoisted(() => ({
+  listForSource: vi.fn(async () => []),
+  openMissingReceiptRecovery: vi.fn(async () => undefined),
+  publish: vi.fn(async () => ({ id: "receipt-1" })),
+}));
+const mockWorkProductService = vi.hoisted(() => ({
+  getById: vi.fn(async (id: string) => ({
+    id,
+    companyId: "company-1",
+    issueId: "11111111-1111-4111-8111-111111111111",
+    updatedAt: new Date("2026-05-01T00:00:00.000Z"),
+  })),
+}));
+
+const deliveryReceipt = {
+  primaryWorkProductKey: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  revision: "2026-05-01T00:00:00.000Z",
+  format: "inline_text",
+  summary: "The requested delivery is available.",
+  inlineText: "Requester-visible delivery text.",
+};
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   limit: vi.fn(async () => []),
@@ -127,7 +158,7 @@ vi.mock("../services/routines.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
-    issueDeliveryReceiptService: () => ({}),
+  issueDeliveryReceiptService: () => mockDeliveryReceiptService,
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
   }),
@@ -164,7 +195,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
-  workProductService: () => ({}),
+  workProductService: () => mockWorkProductService,
 }));
 
 vi.mock("../services/external-objects.js", () => ({
@@ -1750,7 +1781,7 @@ describe.sequential("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ status: "done" });
+      .send({ status: "done", deliveryReceipt });
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
@@ -1797,7 +1828,7 @@ describe.sequential("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ status: "done", comment: "Approved for ship" });
+      .send({ status: "done", comment: "Approved for ship", deliveryReceipt });
 
     expect(res.status).toBe(200);
     expect(mockDb.transaction).toHaveBeenCalledTimes(1);

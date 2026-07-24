@@ -23,7 +23,40 @@ const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWher
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
+  transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback({
+    select: () => ({
+      from: () => ({
+        where: async () => [{
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          companyId: "company-1",
+          issueId: "11111111-1111-4111-8111-111111111111",
+          updatedAt: new Date("2026-05-01T00:00:00.000Z"),
+        }],
+      }),
+    }),
+  })),
 }));
+const mockDeliveryReceiptService = vi.hoisted(() => ({
+  listForSource: vi.fn(async () => []),
+  openMissingReceiptRecovery: vi.fn(async () => undefined),
+  publish: vi.fn(async () => ({ id: "receipt-1" })),
+}));
+const mockWorkProductService = vi.hoisted(() => ({
+  getById: vi.fn(async (id: string) => ({
+    id,
+    companyId: "company-1",
+    issueId: "11111111-1111-4111-8111-111111111111",
+    updatedAt: new Date("2026-05-01T00:00:00.000Z"),
+  })),
+}));
+
+const deliveryReceipt = {
+  primaryWorkProductKey: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  revision: "2026-05-01T00:00:00.000Z",
+  format: "inline_text",
+  summary: "The requested delivery is available.",
+  inlineText: "Requester-visible delivery text.",
+};
 
 function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -44,7 +77,7 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
-    issueDeliveryReceiptService: () => ({}),
+    issueDeliveryReceiptService: () => mockDeliveryReceiptService,
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
     }),
@@ -101,7 +134,7 @@ function registerModuleMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
-    workProductService: () => ({}),
+    workProductService: () => mockWorkProductService,
   }));
 }
 
@@ -178,7 +211,7 @@ describe("issue telemetry routes", () => {
     });
     const res = await request(app)
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ status: "done" });
+      .send({ status: "done", deliveryReceipt });
 
     expect(res.status).toBe(200);
     await vi.waitFor(() => {
@@ -201,7 +234,7 @@ describe("issue telemetry routes", () => {
     });
     const res = await request(app)
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ status: "done" });
+      .send({ status: "done", deliveryReceipt });
 
     expect(res.status).toBe(200);
     expect(mockTrackAgentTaskCompleted).not.toHaveBeenCalled();
