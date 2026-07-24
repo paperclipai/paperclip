@@ -10,6 +10,7 @@ import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { firePushFanoutForActivity } from "./push-fanout.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
@@ -133,7 +134,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
-  await db.insert(activityLog).values({
+  const [insertedRow] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
     actorId: input.actorId,
@@ -144,6 +145,23 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     runId: input.runId ?? null,
     responsibleUserId,
     details: redactedDetails,
+  }).returning({ id: activityLog.id });
+
+  // Push-fanout hook: fires right after the insert, gated to the Phase-1
+  // allowlist inside firePushFanoutForActivity. Deliberately NOT on the
+  // publishLiveEvent path below (in-memory EventEmitter, no delivery
+  // guarantee — see SAG-7600 plan §2). Fire-and-forget: never block or
+  // throw out of logActivity().
+  void firePushFanoutForActivity(db, {
+    companyId: input.companyId,
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    responsibleUserId,
+    activityLogId: insertedRow.id,
+    details: redactedDetails,
+  }).catch((err) => {
+    logger.warn({ err, activityLogId: insertedRow.id }, "push-fanout: unhandled fanout rejection");
   });
 
   publishLiveEvent({
