@@ -17,6 +17,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  issueWorkProducts,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -130,6 +131,7 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
   afterEach(async () => {
     await db.delete(issueRecoveryActions);
     await db.delete(issueDeliveryReceipts);
+    await db.delete(issueWorkProducts);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -177,10 +179,24 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
     return { companyId, agentId, issueId, prefix };
   }
 
-  function receipt(overrides: Record<string, unknown> = {}) {
+  async function deliveryWorkProduct(issueId: string) {
+    return db.insert(issueWorkProducts).values({
+      companyId: (await db.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, issueId)))[0]!.companyId,
+      issueId,
+      type: "artifact",
+      provider: "test",
+      title: "Delivery evidence",
+      status: "approved",
+      reviewState: "approved",
+      isPrimary: true,
+      healthStatus: "healthy",
+    }).returning().then((rows) => rows[0]!);
+  }
+
+  function receipt(workProduct: { id: string; updatedAt: Date }, overrides: Record<string, unknown> = {}) {
     return {
-      primaryWorkProductKey: "artifact:delivery-summary",
-      revision: "r1",
+      primaryWorkProductKey: workProduct.id,
+      revision: workProduct.updatedAt.toISOString(),
       format: "inline_text",
       summary: "The requested delivery summary is ready.",
       inlineText: "Final requester-visible delivery text.",
@@ -202,9 +218,10 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
 
   it("permits terminal completion with a small inline receipt", async () => {
     const fixture = await seedReceiptIssue();
+    const workProduct = await deliveryWorkProduct(fixture.issueId);
     const response = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
       status: "done",
-      deliveryReceipt: receipt(),
+      deliveryReceipt: receipt(workProduct),
     });
 
     expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -213,6 +230,10 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
       sourceIssueId: fixture.issueId,
       producerIssueId: fixture.issueId,
       inlineText: "Final requester-visible delivery text.",
+    });
+    expect(response.body.deliveryReceipt).toMatchObject({
+      primaryWorkProductKey: workProduct.id,
+      revision: workProduct.updatedAt.toISOString(),
     });
   });
 
@@ -250,11 +271,12 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
 
     const denied = await request(app()).patch(`/api/issues/${child.issueId}`).send({
       status: "done",
-      deliveryReceipt: receipt({ sourceIssueId: unrelated!.id, revision: "r2" }),
+      deliveryReceipt: receipt(await deliveryWorkProduct(child.issueId), { sourceIssueId: unrelated!.id }),
     });
+    const childEvidence = await deliveryWorkProduct(child.issueId);
     const projected = await request(app()).patch(`/api/issues/${child.issueId}`).send({
       status: "done",
-      deliveryReceipt: receipt({ sourceIssueId: source.issueId }),
+      deliveryReceipt: receipt(childEvidence, { sourceIssueId: source.issueId }),
     });
 
     expect(denied.status).toBe(422);
@@ -266,10 +288,10 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
 
   it("accepts explicit document-only delivery only with an inspection surface", async () => {
     const fixture = await seedReceiptIssue();
+    const workProduct = await deliveryWorkProduct(fixture.issueId);
     const response = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
       status: "done",
-      deliveryReceipt: receipt({
-        primaryWorkProductKey: "document:delivery-brief",
+      deliveryReceipt: receipt(workProduct, {
         format: "document",
         documentOnly: true,
         inlineText: undefined,
@@ -284,19 +306,54 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
 
   it("reuses the same receipt identity when a terminal transition is retried", async () => {
     const fixture = await seedReceiptIssue();
+    const workProduct = await deliveryWorkProduct(fixture.issueId);
     const first = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
       status: "done",
-      deliveryReceipt: receipt(),
+      deliveryReceipt: receipt(workProduct),
     });
     await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, fixture.issueId));
     const second = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
       status: "done",
-      deliveryReceipt: receipt(),
+      deliveryReceipt: receipt(workProduct),
     });
 
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     expect(second.status, JSON.stringify(second.body)).toBe(200);
     expect(await db.select().from(issueDeliveryReceipts)).toHaveLength(1);
+  });
+
+  it("does not require a receipt for ordinary in-review transitions", async () => {
+    const fixture = await seedReceiptIssue();
+    const response = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({ status: "in_review" });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(await db.select().from(issueDeliveryReceipts)).toHaveLength(0);
+  });
+
+  it("rejects stale evidence and exposes the matching receipt through the source issue", async () => {
+    const fixture = await seedReceiptIssue();
+    const workProduct = await deliveryWorkProduct(fixture.issueId);
+    const stale = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt(workProduct, { revision: new Date(workProduct.updatedAt.getTime() - 1).toISOString() }),
+    });
+    const completed = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt(workProduct),
+    });
+    const visible = await request(app()).get(`/api/issues/${fixture.issueId}/delivery-receipts`);
+
+    expect(stale.status).toBe(422);
+    expect(stale.body).toMatchObject({ code: "stale_delivery_receipt" });
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+    expect(visible.status).toBe(200);
+    expect(visible.body).toHaveLength(1);
+    expect(visible.body[0]).toMatchObject({
+      sourceIssueId: fixture.issueId,
+      producerIssueId: fixture.issueId,
+      primaryWorkProductKey: workProduct.id,
+      revision: workProduct.updatedAt.toISOString(),
+    });
   });
 });
 

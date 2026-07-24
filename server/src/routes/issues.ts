@@ -5746,6 +5746,14 @@ export function issueRoutes(
     res.json(workProducts);
   });
 
+  router.get("/issues/:id/delivery-receipts", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    res.json(await deliveryReceiptsSvc.listForSource(issue.companyId, issue.id));
+  });
+
   router.get("/issues/:id/external-objects", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
@@ -7989,11 +7997,22 @@ export function issueRoutes(
       actorType: req.actor.type,
     });
 
-    const terminalOrReviewRequested =
-      (updateFields.status === "done" || updateFields.status === "in_review") &&
-      updateFields.status !== existing.status;
+    const terminalDoneRequested =
+      updateFields.status === "done" && updateFields.status !== existing.status;
     let deliveryReceiptSourceIssueId: string | null = null;
-    if (terminalOrReviewRequested) {
+    if (terminalDoneRequested) {
+      if (!deliveryReceipt) {
+        await deliveryReceiptsSvc.openMissingReceiptRecovery({
+          companyId: existing.companyId,
+          sourceIssueId: existing.id,
+          ownerAgentId: existing.assigneeAgentId,
+        });
+        res.status(422).json({
+          error: "Requester-visible delivery receipt required before terminal completion",
+          code: "missing_delivery_receipt",
+        });
+        return;
+      }
       const requestedSourceIssueId = deliveryReceipt?.sourceIssueId ?? existing.id;
       if (requestedSourceIssueId !== existing.id && requestedSourceIssueId !== existing.parentId) {
         res.status(422).json({ error: "Delivery receipts may target only the producing issue or its direct parent" });
@@ -8008,18 +8027,19 @@ export function issueRoutes(
         return;
       }
       deliveryReceiptSourceIssueId = sourceIssue.id;
-      const hasValidReceipt = deliveryReceipt
-        ? true
-        : await deliveryReceiptsSvc.hasReceipt(existing.companyId, sourceIssue.id);
-      if (!hasValidReceipt) {
-        await deliveryReceiptsSvc.openMissingReceiptRecovery({
-          companyId: existing.companyId,
-          sourceIssueId: sourceIssue.id,
-          ownerAgentId: existing.assigneeAgentId,
-        });
+      const workProduct = await workProductsSvc.getById(deliveryReceipt.primaryWorkProductKey);
+      if (!workProduct || workProduct.companyId !== existing.companyId || workProduct.issueId !== existing.id) {
         res.status(422).json({
-          error: "Requester-visible delivery receipt required before terminal or review transition",
-          code: "missing_delivery_receipt",
+          error: "Delivery receipt must reference a durable work product produced by this issue",
+          code: "invalid_delivery_receipt_evidence",
+        });
+        return;
+      }
+      const currentRevision = workProduct.updatedAt.toISOString();
+      if (deliveryReceipt.revision !== currentRevision) {
+        res.status(422).json({
+          error: "Delivery receipt revision does not match the current delivered work product",
+          code: "stale_delivery_receipt",
         });
         return;
       }
@@ -8133,6 +8153,24 @@ export function issueRoutes(
       } else {
         issue = await db.transaction(async (tx) => {
           if (deliveryReceipt && deliveryReceiptSourceIssueId) {
+            // Re-read inside the completion transaction so a receipt cannot
+            // authorize a work product changed after the preflight check.
+            const [currentWorkProduct] = await tx.select({
+              id: issueWorkProducts.id,
+              companyId: issueWorkProducts.companyId,
+              issueId: issueWorkProducts.issueId,
+              updatedAt: issueWorkProducts.updatedAt,
+            }).from(issueWorkProducts).where(eq(issueWorkProducts.id, deliveryReceipt.primaryWorkProductKey));
+            if (
+              !currentWorkProduct ||
+              currentWorkProduct.companyId !== existing.companyId ||
+              currentWorkProduct.issueId !== existing.id
+            ) {
+              throw unprocessable("Delivery receipt must reference a durable work product produced by this issue");
+            }
+            if (currentWorkProduct.updatedAt.toISOString() !== deliveryReceipt.revision) {
+              throw unprocessable("Delivery receipt revision does not match the current delivered work product");
+            }
             await deliveryReceiptsSvc.publish(tx, {
               companyId: existing.companyId,
               producerIssueId: existing.id,
@@ -8249,6 +8287,7 @@ export function issueRoutes(
       activeRecoveryAction?: unknown;
       relatedWork?: Awaited<ReturnType<typeof issueReferencesSvc.listIssueReferenceSummary>>;
       referencedIssueIdentifiers?: string[];
+      deliveryReceipt?: Awaited<ReturnType<typeof deliveryReceiptsSvc.listForSource>>[number];
     } = issue;
     let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
     if (issue && Array.isArray(req.body.blockedByIssueIds)) {
@@ -8258,6 +8297,15 @@ export function issueRoutes(
         blockedBy: updatedRelations.blockedBy,
         blocks: updatedRelations.blocks,
       };
+    }
+    if (terminalDoneRequested && deliveryReceiptSourceIssueId) {
+      const receipts = await deliveryReceiptsSvc.listForSource(issue.companyId, deliveryReceiptSourceIssueId);
+      const matchingReceipt = receipts.find((receipt) =>
+        receipt.producerIssueId === existing.id &&
+        receipt.primaryWorkProductKey === deliveryReceipt?.primaryWorkProductKey &&
+        receipt.revision === deliveryReceipt?.revision,
+      );
+      if (matchingReceipt) issueResponse = { ...issueResponse, deliveryReceipt: matchingReceipt };
     }
     await routinesSvc.syncRunStatusForIssue(issue.id);
 

@@ -491,8 +491,10 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
 }).partial().extend({
   deliveryReceipt: z.object({
     sourceIssueId: z.string().uuid().optional(),
-    primaryWorkProductKey: z.string().trim().min(1).max(500),
-    revision: z.string().trim().min(1).max(200),
+    // The work product is the durable delivery evidence. Its id and current
+    // revision are verified by the issue route before a receipt is accepted.
+    primaryWorkProductKey: z.string().uuid(),
+    revision: z.string().datetime(),
     format: z.enum(["inline_text", "work_product", "document", "url"]),
     summary: z.string().trim().min(1).max(2000),
     inlineText: z.string().trim().min(1).max(20000).optional(),

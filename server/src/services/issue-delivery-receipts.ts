@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueDeliveryReceipts, issueRecoveryActions, issues } from "@paperclipai/db";
 
@@ -18,6 +18,22 @@ export type DeliveryReceiptInput = {
 };
 
 export type ReceiptPublication = { id: string; sourceIssueId: string; reused: boolean };
+
+export type DeliveryReceiptView = {
+  id: string;
+  sourceIssueId: string;
+  producerIssueId: string;
+  primaryWorkProductKey: string;
+  revision: string;
+  format: string;
+  summary: string;
+  inlineText: string | null;
+  inspectionUrl: string | null;
+  documentOnly: boolean;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+};
 
 /**
  * Receipts are deliberately keyed by requester-facing source + product + revision.
@@ -60,6 +76,28 @@ export function issueDeliveryReceiptService(db: Db) {
     )).limit(1).then((rows) => rows[0]));
   }
 
+  /** Requester-visible receipt projection, scoped by the source issue's company. */
+  async function listForSource(companyId: string, sourceIssueId: string): Promise<DeliveryReceiptView[]> {
+    return db.select().from(issueDeliveryReceipts).where(and(
+      eq(issueDeliveryReceipts.companyId, companyId),
+      eq(issueDeliveryReceipts.sourceIssueId, sourceIssueId),
+    )).orderBy(desc(issueDeliveryReceipts.updatedAt)).then((rows) => rows.map((row) => ({
+      id: row.id,
+      sourceIssueId: row.sourceIssueId,
+      producerIssueId: row.producerIssueId,
+      primaryWorkProductKey: row.primaryWorkProductKey,
+      revision: row.revision,
+      format: row.format,
+      summary: row.summary,
+      inlineText: row.inlineText,
+      inspectionUrl: row.inspectionUrl,
+      documentOnly: row.documentOnly,
+      metadata: row.metadata as Record<string, unknown>,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    })));
+  }
+
   /** Atomically consumes the one allowed missing-receipt recovery attempt. */
   async function openMissingReceiptRecovery(input: { companyId: string; sourceIssueId: string; ownerAgentId?: string | null }) {
     return db.transaction(async (tx) => {
@@ -86,5 +124,5 @@ export function issueDeliveryReceiptService(db: Db) {
     });
   }
 
-  return { publish, hasReceipt, openMissingReceiptRecovery };
+  return { publish, hasReceipt, listForSource, openMissingReceiptRecovery };
 }
