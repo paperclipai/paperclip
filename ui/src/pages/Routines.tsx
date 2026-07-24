@@ -134,6 +134,8 @@ function compareNullableText(left: string | null | undefined, right: string | nu
   return (left ?? "").localeCompare(right ?? "", undefined, { sensitivity: "base" });
 }
 
+type RoutineFolderGroupMeta = { name: string; position?: number | null };
+
 function buildRoutineMutationPayload(input: {
   title: string;
   description: string;
@@ -159,7 +161,7 @@ export function buildRoutineGroups(
   groupByValue: RoutineGroupBy,
   projectById: Map<string, { name: string }>,
   agentById: Map<string, { name: string }>,
-  folderById: Map<string, { name: string }>,
+  folderById: Map<string, RoutineFolderGroupMeta>,
 ): RoutineGroup[] {
   if (groupByValue === "none") {
     return [{ key: "__all", label: null, items: routines }];
@@ -169,9 +171,24 @@ export function buildRoutineGroups(
     const groups = groupBy(routines, (routine) => routine.folderId ?? "__unfiled");
     return Object.keys(groups)
       .sort((left, right) => {
-        const leftLabel = left === "__unfiled" ? "Unfiled" : (folderById.get(left)?.name ?? "Unknown folder");
-        const rightLabel = right === "__unfiled" ? "Unfiled" : (folderById.get(right)?.name ?? "Unknown folder");
-        return leftLabel.localeCompare(rightLabel);
+        if (left === "__unfiled" || right === "__unfiled") {
+          if (left === right) return 0;
+          return left === "__unfiled" ? 1 : -1;
+        }
+
+        const leftFolder = folderById.get(left);
+        const rightFolder = folderById.get(right);
+        const leftPosition = Number.isFinite(leftFolder?.position) ? leftFolder!.position! : Number.POSITIVE_INFINITY;
+        const rightPosition = Number.isFinite(rightFolder?.position) ? rightFolder!.position! : Number.POSITIVE_INFINITY;
+        const positionCompare = leftPosition - rightPosition;
+        if (positionCompare !== 0) return positionCompare;
+
+        const labelCompare = (leftFolder?.name ?? "Unknown folder").localeCompare(
+          rightFolder?.name ?? "Unknown folder",
+          undefined,
+          { sensitivity: "base" },
+        );
+        return labelCompare || left.localeCompare(right);
       })
       .map((key) => ({
         key,

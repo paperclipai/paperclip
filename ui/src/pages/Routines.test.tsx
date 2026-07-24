@@ -469,6 +469,26 @@ describe("Routines page", () => {
     expect(groups[2]?.items.map((item) => item.title)).toEqual(["Unfiled sweep"]);
   });
 
+  it("orders folder groups by folder position before label and keeps Unfiled after folders", () => {
+    const groups = buildRoutineGroups(
+      [
+        createRoutine({ id: "routine-1", title: "Beta routine", folderId: "folder-beta" }),
+        createRoutine({ id: "routine-2", title: "Loose routine", folderId: null }),
+        createRoutine({ id: "routine-3", title: "Alpha routine", folderId: "folder-alpha" }),
+      ],
+      "folder",
+      new Map(),
+      new Map(),
+      new Map([
+        ["folder-alpha", { name: "Alpha", position: 20 }],
+        ["folder-beta", { name: "Beta", position: 10 }],
+      ]),
+    );
+
+    expect(groups.map((group) => group.label)).toEqual(["Beta", "Alpha", "Unfiled"]);
+    expect(groups.map((group) => group.key)).toEqual(["folder-beta", "folder-alpha", "__unfiled"]);
+  });
+
   it("keeps built-in routines in their own section after folder groups", () => {
     const groups = buildRoutineSections(
       [
