@@ -302,6 +302,19 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.evaluationOutcome).toBe("PASS");
     expect(await db.select().from(issues).where(eq(issues.companyId, routine.companyId))).toHaveLength(0);
     expect(await db.select().from(routineRuns).where(eq(routineRuns.id, run.id))).toHaveLength(1);
+
+    const detail = await svc.getDetail(routine.id);
+    const detailRun = detail?.recentRuns.find((candidate) => candidate.id === run.id);
+    expect(detailRun).toMatchObject({
+      evaluatorId: run.evaluatorId,
+      evaluatorContractVersion: run.evaluatorContractVersion,
+      evaluationOutcome: "PASS",
+      evaluationResult: run.evaluationResult,
+      evaluatorProvenance: run.evaluatorProvenance,
+      exceptionFingerprint: run.exceptionFingerprint,
+      evidenceDigest: run.evidenceDigest,
+      evaluationLeaseExpiresAt: run.evaluationLeaseExpiresAt,
+    });
   });
 
   it("keeps non-pilot routines on legacy issue-per-run dispatch", async () => {
