@@ -189,6 +189,15 @@ function isSimpleAssignableAgentStatus(status: string | null | undefined) {
   return status !== "pending_approval" && status !== "terminated";
 }
 
+// Used for assignment TARGET checks only. Extends isSimpleAssignableAgentStatus by also
+// rejecting "paused", because a paused agent never runs a heartbeat and work routed to one
+// will strand permanently. isSimpleAssignableAgentStatus is deliberately kept separate for
+// ACTOR checks (e.g. tasks:assign caller, inbox:manage) where paused service identities that
+// hold long-lived API keys must remain able to take action without running a heartbeat.
+function isAssignableTargetAgentStatus(status: string | null | undefined) {
+  return isSimpleAssignableAgentStatus(status) && status !== "paused";
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1235,7 +1244,7 @@ export function authorizationService(db: Db) {
       return Boolean(
         target &&
         target.companyId === resource.companyId &&
-        isSimpleAssignableAgentStatus(target.status),
+        isAssignableTargetAgentStatus(target.status),
       );
     }
     if (resource.assigneeUserId) {

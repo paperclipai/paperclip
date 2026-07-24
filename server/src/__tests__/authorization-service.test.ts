@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   agents,
   authUsers,
@@ -525,6 +526,60 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "allow_simple_company_member",
     });
     expect(decision.explanation).toContain("simple mode");
+  });
+
+  it("denies tasks:assign when the target agent is paused", async () => {
+    const company = await createCompany(db, "PausedTarget");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, targetAgent.id));
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_company_boundary",
+    });
+  });
+
+  it("allows a paused agent to call tasks:assign as the actor", async () => {
+    // Paused service identities holding long-lived keys must remain able to create and
+    // route issues; only the assignment TARGET check rejects paused, not the actor check.
+    const company = await createCompany(db, "PausedActor");
+    const pausedActor = await createAgent(db, company.id, { role: "engineer" });
+    const activeTarget = await createAgent(db, company.id, { role: "engineer" });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, pausedActor.id));
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: pausedActor.id,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: pausedActor.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: activeTarget.id },
+      scope: { assigneeAgentId: activeTarget.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_simple_company_member",
+    });
   });
 
   it("denies delegated protected assignment when the responsible user lacks matching authority", async () => {
