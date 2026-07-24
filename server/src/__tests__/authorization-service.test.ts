@@ -1553,6 +1553,43 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("another company");
   });
 
+  it("allows a manager to mutate and comment on a report's issue via the reporting chain", async () => {
+    const company = await createCompany(db, "ManagerChainIssue");
+    const managerAgent = await createAgent(db, company.id, { role: "ceo" });
+    const childAgent = await createAgent(db, company.id, { reportsTo: managerAgent.id });
+    const grandchildAgent = await createAgent(db, company.id, { reportsTo: childAgent.id });
+
+    for (const action of ["issue:mutate", "issue:comment"] as const) {
+      const directReport = await authorizationService(db).decide({
+        actor: { type: "agent", agentId: managerAgent.id, companyId: company.id, source: "agent_jwt" },
+        action,
+        resource: { type: "issue", companyId: company.id, assigneeAgentId: childAgent.id },
+      });
+      expect(directReport).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+
+      const indirectReport = await authorizationService(db).decide({
+        actor: { type: "agent", agentId: managerAgent.id, companyId: company.id, source: "agent_jwt" },
+        action,
+        resource: { type: "issue", companyId: company.id, assigneeAgentId: grandchildAgent.id },
+      });
+      expect(indirectReport).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+    }
+  });
+
+  it("denies mutating an issue assigned to an agent outside the actor's reporting subtree", async () => {
+    const company = await createCompany(db, "ManagerChainNonReport");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const unrelatedAgent = await createAgent(db, company.id, { role: "engineer" });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+      action: "issue:mutate",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: unrelatedAgent.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+  });
+
   it("allows scoped assignment inside a granted project and denies other projects", async () => {
     const company = await createCompany(db, "ProjectScope");
     const project = await createProject(db, company.id, "Allowed");
