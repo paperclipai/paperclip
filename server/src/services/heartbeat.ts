@@ -314,6 +314,7 @@ const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_MAX_QUEUED_RUN_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
@@ -11380,11 +11381,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxQueuedAgeMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const maxQueuedAgeMs = opts?.maxQueuedAgeMs ?? DEFAULT_MAX_QUEUED_RUN_AGE_MS;
     const now = new Date();
 
-    // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
+    // Find all runs stuck in "running" state (queued runs get a bounded wait below; resumeQueuedRuns handles normal dequeue)
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -11566,6 +11568,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
+    }
+
+    // Backstop for any cause of queue stranding (pause races, concurrency starvation,
+    // invokability edge cases): a run should never wait in "queued" forever.
+    const expiredQueuedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "queued"),
+          lt(heartbeatRuns.createdAt, new Date(now.getTime() - maxQueuedAgeMs)),
+        ),
+      );
+
+    const maxQueuedAgeHours = maxQueuedAgeMs / (60 * 60 * 1000);
+    const maxQueuedAgeHoursLabel = Number.isInteger(maxQueuedAgeHours)
+      ? String(maxQueuedAgeHours)
+      : maxQueuedAgeHours.toFixed(2);
+    const queueExpiredMessage = `Cancelled because the run waited in queue longer than ${maxQueuedAgeHoursLabel} hours`;
+
+    for (const run of expiredQueuedRuns) {
+      const cancelledRun = await setRunStatus(run.id, "cancelled", {
+        finishedAt: now,
+        error: queueExpiredMessage,
+        errorCode: "queue_expired",
+      });
+      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+        finishedAt: now,
+        error: queueExpiredMessage,
+      });
+      if (!cancelledRun) continue;
+      await appendRunEvent(cancelledRun, await nextRunEventSeq(cancelledRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: queueExpiredMessage,
+      });
+      reaped.push(cancelledRun.id);
     }
 
     if (reaped.length > 0) {

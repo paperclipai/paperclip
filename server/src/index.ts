@@ -1010,6 +1010,11 @@ export async function startServer(): Promise<StartedServer> {
       logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
     }
 
+    const heartbeatMaxQueuedRunAgeMs = Math.max(
+      1,
+      Number(process.env.PAPERCLIP_HEARTBEAT_MAX_QUEUED_RUN_AGE_MS) || 24 * 60 * 60 * 1000,
+    );
+
     heartbeatSchedulerInterval = setInterval(() => {
       // Async so the suppression checks below can honor the override-aware
       // resolver (e.g. worktree run-execution opt-in). The gated work is still
@@ -1075,10 +1080,11 @@ export async function startServer(): Promise<StartedServer> {
 
         if (heartbeatSchedulerStopped) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
-          // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-          // persisted queued work is still being driven forward.
+          // Periodically reap orphaned runs (5-min staleness threshold for stuck "running"
+          // runs, bounded max-age for stuck "queued" runs) and make sure persisted queued
+          // work is still being driven forward.
           trackHeartbeatSchedulerWork(heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, maxQueuedAgeMs: heartbeatMaxQueuedRunAgeMs })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
               await heartbeat.resumeQueuedRuns();
