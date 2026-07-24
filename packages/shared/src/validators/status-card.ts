@@ -85,6 +85,7 @@ export const statusCardSchema = z.object({
   lastChangeAt: z.string().datetime().nullable(),
   fingerprint: statusCardFingerprintSchema.nullable(),
   fingerprintAt: z.string().datetime().nullable(),
+  mentionedIssueIds: z.array(z.string().uuid()).default([]),
   documentId: z.string().uuid().nullable(),
   lastUpdateRunKind: z.enum(["full", "incremental"]).nullable(),
   lastGeneratedAt: z.string().datetime().nullable(),

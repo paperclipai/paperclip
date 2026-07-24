@@ -98,7 +98,7 @@ export function StatusCardDetailDrawer({
   const dryRunQuery = useQuery({
     queryKey: card ? queryKeys.statusCards.dryRun(card.id) : ["status-cards", "detail", "none", "dry-run"],
     queryFn: () => statusCardsApi.dryRun(card!.id),
-    enabled: Boolean(card && open && tab === "watched" && card.queries.length > 0),
+    enabled: Boolean(card && open && tab === "watched" && (card.queries.length > 0 || (card.mentionedIssueIds?.length ?? 0) > 0)),
   });
   const lifecycle = card ? deriveStatusCardLifecycle(card) : "fresh";
   const generatingIssue = useMemo<SummarySlotIssueRef | null>(
@@ -417,7 +417,7 @@ export function StatusCardDetailDrawer({
             </TabsContent>
 
             <TabsContent value="watched" className="mt-0 space-y-3">
-              {card.queries.length === 0 ? (
+              {card.queries.length === 0 && (card.mentionedIssueIds?.length ?? 0) === 0 ? (
                 <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
                   This card is still setting up — the issues it watches appear here once it's ready.
                 </div>
@@ -430,7 +430,10 @@ export function StatusCardDetailDrawer({
                   {dryRunQuery.error instanceof Error ? dryRunQuery.error.message : "Try again."}
                 </InlineBanner>
               ) : (
-                <MatchedIssueList queries={dryRunQuery.data?.queries ?? []} />
+                <MatchedIssueList
+                  queries={dryRunQuery.data?.queries ?? []}
+                  mentioned={dryRunQuery.data?.mentionedIssues ?? []}
+                />
               )}
             </TabsContent>
 
@@ -523,9 +526,10 @@ function QueryDebugSection({ card }: { card: StatusCardView }) {
 /**
  * Live matched-issue list for the Watched tab, fed by the dry-run endpoint.
  * Queries in the compiled array are a union, so issues matched by more than
- * one query are deduplicated by id.
+ * one query are deduplicated by id. Issues mentioned in the latest summary
+ * join the watched set too and render as their own group below the matches.
  */
-function MatchedIssueList({ queries }: { queries: StatusCardDryRun["queries"] }) {
+function MatchedIssueList({ queries, mentioned }: { queries: StatusCardDryRun["queries"]; mentioned: CompanySearchIssueSummary[] }) {
   const seen = new Set<string>();
   const matched: CompanySearchIssueSummary[] = [];
   for (const { result } of queries) {
@@ -535,7 +539,8 @@ function MatchedIssueList({ queries }: { queries: StatusCardDryRun["queries"] })
       matched.push(item.issue);
     }
   }
-  if (matched.length === 0) {
+  const mentionedOnly = mentioned.filter((issue) => !seen.has(issue.id));
+  if (matched.length === 0 && mentionedOnly.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
         The compiled query matches no issues right now.
@@ -543,20 +548,38 @@ function MatchedIssueList({ queries }: { queries: StatusCardDryRun["queries"] })
     );
   }
   return (
-    <div className="space-y-1.5">
-      {matched.map((issue) => (
-        <div key={issue.id} className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs">
-          <Link
-            to={`/issues/${issue.identifier ?? issue.id}`}
-            className="shrink-0 font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          >
-            {issue.identifier ?? issue.id.slice(0, 8)}
-          </Link>
-          <IssueStatusBadge status={issue.status} />
-          <span className="min-w-0 flex-1 truncate">{issue.title}</span>
-          <span className="shrink-0 text-muted-foreground">{relativeTime(issue.updatedAt)}</span>
+    <div className="space-y-3">
+      {matched.length > 0 ? (
+        <div className="space-y-1.5">
+          {matched.map((issue) => (
+            <WatchedIssueRow key={issue.id} issue={issue} />
+          ))}
         </div>
-      ))}
+      ) : null}
+      {mentionedOnly.length > 0 ? (
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-muted-foreground">Mentioned in the latest update</p>
+          {mentionedOnly.map((issue) => (
+            <WatchedIssueRow key={issue.id} issue={issue} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function WatchedIssueRow({ issue }: { issue: CompanySearchIssueSummary }) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs">
+      <Link
+        to={`/issues/${issue.identifier ?? issue.id}`}
+        className="shrink-0 font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+      >
+        {issue.identifier ?? issue.id.slice(0, 8)}
+      </Link>
+      <IssueStatusBadge status={issue.status} />
+      <span className="min-w-0 flex-1 truncate">{issue.title}</span>
+      <span className="shrink-0 text-muted-foreground">{relativeTime(issue.updatedAt)}</span>
     </div>
   );
 }

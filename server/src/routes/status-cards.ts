@@ -260,7 +260,12 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     if (!decision.allowed) {
       throw forbidden("Status-card dry-run is outside this actor's low-trust authorization boundary", authorizationDeniedDetails(decision));
     }
-    res.json({ cardId: card.id, queryVersion: card.queryVersion, queries: await service.dryRun(card) });
+    res.json({
+      cardId: card.id,
+      queryVersion: card.queryVersion,
+      queries: await service.dryRun(card),
+      mentionedIssues: await service.listMentionedIssues(card),
+    });
   });
 
   router.put("/status-cards/:id/query", validate(writeStatusCardQuerySchema), async (req, res) => {

@@ -22,6 +22,25 @@ export type StatusCardDeltaChange = {
   changeKind: "new" | "removed" | "status" | "assignee" | "human_comment" | "updated";
 };
 
+/** Upper bound on summary-mentioned issues joined to a card's watched set. */
+export const STATUS_CARD_MAX_MENTIONED_ISSUES = 200;
+
+const ISSUE_IDENTIFIER_MENTION_PATTERN = /\b[A-Z][A-Z0-9]{0,9}-\d{1,7}\b/g;
+const ISSUE_LINK_MENTION_PATTERN = /\/issues\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b/g;
+
+/**
+ * Pull issue references out of summary markdown: bare identifiers ("PAP-123")
+ * and issue links carrying a UUID ("/issues/<id>"). Callers must resolve the
+ * candidates against the card's company before trusting them.
+ */
+export function extractIssueMentions(markdown: string) {
+  const identifiers = new Set<string>();
+  const issueIds = new Set<string>();
+  for (const match of markdown.matchAll(ISSUE_IDENTIFIER_MENTION_PATTERN)) identifiers.add(match[0]);
+  for (const match of markdown.matchAll(ISSUE_LINK_MENTION_PATTERN)) issueIds.add(match[1]!.toLowerCase());
+  return { identifiers: [...identifiers], issueIds: [...issueIds] };
+}
+
 export function buildStatusCardFingerprint(issues: Array<CompanySearchIssueSummary & { latestHumanCommentAt?: string | null }>): StatusCardFingerprint {
   return Object.fromEntries(issues.map((issue) => [issue.id, {
     status: issue.status,

@@ -4,6 +4,7 @@ import {
   chooseStatusCardUpdateKind,
   diffStatusCardFingerprint,
   evaluateStatusCardPolicy,
+  extractIssueMentions,
   filterStatusCardChanges,
   isWithinStatusCardActiveHours,
   nextStatusCardEvaluationAt,
@@ -86,5 +87,18 @@ describe("status card update engine", () => {
     expect(chooseStatusCardUpdateKind({ ...base, configurationChanged: true })).toBe("full");
     expect(chooseStatusCardUpdateKind({ ...base, explicitFull: true })).toBe("full");
     expect(chooseStatusCardUpdateKind({ ...base, restoreRefresh: true })).toBe("full");
+  });
+
+  it("extracts identifier and issue-link mentions from summary markdown", () => {
+    const markdown = [
+      "**Decide:** [PAP-15357](/issues/PAP-15357) is blocked; PAP-15357 and pap-99 (lowercase) plus SC2-4 moved.",
+      "See [the launch issue](/issues/0F5A2C71-9F5C-4B6C-8A9E-1B2C3D4E5F60#comment-1) and /issues/not-a-uuid.",
+    ].join("\n");
+
+    expect(extractIssueMentions(markdown)).toEqual({
+      identifiers: ["PAP-15357", "SC2-4"],
+      issueIds: ["0f5a2c71-9f5c-4b6c-8a9e-1b2c3d4e5f60"],
+    });
+    expect(extractIssueMentions("No references here.")).toEqual({ identifiers: [], issueIds: [] });
   });
 });

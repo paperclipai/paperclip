@@ -47,6 +47,9 @@ export const statusCards = pgTable(
     lastChangeAt: timestamp("last_change_at", { withTimezone: true }),
     fingerprint: jsonb("fingerprint").$type<StatusCardFingerprint>(),
     fingerprintAt: timestamp("fingerprint_at", { withTimezone: true }),
+    // Issues referenced in the latest summary markdown (by identifier or issue
+    // link) that join the watched set alongside the compiled-query matches.
+    mentionedIssueIds: jsonb("mentioned_issue_ids").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     documentId: uuid("document_id").references(() => documents.id, { onDelete: "set null" }),
     lastUpdateRunKind: text("last_update_run_kind").$type<"full" | "incremental">(),
     lastGeneratedAt: timestamp("last_generated_at", { withTimezone: true }),

@@ -57,6 +57,7 @@ function baseCard(overrides: Partial<StatusCardView>): StatusCardView {
     lastChangeAt: null,
     fingerprint: null,
     fingerprintAt: null,
+    mentionedIssueIds: [],
     documentId: null,
     lastUpdateRunKind: "full",
     lastGeneratedAt: "2026-07-22T11:00:00.000Z",

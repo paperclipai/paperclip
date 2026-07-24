@@ -916,6 +916,124 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(summaryWrite.status).toBe(404);
   });
 
+  it("joins issues mentioned in the summary to the watched set and tracks their later changes", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const boardApp = createApp(db, localBoardActor());
+    const service = statusCardService(db);
+
+    const created = await request(boardApp)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Blocked launch tasks" });
+    const compileIssueId = created.body.generatingIssueId as string;
+    const compileRun = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ checkoutRunId: compileRun.id }).where(eq(issues.id, compileIssueId));
+    const matchedIssue = await db.insert(issues).values({ companyId: company.id, title: "Launch blocked on approval", status: "blocked", priority: "high" }).returning().then((rows) => rows[0]!);
+    const mentionedIdentifier = `M${randomUUID().replace(/[^0-9]/g, "").slice(0, 6)}X-7`;
+    const mentionedIssue = await db.insert(issues).values({ companyId: company.id, identifier: mentionedIdentifier, title: "Related migration follow-up", status: "in_progress", priority: "medium" }).returning().then((rows) => rows[0]!);
+
+    const compileApp = createApp(db, agentActor(company.id, summarizer.id, compileRun.id));
+    const queryWrite = await request(compileApp).put(`/api/status-cards/${created.body.id}/query`).send({
+      queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }],
+      title: "Launch blockers",
+      changeSummary: "Compiled the blocker query.",
+      generationIssueId: compileIssueId,
+    });
+    expect(queryWrite.status).toBe(200);
+
+    // The first summary mentions an issue the compiled query does not match —
+    // by identifier and by issue link — plus noise that must not resolve.
+    const summaryWrite = await request(compileApp).put(`/api/status-cards/${created.body.id}/summary`).send({
+      markdown: `**Decide:** unblock approval.\n\nAlso tracking ${mentionedIdentifier} ([details](/issues/${mentionedIssue.id})) and the unrelated UTF-8 / NOPE-99 tokens.`,
+      title: "Launch blockers",
+      changeSummary: "First full summary.",
+      generationIssueId: compileIssueId,
+      model: "gpt-5.4",
+    });
+    expect(summaryWrite.status).toBe(200);
+
+    const afterFirstSummary = await db.select().from(statusCards).where(eq(statusCards.id, created.body.id)).then((rows) => rows[0]!);
+    expect(afterFirstSummary.mentionedIssueIds).toEqual([mentionedIssue.id]);
+    expect(Object.keys(afterFirstSummary.fingerprint ?? {}).sort()).toEqual([matchedIssue.id, mentionedIssue.id].sort());
+
+    const detail = await request(boardApp).get(`/api/status-cards/${created.body.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.watchedIssueCount).toBe(2);
+
+    const dryRun = await request(boardApp).get(`/api/status-cards/${created.body.id}/dry-run`);
+    expect(dryRun.status).toBe(200);
+    expect(dryRun.body.mentionedIssues).toEqual([
+      expect.objectContaining({ id: mentionedIssue.id, identifier: mentionedIdentifier, status: "in_progress" }),
+    ]);
+
+    // Joining the mention must not by itself produce a pending delta.
+    const interval = { ...defaultStatusCardRefreshPolicy, mode: "interval" as const, intervalMinutes: 15 };
+    await db.update(statusCards).set({ refreshPolicy: interval, nextEvalAt: new Date(Date.now() - 1000) }).where(eq(statusCards.id, created.body.id));
+    expect(await service.tickDueStatusCards(new Date())).toMatchObject({ evaluated: 1, enqueued: [] });
+
+    // A status change on the mentioned issue now fires like any watched issue.
+    await db.update(issues).set({ status: "todo", updatedAt: new Date() }).where(eq(issues.id, mentionedIssue.id));
+    await db.update(statusCards).set({ nextEvalAt: new Date(Date.now() - 1000) }).where(eq(statusCards.id, created.body.id));
+    const tick = await service.tickDueStatusCards(new Date());
+    expect(tick.enqueued).toHaveLength(1);
+    const updateIssueId = tick.enqueued[0]!.generatingIssue.id;
+    const updateRow = await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.generationIssueId === updateIssueId)!);
+    expect(updateRow.changes).toEqual([
+      expect.objectContaining({ issueId: mentionedIssue.id, changeKind: "status", from: "in_progress", to: "todo" }),
+    ]);
+
+    // If the issue changes again while the update summary is being written,
+    // continuing to mention it refreshes the snapshot to the latest state so
+    // the same change is not queued again on the next tick.
+    await db.update(issues).set({ status: "in_review", updatedAt: new Date() }).where(eq(issues.id, mentionedIssue.id));
+    const updateRun = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ checkoutRunId: updateRun.id }).where(eq(issues.id, updateIssueId));
+    const secondSummary = await request(createApp(db, agentActor(company.id, summarizer.id, updateRun.id)))
+      .put(`/api/status-cards/${created.body.id}/summary`)
+      .send({
+        markdown: `**Decide:** unblock approval. ${mentionedIdentifier} remains in the launch scope.`,
+        changeSummary: "Covered the follow-up issue's latest state.",
+        generationIssueId: updateIssueId,
+        model: "gpt-5.4",
+      });
+    expect(secondSummary.status).toBe(200);
+
+    const afterSecondSummary = await db.select().from(statusCards).where(eq(statusCards.id, created.body.id)).then((rows) => rows[0]!);
+    expect(afterSecondSummary.mentionedIssueIds).toEqual([mentionedIssue.id]);
+    expect(afterSecondSummary.fingerprint?.[mentionedIssue.id]).toEqual(expect.objectContaining({ status: "in_review" }));
+
+    await db.update(statusCards).set({ nextEvalAt: new Date(Date.now() - 1000) }).where(eq(statusCards.id, created.body.id));
+    expect(await service.tickDueStatusCards(new Date())).toMatchObject({ evaluated: 1, enqueued: [] });
+
+    // A later summary that stops mentioning the issue drops it from the
+    // watched set without queuing a spurious "removed" delta afterwards.
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, mentionedIssue.id));
+    await db.update(statusCards).set({ nextEvalAt: new Date(Date.now() - 1000) }).where(eq(statusCards.id, created.body.id));
+    const nextTick = await service.tickDueStatusCards(new Date());
+    expect(nextTick.enqueued).toHaveLength(1);
+    const nextUpdateIssueId = nextTick.enqueued[0]!.generatingIssue.id;
+    const nextUpdateRun = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ checkoutRunId: nextUpdateRun.id }).where(eq(issues.id, nextUpdateIssueId));
+    const thirdSummary = await request(createApp(db, agentActor(company.id, summarizer.id, nextUpdateRun.id)))
+      .put(`/api/status-cards/${created.body.id}/summary`)
+      .send({
+        markdown: "**Decide:** unblock approval. The follow-up left the launch scope.",
+        changeSummary: "Dropped the follow-up issue.",
+        generationIssueId: nextUpdateIssueId,
+        model: "gpt-5.4",
+      });
+    expect(thirdSummary.status).toBe(200);
+
+    const afterThirdSummary = await db.select().from(statusCards).where(eq(statusCards.id, created.body.id)).then((rows) => rows[0]!);
+    expect(afterThirdSummary.mentionedIssueIds).toEqual([]);
+    expect(Object.keys(afterThirdSummary.fingerprint ?? {})).toEqual([matchedIssue.id]);
+    expect((await request(boardApp).get(`/api/status-cards/${created.body.id}`)).body.watchedIssueCount).toBe(1);
+
+    await db.update(statusCards).set({ nextEvalAt: new Date(Date.now() - 1000) }).where(eq(statusCards.id, created.body.id));
+    expect(await service.tickDueStatusCards(new Date())).toMatchObject({ evaluated: 1, enqueued: [] });
+  });
+
   it("writes a compiled query and first summary, dry-runs live rows, and bumps the version after recompile", async () => {
     const company = await seedCompany();
     await enableStatusCards();

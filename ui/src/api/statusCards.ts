@@ -1,4 +1,5 @@
 import type {
+  CompanySearchIssueSummary,
   CompanySearchQuery,
   CompanySearchResponse,
   CreateStatusCard,
@@ -13,6 +14,8 @@ export interface StatusCardDryRun {
   cardId: string;
   queryVersion: number;
   queries: Array<{ query: CompanySearchQuery; result: CompanySearchResponse }>;
+  /** Issues referenced in the latest summary that joined the watched set. */
+  mentionedIssues: CompanySearchIssueSummary[];
 }
 
 /**

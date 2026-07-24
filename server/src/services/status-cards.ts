@@ -31,8 +31,10 @@ import {
   chooseStatusCardUpdateKind,
   diffStatusCardFingerprint,
   evaluateStatusCardPolicy,
+  extractIssueMentions,
   filterStatusCardChanges,
   nextStatusCardEvaluationAt,
+  STATUS_CARD_MAX_MENTIONED_ISSUES,
   statusCardChangesHash,
   statusCardFingerprintHash,
   type StatusCardDeltaChange,
@@ -86,7 +88,7 @@ function updateDescription(input: {
   previousSummary: string | null;
   snapshot: CompanySearchIssueSummary[];
 }) {
-  const mechanical = `Return the completed Markdown through \`PUT /api/status-cards/${input.card.id}/summary\` with \`generationIssueId\`, a short non-empty \`changeSummary\`, and the model id. Do not call issue-list endpoints. Preserve the streaming STATUS and <<<SUMMARY-DRAFT>>> sentinels used by the Summarizer.`;
+  const mechanical = `Return the completed Markdown through \`PUT /api/status-cards/${input.card.id}/summary\` with \`generationIssueId\`, a short non-empty \`changeSummary\`, and the model id. Do not call issue-list endpoints. Preserve the streaming STATUS and <<<SUMMARY-DRAFT>>> sentinels used by the Summarizer. Issues the Markdown references by identifier (e.g. ABC-123) or issue link automatically join the card's watched set, so reference an issue only when the board should keep tracking it.`;
   // The card prompt is the board's single standing request: it already says
   // what to watch and how the update should read, so it doubles as the
   // summary instructions — there is no separate default prompt to append to
@@ -153,7 +155,7 @@ export function statusCardService(
   const searchSvc = companySearchService(db);
 
   async function readWatchedIssueCount(card: StatusCardRow) {
-    if (card.queries.length === 0) return 0;
+    if (card.queries.length === 0 && (card.mentionedIssueIds?.length ?? 0) === 0) return 0;
     try {
       return (await executeQueries(card)).length;
     } catch (err) {
@@ -513,6 +515,54 @@ export function statusCardService(
     });
   }
 
+  async function loadIssueSummaries(companyId: string, issueIds: string[]): Promise<CompanySearchIssueSummary[]> {
+    if (issueIds.length === 0) return [];
+    const rows = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        projectId: issues.projectId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
+    return rows.map((row) => ({
+      ...row,
+      status: row.status as CompanySearchIssueSummary["status"],
+      priority: row.priority as CompanySearchIssueSummary["priority"],
+      updatedAt: row.updatedAt.toISOString(),
+    }));
+  }
+
+  /**
+   * Resolve markdown issue mentions to real issue ids in the card's company.
+   * Unknown identifiers and foreign-company links drop out here, so a summary
+   * cannot join arbitrary ids to the watched set.
+   */
+  async function resolveMentionedIssueIds(companyId: string, markdown: string) {
+    const mentions = extractIssueMentions(markdown);
+    const conditions = [
+      ...(mentions.identifiers.length > 0 ? [inArray(issues.identifier, mentions.identifiers)] : []),
+      ...(mentions.issueIds.length > 0 ? [inArray(issues.id, mentions.issueIds)] : []),
+    ];
+    if (conditions.length === 0) return [];
+    const rows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), or(...conditions)))
+      .limit(STATUS_CARD_MAX_MENTIONED_ISSUES);
+    return rows.map((row) => row.id).sort();
+  }
+
+  async function listMentionedIssues(card: StatusCardRow) {
+    return loadIssueSummaries(card.companyId, card.mentionedIssueIds ?? []);
+  }
+
   async function executeQueries(card: StatusCardRow) {
     const issueMap = new Map<string, CompanySearchIssueSummary>();
     for (const storedQuery of card.queries) {
@@ -522,6 +572,13 @@ export function statusCardService(
         if (result.type === "issue" && result.issue) issueMap.set(result.issue.id, result.issue);
       }
     }
+    // Issues mentioned in the latest summary join the watched set alongside the
+    // compiled-query matches, so their later changes fire deltas too.
+    const mentioned = await loadIssueSummaries(
+      card.companyId,
+      (card.mentionedIssueIds ?? []).filter((issueId) => !issueMap.has(issueId)),
+    );
+    for (const issue of mentioned) issueMap.set(issue.id, issue);
     const snapshot = [...issueMap.values()];
     if (snapshot.length === 0) return snapshot;
     const latestHumanComments = await db
@@ -733,9 +790,33 @@ export function statusCardService(
       const trigger = payload?.operation === "update" && ["manual", "interval", "reactive", "restore"].includes(String(payload.trigger))
         ? payload.trigger as "manual" | "interval" | "reactive" | "restore"
         : "manual";
-      const snapshot = payload?.operation === "update" && payload.fingerprint && typeof payload.fingerprint === "object"
+      const payloadFingerprint = payload?.operation === "update" && payload.fingerprint && typeof payload.fingerprint === "object"
         ? payload.fingerprint as StatusCardFingerprint
-        : buildStatusCardFingerprint(await executeQueries(current));
+        : null;
+      const mentionedIssueIds = await resolveMentionedIssueIds(current.companyId, input.markdown);
+      // Current watched membership: compiled-query matches plus the issues this
+      // summary mentions.
+      const watchedNow = buildStatusCardFingerprint(
+        await executeQueries({ ...current, mentionedIssueIds }),
+      );
+      let snapshot: StatusCardFingerprint;
+      if (payloadFingerprint) {
+        // Keep the generation-time fingerprint as the change baseline: issues
+        // that changed (or newly matched the query) while this summary was
+        // being written must still fire at the next diff. Mentions are the
+        // exception — the summary just covered them, so they join silently —
+        // and mention-only entries whose reference dropped out leave the set.
+        snapshot = { ...payloadFingerprint };
+        for (const droppedId of current.mentionedIssueIds ?? []) {
+          if (!mentionedIssueIds.includes(droppedId) && !watchedNow[droppedId]) delete snapshot[droppedId];
+        }
+        for (const issueId of mentionedIssueIds) {
+          const entry = watchedNow[issueId];
+          if (entry) snapshot[issueId] = entry;
+        }
+      } else {
+        snapshot = watchedNow;
+      }
       const existing = current.documentId
         ? await tx.select().from(documents).where(and(eq(documents.id, current.documentId), eq(documents.companyId, current.companyId))).then((rows) => rows[0] ?? null)
         : null;
@@ -784,6 +865,7 @@ export function statusCardService(
         lastModel: input.model ?? null,
         fingerprint: snapshot,
         fingerprintAt: now,
+        mentionedIssueIds,
         pendingChangeCount: 0,
         pendingChangeHash: null,
         lastChangeAt: null,
@@ -831,5 +913,5 @@ export function statusCardService(
     return Promise.all(card.queries.map(async (query) => ({ query, result: await searchSvc.search(card.companyId, query) })));
   }
 
-  return { list, getById, hydrate, create, update, remove, listUpdates, listSummaryRevisions, requestCompile, requestRefresh, tickDueStatusCards, writeQuery, writeSummary, dryRun };
+  return { list, getById, hydrate, create, update, remove, listUpdates, listSummaryRevisions, listMentionedIssues, requestCompile, requestRefresh, tickDueStatusCards, writeQuery, writeSummary, dryRun };
 }

@@ -14,7 +14,7 @@ import type { StatusCard, StatusCardUpdate } from "@paperclipai/shared";
 export interface StatusCardView extends StatusCard {
   /** Latest summary markdown (from the card's summary document). */
   summaryBody?: string | null;
-  /** Number of issues currently matched by the compiled query. */
+  /** Watched-issue count: compiled-query matches plus summary mentions. */
   watchedIssueCount?: number;
   /** Tokens spent by this card so far today. */
   todayTokens?: number;
