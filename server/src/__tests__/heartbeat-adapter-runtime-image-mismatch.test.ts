@@ -17,6 +17,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { environmentService } from "../services/environments.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
 import { AdapterRuntimeImageMismatchError } from "@paperclipai/adapter-utils/execution-target";
 
@@ -312,5 +313,93 @@ describeEmbeddedPostgres("heartbeat AdapterRuntimeImageMismatchError self-heal",
     const destroyCalls = call.mock.calls.filter(([, method]: [unknown, string]) => method === "environmentDestroyLease");
     expect(acquireCalls).toHaveLength(2);
     expect(destroyCalls).toHaveLength(1);
+  }, 15_000);
+
+  it("marks the mismatched lease failed (not released) when the destroy RPC throws and the healed retry succeeds", async () => {
+    // Review finding 1: if destroyRunLease's RPC throws, the plugin driver
+    // never reaches its own releaseLease(..., "failed", ...) call (that only
+    // happens AFTER a successful destroy), so the old lease row is left
+    // "active" and still tied to this run's heartbeatRunId. If the healed
+    // retry then succeeds, run teardown releases every lease still tied to
+    // the run with status "released" (leaseReleaseStatusForRunStatus mapping
+    // "succeeded" -> "released"), which would silently put a KNOWN-BAD lease
+    // back into the reusable pool. The self-heal's destroy-failure catch must
+    // mark that lease "failed" directly so it can never be resumed, while the
+    // fresh lease from the successful re-acquire is unaffected.
+    const { companyId: _companyId, projectId, pluginId, agentId } = await seedPluginSandboxRun({
+      environmentName: "Plugin Sandbox Self-heal Destroy-Failure",
+      projectName: "Plugin Environment Self-heal Destroy-Failure",
+    });
+
+    let acquireCount = 0;
+    const call = vi.fn(async (_pluginId: string, method: string) => {
+      if (method === "environmentAcquireLease") {
+        acquireCount += 1;
+        return {
+          providerLeaseId: `plugin-heartbeat-lease-${acquireCount}`,
+          metadata: {
+            remoteCwd: "/workspace/project",
+          },
+        };
+      }
+      if (method === "environmentDestroyLease") {
+        throw new Error("destroy RPC unavailable");
+      }
+      if (method === "environmentReleaseLease") {
+        return undefined;
+      }
+      throw new Error(`Unexpected plugin environment method: ${method}`);
+    });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call,
+    } as unknown as PluginWorkerManager;
+
+    adapterExecute.mockImplementationOnce(async () => {
+      throw new AdapterRuntimeImageMismatchError(
+        "codex",
+        "sandbox pod plugin-heartbeat-lease-1",
+        "detect probe exited 127",
+      );
+    });
+
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      contextSnapshot: { projectId },
+    });
+
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 5_000 });
+
+    expect(adapterExecute).toHaveBeenCalledTimes(2);
+    const acquireCalls = call.mock.calls.filter(([, method]: [unknown, string]) => method === "environmentAcquireLease");
+    const destroyCalls = call.mock.calls.filter(([, method]: [unknown, string]) => method === "environmentDestroyLease");
+    expect(acquireCalls).toHaveLength(2);
+    expect(destroyCalls).toHaveLength(1);
+
+    const environmentId = (acquireCalls[0][2] as { environmentId: string }).environmentId;
+    // Lease release happens in executeRun's `finally` block, after the run
+    // status is already persisted as "succeeded"; wait for it explicitly
+    // rather than racing it right after the run-status waitFor above.
+    let oldLease: Awaited<ReturnType<ReturnType<typeof environmentService>["listLeases"]>>[number] | undefined;
+    let newLease: Awaited<ReturnType<ReturnType<typeof environmentService>["listLeases"]>>[number] | undefined;
+    await vi.waitFor(async () => {
+      const leases = await environmentService(db).listLeases(environmentId);
+      oldLease = leases.find((lease) => lease.providerLeaseId === "plugin-heartbeat-lease-1");
+      newLease = leases.find((lease) => lease.providerLeaseId === "plugin-heartbeat-lease-2");
+      expect(newLease?.status).toBe("released");
+    }, { timeout: 5_000 });
+
+    expect(oldLease).toBeDefined();
+    expect(oldLease?.status).toBe("failed");
+    expect(oldLease?.status).not.toBe("released");
+
+    expect(newLease).toBeDefined();
+    expect(newLease?.status).toBe("released");
   }, 15_000);
 });

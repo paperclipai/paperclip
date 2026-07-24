@@ -411,6 +411,17 @@ function buildReusableSandboxLeaseScope(input: {
   config: Record<string, unknown>;
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   providerMetadata?: Record<string, unknown> | null;
+  // Mirrors the `sandboxProviderPlugin === true` gate that
+  // reusableSandboxLeaseScopeMatches uses for its strict adapterType-equality
+  // rule. Only plugin-backed sandbox leases resolve a per-run adapter/image
+  // through the plugin worker RPC, so only they may fall back to reading
+  // adapterType/image out of providerMetadata; a built-in provider's
+  // providerMetadata is not per-run-image-keyed the way the plugin pool is,
+  // so treating any stray adapterType/image key there as a positive match
+  // would be unfounded. Built-in callers omit this flag (default false),
+  // making the fallback inert for them today; it exists so the two functions
+  // stay symmetric if a built-in provider ever starts publishing those keys.
+  isPluginBackedLease?: boolean;
 }): Record<string, unknown> | null {
   if (!input.executionWorkspaceId || !input.agentId) return null;
   const providerMetadata = input.providerMetadata ?? {};
@@ -420,8 +431,11 @@ function buildReusableSandboxLeaseScope(input: {
   // scope from ever being null for a plugin sandbox lease that DID resolve a
   // concrete adapter/image: a null scope has no positive proof of which
   // image the pod carries and can be matched by any run's reuse lookup.
-  const adapterType = input.adapterType ?? readString(providerMetadata.adapterType) ?? null;
-  const runtimeImage = readString(providerMetadata.image);
+  const adapterType =
+    input.adapterType ??
+    (input.isPluginBackedLease ? readString(providerMetadata.adapterType) : null) ??
+    null;
+  const runtimeImage = input.isPluginBackedLease ? readString(providerMetadata.image) : null;
   const remoteCwd = readString(providerMetadata.remoteCwd);
   const workspaceSentinel = isRecord(providerMetadata.workspaceSentinel)
     ? { ...providerMetadata.workspaceSentinel }
@@ -952,6 +966,7 @@ function createSandboxEnvironmentDriver(
               config: providerConfigForLease,
               leaseFingerprint,
               providerMetadata: sanitizedProviderMetadata,
+              isPluginBackedLease: true,
             })
           : null;
 

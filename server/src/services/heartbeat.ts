@@ -12746,7 +12746,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agentId: agent.id,
       persistedExecutionWorkspace,
     });
-    const selectedEnvironment = acquiredEnvironment.environment;
+    // `let`, not `const`: the AdapterRuntimeImageMismatchError self-heal
+    // (recoverEnvironmentLeaseAfterImageMismatch below) re-acquires the
+    // environment and must update this reference too, so the re-realization
+    // call uses the fresh environment rather than the one from before
+    // recovery.
+    let selectedEnvironment = acquiredEnvironment.environment;
     // Defense-in-depth: re-check the actually-acquired environment against the
     // execution allowlist. Even if selection were bypassed, a denied (local/ssh/
     // non-k8s) environment FAILS the run here rather than executing untrusted.
@@ -13636,6 +13641,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "adapter runtime image mismatch on sandbox lease; destroying lease and re-acquiring once",
         );
+        const mismatchedLeaseId = activeEnvironmentLease.lease.id;
         try {
           await envOrchestrator.runtime.destroyRunLease({
             environment: activeEnvironmentLease.environment,
@@ -13644,9 +13650,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
         } catch (destroyErr) {
           logger.warn(
-            { err: destroyErr, runId: run.id, leaseId: activeEnvironmentLease.lease.id },
+            { err: destroyErr, runId: run.id, leaseId: mismatchedLeaseId },
             "failed to destroy mismatched sandbox lease before re-acquiring; continuing with re-acquire",
           );
+          // The destroy RPC threw before the driver's destroyRunLease could
+          // mark this lease "failed" (that only happens AFTER a successful
+          // destroy), so the row is still "active" and still owned by this
+          // run's heartbeatRunId. If the healed retry below succeeds, run
+          // teardown (releaseEnvironmentLeasesForRun ->
+          // leaseReleaseStatusForRunStatus("succeeded")) releases every lease
+          // still tied to this run with status "released", which would put
+          // this KNOWN-BAD lease back into the reusable pool. Mark it
+          // non-reusable directly here, mirroring the exact call the driver's
+          // destroyRunLease would have made on success. Best-effort: this
+          // must not block recovery from proceeding even if it also fails.
+          try {
+            await environmentsSvc.releaseLease(mismatchedLeaseId, "failed", {
+              failureReason: "adapter_runtime_image_mismatch",
+            });
+          } catch (markFailedErr) {
+            logger.warn(
+              { err: markFailedErr, runId: run.id, leaseId: mismatchedLeaseId },
+              "failed to mark mismatched sandbox lease as failed after destroy RPC error; it may remain reusable",
+            );
+          }
         }
 
         const reacquiredEnvironment = await envOrchestrator.acquireForRun({
@@ -13664,6 +13691,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           lease: reacquiredEnvironment.lease,
           leaseContext: reacquiredEnvironment.leaseContext,
         };
+        // Keep selectedEnvironment in sync with the freshly reacquired
+        // environment (same pattern as the initial setup, which sources it
+        // from acquiredEnvironment.environment) so the re-realization call
+        // below never uses the stale pre-recovery reference.
+        selectedEnvironment = reacquiredEnvironment.environment;
         const rerealizationResult = await envOrchestrator.realizeForRun({
           environment: selectedEnvironment,
           lease: activeEnvironmentLease.lease,

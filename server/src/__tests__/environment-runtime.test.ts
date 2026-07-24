@@ -1775,6 +1775,55 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
+  it("does not reuse a plugin-backed sandbox lease scoped to a different concrete adapter type", async () => {
+    // Concrete-vs-concrete case: both sides are non-null, but different
+    // harnesses. A run requesting claude_local must never resume a lease
+    // scoped to gemini_local, even though neither side is null (the null
+    // cases above prove null is never a wildcard; this proves two distinct
+    // concrete values are also never treated as equal).
+    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease({ scopedAdapterType: "gemini_local" });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease-claude-vs-gemini",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      adapterType: "claude_local",
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease-claude-vs-gemini");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+    });
+  });
+
   it("persists the plugin's resolved adapter type and image into the reusable lease scope when the server has no per-run hint", async () => {
     // Gap-1 (second layer, matching plugin.ts's onEnvironmentAcquireLease
     // change): when the server's own adapterType hint is absent, the scope
