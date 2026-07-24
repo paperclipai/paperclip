@@ -625,6 +625,21 @@ Within the watched subtree, a watchdog run may perform only mutations that resto
 
 Every watchdog-triggered mutation must write activity with the watchdog id, source issue id, watchdog issue id when present, run id, and stop fingerprint. Mutations still use the normal status-transition, blocker, assignment, budget, and company-boundary guards.
 
+### Atomic recovery batch
+
+A watchdog run may submit an atomic recovery batch of at most 3 mutations drawn from the allowed-mutation list above, validated against the stop fingerprint that run observed. The server applies the batch all-or-nothing: if the subtree's stop fingerprint changed between observation and application — the subtree went live concurrently — the entire remainder of the batch is aborted and the staleness is recorded as evidence on the reusable watchdog issue. The batch is single-shot per watchdog run. This replaces the exactly-one-fresh-write model: the stale-guard's purpose (never mutate a subtree that concurrently went live) is preserved by fingerprint validation on the whole batch rather than by capping the run at one write, so a restoration that needs both a state-restoring `PATCH` and an explanatory comment cannot forfeit the restoration by ordering the comment first.
+
+### Restoration verification and escalation
+
+Reviewed-fingerprint suppression is disposition-aware. A watchdog disposition of "stopped state is legitimate" suppresses re-fire for that fingerprint as today. A disposition of "live path restored" arms a bounded verification instead:
+
+- if a later scan observes the subtree stopped with a fingerprint equal to the one the restoration claimed to fix, the watchdog re-fires with an incremented attempt count for that fingerprint lineage
+- restoration-attempt lineage (attempt number, claimed-fixed fingerprint, restoration actions) is persisted durable watchdog state
+- the stop fingerprint (or the lineage check) must account for intermediate-node durable updates so a restoration that changes no stopped leaf is classified as a failed restoration, not as a reviewed stop
+- after N attempts (N = 2–3, configuration-bounded) on the same fingerprint lineage, the platform stops re-firing and escalates to a human — the watchdog owner or a board notification — with the attempt history attached
+
+Escalation is terminal for the automatic loop: no further watchdog wakes fire for that lineage until a human or a new durable subtree change produces a different fingerprint.
+
 ### Disallowed watchdog mutations
 
 A task watchdog must not:
@@ -668,6 +683,8 @@ Implementation, security, UI, and QA work for task watchdogs must prove these co
 - plan-confirmation tests cover stale document revisions, missing purpose markers, outside-subtree targets, governed actions, newer user comments, and explicit human/CTO/Security reservations
 - scheduler tests prove live runs, queued wakes, and scheduled retries suppress watchdog wakeups, while terminal, cancelled, blocked, and review leaves are still verified when the subtree has no live path
 - tests prove `task_watchdog` origin issues and descendants are excluded from scans so watchdogs do not trigger themselves
+- recovery-batch tests prove batches are capped at 3 allowed mutations, applied all-or-nothing, and aborted with recorded evidence when the observed stop fingerprint went stale mid-batch
+- restoration-verification tests prove a "live path restored" disposition re-fires on an unchanged fingerprint with an incremented attempt count, a failed intermediate-node restoration is not treated as a reviewed stop, and the N-attempt bound escalates to a human with attempt history instead of firing forever
 - regression tests prove watchdog capability discovery comes from wake metadata/denials and denied probes do not create visible issues
 - UI copy and badges distinguish task watchdogs from active-run output watchdogs, monitors, reviewers, approvers, and liveness recovery
 - prompt/context tests prove custom instructions are appended after non-overridable safety constraints and cannot expand authority
