@@ -9,6 +9,9 @@ export interface CostEvent {
   goalId: string | null;
   heartbeatRunId: string | null;
   billingCode: string | null;
+  idempotencyKey: string | null;
+  idempotencyDigest: string | null;
+  payloadDigest: string | null;
   provider: string;
   biller: string;
   billingType: BillingType;

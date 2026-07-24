@@ -67,6 +67,8 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
+  createIdempotentEvent: vi.fn(),
+  findByIdempotencyKey: vi.fn(),
   summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
@@ -160,8 +162,18 @@ async function createAppWithActor(actor: any) {
 }
 
 async function loadCostParsers() {
-  const { parseCostDateRange, parseCostLimit } = await import("../routes/costs.js");
-  return { parseCostDateRange, parseCostLimit };
+  const {
+    digestCostEventPayload,
+    parseCostDateRange,
+    parseCostIdempotencyKey,
+    parseCostLimit,
+  } = await import("../routes/costs.js");
+  return {
+    digestCostEventPayload,
+    parseCostDateRange,
+    parseCostIdempotencyKey,
+    parseCostLimit,
+  };
 }
 
 beforeEach(() => {
@@ -232,6 +244,133 @@ describe("cost routes", () => {
   it("returns 400 for an invalid 'to' date string", async () => {
     const { parseCostDateRange } = await loadCostParsers();
     expect(() => parseCostDateRange({ to: "banana" })).toThrow(/invalid 'to' date/i);
+  });
+
+  it("digests accepted request payloads independently of JSON object key order", async () => {
+    const { digestCostEventPayload } = await loadCostParsers();
+    expect(digestCostEventPayload({ agentId: "agent-1", costCents: 17 })).toBe(
+      digestCostEventPayload({ costCents: 17, agentId: "agent-1" }),
+    );
+    expect(digestCostEventPayload({ agentId: "agent-1", costCents: 17 })).not.toBe(
+      digestCostEventPayload({ agentId: "agent-1", costCents: 18 }),
+    );
+  });
+
+  it("returns the original event without another activity write on an idempotent replay", async () => {
+    const event = {
+      id: randomUUID(),
+      companyId: "company-1",
+      agentId: randomUUID(),
+      billingCode: "retry-key",
+      idempotencyKey: "retry-key",
+      payloadDigest: "A".repeat(43),
+      costCents: 17,
+      model: "aggregate",
+    };
+    mockCostService.createIdempotentEvent.mockResolvedValue({
+      event,
+      replayed: true,
+    });
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/cost-events")
+      .set("Idempotency-Key", "retry-key")
+      .send({
+        agentId: event.agentId,
+        billingCode: event.billingCode,
+        payloadDigest: event.payloadDigest,
+        provider: "anthropic",
+        model: "aggregate",
+        costCents: 17,
+        occurredAt: "2026-07-24T04:00:00.000Z",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(event.id);
+    expect(mockCostService.createIdempotentEvent).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        agentId: event.agentId,
+        billingCode: event.billingCode,
+        occurredAt: new Date("2026-07-24T04:00:00.000Z"),
+      }),
+      expect.objectContaining({
+        key: "retry-key",
+        digest: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+        payloadDigest: "A".repeat(43),
+      }),
+    );
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("looks up a raw cost event by billing code and scopes agents to their own ledger", async () => {
+    const event = {
+      id: randomUUID(),
+      companyId: "company-1",
+      agentId: "agent-1",
+      billingCode: "scv2_lookup",
+      idempotencyKey: "scv2_lookup",
+      payloadDigest: "B".repeat(43),
+      costCents: 9,
+    };
+    mockCostService.findByIdempotencyKey.mockResolvedValue(event);
+    const app = await createAppWithActor({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    });
+    const res = await request(app)
+      .get("/api/companies/company-1/cost-events/lookup")
+      .query({ billingCode: "scv2_lookup" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: event.id,
+      billingCode: "scv2_lookup",
+      payloadDigest: "B".repeat(43),
+      costCents: 9,
+    });
+    expect(mockCostService.findByIdempotencyKey).toHaveBeenCalledWith(
+      "company-1",
+      "scv2_lookup",
+      "agent-1",
+    );
+  });
+
+  it("denies raw lookup when the actor lacks company-wide cost read access", async () => {
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "company_scope:read",
+      reason: "deny_scope",
+      explanation: "Restricted agent keys cannot read company-wide costs.",
+    });
+    const app = await createAppWithActor({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      keyScope: { kind: "task_bridge" },
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .get("/api/companies/company-1/cost-events/lookup")
+      .query({ billingCode: "scv2_lookup" });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({
+      error: "Costs are outside this actor's authorization boundary",
+    });
+    expect(mockAccessService.decide).toHaveBeenCalledWith({
+      actor: expect.objectContaining({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+      }),
+      action: "company_scope:read",
+      resource: { type: "company", companyId: "company-1" },
+    });
+    expect(mockCostService.findByIdempotencyKey).not.toHaveBeenCalled();
   });
 
   it("returns finance summary rows for valid requests", async () => {
@@ -474,6 +613,147 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(event.inputTokens).toBe(2_732_577);
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent?.spentMonthlyCents).toBe(0);
+  });
+
+  it("deduplicates the same key and rejects a different payload digest", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const payload = {
+      agentId,
+      billingCode: "scv2_same",
+      provider: "anthropic",
+      biller: "anthropic-subscription",
+      billingType: "subscription_included" as const,
+      costStatus: "reported" as const,
+      model: "aggregate",
+      inputTokens: 100,
+      cachedInputTokens: 25,
+      outputTokens: 10,
+      costCents: 31,
+      occurredAt: new Date("2026-07-24T04:00:00.000Z"),
+    };
+    const idempotency = {
+      key: "scv2_same",
+      digest: "transport-digest-a",
+      payloadDigest: "A".repeat(43),
+    };
+
+    const attempts = await Promise.all([
+      costs.createIdempotentEvent(companyId, payload, idempotency),
+      costs.createIdempotentEvent(companyId, payload, idempotency),
+    ]);
+    const created = attempts.find((attempt) => !attempt.replayed);
+    const replay = attempts.find((attempt) => attempt.replayed);
+
+    expect(created).toBeDefined();
+    expect(replay).toBeDefined();
+    expect(replay?.event.id).toBe(created?.event.id);
+    const stored = await costs.findByIdempotencyKey(companyId, "scv2_same");
+    expect(stored).toMatchObject({
+      id: created?.event.id,
+      billingCode: "scv2_same",
+      idempotencyKey: "scv2_same",
+      idempotencyDigest: "transport-digest-a",
+      payloadDigest: "A".repeat(43),
+      costCents: 31,
+      inputTokens: 100,
+      cachedInputTokens: 25,
+      outputTokens: 10,
+    });
+    const rows = await db
+      .select()
+      .from(costEvents)
+      .where(eq(costEvents.idempotencyKey, "scv2_same"));
+    expect(rows).toHaveLength(1);
+
+    await expect(
+      costs.createIdempotentEvent(companyId, payload, {
+        ...idempotency,
+        digest: "transport-digest-b",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "cost_event_idempotency_conflict",
+        idempotencyKey: "scv2_same",
+      },
+    });
+  });
+
+  it("rejects future cost events before inserting a ledger row", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(
+      costs.createEvent(companyId, {
+        agentId,
+        provider: "anthropic",
+        model: "aggregate",
+        costCents: 1,
+        occurredAt: new Date(Date.now() + 60_000),
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "cost_event_future_occurred_at" },
+    });
+    await expect(
+      costs.createIdempotentEvent(
+        companyId,
+        {
+          agentId,
+          billingCode: "future_event",
+          provider: "anthropic",
+          model: "aggregate",
+          costCents: 1,
+          occurredAt: new Date(Date.now() + 60_000),
+        },
+        {
+          key: "future_event",
+          digest: "transport-digest-future",
+        },
+      ),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "cost_event_future_occurred_at" },
+    });
+    expect(await db.select().from(costEvents)).toHaveLength(0);
   });
 
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {

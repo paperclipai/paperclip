@@ -2906,12 +2906,39 @@ registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/cost-events",
   tags: ["costs"],
-  summary: "Record a cost event",
+  summary: "Record a cost event (Idempotency-Key supported)",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createCostEventSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/cost-events/lookup",
+  tags: ["costs"],
+  summary: "Look up an idempotent raw cost event by key",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      billingCode: z.string().min(1).max(200).optional(),
+      idempotencyKey: z.string().min(1).max(200).optional(),
+    }),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
 });
 
 registry.registerPath({
