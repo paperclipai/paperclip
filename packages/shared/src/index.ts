@@ -497,6 +497,13 @@ export {
 } from "./constants.js";
 
 export {
+  SUPPORTED_CURRENCIES,
+  DEFAULT_CURRENCY,
+  CURRENCY_SYMBOLS,
+  type SupportedCurrency,
+} from "./constants.js";
+
+export {
   generateSummarySlotSchema,
   summarySlotKeySchema,
   summarySlotQuerySchema,
@@ -1303,6 +1310,14 @@ export {
   upsertSidebarOrderPreferenceSchema,
   type UpsertSidebarOrderPreference,
 } from "./validators/sidebar-preferences.js";
+export {
+  userPreferencesSchema,
+  getUserPreferencesResponseSchema,
+  updateUserPreferencesSchema,
+  type UserPreferences,
+  type GetUserPreferencesResponse,
+  type UpdateUserPreferences,
+} from "./validators/user-preferences.js";
 export {
   resourceMembershipStateSchema,
   updateResourceMembershipSchema,

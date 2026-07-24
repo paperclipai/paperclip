@@ -1,5 +1,17 @@
 export type { Company } from "./company.js";
 export type {
+  CurrencyCode,
+} from "./currency.js";
+export {
+  SUPPORTED_CURRENCIES,
+  DEFAULT_CURRENCY,
+  CURRENCY_SYMBOLS,
+  CURRENCY_NAMES,
+  isValidCurrency,
+  getCurrencySymbol,
+  getCurrencyName,
+} from "./currency.js";
+export type {
   GenerateSummarySlotRequest,
   GenerateSummarySlotResponse,
   GetSummarySlotResponse,

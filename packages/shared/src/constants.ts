@@ -1,6 +1,17 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
+export const SUPPORTED_CURRENCIES = ["USD", "EUR", "UYU", "ARS"] as const;
+export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
+export const DEFAULT_CURRENCY: SupportedCurrency = "USD";
+
+export const CURRENCY_SYMBOLS: Record<SupportedCurrency, string> = {
+  USD: "$",
+  EUR: "€",
+  UYU: "$",
+  ARS: "$",
+} as const;
+
 export const DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const MAX_COMPANY_ATTACHMENT_MAX_BYTES = 1024 * 1024 * 1024;
 
