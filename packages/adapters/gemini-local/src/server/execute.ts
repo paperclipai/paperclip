@@ -640,12 +640,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     clearSessionOnMissingSession = false,
     isRetry = false,
   ): AdapterExecutionResult => {
+    // The classifiers strip JSONL event lines from stdout internally, so the
+    // agent conversation — which routinely discusses auth, rate limits, and
+    // network errors — never reaches the keyword matchers; structured error
+    // text is fed in explicitly via parsed.errorMessage/resultEvent.
     const authMeta = detectGeminiAuthRequired({
       parsed: attempt.parsed.resultEvent,
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
+      errorMessage: attempt.parsed.errorMessage,
     });
-    const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
+    const networkUnavailable = isGeminiTransientNetworkError(
+      attempt.proc.stdout,
+      attempt.proc.stderr,
+      attempt.parsed.errorMessage,
+    );
 
     if (attempt.proc.timedOut) {
       return {
@@ -672,7 +681,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       structuredFailure ||
       stderrLine ||
       `Gemini exited with code ${attempt.proc.exitCode ?? -1}`;
-    const failed = (attempt.proc.exitCode ?? 0) !== 0;
+    // A structured non-error result event is authoritative success even when
+    // the process exit code is nonzero (terminal-result cleanup SIGTERMs the
+    // CLI after a successful result), and error classification applies only
+    // to actual failures.
+    const parsedSucceeded = attempt.parsed.succeeded === true;
+    const failed = !parsedSucceeded && (attempt.proc.exitCode ?? 0) !== 0;
     const clearSessionForTurnLimit = isGeminiTurnLimitResult(
       attempt.parsed.resultEvent,
       attempt.proc.exitCode,
@@ -708,6 +722,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
+      succeeded: parsedSucceeded,
       errorMessage: failed ? fallbackErrorMessage : null,
       errorCode: failed && authMeta.requiresAuth
         ? "gemini_auth_required"
@@ -738,7 +753,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId &&
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
-      isGeminiSessionUnrecoverableError(initial.proc.stdout, initial.proc.stderr)
+      isGeminiSessionUnrecoverableError(initial.proc.stdout, initial.proc.stderr, initial.parsed.errorMessage)
     ) {
       await onLog(
         "stdout",

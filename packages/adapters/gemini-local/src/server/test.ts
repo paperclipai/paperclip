@@ -227,11 +227,13 @@ export async function testEnvironment(
         parsed: parsed.resultEvent,
         stdout: probe.stdout,
         stderr: probe.stderr,
+        errorMessage: parsed.errorMessage,
       });
       const quotaMeta = detectGeminiQuotaExhausted({
         parsed: parsed.resultEvent,
         stdout: probe.stdout,
         stderr: probe.stderr,
+        errorMessage: parsed.errorMessage,
       });
 
       if (quotaMeta.exhausted) {
