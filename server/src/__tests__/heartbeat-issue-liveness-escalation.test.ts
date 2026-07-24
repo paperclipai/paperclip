@@ -6,6 +6,7 @@ import {
   agents,
   agentWakeupRequests,
   agentRuntimeState,
+  agentTaskSessions,
   budgetPolicies,
   companies,
   companyMemberships,
@@ -114,7 +115,19 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
-    await db.delete(heartbeatRuns);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await db.delete(heartbeatRunEvents);
+      await db.delete(activityLog);
+      await db.delete(agentTaskSessions);
+      try {
+        await db.delete(heartbeatRuns);
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : String(error);
+        if (attempt === 9 || !message.includes("_heartbeat_runs_id_fk")) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(budgetPolicies);

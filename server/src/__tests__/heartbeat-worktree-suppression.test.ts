@@ -4,6 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  agentTaskSessions,
   agentWakeupRequests,
   agentRuntimeState,
   companySkills,
@@ -50,6 +51,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(heartbeatRunEvents);
       await db.delete(activityLog);
+      await db.delete(agentTaskSessions);
       try {
         await db.delete(heartbeatRuns);
         return;

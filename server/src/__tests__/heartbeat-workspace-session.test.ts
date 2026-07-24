@@ -1821,6 +1821,143 @@ describe("effective run session config freshness", () => {
     expect(decision.reasons.join("\n")).toContain("adapter config");
   });
 
+  it("ignores generic issue and project update timestamps when semantic workspace config is unchanged", async () => {
+    const base = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        issueConfigRevisionAt: "2026-06-01T00:00:00.000Z",
+        projectConfigRevisionAt: "2026-06-01T00:00:00.000Z",
+        issueSettings: { mode: "agent_default" },
+        projectPolicy: { mode: "shared" },
+      },
+    });
+    const next = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        issueConfigRevisionAt: "2026-06-02T00:00:00.000Z",
+        projectConfigRevisionAt: "2026-06-02T00:00:00.000Z",
+        issueSettings: { mode: "agent_default" },
+        projectPolicy: { mode: "shared" },
+      },
+    });
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(base),
+      configMetadata: next,
+    });
+
+    expect(decision.reset).toBe(false);
+    expect(decision.changedCategories).toEqual([]);
+  });
+
+  it("resets when the effective trust preset or workspace identity changes", async () => {
+    const base = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "shared_workspace",
+        effectiveMode: "shared_workspace",
+        workspaceIdentity: {
+          projectId: "project-a",
+          projectWorkspaceId: "workspace-a",
+          executionWorkspaceId: null,
+        },
+        trustPreset: {
+          kind: "standard",
+          preset: { kind: "standard" },
+          boundary: null,
+          sourcePresets: {},
+        },
+      },
+    });
+    const trustChanged = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "shared_workspace",
+        effectiveMode: "shared_workspace",
+        workspaceIdentity: {
+          projectId: "project-a",
+          projectWorkspaceId: "workspace-a",
+          executionWorkspaceId: null,
+        },
+        trustPreset: {
+          kind: "low_trust_review",
+          preset: { kind: "low_trust_review" },
+          boundary: { projectIds: ["project-a"] },
+          sourcePresets: { project: "low_trust_review" },
+        },
+      },
+    });
+    const workspaceChanged = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "shared_workspace",
+        effectiveMode: "shared_workspace",
+        workspaceIdentity: {
+          projectId: "project-b",
+          projectWorkspaceId: "workspace-b",
+          executionWorkspaceId: null,
+        },
+        trustPreset: {
+          kind: "standard",
+          preset: { kind: "standard" },
+          boundary: null,
+          sourcePresets: {},
+        },
+      },
+    });
+
+    expect(resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(base),
+      configMetadata: trustChanged,
+      wakeResetReason: null,
+    })).toMatchObject({
+      reset: true,
+      changedCategories: ["workspaceConfig"],
+    });
+    expect(resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(base),
+      configMetadata: workspaceChanged,
+      wakeResetReason: null,
+    })).toMatchObject({
+      reset: true,
+      changedCategories: ["workspaceConfig"],
+    });
+  });
+
+  it("still resets when semantic issue workspace settings change", async () => {
+    const base = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        issueSettings: { mode: "agent_default" },
+      },
+    });
+    const next = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "isolated_workspace",
+        effectiveMode: "isolated_workspace",
+        issueSettings: { mode: "isolated_workspace" },
+      },
+    });
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(base),
+      configMetadata: next,
+    });
+
+    expect(decision).toMatchObject({
+      reset: true,
+      changedCategories: ["workspaceConfig"],
+    });
+  });
+
   it("keeps model-only compatibility as an additional reset reason", async () => {
     const base = await buildSessionConfigMetadata();
 
