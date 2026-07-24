@@ -61,6 +61,40 @@ describe("measureStartupStep", () => {
     });
   });
 
+  it("swallows onEvent errors without changing the wrapped fn result", async () => {
+    let t = 0;
+    const now = () => t;
+    const onEvent = vi.fn(async () => {
+      throw new Error("sink failed");
+    });
+
+    const result = await measureStartupStep({ onEvent }, now, "bridge.paperclip", async () => {
+      t = 17;
+      return "value";
+    });
+
+    expect(result).toBe("value");
+    expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("swallows onEvent errors without replacing a wrapped fn error", async () => {
+    let t = 0;
+    const now = () => t;
+    const onEvent = vi.fn(async () => {
+      throw new Error("sink failed");
+    });
+    const boom = new Error("step failed");
+
+    await expect(
+      measureStartupStep({ onEvent }, now, "bridge.process-session", async () => {
+        t = 17;
+        throw boom;
+      }),
+    ).rejects.toBe(boom);
+
+    expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+
   it("does not throw when ctx.onEvent is undefined", async () => {
     const now = () => 0;
 

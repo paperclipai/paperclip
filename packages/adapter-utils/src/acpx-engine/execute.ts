@@ -2625,13 +2625,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             "stdout",
             `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
           );
-          handle = await runtime.ensureSession({
-            sessionKey: prepared.sessionKey,
-            agent: prepared.acpxAgent,
-            mode: prepared.mode,
-            cwd: prepared.cwd,
-            sessionOptions: { env: prepared.env },
-          });
+          handle = await measureStartupStep(ctx, now, "acp.handshake", () =>
+            runtime.ensureSession({
+              sessionKey: prepared.sessionKey,
+              agent: prepared.acpxAgent,
+              mode: prepared.mode,
+              cwd: prepared.cwd,
+              sessionOptions: { env: prepared.env },
+            }),
+          );
         }
       }
     } catch (err) {

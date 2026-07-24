@@ -38,6 +38,10 @@ export async function measureStartupStep<T>(
     return await fn();
   } finally {
     const durationMs = now() - start;
-    await ctx.onEvent?.(buildStepEvent(step, durationMs));
+    try {
+      await ctx.onEvent?.(buildStepEvent(step, durationMs));
+    } catch {
+      // Observability must not change startup control flow.
+    }
   }
 }
