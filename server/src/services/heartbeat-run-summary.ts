@@ -97,7 +97,11 @@ export function summarizeHeartbeatRunResultJson(
 // inter-tool narration (assistantTexts concatenated by the adapter), which must
 // never be published verbatim to the board — see BRO-1507 / BRO-1516.
 export const MAX_FALLBACK_COMMENT_CHARS = 1200;
-const NARRATION_OPENERS = /^(let me|i.ll|i need to|i can see|looking at|fetching|checking|first,)/i;
+// Apostrophes are matched as a character class so both the straight (') and
+// curly (’) forms count — agents emit either. Openers are narration phrases a
+// declarative status summary would not begin with ("Fixed X", "13/13 pass").
+const NARRATION_OPENERS =
+  /^(let me\b|i['’]ll\b|i['’]m going\b|i need to\b|i can see\b|now i['’]ll\b|next,? i['’]ll\b|looking at\b|fetching\b|checking\b|first,)/i;
 const FALLBACK_WITHHELD_COMMENT =
   "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
 

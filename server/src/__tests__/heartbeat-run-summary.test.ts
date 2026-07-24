@@ -83,10 +83,20 @@ describe("buildHeartbeatRunIssueComment", () => {
       "Fetching the run details from the API.",
       "Checking the current branch state.",
       "First, I will reproduce the bug.",
+      "I’m going to trace the fallback path.",
+      "Now I'll push the follow-up commit.",
+      "Next, I'll re-run the suite.",
     ]) {
       expect(buildHeartbeatRunIssueComment({ summary: opener })).toContain(
         "did not post a summary comment",
       );
+    }
+  });
+
+  it("does not treat the apostrophe opener as a regex wildcard", () => {
+    // Prior regex used `i.ll` where `.` matched any char; these must pass through.
+    for (const summary of ["Iall greetings logged.", "I-ll formatting kept."]) {
+      expect(buildHeartbeatRunIssueComment({ summary })).toBe(summary);
     }
   });
 
