@@ -1775,6 +1775,136 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
+  it("persists the plugin's resolved adapter type and image into the reusable lease scope when the server has no per-run hint", async () => {
+    // Gap-1 (second layer, matching plugin.ts's onEnvironmentAcquireLease
+    // change): when the server's own adapterType hint is absent, the scope
+    // must fall back to whatever the plugin actually resolved and returned
+    // in the lease metadata, so the scope is never null even though a
+    // concrete image WAS provisioned.
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Reusable Plugin Sandbox With Fallback",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.reusable-sandbox-provider-fallback",
+      packageName: "@acme/reusable-sandbox-provider-fallback",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.reusable-sandbox-provider-fallback",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Reusable Sandbox Provider Fallback",
+        description: "Test provider exercising the adapterType metadata fallback",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            supportsReusableLeases: true,
+            configSchema: {
+              type: "object",
+              properties: {
+                image: { type: "string" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Reusable workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "resolved-plugin-lease",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+              // The plugin's own resolution: no per-run hint came from the
+              // server (acquireRunLease is called below without adapterType),
+              // but the plugin still resolved a concrete adapter/image (e.g.
+              // the environment's configured default).
+              adapterType: "codex_local",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("resolved-plugin-lease");
+    expect(acquired.lease.metadata?.reusableSandboxLease).toMatchObject({
+      adapterType: "codex_local",
+      runtimeImage: "fake:test",
+    });
+  });
+
   it("does not retain or resume plugin-backed sandbox leases unless the provider opts in", async () => {
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();

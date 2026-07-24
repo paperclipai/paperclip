@@ -116,4 +116,21 @@ export interface KubernetesLeaseMetadata {
    * on runtime installation must NOT set this, so its install path is preserved.
    */
   runtimeImagePrebaked: true;
+  /**
+   * The adapter type this lease's pod was actually provisioned for (the
+   * per-run adapterType when supplied, otherwise the resolved environment
+   * default, see resolveRunAdapterType). Surfaced so the server's reusable
+   * sandbox lease scope is never null for a plugin-backed lease: a null scope
+   * has no positive proof of which runtime image the pod carries and can be
+   * matched by any run's reuse lookup, which is exactly the wrong-harness
+   * warm-pool bug this closes. Optional only for leases resumed from
+   * metadata predating this field.
+   */
+  adapterType?: string;
+  /**
+   * The runtime image resolved for this lease's pod (mirrors adapterType:
+   * persisted at acquire time and carried forward unchanged on resume, since
+   * a Kubernetes pod's image cannot change in place).
+   */
+  image?: string;
 }

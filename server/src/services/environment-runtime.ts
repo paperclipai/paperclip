@@ -414,7 +414,14 @@ function buildReusableSandboxLeaseScope(input: {
 }): Record<string, unknown> | null {
   if (!input.executionWorkspaceId || !input.agentId) return null;
   const providerMetadata = input.providerMetadata ?? {};
-  const adapterType = input.adapterType ?? null;
+  // Prefer the server's own per-run hint; fall back to the plugin's actually
+  // resolved adapter type when the server's hint is absent (e.g. a run whose
+  // adapterType wasn't threaded through). This is what keeps the persisted
+  // scope from ever being null for a plugin sandbox lease that DID resolve a
+  // concrete adapter/image: a null scope has no positive proof of which
+  // image the pod carries and can be matched by any run's reuse lookup.
+  const adapterType = input.adapterType ?? readString(providerMetadata.adapterType) ?? null;
+  const runtimeImage = readString(providerMetadata.image);
   const remoteCwd = readString(providerMetadata.remoteCwd);
   const workspaceSentinel = isRecord(providerMetadata.workspaceSentinel)
     ? { ...providerMetadata.workspaceSentinel }
@@ -435,6 +442,7 @@ function buildReusableSandboxLeaseScope(input: {
     ...(input.leaseFingerprint
       ? { leaseFingerprint: serializeLeaseFingerprint(input.leaseFingerprint) }
       : {}),
+    ...(runtimeImage ? { runtimeImage } : {}),
     ...(remoteCwd ? { remoteCwd } : {}),
     ...(workspaceSentinel ? { workspaceSentinel } : {}),
   };

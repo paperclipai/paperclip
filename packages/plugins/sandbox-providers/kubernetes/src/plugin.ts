@@ -355,6 +355,13 @@ const plugin = definePlugin({
       // behind a locked egress: declare them pre-baked so the server disables
       // the network-install shim and fails fast on a wrong-image mismatch.
       runtimeImagePrebaked: true,
+      // The adapter/image this pod was actually provisioned for (resolved
+      // above, never the possibly-absent per-run hint), so the server's
+      // reusable-lease scope is never null for this lease: a null scope has
+      // no positive proof of which image the pod carries and would otherwise
+      // be matched by any run's reuse lookup.
+      adapterType: effectiveAdapterType,
+      image,
     };
 
     return {
@@ -417,6 +424,16 @@ const plugin = definePlugin({
       readySandboxesByLease.add(params.providerLeaseId);
     }
 
+    // A Kubernetes pod's image cannot change in place, so the adapter/image
+    // this resumed pod is running is whatever was resolved at its original
+    // acquireLease: carry it forward unchanged rather than re-deriving it.
+    // Leases resumed from metadata that predates this field simply omit it
+    // (matching pre-existing behavior; the strict scope-matching rule on the
+    // server treats an absent value as never-a-wildcard, same as null).
+    const priorAdapterType =
+      typeof params.leaseMetadata?.adapterType === "string" ? params.leaseMetadata.adapterType : undefined;
+    const priorImage =
+      typeof params.leaseMetadata?.image === "string" ? params.leaseMetadata.image : undefined;
     const leaseMetadata: KubernetesLeaseMetadata = {
       namespace,
       jobName: params.providerLeaseId,
@@ -427,6 +444,8 @@ const plugin = definePlugin({
       // Pre-baked runtime images (see acquire path); the resumed lease carries
       // the same capability so the server keeps the network-install shim off.
       runtimeImagePrebaked: true,
+      adapterType: priorAdapterType,
+      image: priorImage,
     };
 
     return {

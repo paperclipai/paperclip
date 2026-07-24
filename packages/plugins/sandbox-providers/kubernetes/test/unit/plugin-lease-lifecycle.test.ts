@@ -89,6 +89,44 @@ describe("onEnvironmentResumeLease", () => {
     );
   });
 
+  it("carries the originally-resolved adapter type and image forward on resume", async () => {
+    // Gap-1 (second layer): a Kubernetes pod's image cannot change in place,
+    // so the resumed lease must surface the SAME adapterType/image it was
+    // acquired with, not drop them: otherwise the server's reusable-lease
+    // scope would go null on every resume and lose the positive match proof
+    // reacquired leases had.
+    h.clients = {
+      custom: {
+        getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")),
+      },
+      core: {
+        readNamespacedPod: vi.fn().mockResolvedValue({
+          metadata: {},
+          status: { phase: "Running" },
+        }),
+      },
+    };
+
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata({
+        adapterType: "claude_local",
+        image: "ghcr.io/paperclipai/agent-runtime-claude:v1",
+      }),
+    });
+
+    expect(lease.metadata).toEqual(
+      expect.objectContaining({
+        adapterType: "claude_local",
+        image: "ghcr.io/paperclipai/agent-runtime-claude:v1",
+      }),
+    );
+  });
+
   it("returns providerLeaseId null (expired) when the Sandbox CR is gone, so the caller falls back to acquireLease", async () => {
     h.clients = {
       custom: { getNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()) },
