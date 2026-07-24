@@ -4,6 +4,7 @@ import {
   costEvents,
   executionReceipts,
   heartbeatRuns,
+  issues,
   toolInvocations,
   type Db,
   type ExecutionReceiptToolInvoked,
@@ -12,6 +13,14 @@ import { sanitizeRecord } from "../redaction.js";
 import { sha256Digest } from "./canonical-hash.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ISSUE_ID_FK_CONSTRAINT = "execution_receipts_issue_id_issues_id_fk";
+
+function isPostgresForeignKeyViolation(error: unknown, constraint: string): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const record = error as { code?: unknown; constraint_name?: unknown; cause?: unknown };
+  if (record.code === "23503" && record.constraint_name === constraint) return true;
+  return record.cause ? isPostgresForeignKeyViolation(record.cause, constraint) : false;
+}
 
 export type ExecutionReceiptRow = typeof executionReceipts.$inferSelect;
 export type SkillRiskTier = 0 | 1 | 2 | null;
@@ -181,57 +190,82 @@ export async function emitExecutionReceipt(db: Db, runId: string): Promise<Execu
   const outcome = mapRunStatusToOutcome(run.status);
   const issueId = readContextIssueId(run.contextSnapshot);
 
-  return db.transaction(async (tx) => {
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`paperclip:execution-receipts:${run.companyId}`}, 0))`,
-    );
+  // `issueId` is a hard FK to `issues.id`. The issue can be gone by the time this
+  // fires (deleted mid-flight, or any other staleness) — an audit trail whose
+  // entire value is non-skippability must not let that sink the whole receipt.
+  // The existence check below closes almost all of that window; the outer catch/
+  // retry closes the remainder (issue deleted between the check and the insert).
+  async function runReceiptTransaction(forceNullIssueId: boolean): Promise<ExecutionReceiptRow | null> {
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`paperclip:execution-receipts:${run.companyId}`}, 0))`,
+      );
 
-    const [chainRow] = await tx
-      .select({ maxSeq: sql<number | null>`max(${executionReceipts.chainSeq})` })
-      .from(executionReceipts)
-      .where(eq(executionReceipts.companyId, run.companyId));
-    const maxSeq = chainRow?.maxSeq ?? null;
+      const resolvedIssueId =
+        issueId && !forceNullIssueId
+          ? await tx
+              .select({ id: issues.id })
+              .from(issues)
+              .where(eq(issues.id, issueId))
+              .then((rows) => (rows.length > 0 ? issueId : null))
+          : null;
 
-    let prevReceiptHash: string | null = null;
-    if (maxSeq !== null) {
-      const prevRow = await tx
-        .select({ contentHash: executionReceipts.contentHash })
+      const [chainRow] = await tx
+        .select({ maxSeq: sql<number | null>`max(${executionReceipts.chainSeq})` })
         .from(executionReceipts)
-        .where(and(eq(executionReceipts.companyId, run.companyId), eq(executionReceipts.chainSeq, maxSeq)))
-        .then((rows) => rows[0] ?? null);
-      prevReceiptHash = prevRow?.contentHash ?? null;
+        .where(eq(executionReceipts.companyId, run.companyId));
+      const maxSeq = chainRow?.maxSeq ?? null;
+
+      let prevReceiptHash: string | null = null;
+      if (maxSeq !== null) {
+        const prevRow = await tx
+          .select({ contentHash: executionReceipts.contentHash })
+          .from(executionReceipts)
+          .where(and(eq(executionReceipts.companyId, run.companyId), eq(executionReceipts.chainSeq, maxSeq)))
+          .then((rows) => rows[0] ?? null);
+        prevReceiptHash = prevRow?.contentHash ?? null;
+      }
+      const chainSeq = maxSeq === null ? 0 : maxSeq + 1;
+
+      const hashInput: ReceiptHashInput = {
+        companyId: run.companyId,
+        agentId: run.agentId,
+        runId: run.id,
+        issueId: resolvedIssueId,
+        skillId: skillRef.skillId,
+        pluginId: skillRef.pluginId,
+        skillName: skillRef.skillName,
+        skillVersionHash: skillRef.skillVersionHash,
+        riskTier,
+        riskTierSource: riskTier === null ? "fail_safe_default" : "classifier",
+        inputsRedacted,
+        toolsInvoked,
+        gateDecisions: {},
+        evalScores: {},
+        outcome,
+        costCents,
+        prevReceiptHash,
+        chainSeq,
+      };
+      const contentHash = computeReceiptContentHash(hashInput);
+
+      const [inserted] = await tx
+        .insert(executionReceipts)
+        .values({ ...hashInput, contentHash })
+        .onConflictDoNothing({ target: executionReceipts.runId })
+        .returning();
+      return inserted ?? null;
+    });
+  }
+
+  try {
+    return await runReceiptTransaction(false);
+  } catch (error) {
+    if (issueId && isPostgresForeignKeyViolation(error, ISSUE_ID_FK_CONSTRAINT)) {
+      return runReceiptTransaction(true);
     }
-    const chainSeq = maxSeq === null ? 0 : maxSeq + 1;
-
-    const hashInput: ReceiptHashInput = {
-      companyId: run.companyId,
-      agentId: run.agentId,
-      runId: run.id,
-      issueId,
-      skillId: skillRef.skillId,
-      pluginId: skillRef.pluginId,
-      skillName: skillRef.skillName,
-      skillVersionHash: skillRef.skillVersionHash,
-      riskTier,
-      riskTierSource: riskTier === null ? "fail_safe_default" : "classifier",
-      inputsRedacted,
-      toolsInvoked,
-      gateDecisions: {},
-      evalScores: {},
-      outcome,
-      costCents,
-      prevReceiptHash,
-      chainSeq,
-    };
-    const contentHash = computeReceiptContentHash(hashInput);
-
-    const [inserted] = await tx
-      .insert(executionReceipts)
-      .values({ ...hashInput, contentHash })
-      .onConflictDoNothing({ target: executionReceipts.runId })
-      .returning();
-    return inserted ?? null;
-  });
+    throw error;
+  }
 }
 
 export async function getReceiptsBySkillVersion(

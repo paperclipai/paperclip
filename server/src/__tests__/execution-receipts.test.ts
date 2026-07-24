@@ -168,6 +168,21 @@ describeEmbeddedPostgres("execution receipts", () => {
     expect(receipt!.riskTierSource).toBe("fail_safe_default");
   });
 
+  it("still emits a receipt (with a null issueId) when contextSnapshot.issueId references a deleted/nonexistent issue", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const danglingIssueId = randomUUID();
+    const run = await createHeartbeatRun(db, company.id, agent.id, {
+      status: "succeeded",
+      contextSnapshot: { issueId: danglingIssueId },
+    });
+
+    const receipt = await emitExecutionReceipt(db, run.id);
+
+    expect(receipt).not.toBeNull();
+    expect(receipt!.issueId).toBeNull();
+  });
+
   it("filters getReceiptsBySkillVersion by companyId and skillVersionHash", async () => {
     const company = await createCompany(db);
     const otherCompany = await createCompany(db);
