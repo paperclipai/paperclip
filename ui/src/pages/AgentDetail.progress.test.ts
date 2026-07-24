@@ -5,6 +5,7 @@ import { queryKeys } from "../lib/queryKeys";
 import {
   buildHeartbeatProgressLogLine,
   heartbeatProgressLogLineKey,
+  shouldPollRunShellLog,
   syncAgentRouteAfterRename,
 } from "./AgentDetail";
 
@@ -60,6 +61,14 @@ describe("heartbeatProgressLogLineKey", () => {
     expect(heartbeatProgressLogLineKey(line)).toBe(
       "2026-07-04T05:03:00.000Z\u0000system\u0000[workspace] Syncing issue history",
     );
+  });
+});
+
+describe("shouldPollRunShellLog", () => {
+  it("polls only after a queued run has started running", () => {
+    expect(shouldPollRunShellLog("queued")).toBe(false);
+    expect(shouldPollRunShellLog("running")).toBe(true);
+    expect(shouldPollRunShellLog("succeeded")).toBe(false);
   });
 });
 
