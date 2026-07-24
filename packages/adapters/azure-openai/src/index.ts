@@ -1,13 +1,3 @@
-/**
- * Azure OpenAI + Azure AI Foundry adapter for Paperclip.
- *
- * Wraps Azure's OpenAI-compatible /chat/completions endpoint (SSE streaming,
- * `api-key` header, `api-version` query parameter for classic Azure OpenAI;
- * plain /chat/completions for Foundry serverless deployments).
- *
- * @packageDocumentation
- */
-
 import type { AdapterSessionManagement, ServerAdapterModule } from "@paperclipai/adapter-utils";
 
 import { ADAPTER_LABEL, ADAPTER_TYPE } from "./shared/constants.js";
@@ -21,11 +11,6 @@ import {
 export const type = ADAPTER_TYPE;
 export const label = ADAPTER_LABEL;
 
-/**
- * Model list is intentionally empty — the operator picks the deployment name
- * per Azure resource; there is no meaningful global list. UI should surface
- * `deployment` as a free-text field (see getConfigSchema()).
- */
 export const models: { id: string; label: string }[] = [];
 
 const sessionManagement: AdapterSessionManagement = {
@@ -37,58 +22,62 @@ export const agentConfigurationDoc = `# azure_openai agent configuration
 
 Adapter: azure_openai
 
-Use when:
-- The company already has an Azure OpenAI resource or an Azure AI Foundry
-  serverless deployment, and you want to run a Paperclip agent directly against
-  a chat model without owning a CLI agent.
-- Compliance requires the model call to originate from Azure (data residency,
-  private link, tenant-scoped auth).
+Covers three Azure surfaces with one adapter:
 
-Don't use when:
-- The agent needs local tools, filesystem access, shell, or long-running
-  in-process state — use a CLI adapter (claude_local, codex_local, hermes_local)
-  and configure that CLI to talk to Azure OpenAI at the provider layer.
-- The agent needs Copilot subscription semantics — use the GitHub Copilot
-  adapter (roadmap; not this adapter).
+1. Azure OpenAI resource + named deployment (classic).
+2. Azure AI Foundry serverless deployments.
+3. Azure AI Foundry model / Agent endpoints using the OpenAI Responses API
+   (URL like https://<project>.services.ai.azure.com/openai/v1/responses).
+
+Endpoint URL construction is controlled by endpointMode:
+- deployment (default): adapter builds the URL from endpoint + deployment + apiVersion.
+- raw: adapter posts to endpoint verbatim. Use for the Foundry per-model URL you
+  copied from the portal.
+
+Request/response shape is controlled by apiSurface:
+- auto (default): URLs ending in /responses go through the Responses API;
+  everything else goes through Chat Completions.
+- chat_completions: classic /chat/completions shape.
+- responses: OpenAI Responses API — input + instructions in,
+  response.output_text.delta + response.completed SSE out.
+
+Authentication (authMode):
+- api_key (default): sends 'api-key: <apiKey>'.
+- bearer: sends 'Authorization: Bearer <bearerToken>'. Operator refreshes
+  the token externally (adapter never refreshes).
+- azure_ad: uses @azure/identity DefaultAzureCredential for the
+  https://cognitiveservices.azure.com/.default scope (override with aadScope).
+  Handles managed identity, az login, env vars, interactive browser.
+  In-process token cache with 5-min refresh margin. Required for tenants
+  where API key auth is disabled.
 
 Required fields:
-- endpoint (string):
-    Azure OpenAI resource URL, e.g. https://my-resource.openai.azure.com/
-    or Foundry serverless URL, e.g. https://my-project.eastus2.inference.ai.azure.com/
-- apiKey (string): Azure resource api-key OR Foundry inference key. Stored as
-  a Paperclip secret; never appears in prompts or comments.
-- deployment (string): required when deploymentKind='azure_openai'. Ignored
-  (but recorded as model label) when deploymentKind='azure_ai_foundry'.
+- endpoint (string).
+- One of: apiKey (authMode=api_key), bearerToken (authMode=bearer),
+  a working AAD identity (authMode=azure_ad).
+- deployment (only when endpointMode=deployment and deploymentKind=azure_openai).
 
-Optional fields:
-- deploymentKind (azure_openai | azure_ai_foundry): defaults to azure_openai.
-- apiVersion (string): defaults to 2024-10-21. Ignored for Foundry serverless.
-- systemPrompt (string): stable system message prepended to every request.
-- temperature (number): defaults to 0.2.
-- maxOutputTokens (number): defaults to 4096.
-- timeoutSec (number): defaults to 300.
-- headers (JSON object): extra non-secret headers. Adapter-managed headers
-  (Authorization, api-key, content-type) cannot be overridden.
+Optional: endpointMode, deploymentKind, apiSurface, authMode, aadScope, model,
+apiVersion, systemPrompt, temperature, maxOutputTokens, timeoutSec, headers.
 
 Runtime mapping:
 - Renders the Paperclip wake payload through the shared prompt renderer so
   recovery, plan-review, and task-context scaffolding match every other adapter.
-- Sends POST {endpoint-shape}/chat/completions with stream=true and
-  stream_options.include_usage=true; parses SSE frames and forwards content
-  deltas to the Paperclip log stream in real time.
-- Reports usage.{inputTokens,outputTokens,cachedInputTokens} and a best-effort
-  costUsd from a built-in pricing table (see server/pricing.ts). Unknown
-  deployments fall back to costUsd=null so budgets track tokens honestly.
+- Sends POST with stream=true; parses SSE and forwards content deltas to
+  ctx.onLog("stdout", ...) in real time.
+- Reports usage.{inputTokens, outputTokens, cachedInputTokens?} from the final
+  frame. usageBasis="per_run".
+- Best-effort USD cost from a per-model table (server/pricing.ts) with
+  longest-prefix match. Unknown deployments return costUsd=null so budgets
+  track tokens honestly.
 
 Billing type: metered_api (Azure pay-as-you-go).
 
 Security guidance:
-- Prefer resource-level api-key with tight IP restrictions, or Azure AD
-  bearer tokens via the extra 'headers' field (adapter still sends api-key
-  by default; a follow-up change may add first-class AAD support).
-- Do not put apiKey in prompts, comments, extraHeaders, or agent notes.
-- Foundry serverless endpoints are per-model; treat the endpoint URL itself
-  as sensitive if it identifies the customer.
+- Prefer azure_ad in AAD-only tenants. Otherwise use bearer with an
+  externally refreshed token, or api_key where it is enabled.
+- The adapter never puts credentials in prompts, comments, or resultJson.
+  onMeta.context.headers shows Authorization/api-key as '***'.
 `;
 
 /**

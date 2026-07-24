@@ -15,14 +15,53 @@ import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   DEFAULT_TEMPERATURE,
   DEFAULT_TIMEOUT_SEC,
+  type ApiSurface,
   type DeploymentKind,
+  type EndpointMode,
 } from "../shared/constants.js";
 import { computeCostUsd } from "./pricing.js";
+import { resolveAuthHeaders } from "./auth.js";
+import {
+  buildRequestUrl as buildRequestUrlImpl,
+  resolveApiSurface,
+} from "./endpoint.js";
+import {
+  buildResponsesBody,
+  extractUsageFromResponses,
+  parseResponsesStream,
+} from "./responses-api.js";
 
-type ChatMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
-};
+// ---------------------------------------------------------------------------
+// Re-exports the tests + earlier callers rely on
+// ---------------------------------------------------------------------------
+
+export { resolveApiSurface } from "./endpoint.js";
+
+/**
+ * Back-compat overload for the earlier signature (no endpointMode field). The
+ * unit tests in execute.test.ts and the local harness use this shape.
+ */
+export function buildRequestUrl(args: {
+  endpoint: string;
+  deployment: string;
+  apiVersion: string;
+  deploymentKind: DeploymentKind;
+  endpointMode?: EndpointMode;
+}): string {
+  return buildRequestUrlImpl({
+    endpoint: args.endpoint,
+    deployment: args.deployment,
+    apiVersion: args.apiVersion,
+    deploymentKind: args.deploymentKind,
+    endpointMode: args.endpointMode ?? "deployment",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Chat Completions request/parse (unchanged from v1)
+// ---------------------------------------------------------------------------
+
+type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
 type ChatCompletionUsage = {
   prompt_tokens?: number;
@@ -31,50 +70,17 @@ type ChatCompletionUsage = {
   prompt_tokens_details?: { cached_tokens?: number };
 };
 
-type ChatCompletionChoiceDelta = {
-  role?: string;
-  content?: string | null;
-};
-
 type ChatCompletionStreamChunk = {
   id?: string;
   model?: string;
   choices?: Array<{
     index?: number;
-    delta?: ChatCompletionChoiceDelta;
+    delta?: { role?: string; content?: string | null };
     finish_reason?: string | null;
   }>;
   usage?: ChatCompletionUsage | null;
 };
 
-/**
- * Build the request URL for Azure OpenAI or Foundry serverless.
- *
- * - Azure OpenAI:      {endpoint}/openai/deployments/{deployment}/chat/completions?api-version={ver}
- * - Foundry serverless:{endpoint}/chat/completions   (deployment/api-version implicit in the endpoint)
- */
-export function buildRequestUrl(args: {
-  endpoint: string;
-  deployment: string;
-  apiVersion: string;
-  deploymentKind: DeploymentKind;
-}): string {
-  const base = args.endpoint.replace(/\/+$/, "");
-  if (args.deploymentKind === "azure_ai_foundry") {
-    // Foundry serverless already carries the model; deployment optional
-    return `${base}/chat/completions`;
-  }
-  const encoded = encodeURIComponent(args.deployment);
-  return `${base}/openai/deployments/${encoded}/chat/completions?api-version=${encodeURIComponent(
-    args.apiVersion,
-  )}`;
-}
-
-/**
- * Assemble the chat messages sent to Azure. The Paperclip wake payload is
- * rendered by the shared helper so recovery / task-context / plan-review
- * scaffolding behaves the same as every other adapter.
- */
 export function buildChatMessages(args: {
   systemPrompt: string | null;
   prompt: string;
@@ -87,23 +93,17 @@ export function buildChatMessages(args: {
   return messages;
 }
 
-type ParsedSse = {
+type ChatParsed = {
   outputText: string;
   finishReason: string | null;
   usage: ChatCompletionUsage | null;
   reportedModel: string | null;
 };
 
-/**
- * Parse an Azure OpenAI SSE stream body. Each frame is a `data: {json}` line
- * terminated by an empty line; `data: [DONE]` closes the stream. Emits every
- * content delta through the `onDelta` callback so callers can forward chunks
- * to Paperclip's log stream in real time.
- */
 export async function parseChatCompletionStream(
   body: ReadableStream<Uint8Array>,
   onDelta: (chunk: string) => Promise<void> | void,
-): Promise<ParsedSse> {
+): Promise<ChatParsed> {
   const reader = body.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
@@ -117,7 +117,6 @@ export async function parseChatCompletionStream(
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    // Split on SSE frame boundary (blank line).
     let sepIndex: number;
     while ((sepIndex = buffer.indexOf("\n\n")) !== -1) {
       const frame = buffer.slice(0, sepIndex);
@@ -154,7 +153,7 @@ export async function parseChatCompletionStream(
   return { outputText: output, finishReason, usage, reportedModel };
 }
 
-function extractUsage(u: ChatCompletionUsage | null): UsageSummary | undefined {
+function extractChatUsage(u: ChatCompletionUsage | null): UsageSummary | undefined {
   if (!u) return undefined;
   const inputTokens = u.prompt_tokens ?? 0;
   const outputTokens = u.completion_tokens ?? 0;
@@ -167,19 +166,34 @@ function extractUsage(u: ChatCompletionUsage | null): UsageSummary | undefined {
   };
 }
 
-const SENSITIVE_HEADER_PATTERN = /(^|[_-])(auth|authorization|api[_-]?key|token|secret)([_-]|$)/i;
+// ---------------------------------------------------------------------------
+// Header redaction (auth + operator-supplied extras)
+// ---------------------------------------------------------------------------
+
+const SENSITIVE_HEADER_PATTERN =
+  /(^|[_-])(auth|authorization|api[_-]?key|token|secret|bearer)([_-]|$)/i;
 
 function redactHeaders(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(headers)) {
-    out[k] = SENSITIVE_HEADER_PATTERN.test(k) ? "***" : v;
+    if (SENSITIVE_HEADER_PATTERN.test(k)) {
+      out[k] = "***";
+      continue;
+    }
+    // Redact bearer-shaped values even under non-obvious header names
+    if (typeof v === "string" && /^Bearer\s+/i.test(v)) {
+      out[k] = "Bearer ***";
+      continue;
+    }
+    out[k] = v;
   }
   return out;
 }
 
-/**
- * Adapter execute() entry point.
- */
+// ---------------------------------------------------------------------------
+// execute()
+// ---------------------------------------------------------------------------
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, runtime, context } = ctx;
 
@@ -194,28 +208,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const apiKey = asString(config.apiKey, "");
-  if (!apiKey) {
-    return {
-      exitCode: 1,
-      signal: null,
-      timedOut: false,
-      errorMessage: `${ADAPTER_TYPE}: missing config.apiKey`,
-      errorCode: "config_missing_api_key",
-    };
-  }
-
-  const deploymentKind =
+  const endpointMode: EndpointMode =
+    asString(config.endpointMode, "deployment") === "raw" ? "raw" : "deployment";
+  const deploymentKind: DeploymentKind =
     asString(config.deploymentKind, "azure_openai") === "azure_ai_foundry"
       ? "azure_ai_foundry"
       : "azure_openai";
   const deployment = asString(config.deployment, "");
-  if (deploymentKind === "azure_openai" && !deployment) {
+  if (
+    endpointMode === "deployment" &&
+    deploymentKind === "azure_openai" &&
+    !deployment
+  ) {
     return {
       exitCode: 1,
       signal: null,
       timedOut: false,
-      errorMessage: `${ADAPTER_TYPE}: missing config.deployment (required for deploymentKind='azure_openai')`,
+      errorMessage: `${ADAPTER_TYPE}: missing config.deployment (required for deploymentKind='azure_openai' with endpointMode='deployment')`,
       errorCode: "config_missing_deployment",
     };
   }
@@ -225,7 +234,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const maxOutputTokens = asNumber(config.maxOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS);
   const timeoutSec = asNumber(config.timeoutSec, DEFAULT_TIMEOUT_SEC);
   const systemPrompt = asString(config.systemPrompt, "");
+  const modelHint = asString(config.model, "") || deployment || "";
   const extraHeaders = parseObject(config.headers) as Record<string, string>;
+
+  const apiSurfaceRaw = asString(config.apiSurface, "auto") as ApiSurface;
+  const url = buildRequestUrlImpl({
+    endpoint,
+    deployment,
+    apiVersion,
+    deploymentKind,
+    endpointMode,
+  });
+  const apiSurface = resolveApiSurface(apiSurfaceRaw, url);
+
+  // Resolve auth (may throw with a helpful message on misconfiguration)
+  let authHeaders: Record<string, string>;
+  let authDisplayMode: string;
+  try {
+    const resolved = await resolveAuthHeaders(config);
+    authHeaders = resolved.headers;
+    authDisplayMode = resolved.displayMode;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: message,
+      errorCode: "config_auth",
+    };
+  }
 
   const resumedSession = Boolean(runtime.sessionParams);
   const prompt = renderPaperclipWakePrompt(context, {
@@ -242,22 +280,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const url = buildRequestUrl({ endpoint, deployment, apiVersion, deploymentKind });
-  const messages = buildChatMessages({ systemPrompt: systemPrompt || null, prompt });
-
-  const body = {
-    messages,
-    temperature,
-    max_tokens: maxOutputTokens,
-    stream: true,
-    stream_options: { include_usage: true },
-  };
+  const body =
+    apiSurface === "responses"
+      ? buildResponsesBody({
+          systemPrompt: systemPrompt || null,
+          prompt,
+          model: modelHint || null,
+          temperature,
+          maxOutputTokens,
+          stream: true,
+        })
+      : {
+          messages: buildChatMessages({ systemPrompt: systemPrompt || null, prompt }),
+          temperature,
+          max_tokens: maxOutputTokens,
+          stream: true,
+          stream_options: { include_usage: true },
+        };
 
   const headers: Record<string, string> = {
     "content-type": "application/json",
     accept: "text/event-stream",
-    "api-key": apiKey,
-    // Foundry serverless typically also accepts a Bearer token; api-key works for both.
+    ...authHeaders,
     ...extraHeaders,
   };
 
@@ -273,9 +317,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       prompt,
       context: {
         url,
+        endpointMode,
         deploymentKind,
         deployment,
         apiVersion,
+        apiSurface,
+        authMode: authDisplayMode,
         headers: redactHeaders(headers),
       },
     });
@@ -290,8 +337,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!res.ok || !res.body) {
       const errText = await safeReadText(res);
       const status = res.status;
-      const providerQuota =
-        status === 429 && /quota|rate.?limit/i.test(errText);
+      const providerQuota = status === 429 && /quota|rate.?limit/i.test(errText);
       const errorFamily =
         providerQuota
           ? ("provider_quota" as const)
@@ -306,21 +352,51 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode: `http_${status}`,
         ...(errorFamily ? { errorFamily } : {}),
         provider: "azure",
-        model: deployment || null,
+        model: modelHint || null,
       };
     }
 
-    const parsed = await parseChatCompletionStream(res.body, async (delta) => {
-      await ctx.onLog("stdout", delta);
-    });
+    let outputText = "";
+    let finishReason: string | null = null;
+    let reportedModel: string | null = null;
+    let usage: UsageSummary | undefined;
+    let responseId: string | null = null;
 
-    // Trailing newline for shell-style log framing.
-    if (parsed.outputText.length > 0 && !parsed.outputText.endsWith("\n")) {
+    if (apiSurface === "responses") {
+      const parsed = await parseResponsesStream(res.body, async (delta) => {
+        await ctx.onLog("stdout", delta);
+      });
+      outputText = parsed.outputText;
+      finishReason = parsed.finishReason;
+      reportedModel = parsed.reportedModel;
+      usage = extractUsageFromResponses(parsed.usage);
+      responseId = parsed.responseId;
+      if (parsed.errorMessage) {
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: `${ADAPTER_TYPE}: Responses API stream error — ${parsed.errorMessage}`,
+          errorCode: "responses_stream_error",
+          provider: "azure",
+          model: reportedModel ?? modelHint ?? null,
+        };
+      }
+    } else {
+      const parsed = await parseChatCompletionStream(res.body, async (delta) => {
+        await ctx.onLog("stdout", delta);
+      });
+      outputText = parsed.outputText;
+      finishReason = parsed.finishReason;
+      reportedModel = parsed.reportedModel;
+      usage = extractChatUsage(parsed.usage);
+    }
+
+    if (outputText.length > 0 && !outputText.endsWith("\n")) {
       await ctx.onLog("stdout", "\n");
     }
 
-    const usage = extractUsage(parsed.usage);
-    const model = parsed.reportedModel ?? deployment ?? null;
+    const model = reportedModel ?? modelHint ?? null;
     const costUsd = usage ? computeCostUsd(model, usage) : null;
 
     return {
@@ -333,11 +409,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       usage,
       usageBasis: "per_run",
       costUsd: costUsd,
-      summary: truncate(parsed.outputText, 2000),
+      summary: truncate(outputText, 2000),
       resultJson: {
-        finish_reason: parsed.finishReason,
+        finish_reason: finishReason,
         duration_ms: Date.now() - startedAt,
         deployment_kind: deploymentKind,
+        endpoint_mode: endpointMode,
+        api_surface: apiSurface,
+        auth_mode: authDisplayMode,
+        ...(responseId ? { response_id: responseId } : {}),
       },
     };
   } catch (err) {
@@ -349,7 +429,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `${ADAPTER_TYPE}: request timed out after ${timeoutSec}s`,
         errorFamily: "transient_upstream",
         provider: "azure",
-        model: deployment || null,
+        model: modelHint || null,
       };
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -360,7 +440,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage: `${ADAPTER_TYPE}: ${message}`,
       errorFamily: "transient_upstream",
       provider: "azure",
-      model: deployment || null,
+      model: modelHint || null,
     };
   } finally {
     if (timer) clearTimeout(timer);

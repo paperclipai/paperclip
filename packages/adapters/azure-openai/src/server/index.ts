@@ -1,9 +1,16 @@
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
-export { execute, buildRequestUrl, buildChatMessages, parseChatCompletionStream } from "./execute.js";
+export { execute, buildRequestUrl, buildChatMessages, parseChatCompletionStream, resolveApiSurface } from "./execute.js";
 export { testEnvironment } from "./test.js";
 export { getConfigSchema } from "./config-schema.js";
 export { computeCostUsd, resolveModelPrice } from "./pricing.js";
+export { resolveAuthHeaders, resolveAuthMode, DEFAULT_AAD_SCOPE, _resetAuthCachesForTests } from "./auth.js";
+export {
+  buildResponsesBody,
+  extractUsageFromResponses,
+  parseResponsesJson,
+  parseResponsesStream,
+} from "./responses-api.js";
 
 /**
  * Azure OpenAI is stateless per request — there is no server-managed session
