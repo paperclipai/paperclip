@@ -217,7 +217,7 @@ export function approvalService(db: Db) {
       }
 
       const now = new Date();
-      return db
+      const rows = await db
         .update(approvals)
         .set({
           status: "revision_requested",
@@ -226,9 +226,13 @@ export function approvalService(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
-        .returning()
-        .then((rows) => rows[0]);
+        .where(and(eq(approvals.id, id), eq(approvals.status, "pending")))
+        .returning();
+      const updated = rows[0];
+      if (!updated) {
+        throw unprocessable("Only pending approvals can request revision");
+      }
+      return updated;
     },
 
     resubmit: async (id: string, payload?: Record<string, unknown>) => {
