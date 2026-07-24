@@ -59,6 +59,7 @@ export interface InstanceExperimentalSettings {
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
+  enableBetaSkills: boolean;
   enableSummaries: boolean;
   enableStatusCards: boolean;
   enableDecisions: boolean;

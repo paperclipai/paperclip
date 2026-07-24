@@ -159,6 +159,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableBetaSkills: {
+    title: "Beta skills",
+    description: "Allow agents to pin beta releases of the Paperclip core skill.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableSummaries: {
     title: "Summaries",
     description:

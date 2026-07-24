@@ -39,6 +39,7 @@ describe("instance settings service", () => {
       enableTaskWatchdogs: true,
       enableCloudSync: true,
       enableBuiltInAgents: true,
+      enableBetaSkills: false,
       enableSummaries: false,
       enableStatusCards: false,
       enableDecisions: false,
@@ -148,6 +149,12 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings(undefined).enableBuiltInAgents).toBe(false);
     expect(normalizeExperimentalSettings({}).enableBuiltInAgents).toBe(false);
     expect(normalizeExperimentalSettings({ enableExternalObjects: true }).enableBuiltInAgents).toBe(false);
+  });
+
+  it("preserves enableBetaSkills and defaults it off for legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableBetaSkills).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableBetaSkills).toBe(false);
+    expect(normalizeExperimentalSettings({ enableBetaSkills: true }).enableBetaSkills).toBe(true);
   });
 
   it("sets worktree run execution activation fields on a false to true transition", () => {

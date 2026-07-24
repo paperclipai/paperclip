@@ -48,6 +48,10 @@ const mockCompanySkillService = vi.hoisted(() => ({
   resolveRequestedSkillKeys: vi.fn(),
 }));
 
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
 const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
@@ -102,6 +106,11 @@ vi.mock("../services/secrets.js", () => ({
   secretService: () => mockSecretService,
 }));
 
+vi.mock("../services/instance-settings.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/instance-settings.js")>()),
+  instanceSettingsService: () => mockInstanceSettingsService,
+}));
+
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: vi.fn(() => mockAdapter),
   findActiveServerAdapter: vi.fn(() => mockAdapter),
@@ -138,6 +147,11 @@ function registerModuleMocks() {
 
   vi.doMock("../services/secrets.js", () => ({
     secretService: () => mockSecretService,
+  }));
+
+  vi.doMock("../services/instance-settings.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../services/instance-settings.js")>()),
+    instanceSettingsService: () => mockInstanceSettingsService,
   }));
 
   vi.doMock("../adapters/index.js", () => ({
@@ -245,6 +259,7 @@ describe.sequential("agent skill routes", () => {
     for (const mock of Object.values(mockIssueApprovalService)) mock.mockReset();
     for (const mock of Object.values(mockAgentInstructionsService)) mock.mockReset();
     for (const mock of Object.values(mockCompanySkillService)) mock.mockReset();
+    for (const mock of Object.values(mockInstanceSettingsService)) mock.mockReset();
     for (const mock of Object.values(mockSecretService)) mock.mockReset();
     mockLogActivity.mockReset();
     mockTrackAgentCreated.mockReset();
@@ -260,6 +275,7 @@ describe.sequential("agent skill routes", () => {
       agent: makeAgent("claude_local"),
     });
     mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: { env: {} } });
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBetaSkills: false });
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
@@ -596,6 +612,48 @@ describe.sequential("agent skill routes", () => {
         }),
       }),
       ["paperclipai/paperclip/paperclip"],
+    );
+  });
+
+  it("rejects version pins while beta skills are disabled", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({
+        desiredSkills: [{
+          key: "paperclipai/paperclip/paperclip",
+          versionId: "22222222-2222-4222-8222-222222222222",
+        }],
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("Beta skills experimental setting");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("accepts version pins while beta skills are enabled", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBetaSkills: true });
+    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
+    const versionId = "22222222-2222-4222-8222-222222222222";
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({
+        desiredSkills: [{ key: "paperclipai/paperclip/paperclip", versionId }],
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: expect.objectContaining({
+            desiredSkills: [{ key: "paperclipai/paperclip/paperclip", versionId }],
+          }),
+        }),
+      }),
+      expect.any(Object),
     );
   });
 
