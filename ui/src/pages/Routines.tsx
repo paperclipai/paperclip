@@ -159,9 +159,25 @@ export function buildRoutineGroups(
   groupByValue: RoutineGroupBy,
   projectById: Map<string, { name: string }>,
   agentById: Map<string, { name: string }>,
+  folderById: Map<string, { name: string }>,
 ): RoutineGroup[] {
-  if (groupByValue === "none" || groupByValue === "folder") {
+  if (groupByValue === "none") {
     return [{ key: "__all", label: null, items: routines }];
+  }
+
+  if (groupByValue === "folder") {
+    const groups = groupBy(routines, (routine) => routine.folderId ?? "__unfiled");
+    return Object.keys(groups)
+      .sort((left, right) => {
+        const leftLabel = left === "__unfiled" ? "Unfiled" : (folderById.get(left)?.name ?? "Unknown folder");
+        const rightLabel = right === "__unfiled" ? "Unfiled" : (folderById.get(right)?.name ?? "Unknown folder");
+        return leftLabel.localeCompare(rightLabel);
+      })
+      .map((key) => ({
+        key,
+        label: key === "__unfiled" ? "Unfiled" : (folderById.get(key)?.name ?? "Unknown folder"),
+        items: groups[key]!,
+      }));
   }
 
   if (groupByValue === "project") {
@@ -202,10 +218,11 @@ export function buildRoutineSections(
   groupByValue: RoutineGroupBy,
   projectById: Map<string, { name: string }>,
   agentById: Map<string, { name: string }>,
+  folderById: Map<string, { name: string }>,
 ): RoutineGroup[] {
   const builtInRoutines = routines.filter(isBuiltInRoutine);
   const customRoutines = routines.filter((routine) => !isBuiltInRoutine(routine));
-  const customGroups = buildRoutineGroups(customRoutines, groupByValue, projectById, agentById)
+  const customGroups = buildRoutineGroups(customRoutines, groupByValue, projectById, agentById, folderById)
     .filter((group) => group.items.length > 0)
     .map((group) => (
       builtInRoutines.length > 0 && groupByValue === "none" && group.key === "__all"
@@ -617,6 +634,10 @@ export function Routines() {
     () => new Map((projects ?? []).map((project) => [project.id, project])),
     [projects],
   );
+  const folderById = useMemo(
+    () => new Map((routineFolders?.folders ?? []).map((folder) => [folder.id, folder])),
+    [routineFolders],
+  );
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const visibleRoutines = useMemo(
     () => (routines ?? []).filter((routine) => routine.status !== "archived"),
@@ -653,8 +674,8 @@ export function Routines() {
     [folderFilteredRoutines, routineViewState.sortDir, routineViewState.sortField],
   );
   const routineSections = useMemo(
-    () => buildRoutineSections(sortedRoutines, routineViewState.groupBy, projectById, agentById),
-    [agentById, projectById, routineViewState.groupBy, sortedRoutines],
+    () => buildRoutineSections(sortedRoutines, routineViewState.groupBy, projectById, agentById, folderById),
+    [agentById, folderById, projectById, routineViewState.groupBy, sortedRoutines],
   );
   const recentRunsIssueLinkState = useMemo(
     () =>
