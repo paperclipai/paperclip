@@ -90,3 +90,38 @@ EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+
+# Cloud image variant (build with `--target cloud`): the production image
+# plus built bundled sandbox-provider plugins. Managed instances receive a
+# `plugins.autoInstall` key list through PAPERCLIP_MANAGED_CONFIG and
+# install those plugins from the bundled catalog at boot
+# (server/src/services/bundled-plugins.ts), which requires each plugin's
+# dist/ to exist in the image — the default image ships only their source,
+# so auto-install logs "bundle not present" and skips. The plugins are
+# built in this separate target so the default (self-hosted) image stays
+# lean; CI pins the default build to `--target production`, which is
+# byte-identical to before this stage existed.
+#
+# The sandbox providers are intentionally excluded from the pnpm workspace
+# (see pnpm-workspace.yaml), so each installs standalone exactly as its
+# README prescribes. Installing in a `build`-based stage (not `production`)
+# keeps devDependencies available for tsc: `production` sets
+# NODE_ENV=production, which would make pnpm skip them.
+#
+# CLOUD_BUNDLED_PLUGINS is the space-separated list of sandbox-provider
+# directory names to build into the variant. Only what managed deployments
+# actually auto-install belongs here — every entry adds its node_modules
+# to the image. Growing the list is a one-line workflow change.
+FROM build AS cloud-plugins
+ARG CLOUD_BUNDLED_PLUGINS="daytona"
+RUN set -eu; \
+  for name in $CLOUD_BUNDLED_PLUGINS; do \
+    dir="packages/plugins/sandbox-providers/$name"; \
+    test -d "$dir" || { echo "ERROR: unknown sandbox provider '$name'" >&2; exit 1; }; \
+    pnpm -C "$dir" install --ignore-workspace --no-lockfile; \
+    pnpm -C "$dir" build; \
+    test -f "$dir/dist/manifest.js" || { echo "ERROR: $dir is missing dist/manifest.js after build" >&2; exit 1; }; \
+  done
+
+FROM production AS cloud
+COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers
