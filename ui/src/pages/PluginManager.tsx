@@ -223,7 +223,10 @@ export function PluginManager() {
                       ? "border-foreground bg-accent text-foreground"
                       : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/50"
                   )}
-                  onClick={() => setIsLocalPath(false)}
+                  onClick={() => {
+                    setIsLocalPath(false);
+                    setInstallPackage("");
+                  }}
                 >
                   <Package className="h-3.5 w-3.5" />
                   npm package
@@ -236,7 +239,10 @@ export function PluginManager() {
                       ? "border-foreground bg-accent text-foreground"
                       : "border-border text-muted-foreground hover:text-foreground hover:bg-accent/50"
                   )}
-                  onClick={() => setIsLocalPath(true)}
+                  onClick={() => {
+                    setIsLocalPath(true);
+                    setInstallPackage("");
+                  }}
                 >
                   <FolderOpen className="h-3.5 w-3.5" />
                   Local path

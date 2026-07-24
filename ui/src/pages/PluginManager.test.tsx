@@ -100,4 +100,26 @@ describe("PluginManager", () => {
 
     await act(async () => root.unmount());
   });
+
+  it("clears an npm package name when switching to local-path mode", async () => {
+    const root = await renderManager(container);
+
+    const openButton = [...document.querySelectorAll("button")].find((button) => button.textContent?.includes("Install Plugin"));
+    await act(async () => openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    const npmInput = document.querySelector<HTMLInputElement>('input[placeholder="@paperclipai/plugin-example"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(npmInput, "@example/plugin");
+      npmInput?.dispatchEvent(new Event("input", { bubbles: true }));
+      npmInput?.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    const localPathButton = [...document.querySelectorAll("button")].find((button) => button.textContent?.includes("Local path"));
+    await act(async () => localPathButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    expect(document.querySelector<HTMLInputElement>('input[placeholder="/plugins/my-plugin"]')?.value).toBe("");
+
+    await act(async () => root.unmount());
+  });
 });
