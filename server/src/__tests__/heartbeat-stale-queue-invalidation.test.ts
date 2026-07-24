@@ -1127,6 +1127,60 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it("cancels process-loss retries after the issue enters review", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Worker already handed off for review",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "process_lost_retry",
+      invocationSource: "automation",
+      scheduledRetryReason: "process_lost",
+      contextExtras: {
+        retryReason: "process_lost",
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_not_in_progress");
+    expect(wakeup?.status).toBe("skipped");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("cancels queued max-turn continuations when the issue is no longer in_progress before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

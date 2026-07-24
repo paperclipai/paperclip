@@ -10962,6 +10962,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
+    const isProcessLossRetry = wakeReason === "process_lost_retry" || retryReason === "process_lost";
     const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
     const hasResolvedInteractionEvidence = interactionResolvedAt !== null && !Number.isNaN(Date.parse(interactionResolvedAt));
 
@@ -11025,6 +11026,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           details: { issueId, currentStatus: issue.status },
         };
       }
+    }
+
+    if (issue.status === "in_review" && isProcessLossRetry && !resumeIntent) {
+      return {
+        stale: true,
+        errorCode: "issue_not_in_progress",
+        reason:
+          "Cancelled because the issue entered review before the process-loss retry could start; the review workflow now owns the next action",
+        details: { issueId, currentStatus: issue.status, wakeReason, retryReason },
+      };
     }
 
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
