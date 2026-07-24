@@ -1662,8 +1662,8 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       : DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
   const hostApiUrl =
     input.hostApiUrl?.trim() ||
-    process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||
     process.env.PAPERCLIP_API_URL?.trim() ||
+    process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||
     resolveDefaultPaperclipApiUrl();
   const shellCommand = adapterExecutionTargetShellCommand(target);
   const runner = adapterExecutionTargetCommandRunner(target);

@@ -240,13 +240,20 @@ export async function startServer(): Promise<StartedServer> {
     }
   }
 
-  function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): string | undefined {
+  function rewriteLocalUrlPort(rawUrl: string | undefined, detectedPort: number, requestedPort?: number): string | undefined {
     if (!rawUrl) return undefined;
     try {
       const parsed = new URL(rawUrl);
       // The URL API normalizes default ports like :80/:443 to "", so treat them as stable URLs.
       if (!parsed.port) return rawUrl;
-      parsed.port = String(port);
+      // Only rewrite the port if the publicBaseUrl port matches the originally requested
+      // listen port — i.e., detectPort auto-shifted it. If the operator set a deliberately
+      // different port (e.g., a reverse proxy on :8443 while Paperclip listens on :3001),
+      // the publicBaseUrl must be preserved as-is.
+      if (requestedPort !== undefined && Number(parsed.port) !== requestedPort) {
+        return rawUrl;
+      }
+      parsed.port = String(detectedPort);
       return parsed.toString();
     } catch {
       return rawUrl;
@@ -527,7 +534,7 @@ export async function startServer(): Promise<StartedServer> {
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
-    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
+    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort, requestedListenPort);
   }
   
   let authReady = config.deploymentMode === "local_trusted";
@@ -763,7 +770,11 @@ export async function startServer(): Promise<StartedServer> {
   });
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
+  // PAPERCLIP_RUNTIME_API_URL must respect the operator override (PAPERCLIP_API_URL)
+  // and the authPublicBaseUrl-derived URL, NOT the raw derived runtimeApiUrl.
+  // Using configuredApiUrl ensures that env-based overrides take precedence over
+  // the derived value, preventing agents from receiving unreachable API URLs.
+  process.env.PAPERCLIP_RUNTIME_API_URL = configuredApiUrl;
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
   

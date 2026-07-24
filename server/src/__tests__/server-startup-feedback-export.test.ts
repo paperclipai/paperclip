@@ -468,6 +468,9 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     expect(started.apiUrl).toBe("http://custom-api:3100");
     expect(process.env.PAPERCLIP_API_URL).toBe("http://custom-api:3100");
+    // Regression: PAPERCLIP_RUNTIME_API_URL must also respect the override,
+    // not the derived runtimeApiUrl.
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://custom-api:3100");
     expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual(
       expect.arrayContaining(["http://custom-api:3100"]),
     );
@@ -524,5 +527,20 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(started.listenPort).toBe(3110);
     expect(started.apiUrl).toBe("https://paperclip.example");
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
+  });
+
+  it("preserves operator-set publicBaseUrl port when it differs from listen port (reverse-proxy scenario)", async () => {
+    // Regression for MMB-10776: operator sets publicBaseUrl to :8443 (reverse proxy)
+    // while Paperclip listens on :3001. The port must NOT be rewritten to 3001.
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      port: 3001,
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "http://brainbug01.tail802293.ts.net:8443",
+    }));
+
+    const started = await startServer();
+
+    expect(started.apiUrl).toBe("http://brainbug01.tail802293.ts.net:8443");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://brainbug01.tail802293.ts.net:8443");
   });
 });
