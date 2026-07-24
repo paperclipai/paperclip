@@ -86,6 +86,7 @@ import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
 } from "@paperclipai/hermes-paperclip-adapter";
+import { createAzureOpenAIServerAdapter } from "@paperclipai/adapter-azure-openai";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -371,6 +372,8 @@ const hermesGatewayAdapter = createHermesGatewayServerAdapter();
 
 const hermesLocalAdapter = createHermesLocalServerAdapter();
 
+const azureOpenAIAdapter = createAzureOpenAIServerAdapter();
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   execute: openclawGatewayExecute,
@@ -445,6 +448,7 @@ function registerBuiltInAdapters() {
     grokLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,
+    azureOpenAIAdapter,
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,
