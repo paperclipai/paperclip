@@ -91,7 +91,8 @@ import type {
 import { isUuidLike, normalizeAgentUrlKey, parseFrontmatterMarkdown } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { ghFetch, gitHubApiBase, gitHubAuthHeaders, resolveRawGitHubUrl } from "./github-fetch.js";
+import { resolveCompanyGitHubToken } from "./github-external-object-provider.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
 import { toIssueWorkProduct } from "./work-products.js";
@@ -657,18 +658,19 @@ function deriveTrustLevel(fileInventory: CompanySkillFileInventoryEntry[]): Comp
   return "markdown_only";
 }
 
-async function fetchText(url: string) {
-  const response = await ghFetch(url);
+async function fetchText(url: string, token?: string | null) {
+  const response = await ghFetch(url, { headers: gitHubAuthHeaders(token) });
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
   return response.text();
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
+async function fetchJson<T>(url: string, token?: string | null): Promise<T> {
   const response = await ghFetch(url, {
     headers: {
       accept: "application/vnd.github+json",
+      ...gitHubAuthHeaders(token),
     },
   });
   if (!response.ok) {
@@ -678,16 +680,18 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 
-async function resolveGitHubDefaultBranch(owner: string, repo: string, apiBase: string) {
+async function resolveGitHubDefaultBranch(owner: string, repo: string, apiBase: string, token?: string | null) {
   const response = await fetchJson<{ default_branch?: string }>(
     `${apiBase}/repos/${owner}/${repo}`,
+    token,
   );
   return asString(response.default_branch) ?? "main";
 }
 
-async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, apiBase: string) {
+async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, apiBase: string, token?: string | null) {
   const response = await fetchJson<{ sha?: string }>(
     `${apiBase}/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
+    token,
   );
   const sha = asString(response.sha);
   if (!sha) {
@@ -753,7 +757,7 @@ function normalizeRemoteSkillImportSource(rawUrl: string) {
   return url.toString();
 }
 
-async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
+async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>, token?: string | null) {
   const apiBase = gitHubApiBase(parsed.hostname);
   if (/^[0-9a-f]{40}$/i.test(parsed.ref.trim())) {
     return {
@@ -764,8 +768,8 @@ async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourc
 
   const trackingRef = parsed.explicitRef
     ? parsed.ref
-    : await resolveGitHubDefaultBranch(parsed.owner, parsed.repo, apiBase);
-  const pinnedRef = await resolveGitHubCommitSha(parsed.owner, parsed.repo, trackingRef, apiBase);
+    : await resolveGitHubDefaultBranch(parsed.owner, parsed.repo, apiBase, token);
+  const pinnedRef = await resolveGitHubCommitSha(parsed.owner, parsed.repo, trackingRef, apiBase, token);
   return { pinnedRef, trackingRef };
 }
 
@@ -1482,10 +1486,11 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
   return imports;
 }
 
-async function readUrlSkillImports(
+export async function readUrlSkillImports(
   companyId: string,
   sourceUrl: string,
   requestedSkillSlug: string | null = null,
+  githubToken: string | null = null,
 ): Promise<{ skills: ImportedSkill[]; warnings: string[] }> {
   const url = sourceUrl.trim();
   const warnings: string[] = [];
@@ -1493,10 +1498,11 @@ async function readUrlSkillImports(
   if (looksLikeRepoUrl) {
     const parsed = parseGitHubSourceUrl(url);
     const apiBase = gitHubApiBase(parsed.hostname);
-    const { pinnedRef, trackingRef } = await resolveGitHubPinnedRef(parsed);
+    const { pinnedRef, trackingRef } = await resolveGitHubPinnedRef(parsed, githubToken);
     let ref = pinnedRef;
     const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }> }>(
       `${apiBase}/repos/${parsed.owner}/${parsed.repo}/git/trees/${ref}?recursive=1`,
+      githubToken,
     ).catch(() => {
       throw unprocessable(`Failed to read GitHub tree for ${url}`);
     });
@@ -1523,7 +1529,7 @@ async function readUrlSkillImports(
     const skills: ImportedSkill[] = [];
     for (const relativeSkillPath of skillPaths) {
       const repoSkillPath = basePrefix ? `${basePrefix}${relativeSkillPath}` : relativeSkillPath;
-      const markdown = await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath));
+      const markdown = await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath), githubToken);
       const parsedMarkdown = parseFrontmatterMarkdown(markdown);
       const skillDir = path.posix.dirname(relativeSkillPath);
       const slug = deriveImportedSkillSlug(parsedMarkdown.frontmatter, path.posix.basename(skillDir));
@@ -3873,7 +3879,8 @@ export function companySkillService(db: Db) {
 
     const hostname = asString(metadata.hostname) || "github.com";
     const apiBase = gitHubApiBase(hostname);
-    const latestRef = await resolveGitHubCommitSha(owner, repo, trackingRef, apiBase);
+    const githubToken = await resolveCompanyGitHubToken(db, companyId);
+    const latestRef = await resolveGitHubCommitSha(owner, repo, trackingRef, apiBase, githubToken);
     return {
       supported: true,
       reason: null,
@@ -3927,8 +3934,9 @@ export function companySkillService(db: Db) {
         throw unprocessable("Skill source metadata is incomplete.");
       }
       const repoPath = normalizePortablePath(path.posix.join(repoSkillDir, normalizedPath));
+      const githubToken = await resolveCompanyGitHubToken(db, companyId);
       try {
-        content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath));
+        content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath), githubToken);
       } catch (error) {
         if (normalizedPath === "SKILL.md" && skill.markdown) {
           content = skill.markdown;
@@ -4351,7 +4359,8 @@ export function companySkillService(db: Db) {
       throw unprocessable("Skill source locator is missing.");
     }
 
-    const result = await readUrlSkillImports(companyId, skill.sourceLocator, skill.slug);
+    const githubToken = await resolveCompanyGitHubToken(db, companyId);
+    const result = await readUrlSkillImports(companyId, skill.sourceLocator, skill.slug, githubToken);
     const matching = result.skills.find((entry) => entry.key === skill.key) ?? result.skills[0] ?? null;
     if (!matching) {
       throw unprocessable(`Skill ${skill.key} could not be re-imported from its source.`);
@@ -5611,13 +5620,14 @@ export function companySkillService(db: Db) {
     if (local) {
       await assertLocalImportSourceAllowed(companyId, parsed.resolvedSource);
     }
+    const githubToken = local ? null : await resolveCompanyGitHubToken(db, companyId);
     const { skills, warnings } = local
       ? {
         skills: (await readLocalSkillImports(companyId, parsed.resolvedSource))
           .filter((skill) => !parsed.requestedSkillSlug || skill.slug === parsed.requestedSkillSlug),
         warnings: parsed.warnings,
       }
-      : await readUrlSkillImports(companyId, parsed.resolvedSource, parsed.requestedSkillSlug)
+      : await readUrlSkillImports(companyId, parsed.resolvedSource, parsed.requestedSkillSlug, githubToken)
         .then((result) => ({
           skills: result.skills,
           warnings: [...parsed.warnings, ...result.warnings],

@@ -27,7 +27,7 @@ interface GitHubObjectIdentity {
   pathKind: "pull" | "issues";
 }
 
-const DEFAULT_GITHUB_TOKEN_SECRET_NAMES = ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"] as const;
+export const DEFAULT_GITHUB_TOKEN_SECRET_NAMES = ["GITHUB_TOKEN", "GH_TOKEN", "PAPERCLIP_GITHUB_TOKEN"] as const;
 const GITHUB_OBJECT_TTL_SECONDS = 300;
 
 function isGitHubHost(host: string) {
@@ -305,7 +305,17 @@ async function safeJson(response: Response) {
   }
 }
 
-async function defaultTokenProvider(db: Db, companyId: string, secretNames: readonly string[]) {
+/**
+ * Resolve a company-scoped GitHub token from Paperclip secrets, trying the
+ * configured secret names in order. Returns null when none is set. Shared by the
+ * external-object liveness provider and the company skill importer so both use
+ * the same secret-name convention.
+ */
+export async function resolveCompanyGitHubToken(
+  db: Db,
+  companyId: string,
+  secretNames: readonly string[] = DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
+) {
   const secrets = secretService(db);
   for (const secretName of secretNames) {
     const secret = await secrets.getByName(companyId, secretName);
@@ -325,7 +335,7 @@ export function createGitHubExternalObjectProvider(
   const secretNames = opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES;
   const tokenProvider = Object.prototype.hasOwnProperty.call(opts, "tokenProvider") && opts.tokenProvider !== undefined
     ? opts.tokenProvider
-    : ((companyId: string) => defaultTokenProvider(db, companyId, secretNames));
+    : ((companyId: string) => resolveCompanyGitHubToken(db, companyId, secretNames));
 
   const detector: ExternalObjectDetector = {
     key: "github",
