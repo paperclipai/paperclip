@@ -30,7 +30,7 @@ const UNVERIFIED_WORK_RE = new RegExp([
   String.raw`\bunverified\b`,
   String.raw`\b(?:could not|couldn't|cannot|can't|unable to)\s+(?:be\s+)?(?:run|execute|compile|build|test(?:ed)?|verify|verified|validate|validated|check(?:ed)?)\b`,
   String.raw`\b(?:tests?|verification|validation|compilation|build)\s+(?:could not|couldn't|cannot|can't)\s+(?:be\s+)?(?:run|completed|performed|verified)\b`,
-  String.raw`\b(?:not installed|missing dependency|missing toolchain)\b.{0,120}\b(?:test|verify|validation|compil|build|run)\b`,
+  String.raw`\b(?:not installed|missing dependency|missing toolchain)\b.{0,120}\b(?:test|verify|validation|build|run)\b`,
 ].join("|"), "i");
 
 const PRODUCTIVE_SUCCESS_LIVENESS_STATES = new Set<RunLivenessState>([
