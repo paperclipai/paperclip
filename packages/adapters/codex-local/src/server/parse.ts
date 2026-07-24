@@ -19,6 +19,16 @@ const CODEX_REFRESH_TOKEN_EXPIRED_RE =
 const CODEX_REFRESH_TOKEN_INVALIDATED_RE =
   /(?:refresh[_\s-]?token[_\s-]?(?:invalidated|revoked|invalid)|refresh token (?:has been )?(?:invalidated|revoked|invalid)|invalid refresh token|missing bearer)/i;
 const CODEX_OAUTH_INVALID_GRANT_RE = /\binvalid_grant\b/i;
+// A presented OpenAI API key the provider rejected outright (401
+// invalid_api_key family), or no key at all. Distinct from the OAuth
+// refresh-token classes above, which cover ChatGPT subscription auth; callers
+// map this to errorCode "codex_auth_required" (the codex analog of
+// claude-local's claude_auth_required) so a bad or missing API key surfaces
+// as a distinct auth failure instead of a generic error that gets retried.
+// The bare-401 alternatives are anchored to api.openai.com so unrelated 401s
+// (e.g. a tool the agent ran against some other service) are not swallowed.
+const CODEX_INVALID_API_KEY_RE =
+  /(?:incorrect\s+api\s+key\s+provided|\binvalid_api_key\b|invalid\s+api\s+key|no\s+api\s+key\s+provided|you\s+didn(?:'|’)?t\s+provide\s+an\s+api\s+key|api\s+key\s+(?:is\s+)?(?:invalid|incorrect|expired|revoked|disabled)|(?:\b401\b|\bunauthori[sz]ed\b)[\s\S]{0,120}?api\.openai\.com|api\.openai\.com[\s\S]{0,120}?(?:\b401\b|\bunauthori[sz]ed\b))/i;
 const CODEX_CONTEXTUAL_REFRESH_AUTH_INVALIDATED_RE =
   /(?:(?:oauth|refresh|access[_\s-]?token|bearer|credential).{0,80}(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b)|(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b).{0,80}(?:oauth|refresh|access[_\s-]?token|bearer|credential))/i;
 
@@ -157,6 +167,15 @@ export function classifyCodexAuthRefreshFailure(input: {
   if (CODEX_OAUTH_INVALID_GRANT_RE.test(haystack)) return "refresh_token_invalidated";
   if (CODEX_CONTEXTUAL_REFRESH_AUTH_INVALIDATED_RE.test(haystack)) return "refresh_token_invalidated";
   return null;
+}
+
+export function isCodexInvalidApiKeyError(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildCodexErrorHaystack(input);
+  return CODEX_INVALID_API_KEY_RE.test(haystack);
 }
 
 function readTimeZoneParts(date: Date, timeZone: string) {
