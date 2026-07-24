@@ -328,6 +328,58 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("classifies result-only provider credit failures during direct escalation", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "Adapter failed",
+      errorCode: "adapter_failed",
+      contextSnapshot: { issueId: sourceIssue.id },
+      livenessState: "needs_followup",
+      resultJson: {
+        result:
+          "HTTP 402 ProviderError: This request requires more credits, or fewer max_tokens. " +
+          "You requested up to 262144 tokens but can only afford 6586. " +
+          "To increase, visit https://openrouter.ai/settings/credits.",
+      },
+    } as const;
+    await db.insert(heartbeatRuns).values({
+      id: latestRun.id,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: latestRun.error,
+      errorCode: latestRun.errorCode,
+      resultJson: latestRun.resultJson,
+      contextSnapshot: latestRun.contextSnapshot,
+      livenessState: latestRun.livenessState,
+    });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(action).toMatchObject({
+      ownerType: "system",
+      ownerAgentId: null,
+      returnOwnerAgentId: coderId,
+      cause: "provider_quota",
+      monitorPolicy: { type: "wait_recovery", retryAgentId: coderId },
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["process_lost", undefined, "coder"],
     ["adapter_failed", "successful_run_missing_state", "coder"],
