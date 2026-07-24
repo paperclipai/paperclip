@@ -153,6 +153,9 @@ export {
 export {
   companySkillSourceTypeSchema,
   companySkillTrustLevelSchema,
+  companySkillRiskTierSchema,
+  companySkillRiskTierSourceSchema,
+  companySkillRiskTierRationaleSchema,
   companySkillCompatibilitySchema,
   companySkillSourceBadgeSchema,
   companySkillSharingScopeSchema,
@@ -219,6 +222,8 @@ export {
   companySkillInstallCatalogResultSchema,
   companySkillInstallUpdateSchema,
   companySkillResetSchema,
+  companySkillRiskTierOverrideSchema,
+  type CompanySkillRiskTierOverrideInput,
   type CompanySkillImport,
   type CompanySkillListQuery,
   type CompanySkillProjectScan,
