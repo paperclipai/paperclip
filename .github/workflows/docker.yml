@@ -28,11 +28,13 @@ jobs:
           version: 9.15.4
           run_install: false
 
+      # No dependency cache here: this workflow publishes release images, and
+      # restoring a shared Actions cache into the build inputs would let a
+      # poisoned cache entry reach the published artifact.
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 20
-          cache: pnpm
 
       - name: Refresh lockfile for Docker build context
         run: |
@@ -60,7 +62,7 @@ jobs:
           df -h
 
           pnpm store prune || true
-          sudo apt-get clean
+          sudo apt-get clean || true
           sudo rm -rf \
             /usr/share/dotnet \
             /usr/share/swift \
