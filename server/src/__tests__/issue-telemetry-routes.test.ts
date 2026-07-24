@@ -35,6 +35,14 @@ function registerModuleMocks() {
     getTelemetryClient: mockGetTelemetryClient,
   }));
 
+  vi.doMock("../services/external-objects.js", () => ({
+    externalObjectService: () => ({
+      syncCommentSafely: vi.fn(async () => undefined),
+      syncDocumentSafely: vi.fn(async () => undefined),
+      syncIssueSafely: vi.fn(async () => undefined),
+    }),
+  }));
+
   vi.doMock("../services/index.js", () => ({
     issueDeliveryReceiptService: () => ({}),
     companyService: () => ({

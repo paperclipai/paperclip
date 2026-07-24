@@ -52,6 +52,9 @@ vi.mock("../services/index.js", () => ({
   getIssueContinuationSummaryDocument: vi.fn(async () => null),
   instanceSettingsService: () => ({
     get: vi.fn(),
+    getExperimental: vi.fn(async () => ({
+      enableExternalObjects: false,
+    })),
     listCompanyIds: vi.fn(),
   }),
   issueApprovalService: () => ({}),
