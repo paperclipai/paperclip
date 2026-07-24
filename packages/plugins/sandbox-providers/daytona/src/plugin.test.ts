@@ -1209,20 +1209,32 @@ describe("Daytona sandbox provider plugin", () => {
     sandbox.process.executeCommand.mockRejectedValue(new MockDaytonaTimeoutError("command timed out"));
     mockGet.mockResolvedValue(sandbox);
 
-    const result = await plugin.definition.onEnvironmentExecute?.({
-      driverKey: "daytona",
-      companyId: "company-1",
-      environmentId: "env-1",
-      config: {
-        timeoutMs: 300000,
-        reuseLease: false,
-      },
-      lease: { providerLeaseId: "sandbox-123", metadata: {} },
-      command: "sleep",
-      args: ["60"],
-      cwd: "/workspace",
-      timeoutMs: 1000,
-    });
+    // Injected clock: getStart=0, getEnd=10 (getDurationMs=10), execStart=20,
+    // execEnd/timeout=1520 (durationMs=1500). Deterministic so the timeout path's
+    // provider-exec attribution is asserted exactly.
+    const ticks = [0, 10, 20, 1520];
+    let i = 0;
+    const restoreClock = setDaytonaTimingClockForTest(() => ticks[Math.min(i++, ticks.length - 1)]!);
+
+    let result;
+    try {
+      result = await plugin.definition.onEnvironmentExecute?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: {
+          timeoutMs: 300000,
+          reuseLease: false,
+        },
+        lease: { providerLeaseId: "sandbox-123", metadata: {} },
+        command: "sleep",
+        args: ["60"],
+        cwd: "/workspace",
+        timeoutMs: 1000,
+      });
+    } finally {
+      restoreClock();
+    }
 
     expect(result).toMatchObject({
       exitCode: null,
@@ -1230,10 +1242,10 @@ describe("Daytona sandbox provider plugin", () => {
       stdout: "",
       stderr: "command timed out\n",
     });
-    // The timed-out exec never reached executeCommand, so no durationMs — but the
-    // getSandbox re-fetch still completed and is reported.
-    expect((result!.metadata as Record<string, unknown>)?.durationMs).toBeUndefined();
-    expect(typeof (result!.metadata as Record<string, unknown>)?.getDurationMs).toBe("number");
+    // The exec reached executeCommand before timing out, so its wall-time is
+    // preserved as durationMs (provider-exec attribution is not dropped on the
+    // timeout path); the getSandbox re-fetch duration is also reported.
+    expect(result!.metadata).toMatchObject({ durationMs: 1500, getDurationMs: 10 });
   });
 
   it("injects noninteractive git credential defaults for every one-shot command", async () => {

@@ -46,7 +46,18 @@ async function makeTempRoot() {
 }
 
 afterEach(async () => {
-  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  // A remote run stages a process-session bridge whose detached event writer can
+  // still be flushing a trailing event file into `.../process-sessions/<id>/events`
+  // when the run's own best-effort `client.remove(sessionDir)` (which production
+  // catch-wraps) has already returned. Under CI load that trailing write can land
+  // between this recursive delete's directory snapshot and its `rmdir`, surfacing as
+  // `ENOTEMPTY`. `maxRetries`/`retryDelay` make the cleanup ride out that window the
+  // same way production tolerates it, instead of failing the just-passed test.
+  await Promise.all(
+    tempRoots.splice(0).map((root) =>
+      fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
+    ),
+  );
 });
 
 async function pathExists(candidate: string): Promise<boolean> {

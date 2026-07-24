@@ -761,6 +761,13 @@ async function executeOneShot(
   const timeoutSeconds = toTimeoutSeconds(effectiveTimeoutMs);
   const stdinPath = params.stdin != null ? `/tmp/paperclip-stdin-${randomUUID()}` : null;
 
+  // Marks the start of the `executeCommand` REST round-trip. Hoisted out of the
+  // try so the timeout path below can still attribute the exec wall-time it spent
+  // before the SDK aborted — a slow failed exec is exactly what we want to
+  // measure. Stays null until we are about to call `executeCommand`, so a timeout
+  // during the earlier `uploadFile` step honestly reports no `durationMs`.
+  let execStart: number | null = null;
+
   try {
     if (stdinPath) {
       await sandbox.fs.uploadFile(Buffer.from(params.stdin ?? "", "utf8"), stdinPath, timeoutSeconds);
@@ -781,7 +788,7 @@ async function executeOneShot(
     // Time only the `executeCommand` REST round-trip (Open Q1) — the ~600ms
     // login-shell wrapper — so the caller can attribute a step's exec time to
     // the provider boundary via the free-form `metadata.durationMs`.
-    const execStart = timingNow();
+    execStart = timingNow();
     const result = await sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds);
     const durationMs = timingNow() - execStart;
 
@@ -797,11 +804,17 @@ async function executeOneShot(
       const timeoutMessage = gitNet
         ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
         : error.message.trim();
+      // Preserve provider-boundary exec attribution on the timeout path: if the
+      // SDK aborted the `executeCommand` call itself, report how long it ran
+      // before timing out so slow failed startup exec is attributed to the
+      // provider, not silently dropped.
+      const durationMs = execStart != null ? timingNow() - execStart : undefined;
       return {
         exitCode: null,
         timedOut: true,
         stdout: "",
         stderr: `${timeoutMessage}\n`,
+        ...(durationMs != null ? { metadata: { durationMs } } : {}),
       };
     }
     throw error;
