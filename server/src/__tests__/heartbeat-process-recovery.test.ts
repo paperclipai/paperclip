@@ -2136,6 +2136,30 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ]),
     );
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
+    const initialRunEvents = await db
+      .select({
+        eventType: heartbeatRunEvents.eventType,
+        message: heartbeatRunEvents.message,
+        payload: heartbeatRunEvents.payload,
+      })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(initialRunEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        eventType: "causal.wake",
+        payload: expect.objectContaining({
+          wakeReason: "issue_assigned",
+          issueId,
+        }),
+      }),
+      expect.objectContaining({
+        eventType: "causal.recovery_context",
+        payload: expect.objectContaining({
+          issueId,
+          taskId: issueId,
+        }),
+      }),
+    ]));
 
     const issue = await db
       .select()
@@ -2811,6 +2835,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(activityLog)
       .where(eq(activityLog.entityId, issueId));
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
+    const causalEvents = await db
+      .select({
+        eventType: heartbeatRunEvents.eventType,
+        payload: heartbeatRunEvents.payload,
+      })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(causalEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        eventType: "causal.handoff",
+        payload: expect.objectContaining({
+          handoffKind: "successful_run_recovery",
+          sourceIssueId: issueId,
+          sourceRunId: runId,
+        }),
+      }),
+    ]));
   });
 
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {

@@ -259,7 +259,11 @@ import {
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
 import {
+  appendExecutionCausalRunEvent,
   appendExecutionCausalTrace,
+  buildExecutionCausalWakePayload,
+  buildExecutionRecoveryContextPayload,
+  executionCausalEventType,
   inferExecutionCausalTraceKind,
 } from "./execution-causal-trace.js";
 import {
@@ -8148,6 +8152,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       requestedByActorId: "heartbeat",
     });
     if (!handoffRun) return;
+    await appendExecutionCausalRunEvent(db, {
+      companyId: run.companyId,
+      runId: run.id,
+      agentId: run.agentId,
+      eventType: executionCausalEventType("handoff"),
+      message: "queued corrective handoff heartbeat",
+      payload: {
+        traceVersion: 1,
+        handoffKind: "successful_run_recovery",
+        sourceIssueId: issue.id,
+        sourceIssueIdentifier: issue.identifier,
+        sourceRunId: run.id,
+        targetRunId: handoffRun.id,
+        targetAgentId: decision.targetAgentId,
+        reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+        missingDisposition: "clear_next_step",
+      },
+    });
 
     await addSuccessfulRunHandoffCommentOnce({
       issue,
@@ -13199,6 +13221,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         stream: "system",
         level: "info",
         message: "run started",
+      });
+      await appendExecutionCausalRunEvent(db, {
+        companyId: currentRun.companyId,
+        runId: currentRun.id,
+        agentId: currentRun.agentId,
+        eventType: executionCausalEventType("wake"),
+        message: `wake received: ${readNonEmptyString(context.wakeReason) ?? "unspecified"}`,
+        payload: buildExecutionCausalWakePayload(context),
+      });
+      await appendExecutionCausalRunEvent(db, {
+        companyId: currentRun.companyId,
+        runId: currentRun.id,
+        agentId: currentRun.agentId,
+        eventType: executionCausalEventType("recoveryContext"),
+        message: "recovery context received for heartbeat execution",
+        payload: buildExecutionRecoveryContextPayload(context),
       });
 
       handle = await runLogStore.begin({

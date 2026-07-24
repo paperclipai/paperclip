@@ -122,6 +122,7 @@ import {
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
+import { appendExecutionCausalRunEventForExistingRun, executionCausalEventType } from "../services/execution-causal-trace.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
   resolveTaskWatchdogMutationScope,
@@ -7130,6 +7131,22 @@ export function issueRoutes(
         }),
       },
     });
+    if (actor.runId && actor.agentId && issue.parentId) {
+      await appendExecutionCausalRunEventForExistingRun(db, {
+        runId: actor.runId,
+        eventType: executionCausalEventType("handoff"),
+        message: `created child issue: ${issue.identifier}`,
+        payload: {
+          traceVersion: 1,
+          handoffKind: "child_issue_delegation",
+          sourceIssueId: issue.parentId,
+          childIssueId: issue.id,
+          childIssueIdentifier: issue.identifier,
+          childIssueTitle: issue.title,
+          assigneeAgentId: issue.assigneeAgentId ?? null,
+        },
+      });
+    }
 
     if (executionPolicy?.monitor) {
       await logActivity(db, {
