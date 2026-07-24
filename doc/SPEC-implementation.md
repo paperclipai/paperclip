@@ -913,7 +913,7 @@ Allowed states are `joined` and `left`. Endpoints require a concrete board user 
 ## 10.8 Cost and Budgets
 
 - `POST /companies/:companyId/cost-events`
-- `GET /companies/:companyId/cost-events/lookup?billingCode=:key`
+- `GET /companies/:companyId/cost-events/lookup?idempotencyKey=:key`
 - `GET /companies/:companyId/costs/summary`
 - `GET /companies/:companyId/costs/by-agent`
 - `GET /companies/:companyId/costs/by-project`
@@ -1119,11 +1119,13 @@ enforces uniqueness per company:
 - the same key and a different request payload returns `409`
 - `payloadDigest` may carry a caller's logical payload digest for recovery; it
   does not replace the server-computed request digest
-- raw lookup by the key is company-scoped, and agent credentials can only
-  retrieve their own event
+- raw lookup by the key requires `company_scope:read`, remains company-scoped,
+  and agent credentials can only retrieve their own event
 
 For clients that persist a logical `payloadDigest`, `billingCode` may be used as
-the idempotency key when the header is unavailable.
+the idempotency key when the header is unavailable. The lookup endpoint accepts
+`billingCode` as a query alias for that persisted idempotency key; it is not a
+general lookup over legacy non-idempotent billing-code groups.
 
 ## 13.4 Rollups
 
