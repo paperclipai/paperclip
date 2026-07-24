@@ -10322,13 +10322,27 @@ export function issueRoutes(
         addWakeup(commentDecisionStageWakeup.agentId, commentDecisionStageWakeup.wakeup);
       }
 
-      const assigneeId = currentIssue.assigneeAgentId;
+      // Re-fetch immediately before deciding whether to wake anyone: outside
+      // the reopen/auto-approval branches above, `currentIssue` is still the
+      // snapshot read before the comment was inserted, so a concurrent
+      // close/unassign/reassign landing in that window would otherwise wake
+      // the wrong (or no-longer-relevant) agent off stale state. The comment
+      // is already committed, so a failed re-fetch is logged and falls back to
+      // the in-hand snapshot rather than aborting this best-effort wake block.
+      const wakeIssueSnapshot = (await svc.getById(currentIssue.id).catch((err) => {
+        logger.warn(
+          { err, issueId: currentIssue.id },
+          "failed to re-fetch issue for comment wake decision; falling back to in-hand snapshot",
+        );
+        return null;
+      })) ?? currentIssue;
+      const assigneeId = wakeIssueSnapshot.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
-      const skipWake = selfComment || isClosedIssueStatus(currentIssue.status);
+      const skipWake = selfComment || isClosedIssueStatus(wakeIssueSnapshot.status);
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           addWakeup(assigneeId, {

@@ -975,6 +975,88 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("skips the assignee wakeup when the issue is concurrently cancelled while the comment is being written", async () => {
+    const app = await installActor(createApp());
+    // First call is the route's pre-insert fetch; second is the wake-decision
+    // re-fetch. A stale wake decision would use the first (open, assigned)
+    // snapshot instead of the second (cancelled) one.
+    mockIssueService.getById
+      .mockResolvedValueOnce(makeIssue("in_progress"))
+      .mockResolvedValueOnce(makeIssue("cancelled"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-race-cancel",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "Still working on this?",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Still working on this?" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    // Give any (incorrect) fire-and-forget wakeup a moment to fire before asserting its absence.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes the freshly reassigned agent, not the pre-insert snapshot's assignee, when the issue is concurrently reassigned", async () => {
+    const app = await installActor(createApp());
+    const reassignedAgentId = "44444444-4444-4444-8444-444444444444";
+    mockIssueService.getById
+      .mockResolvedValueOnce(makeIssue("in_progress"))
+      .mockResolvedValueOnce({ ...makeIssue("in_progress"), assigneeAgentId: reassignedAgentId });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-race-reassign",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "Status update",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Status update" });
+
+    expect(res.status).toBe(201);
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      reassignedAgentId,
+      expect.objectContaining({ reason: "issue_commented" }),
+    ));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.anything(),
+    );
+  });
+
+  it("keeps the comment write successful and falls back to the in-hand snapshot when the wake re-fetch fails", async () => {
+    const app = await installActor(createApp());
+    // The comment is already committed before the wake-decision re-fetch runs.
+    // If that best-effort re-fetch throws, the route must still return 201 for
+    // the persisted comment (a 5xx would invite a retry that duplicates it) and
+    // fall back to the in-hand snapshot so a legitimate wake isn't dropped.
+    mockIssueService.getById
+      .mockResolvedValueOnce(makeIssue("in_progress"))
+      .mockRejectedValueOnce(new Error("transient read failure"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-refetch-fail",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "Still here?",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Still here?" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_commented" }),
+    ));
+  });
+
   it("passes validated comment presentation fields to trusted board comment writes", async () => {
     const app = await installActor(createApp());
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));

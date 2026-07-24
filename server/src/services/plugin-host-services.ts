@@ -2192,36 +2192,55 @@ export function buildHostServices(
         // handling here, just the core wake. An assignee-less or
         // closed-status issue is a silent no-op, matching the route's own
         // guard.
-        if (
-          params.actorUserId
-          && issue.assigneeAgentId
-          && issue.status !== "done"
-          && issue.status !== "cancelled"
-        ) {
-          await heartbeat.wakeup(issue.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_commented",
-            payload: {
+        //
+        // The guard re-fetches the issue instead of trusting the pre-insert
+        // `issue` snapshot: a concurrent close/unassign/reassign landing
+        // between the initial fetch and here would otherwise wake the wrong
+        // (or no-longer-relevant) agent off stale state.
+        //
+        // The comment is already committed above, so this best-effort wake
+        // must never change that outcome: a failed re-fetch is logged and
+        // falls back to the in-hand snapshot rather than rejecting
+        // createComment — a rejection would surface to the caller as a failed
+        // write and invite a retry that inserts a duplicate comment.
+        if (params.actorUserId) {
+          const postCommentIssue = (await issues.getById(issue.id).catch((err) => {
+            logger.warn(
+              { err, issueId: issue.id, commentId: comment.id },
+              "failed to re-fetch issue for plugin-relayed human comment wake; falling back to pre-insert snapshot",
+            );
+            return null;
+          })) ?? issue;
+          if (
+            postCommentIssue.assigneeAgentId
+            && postCommentIssue.status !== "done"
+            && postCommentIssue.status !== "cancelled"
+          ) {
+            await heartbeat.wakeup(postCommentIssue.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_commented",
+              payload: {
+                issueId: issue.id,
+                commentId: comment.id,
+                mutation: "comment",
+              },
+              requestedByActorType: "user",
+              requestedByActorId: params.actorUserId,
+              contextSnapshot: {
+                issueId: issue.id,
+                taskId: issue.id,
+                sourceCommentId: comment.id,
+                wakeReason: "issue_commented",
+                source: `plugin:${pluginKey}`,
+              },
+            }).catch((err) => logger.warn({
+              err,
               issueId: issue.id,
               commentId: comment.id,
-              mutation: "comment",
-            },
-            requestedByActorType: "user",
-            requestedByActorId: params.actorUserId,
-            contextSnapshot: {
-              issueId: issue.id,
-              taskId: issue.id,
-              sourceCommentId: comment.id,
-              wakeReason: "issue_commented",
-              source: `plugin:${pluginKey}`,
-            },
-          }).catch((err) => logger.warn({
-            err,
-            issueId: issue.id,
-            commentId: comment.id,
-            agentId: issue.assigneeAgentId,
-          }, "failed to wake assignee on plugin-relayed human comment"));
+              agentId: postCommentIssue.assigneeAgentId,
+            }, "failed to wake assignee on plugin-relayed human comment"));
+          }
         }
 
         return comment;
