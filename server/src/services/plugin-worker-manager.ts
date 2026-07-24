@@ -722,7 +722,7 @@ export function createPluginWorkerHandle(
           .map((entry) => readNonEmptyString(entry.scope.companyId))
           .filter((companyId): companyId is string => Boolean(companyId)),
       );
-      if (activeCompanyIds.size === 0 || activeCompanyIds.has(derivedScope.companyId)) {
+      if (activeCompanyIds.has(derivedScope.companyId)) {
         return { invocationScope: derivedScope };
       }
       return null;
@@ -737,7 +737,7 @@ export function createPluginWorkerHandle(
             .map((entry) => readNonEmptyString(entry.scope.companyId))
             .filter((companyId): companyId is string => Boolean(companyId)),
         );
-        if (activeCompanyIds.size === 0 || activeCompanyIds.has(derivedScope.companyId)) {
+        if (activeCompanyIds.has(derivedScope.companyId)) {
           return { invocationScope: derivedScope };
         }
       }
