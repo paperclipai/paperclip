@@ -86,6 +86,7 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { emitExecutionReceipt } from "./execution-receipts.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -7607,6 +7608,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return ensured;
   }
 
+  /**
+   * Shared post-write finalization for every place a `heartbeatRuns` row is
+   * updated with a new `status` (`setRunStatus`/`setRunStatusIfRunning`,
+   * which together cover the run-finalization path). Consolidated here so
+   * runtime-status cleanup, live events, plugin lifecycle events, and receipt
+   * emission (SAG-7616 W2) can't be duplicated or accidentally skipped at one
+   * call site but not another.
+   */
+  function finalizeHeartbeatRunStatusUpdate(updated: typeof heartbeatRuns.$inferSelect) {
+    if (isHeartbeatRunTerminalStatus(updated.status)) {
+      clearHeartbeatRunRuntimeStatus(updated.id);
+      emitExecutionReceipt(db, updated.id).catch((error) => {
+        logger.error(
+          { runId: updated.id, error: error instanceof Error ? error.message : String(error) },
+          "failed to emit execution receipt for terminal heartbeat run",
+        );
+      });
+    }
+    publishLiveEvent({
+      companyId: updated.companyId,
+      type: "heartbeat.run.status",
+      payload: buildHeartbeatRunStatusLiveEventPayload(updated),
+    });
+    publishRunLifecyclePluginEvent(updated);
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -7620,15 +7647,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
-      if (isHeartbeatRunTerminalStatus(updated.status)) {
-        clearHeartbeatRunRuntimeStatus(updated.id);
-      }
-      publishLiveEvent({
-        companyId: updated.companyId,
-        type: "heartbeat.run.status",
-        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
-      });
-      publishRunLifecyclePluginEvent(updated);
+      finalizeHeartbeatRunStatusUpdate(updated);
     }
 
     return updated;
@@ -7647,15 +7666,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
-      if (isHeartbeatRunTerminalStatus(updated.status)) {
-        clearHeartbeatRunRuntimeStatus(updated.id);
-      }
-      publishLiveEvent({
-        companyId: updated.companyId,
-        type: "heartbeat.run.status",
-        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
-      });
-      publishRunLifecyclePluginEvent(updated);
+      finalizeHeartbeatRunStatusUpdate(updated);
       return { run: updated, updated: true as const };
     }
 
@@ -9394,6 +9405,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     if (!cancelled) return null;
+
+    emitExecutionReceipt(db, cancelled.id).catch((error) => {
+      logger.error(
+        { runId: cancelled.id, error: error instanceof Error ? error.message : String(error) },
+        "failed to emit execution receipt for terminal heartbeat run",
+      );
+    });
 
     if (cancelled.wakeupRequestId) {
       await db
@@ -15474,6 +15492,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // same issue workspace while the assignee already has a live run.
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
+      // Runs cancelled directly inside the transaction below (stale scheduled
+      // retry, execution lock released on reassignment) bypass setRunStatus/
+      // setRunStatusIfRunning, so their receipt emission (SAG-7616 W2) is
+      // fired here once the transaction has actually committed.
+      const runIdsCancelledInTransaction: string[] = [];
+
       const outcome = await db.transaction(async (tx) => {
         await tx.execute(
           sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
@@ -15567,6 +15591,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .then((rows) => rows[0] ?? null);
 
           if (!cancelled) return false;
+
+          runIdsCancelledInTransaction.push(cancelled.id);
 
           if (scheduledRun.wakeupRequestId) {
             await tx
@@ -15681,6 +15707,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             )
             .returning({ id: heartbeatRuns.id });
           if (cancelled.length > 0) {
+            runIdsCancelledInTransaction.push(cancelled[0]!.id);
             if (activeExecutionRun.wakeupRequestId) {
               await tx
                 .update(agentWakeupRequests)
@@ -16234,6 +16261,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         return { kind: "queued" as const, run: newRun };
       });
+
+      for (const cancelledRunId of runIdsCancelledInTransaction) {
+        emitExecutionReceipt(db, cancelledRunId).catch((error) => {
+          logger.error(
+            { runId: cancelledRunId, error: error instanceof Error ? error.message : String(error) },
+            "failed to emit execution receipt for terminal heartbeat run",
+          );
+        });
+      }
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {

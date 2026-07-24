@@ -1,6 +1,8 @@
-import { createHash } from "node:crypto";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { sanitizeRecord } from "../redaction.js";
+import { stableStringify, sha256Digest } from "./canonical-hash.js";
+
+export { stableStringify, sha256Digest } from "./canonical-hash.js";
 
 export type FeedbackRedactionState = {
   redactedFields: Set<string>;
@@ -172,22 +174,4 @@ export function finalizeFeedbackRedactionSummary(state: FeedbackRedactionState) 
     notes: Array.from(state.notes).sort(),
     counts: Object.fromEntries(Array.from(state.counts.entries()).sort(([left], [right]) => left.localeCompare(right))),
   } satisfies Record<string, unknown>;
-}
-
-export function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
-  }
-
-  const entries = Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`);
-  return `{${entries.join(",")}}`;
-}
-
-export function sha256Digest(value: unknown) {
-  return createHash("sha256").update(stableStringify(value)).digest("hex");
 }
