@@ -543,7 +543,7 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
-  it("skips a mid-batch event read failure without losing order and retries it next cycle", async () => {
+  it("logs and recovers from a transient mid-batch event read failure without losing order or escalating", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-mid-batch-"));
     cleanupDirs.push(rootDir);
     const childPath = path.join(rootDir, "mid-batch-acp-child.mjs");
@@ -597,11 +597,166 @@ describe("sandbox adapter execution targets", () => {
       expect(result.code).toBe(0);
       expect(result.stdout).toBe("AAA\nBBB\nCCC\n");
       expect(result.stderr).toBe("");
-      // A skipped-and-retried single file read must never surface as a
-      // poll-level failure (that log line, and the fatal escalation it
-      // gates, are reserved for failures the batch reader cannot recover
-      // from on its own, e.g. the directory listing itself failing).
-      expect(combinedStream(logs, "stderr")).not.toContain("ACP process session bridge poll failed");
+      // A single-file read failure must still count as a failed poll cycle
+      // (the events read before it, AAA, are still delivered), but since the
+      // very next cycle successfully reads and delivers the rest, the streak
+      // resets to 0 and the session never escalates to the fatal teardown.
+      const failureLogLines = combinedStream(logs, "stderr")
+        .split("\n")
+        .filter((line) => line.includes("ACP process session bridge poll failed"));
+      expect(failureLogLines).toHaveLength(1);
+      expect(failureLogLines[0]).toContain("000000000002.json");
+      expect(failureLogLines[0]).toContain("(attempt 1/5)");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("escalates to the fatal frame after 5 consecutive cycles of a persistently failing single event file", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-persistent-bad-file-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "persistent-bad-file-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('EARLY\\n');",
+        "setTimeout(() => process.stdout.write('LATER\\n'), 20);",
+        "setTimeout(() => process.exit(0), 10_000);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    // The second event file never reads successfully, on any attempt. Every
+    // poll cycle after the first therefore stops the batch at that same
+    // file forever: this is the livelock this fix closes, so it must be
+    // reported (logged, counted) rather than silently retried at 100ms with
+    // no escalation.
+    const runner = createProcessSessionEventFaultInjectingRunner({
+      base: createLocalSandboxRunner(),
+      failRead: (fileName) => fileName === "000000000002.json",
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-persistent-bad-file",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      // The first event (EARLY) is delivered exactly once before the batch
+      // reader hits the permanently bad file and stops; LATER is never
+      // reached (it sits behind the bad file in sequence order) and the
+      // session tears itself down with the fatal frame instead of looping
+      // forever.
+      expect(result.stdout).toBe("EARLY\n");
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("000000000002.json");
+
+      const failureLogLines = combinedStream(logs, "stderr")
+        .split("\n")
+        .filter((line) => line.includes("ACP process session bridge poll failed"));
+      expect(failureLogLines).toHaveLength(5);
+      expect(failureLogLines[0]).toContain("(attempt 1/5)");
+      expect(failureLogLines[4]).toContain("(attempt 5/5)");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("stops delivering at a mid-batch malformed event, keeps the watermark behind it, and re-delivers on retry", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-malformed-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "malformed-event-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('FIRST\\n');",
+        "setTimeout(() => process.stdout.write('SECOND\\n'), 20);",
+        "setTimeout(() => process.exit(0), 400);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    // Corrupt the body of the second event file on its first read only (the
+    // read itself succeeds, but the JSON is garbage), then let subsequent
+    // reads through untouched so the retry on the next cycle sees the real
+    // (valid) body. This simulates a JSON.parse throw mid-batch, distinct
+    // from a read failure: readRemoteJsonFiles hands the event back to
+    // poll() as successfully read, and it is poll()'s own parse/delivery
+    // step that fails.
+    let corrupted = false;
+    const base = createLocalSandboxRunner();
+    const runner = {
+      execute: async (execInput: Parameters<typeof base.execute>[0]) => {
+        const result = await base.execute(execInput);
+        const script = (execInput.args?.[1] ?? "").trim();
+        const readMatch = /^base64 < '([^']*\/events\/000000000002\.json)'$/.exec(script);
+        if (readMatch && !corrupted && result.exitCode === 0) {
+          corrupted = true;
+          return { ...result, stdout: Buffer.from("not valid json", "utf8").toString("base64") };
+        }
+        return result;
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-malformed",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      // Both events are eventually delivered in order, exactly once: the
+      // corrupted read is retried (with valid JSON) on the next cycle
+      // rather than being skipped or duplicated.
+      expect(result.stdout).toBe("FIRST\nSECOND\n");
+      const failureLogLines = combinedStream(logs, "stderr")
+        .split("\n")
+        .filter((line) => line.includes("ACP process session bridge poll failed"));
+      expect(failureLogLines).toHaveLength(1);
+      expect(failureLogLines[0]).toContain("000000000002.json");
+      expect(failureLogLines[0]).toContain("(attempt 1/5)");
     } finally {
       await bridge?.stop();
     }
