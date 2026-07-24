@@ -1809,7 +1809,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         }
         let checkboxResult: { version: 1; outcome: "accepted"; selectedOptionIds: string[] } | undefined;
         if (input.action === "accept" && current.kind === "request_checkbox_confirmation") {
-          const parsed = acceptIssueThreadInteractionSchema.parse(input);
+          const parsed = acceptIssueThreadInteractionSchema.parse({
+            selectedOptionIds: input.selectedOptionIds,
+          });
           const optionIds = new Set(current.payload.options.map((option) => option.id));
           const selectedOptionIds = parsed.selectedOptionIds
             ?? current.payload.defaultSelectedOptionIds
