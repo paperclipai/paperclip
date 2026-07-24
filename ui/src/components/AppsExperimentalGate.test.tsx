@@ -4,14 +4,15 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { AppsExperimentalGate } from "./AppsExperimentalGate";
 
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -59,7 +60,9 @@ describe("AppsExperimentalGate", () => {
   });
 
   it("redirects to the dashboard when apps are disabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableApps: false } }),
+    );
     await renderGate();
 
     expect(container.querySelector('[data-testid="navigate"]')?.getAttribute("data-to")).toBe("/dashboard");
@@ -67,7 +70,9 @@ describe("AppsExperimentalGate", () => {
   });
 
   it("renders apps routes when apps are enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableApps: true } }),
+    );
     await renderGate();
 
     expect(container.querySelector('[data-testid="apps-content"]')).not.toBeNull();
@@ -75,7 +80,7 @@ describe("AppsExperimentalGate", () => {
   });
 
   it("renders nothing while the flag is loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    mockAccessApi.getCurrentBoardAccess.mockImplementation(() => new Promise(() => {}));
     await renderGate();
 
     expect(container.querySelector('[data-testid="navigate"]')).toBeNull();

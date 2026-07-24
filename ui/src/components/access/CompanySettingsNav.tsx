@@ -1,7 +1,9 @@
+import { useMemo } from "react";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
+import { useBoardCapabilities } from "@/hooks/useFeatures";
 
 const items = [
   { value: "general", label: "General", href: "/company/settings" },
@@ -81,9 +83,27 @@ export function CompanySettingsNav() {
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = getCompanySettingsTab(location.pathname);
+  const { data: boardAccess } = useBoardCapabilities();
+  const exposedSurfaces = new Set(boardAccess?.capabilities.exposedSurfaces ?? []);
+  const isInstanceAdmin = boardAccess?.isInstanceAdmin === true;
+  const cloudSyncEnabled = boardAccess?.capabilities.features.enableCloudSync === true;
+
+  const visibleItems = useMemo(
+    () =>
+      items.filter((item) => {
+        if (item.value === "general") return exposedSurfaces.has("company.general");
+        if (item.value === "cloud-upstream") return cloudSyncEnabled;
+        if (item.value === "members") return exposedSurfaces.has("company.members");
+        if (item.value === "invites") return exposedSurfaces.has("company.invites");
+        if (item.value === "secrets") return exposedSurfaces.has("company.secrets");
+        if (item.value === "instance-profile") return true; // per-user, always visible
+        return isInstanceAdmin; // all remaining instance-* tabs
+      }),
+    [boardAccess, cloudSyncEnabled, isInstanceAdmin], // exposedSurfaces derives from boardAccess
+  );
 
   function handleTabChange(value: string) {
-    const nextTab = items.find((item) => item.value === value);
+    const nextTab = visibleItems.find((item) => item.value === value);
     if (!nextTab || nextTab.value === activeTab) return;
     navigate(nextTab.href);
   }
@@ -91,7 +111,7 @@ export function CompanySettingsNav() {
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange}>
       <PageTabBar
-        items={items.map(({ value, label }) => ({ value, label }))}
+        items={visibleItems.map(({ value, label }) => ({ value, label }))}
         value={activeTab}
         onValueChange={handleTabChange}
         align="start"

@@ -1,4 +1,9 @@
-import type { AgentAdapterType, JoinRequest, PermissionKey } from "@paperclipai/shared";
+import type {
+  AgentAdapterType,
+  BoardCapabilities,
+  JoinRequest,
+  PermissionKey,
+} from "@paperclipai/shared";
 import { api } from "./client";
 
 export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";
@@ -245,6 +250,9 @@ export type CurrentBoardAccess = {
   }>;
   source: string;
   keyId: string | null;
+  /** Server-derived UI capabilities: exposed settings surfaces, public
+   *  feature flags, and (from PR-3) effective company standings. */
+  capabilities: BoardCapabilities;
 };
 
 function buildInviteListQuery(options: {

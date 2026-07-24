@@ -593,6 +593,22 @@ export interface PaperclipPluginManifestV1 {
   minimumPaperclipVersion?: PluginMinimumHostVersion;
   /** Capabilities this plugin requires from the host. Enforced at runtime. */
   capabilities: PluginCapability[];
+  /**
+   * Per-company enablement defaults for this plugin.
+   *
+   * - Absent ⇒ `default: "on"` (today's behavior; existing plugins unaffected).
+   * - `default: "off"` makes the plugin opt-in per company: no
+   *   `plugin_company_settings` row ⇒ disabled for that company.
+   * - `locked: true` ⇒ companies cannot toggle the plugin themselves; the
+   *   effective state is the manifest default unless an instance admin has
+   *   written a per-company override row (governance plugins, e.g. billing).
+   *
+   * A `plugin_company_settings` row always overrides the manifest default.
+   */
+  companyEnablement?: {
+    default: "on" | "off";
+    locked?: boolean;
+  };
   /** Entrypoint paths relative to the package root. */
   entrypoints: {
     /** Path to the worker entrypoint (required). */

@@ -6,7 +6,7 @@ import pc from "picocolors";
 import type {
   CompanyPortabilityExportResult,
   CompanyPortabilityFileEntry,
-  InstanceExperimentalSettings,
+  PublicFeatureFlags,
 } from "@paperclipai/shared";
 import { openUrl } from "../../client/board-auth.js";
 import { resolvePaperclipInstanceId } from "../../config/home.js";
@@ -52,6 +52,18 @@ interface CloudPushOptions extends BaseClientOptions {
   remoteUrl?: string;
   dryRun?: boolean;
   maxEntitiesPerChunk?: number;
+}
+
+// `GET /api/instance/settings/experimental` is instance-admin-only as of
+// PR-1, so a non-admin board user running `cloud push` can no longer read
+// enableCloudSync from it. `GET /api/cli-auth/me` is available to any
+// authenticated board user and surfaces the same flag (derived server-side)
+// under capabilities.features. Only the one field this command needs is
+// modeled here; the full shape is @paperclipai/shared's BoardCapabilities.
+interface CliAuthMeCapabilitiesResponse {
+  capabilities?: {
+    features?: Pick<PublicFeatureFlags, "enableCloudSync">;
+  };
 }
 
 interface UpstreamDiscovery {
@@ -186,7 +198,7 @@ export async function connectCloud(remoteUrl: string, opts: CloudConnectOptions 
 export async function pushCloud(opts: CloudPushOptions): Promise<unknown> {
   const ctx = resolveCommandContext(opts, { requireCompany: false });
   const localCompanyId = requiredString(opts.company, "--company");
-  await assertCloudSyncEnabled(ctx.api.get<InstanceExperimentalSettings>("/api/instance/settings/experimental"));
+  await assertCloudSyncEnabled(ctx.api.get<CliAuthMeCapabilitiesResponse>("/api/cli-auth/me"));
   const connection = getCloudConnection(opts.remoteUrl);
   if (!connection) {
     throw new Error("No cloud connection found. Run `paperclipai cloud connect <remote-url>` first.");
@@ -489,9 +501,11 @@ function normalizePortableFileEntry(entry: CompanyPortabilityFileEntry): Record<
   return { ...entry };
 }
 
-async function assertCloudSyncEnabled(settingsPromise: Promise<InstanceExperimentalSettings | null>): Promise<void> {
-  const settings = await settingsPromise;
-  if (settings?.enableCloudSync !== true) {
+async function assertCloudSyncEnabled(
+  meResponsePromise: Promise<CliAuthMeCapabilitiesResponse | null>,
+): Promise<void> {
+  const me = await meResponsePromise;
+  if (me?.capabilities?.features?.enableCloudSync !== true) {
     throw new Error(
       "Cloud sync is disabled. Enable the cloud sync experimental setting before running `paperclipai cloud push`.",
     );
