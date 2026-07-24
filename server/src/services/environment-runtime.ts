@@ -456,12 +456,30 @@ function reusableSandboxLeaseScopeMatches(input: {
   const scope = input.lease.metadata?.reusableSandboxLease;
   if (!isRecord(scope)) return false;
   const adapterType = input.adapterType ?? null;
+  const storedAdapterType = typeof scope.adapterType === "string" ? scope.adapterType : null;
+  // Plugin-backed sandbox leases pick a per-run runtime image keyed on the
+  // adapter type; a lease published (or resumed from before this fix) with
+  // adapterType null carries no positive proof of which image its pod is
+  // running. Treating null as a wildcard let ANY run reuse it, including one
+  // requesting a different harness (the production adapter_runtime_image_mismatch
+  // case this closes). Require a POSITIVE match instead: both sides must be
+  // set and equal, never null-on-either-side.
+  //
+  // Built-in (non-plugin) sandbox providers never publish adapterType in the
+  // scope at all (they are not per-run-image-keyed the way the plugin pool
+  // is), so their leases legitimately keep the permissive equality check:
+  // scoping the strict rule to `sandboxProviderPlugin === true` leaves that
+  // reuse path unaffected.
+  const isPluginBackedLease = input.lease.metadata?.sandboxProviderPlugin === true;
+  const adapterTypeMatches = isPluginBackedLease
+    ? storedAdapterType !== null && adapterType !== null && storedAdapterType === adapterType
+    : scope.adapterType === adapterType;
   const baseScopeMatches =
     scope.companyId === input.companyId &&
     scope.environmentId === input.environmentId &&
     scope.executionWorkspaceId === input.executionWorkspaceId &&
     scope.agentId === input.agentId &&
-    scope.adapterType === adapterType &&
+    adapterTypeMatches &&
     scope.provider === input.provider;
   if (!baseScopeMatches) return false;
 
