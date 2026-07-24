@@ -49,6 +49,7 @@ import { BootstrapSetupUxLab } from "./pages/BootstrapSetupUxLab";
 import { ResponsibleUserDenialUxLab } from "./pages/ResponsibleUserDenialUxLab";
 import { CompanySettingsPluginPage } from "./pages/CompanySettingsPluginPage";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
+import { SurfaceGuard } from "./components/access/SurfaceGuard";
 import { AdvancedToolsRoute } from "./pages/tools/AdvancedToolsRoute";
 import { ProfileWizardRoute } from "./pages/tools/profiles/ProfileWizardRoute";
 import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
@@ -105,12 +106,33 @@ function boardRoutes() {
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
       <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
-      <Route path="company/settings/members" element={<CompanyAccess />} />
+      <Route
+        path="company/settings/members"
+        element={
+          <SurfaceGuard surface="company.members">
+            <CompanyAccess />
+          </SurfaceGuard>
+        }
+      />
       <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
-      <Route path="company/settings/invites" element={<CompanyInvites />} />
+      <Route
+        path="company/settings/invites"
+        element={
+          <SurfaceGuard surface="company.invites">
+            <CompanyInvites />
+          </SurfaceGuard>
+        }
+      />
       <Route path="company/export/*" element={<CompanyExport />} />
       <Route path="company/import" element={<CompanyImport />} />
-      <Route path="company/settings/secrets" element={<Secrets />} />
+      <Route
+        path="company/settings/secrets"
+        element={
+          <SurfaceGuard surface="company.secrets">
+            <Secrets />
+          </SurfaceGuard>
+        }
+      />
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />

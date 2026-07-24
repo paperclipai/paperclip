@@ -1210,6 +1210,20 @@ export interface WorkerToHostMethods {
     params: { companyId: string },
     result: Company | null,
   ];
+  "companies.setStanding": [
+    params: {
+      companyId: string;
+      status: "active" | "grace" | "blocked";
+      reason: string;
+      message: string;
+      actionUrl?: string;
+    },
+    result: void,
+  ];
+  "companies.clearStanding": [
+    params: { companyId: string },
+    result: void,
+  ];
 
   // Projects (read)
   "projects.list": [

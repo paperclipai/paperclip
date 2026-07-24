@@ -5,20 +5,21 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarServerInfo } from "./SidebarServerInfo";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const mockHealthApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 
 vi.mock("@/api/health", () => ({
   healthApi: mockHealthApi,
 }));
 
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 async function flushReact() {
@@ -38,9 +39,9 @@ async function flushReactMicrotasks() {
 }
 
 function mockEnabledSettings(enabled: boolean) {
-  mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-    enableServerInfoDebugView: enabled,
-  });
+  mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+    buildCurrentBoardAccess({ features: { enableServerInfoDebugView: enabled } }),
+  );
 }
 
 describe("SidebarServerInfo", () => {
@@ -66,7 +67,7 @@ describe("SidebarServerInfo", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockHealthApi.get.mockReset();
-    mockInstanceSettingsApi.getExperimental.mockReset();
+    mockAccessApi.getCurrentBoardAccess.mockReset();
   });
 
   afterEach(() => {

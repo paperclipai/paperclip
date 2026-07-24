@@ -275,6 +275,7 @@ export function InstanceExperimentalSettings() {
         queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
         queryClient.invalidateQueries({ queryKey: ["built-in-agents"] }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess }),
       ]);
     },
     onError: (error, _patch, context) => {
@@ -307,6 +308,7 @@ export function InstanceExperimentalSettings() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess }),
       ]);
     },
     onError: (error) => {

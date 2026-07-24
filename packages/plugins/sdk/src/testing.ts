@@ -490,6 +490,16 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const entities = new Map<string, PluginEntityRecord>();
   const entityExternalIndex = new Map<string, string>();
   const companies = new Map<string, Company>();
+  const companyStandings = new Map<
+    string,
+    {
+      companyId: string;
+      status: "active" | "grace" | "blocked";
+      reason: string;
+      message: string;
+      actionUrl?: string;
+    }
+  >();
   const projects = new Map<string, Project>();
   const routines = new Map<string, Routine>();
   const routineRuns = new Map<string, RoutineRun>();
@@ -1549,6 +1559,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async get(companyId) {
         requireCapability(manifest, capabilitySet, "companies.read");
         return companies.get(companyId) ?? null;
+      },
+      async setStanding(companyId, input) {
+        requireCapability(manifest, capabilitySet, "company.standing.write");
+        companyStandings.set(`${companyId}:${manifest.id}`, { companyId, ...input });
+      },
+      async clearStanding(companyId) {
+        requireCapability(manifest, capabilitySet, "company.standing.write");
+        companyStandings.delete(`${companyId}:${manifest.id}`);
       },
     },
     issues: {

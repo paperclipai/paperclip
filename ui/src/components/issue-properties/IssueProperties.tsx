@@ -8,7 +8,7 @@ import { accessApi } from "../../api/access";
 import { agentsApi } from "../../api/agents";
 import { authApi } from "../../api/auth";
 import { executionWorkspacesApi } from "../../api/execution-workspaces";
-import { instanceSettingsApi } from "../../api/instanceSettings";
+import { useFeatures } from "../../hooks/useFeatures";
 import { issuesApi } from "../../api/issues";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
@@ -158,10 +158,7 @@ export function IssueProperties({
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
+  const { data: experimentalSettings } = useFeatures();
   const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
