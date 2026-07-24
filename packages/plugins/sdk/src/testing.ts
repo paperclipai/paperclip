@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { acceptIssueThreadInteractionSchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import type {
   PaperclipPluginManifestV1,
   PluginCapability,
@@ -1807,19 +1807,35 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         if (current.status !== "pending") {
           return { interaction: current, applied: false };
         }
+        let checkboxResult: { version: 1; outcome: "accepted"; selectedOptionIds: string[] } | undefined;
+        if (input.action === "accept" && current.kind === "request_checkbox_confirmation") {
+          const parsed = acceptIssueThreadInteractionSchema.parse(input);
+          const optionIds = new Set(current.payload.options.map((option) => option.id));
+          const selectedOptionIds = parsed.selectedOptionIds
+            ?? current.payload.defaultSelectedOptionIds
+            ?? [];
+          for (const optionId of selectedOptionIds) {
+            if (!optionIds.has(optionId)) {
+              throw new Error(`Unknown checkbox confirmation optionId: ${optionId}`);
+            }
+          }
+          const selected = current.payload.options
+            .filter((option) => selectedOptionIds.includes(option.id))
+            .map((option) => option.id);
+          const minSelected = current.payload.minSelected ?? 0;
+          const maxSelected = current.payload.maxSelected ?? null;
+          if (selected.length < minSelected) {
+            throw new Error(`Select at least ${minSelected} checkbox confirmation option(s)`);
+          }
+          if (maxSelected != null && selected.length > maxSelected) {
+            throw new Error(`Select no more than ${maxSelected} checkbox confirmation option(s)`);
+          }
+          checkboxResult = { version: 1, outcome: "accepted", selectedOptionIds: selected };
+        }
         const resolved: IssueThreadInteraction = {
           ...current,
           status: input.action === "accept" ? "accepted" : "rejected",
-          ...(input.action === "accept"
-            && current.kind === "request_checkbox_confirmation"
-            && input.selectedOptionIds !== undefined
-            ? {
-              result: {
-                outcome: "accepted",
-                selectedOptionIds: input.selectedOptionIds,
-              },
-            }
-            : {}),
+          ...(checkboxResult ? { result: checkboxResult } : {}),
           updatedAt: new Date(),
         } as IssueThreadInteraction;
         const index = list.indexOf(current);

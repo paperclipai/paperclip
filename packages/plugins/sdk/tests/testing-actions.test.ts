@@ -77,7 +77,21 @@ describe("createTestHarness issue interactions", () => {
   it("creates request_checkbox_confirmation interactions through the typed host helper", async () => {
     const harness = createTestHarness({
       manifest,
-      capabilities: ["issues.create", "issue.interactions.create"],
+      capabilities: ["issues.create", "issue.interactions.create", "issue.interactions.respond"],
+    });
+    const now = new Date().toISOString();
+    harness.seed({
+      accessMembers: [{
+        id: "member-1",
+        companyId: "company-1",
+        principalType: "user",
+        principalId: "user-1",
+        status: "active",
+        membershipRole: "operator",
+        grants: [],
+        createdAt: now,
+        updatedAt: now,
+      }],
     });
     const issue = await harness.ctx.issues.create({
       companyId: "company-1",
@@ -124,6 +138,27 @@ describe("createTestHarness issue interactions", () => {
         defaultSelectedOptionIds: ["file-a"],
         minSelected: 1,
         maxSelected: 2,
+      },
+    });
+
+    const accepted = await harness.ctx.issues.respondInteraction(
+      issue.id,
+      interaction.id,
+      {
+        action: "accept",
+        actorUserId: "user-1",
+        selectedOptionIds: ["file-b"],
+      },
+      "company-1",
+    );
+    expect(accepted).toMatchObject({
+      applied: true,
+      interaction: {
+        status: "accepted",
+        result: {
+          outcome: "accepted",
+          selectedOptionIds: ["file-b"],
+        },
       },
     });
   });
