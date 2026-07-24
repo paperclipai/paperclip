@@ -76,6 +76,42 @@ describe("createBufferedTextFileWriter", () => {
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
   it(
+    "does not publish an archive when pg_dump fails after producing output",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-atomic-backup-");
+      const scriptDir = createTempDir("paperclip-failing-pg-dump-");
+      const fakePgDump = path.join(scriptDir, "pg_dump");
+      fs.writeFileSync(
+        fakePgDump,
+        "#!/bin/sh\nprintf '%s\\n' '-- interrupted database dump'\nexit 17\n",
+        { mode: 0o755 },
+      );
+      const originalPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = fakePgDump;
+
+      try {
+        await expect(runDatabaseBackup({
+          connectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-atomic-test",
+          backupEngine: "pg_dump",
+        })).rejects.toThrow("exit code 17");
+
+        expect(fs.readdirSync(backupDir)).toEqual([]);
+      } finally {
+        if (originalPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = originalPgDumpPath;
+        }
+      }
+    },
+    20_000,
+  );
+
+  it(
     "backs up and restores large table payloads without materializing one giant string",
     async () => {
       const sourceConnectionString = await createTempDatabase();
