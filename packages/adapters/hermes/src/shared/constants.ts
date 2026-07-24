@@ -87,9 +87,18 @@ export const MODEL_PREFIX_PROVIDER_HINTS: [string, string][] = [
   ["huggingface/", "huggingface"],
 ];
 
-/** Regex to extract session ID from Hermes CLI output. */
-export const SESSION_ID_REGEX = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
+/**
+ * Canonical Hermes session IDs.
+ *
+ * Current Hermes releases use `YYYYMMDD_HHMMSS_<hex>`. UUIDs are accepted
+ * for compatibility with sessions created by older installations.
+ */
+export const HERMES_SESSION_ID_REGEX =
+  /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
 
+export function isCanonicalHermesSessionId(value: unknown): value is string {
+  return typeof value === "string" && HERMES_SESSION_ID_REGEX.test(value);
+}
 /** Regex to extract token usage from Hermes output. */
 export const TOKEN_USAGE_REGEX =
   /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
