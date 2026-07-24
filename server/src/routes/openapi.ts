@@ -1980,6 +1980,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/delivery-receipts",
+  tags: ["issues"],
+  summary: "List requester-visible delivery receipts for an issue",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/issues/{id}/work-products",
   tags: ["issues"],
