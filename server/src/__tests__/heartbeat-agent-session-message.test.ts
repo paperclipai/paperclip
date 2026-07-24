@@ -42,4 +42,24 @@ describe("agent session wake messages", () => {
       }),
     ).resolves.toBeNull();
   });
+
+  it("redacts and bounds session messages before materializing the wake payload", async () => {
+    const secret = "do-not-render-this-value";
+    const wakePayload = await buildPaperclipWakePayload({
+      db: {} as never,
+      companyId: "company-1",
+      contextSnapshot: {
+        wakeReason: "gateway_chat_message",
+        paperclipAgentMessage: {
+          text: `OPENAI_API_KEY=${secret}\n${"x".repeat(13_000)}`,
+          source: "plugin_session",
+          pluginKey: "paperclip.gateway",
+          sessionId: "session-1",
+        },
+      },
+    });
+
+    expect(wakePayload?.agentMessage?.text).not.toContain(secret);
+    expect(wakePayload?.agentMessage?.text.length).toBeLessThanOrEqual(12_000);
+  });
 });

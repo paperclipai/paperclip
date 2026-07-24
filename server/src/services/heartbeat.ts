@@ -316,6 +316,7 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const MAX_AGENT_SESSION_MESSAGE_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -2107,6 +2108,13 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function sanitizeAgentSessionMessageText(value: unknown): string | null {
+  const text = readNonEmptyString(value);
+  if (!text) return null;
+  const redacted = redactSensitiveText(text).slice(0, MAX_AGENT_SESSION_MESSAGE_CHARS);
+  return redacted.trim().length > 0 ? redacted : null;
 }
 
 type ManagedMcpGatewayRunConfig = {
@@ -4410,7 +4418,7 @@ export async function buildPaperclipWakePayload(input: {
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
   const agentMessage = parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
-  const agentMessageText = readNonEmptyString(agentMessage.text);
+  const agentMessageText = sanitizeAgentSessionMessageText(agentMessage.text);
   const issueSummary =
     input.issueSummary ??
     (issueId
