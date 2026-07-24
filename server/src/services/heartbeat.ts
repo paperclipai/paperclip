@@ -15699,13 +15699,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .where(eq(issues.id, issue.id));
         }
 
-        if (!activeExecutionRun) {
+        if (!activeExecutionRun && issue.assigneeAgentId) {
+          // Only re-adopt a run that still belongs to the issue's CURRENT
+          // assignee. After an in-place handoff (the carrier is reassigned to a
+          // new agent while a run of the previous owner is still in flight on
+          // it), re-locking the carrier to the outgoing agent's run would
+          // orphan the new assignee's deferred wake forever — the carrier never
+          // drives its governed cycle (spec 0079). This mirrors the ownership
+          // check the engine already applies to stale scheduled retries
+          // (cancelStaleScheduledRetry → "issue_reassigned").
+          //
+          // The previous owner's stale run is intentionally left in place here
+          // (not eagerly cancelled): the engine cancels it lazily, at claim
+          // time, via evaluateQueuedRunStaleness → "issue_assignee_changed"
+          // (it never runs on the carrier). Eager cancellation in this read
+          // path would diverge from that idiom and widen the blast radius.
           const legacyRun = await tx
             .select()
             .from(heartbeatRuns)
             .where(
               and(
                 eq(heartbeatRuns.companyId, issue.companyId),
+                eq(heartbeatRuns.agentId, issue.assigneeAgentId),
                 inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
                 sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
               ),
