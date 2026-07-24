@@ -21,7 +21,7 @@ import type {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cloudUpstreamsApi } from "@/api/cloudUpstreams";
-import { instanceSettingsApi } from "@/api/instanceSettings";
+import { useFeatures } from "@/hooks/useFeatures";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { applyCompanyPrefix, extractCompanyPrefixFromPath } from "@/lib/company-routes";
@@ -82,10 +82,7 @@ export function CloudUpstream() {
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
-  const experimentalQuery = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
+  const experimentalQuery = useFeatures();
   const cloudSyncEnabled = experimentalQuery.data?.enableCloudSync === true;
 
   const upstreamQuery = useQuery({

@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Environment } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { AgentConfigForm } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
 
@@ -21,10 +22,8 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  get: vi.fn(),
-  getExperimental: vi.fn(),
-  getGeneral: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 
 const mockSecretsApi = vi.hoisted(() => ({
@@ -39,8 +38,8 @@ vi.mock("../api/environments", () => ({
   environmentsApi: mockEnvironmentsApi,
 }));
 
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("../api/secrets", () => ({
@@ -285,9 +284,11 @@ describe("AgentConfigForm environment selector", () => {
       checks: [],
       testedAt: new Date(0).toISOString(),
     });
-    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
-    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        features: { enableEnvironments: true, executionMode: "any", defaultEnvironmentId: null },
+      }),
+    );
     mockSecretsApi.list.mockResolvedValue([]);
   });
 

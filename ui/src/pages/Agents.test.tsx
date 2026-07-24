@@ -10,6 +10,7 @@ import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
 import { Agents } from "./Agents";
 import type { AgentOrgChainHealth } from "@paperclipai/shared";
+import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 const mockRouterState = vi.hoisted(() => ({
   pathname: "/agents/all",
@@ -36,8 +37,8 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
 }));
 
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  get: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 
 const mockResourceMembershipsApi = vi.hoisted(() => ({
@@ -89,8 +90,8 @@ vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
 }));
 
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("../api/resourceMemberships", () => ({
@@ -221,24 +222,15 @@ function makeInstanceSettings({
   enableEnvironments?: boolean;
   enableBuiltInAgents?: boolean;
 } = {}) {
-  return {
-    id: "instance-settings-1",
-    defaultEnvironmentId,
-    general: {
+  return buildCurrentBoardAccess({
+    features: {
+      defaultEnvironmentId,
       censorUsernameInLogs: true,
       keyboardShortcuts: true,
       feedbackDataSharingPreference: "prompt",
-      backupRetention: {
-        dailyDays: 7,
-        weeklyWeeks: 4,
-        monthlyMonths: 1,
-      },
       executionMode: "any",
-    },
-    experimental: {
       enableEnvironments,
       enableIsolatedWorkspaces: true,
-      enableStreamlinedLeftNavigation: false,
       enableConferenceRoomChat: false,
       enableTaskWatchdogs: true,
       enableIssuePlanDecompositions: true,
@@ -246,13 +238,8 @@ function makeInstanceSettings({
       enableCloudSync: false,
       enableExternalObjects: false,
       enableBuiltInAgents,
-      autoRestartDevServerWhenIdle: false,
-      enableIssueGraphLivenessAutoRecovery: false,
-      issueGraphLivenessAutoRecoveryLookbackHours: 24,
     },
-    createdAt: new Date("2026-01-01T00:00:00Z"),
-    updatedAt: new Date("2026-01-01T00:00:00Z"),
-  };
+  });
 }
 
 const invalidOrgChainHealth: AgentOrgChainHealth = {
@@ -330,7 +317,7 @@ describe("Agents", () => {
       makeEnvironment({ id: "env-daytona" }),
     ]);
     mockEnvironmentsApi.capabilities.mockResolvedValue(environmentCapabilities);
-    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings());
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(makeInstanceSettings());
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockResourceMembershipsApi.listMine.mockResolvedValue({
       projectMemberships: {},
@@ -444,7 +431,7 @@ describe("Agents", () => {
 
   it("uses the built-in agents route segment as the built-in filter", async () => {
     mockRouterState.pathname = "/agents/builtin";
-    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
     const builtInAgent = makeAgent({
       id: "built-in-agent",
       name: "Briefs Agent",
@@ -628,7 +615,7 @@ describe("Agents", () => {
   });
 
   it("hides the environment column when environments are experimentally disabled", async () => {
-    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableEnvironments: false }));
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(makeInstanceSettings({ enableEnvironments: false }));
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({
         id: "agent-local",
@@ -731,7 +718,7 @@ describe("Agents", () => {
         config: { provider: "daytona" },
       }),
     ]);
-    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ defaultEnvironmentId: "env-default" }));
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(makeInstanceSettings({ defaultEnvironmentId: "env-default" }));
 
     root = createRoot(container);
     await act(async () => {
@@ -835,7 +822,7 @@ describe("Agents", () => {
 
   it("shows and filters built-in agents when the experimental flag is enabled", async () => {
     mockRouterState.pathname = "/agents/builtin";
-    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({
         id: "built-in-agent",

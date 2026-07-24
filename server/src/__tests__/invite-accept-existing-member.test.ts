@@ -12,6 +12,9 @@ const accessServiceMock = vi.hoisted(() => ({
   setPrincipalGrants: vi.fn(),
 }));
 const logActivityMock = vi.hoisted(() => vi.fn());
+const instanceSettingsServiceMock = vi.hoisted(() => ({
+  getVisibility: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => accessServiceMock,
@@ -27,6 +30,7 @@ vi.mock("../services/index.js", () => ({
   deduplicateAgentName: vi.fn(),
   logActivity: logActivityMock,
   notifyHireApproved: vi.fn(),
+  instanceSettingsService: () => instanceSettingsServiceMock,
 }));
 
 type QueryHooks = {
@@ -300,6 +304,15 @@ function createAcceptedHumanInviteReplayDbStub() {
 describe("POST /invites/:token/accept", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    instanceSettingsServiceMock.getVisibility.mockResolvedValue({
+      companySurfaces: [
+        "company.general",
+        "company.members",
+        "company.invites",
+        "company.secrets",
+        "company.plugins",
+      ],
+    });
   });
 
   it("does not consume a human invite when the signed-in user is already a company member", async () => {

@@ -1635,3 +1635,32 @@ export const PLUGIN_BRIDGE_ERROR_CODES = [
   "UNKNOWN",
 ] as const;
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];
+
+// --- Settings-surface taxonomy (settings-surface policy, PR-1) ---
+//
+// Company-scoped surfaces are exposable to non-admin company members via the
+// instance visibility policy (instance_settings.visibility.companySurfaces).
+// "company.plugins" gates the plugin catalog page ONLY (introduced by PR-2):
+// companySettingsPages of already-enabled plugins render regardless.
+export const COMPANY_SETTINGS_SURFACES = [
+  "company.general",
+  "company.members",
+  "company.invites",
+  "company.secrets",
+  "company.plugins",
+] as const;
+export type CompanySettingsSurface = (typeof COMPANY_SETTINGS_SURFACES)[number];
+
+// Instance-scoped surfaces are NEVER exposable to non-admins and do not
+// appear in the policy at all. Sandboxing (executionMode) lives in
+// "instance.general", so it is structurally invisible to company owners.
+export const INSTANCE_SETTINGS_SURFACES = [
+  "instance.general",
+  "instance.environments",
+  "instance.access",
+  "instance.heartbeats",
+  "instance.experimental",
+  "instance.plugins",
+  "instance.adapters",
+] as const;
+export type InstanceSettingsSurface = (typeof INSTANCE_SETTINGS_SURFACES)[number];
