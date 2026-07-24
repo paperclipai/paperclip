@@ -8,17 +8,22 @@ import {
   companies,
   createDb,
   documents,
+  executionWorkspaces,
   heartbeatRuns,
+  instanceSettings,
   issueComments,
   issueDocuments,
   issueWorkProducts,
   issues,
   issueWatchdogs,
+  projectWorkspaces,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 import { taskWatchdogService } from "../services/task-watchdogs.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -49,7 +54,11 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(issueWatchdogs);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(agents);
+    await db.delete(instanceSettings);
     await db.delete(companies);
   });
 
@@ -96,8 +105,13 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       priority: overrides.priority ?? "medium",
       identifier: overrides.identifier ?? `WDOG-${Math.floor(Math.random() * 10_000)}`,
       issueNumber: overrides.issueNumber ?? Math.floor(Math.random() * 10_000),
+      projectId: overrides.projectId,
+      projectWorkspaceId: overrides.projectWorkspaceId,
       parentId: overrides.parentId,
       assigneeAgentId: overrides.assigneeAgentId,
+      executionWorkspaceId: overrides.executionWorkspaceId,
+      executionWorkspacePreference: overrides.executionWorkspacePreference,
+      executionWorkspaceSettings: overrides.executionWorkspaceSettings,
       originKind: overrides.originKind,
       originId: overrides.originId,
       originFingerprint: overrides.originFingerprint,
@@ -162,7 +176,48 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
   it("creates one reusable watchdog issue and wakes the watchdog on the initial stopped state", async () => {
     const companyId = await seedCompany();
-    const sourceId = await seedIssue(companyId, { identifier: "WDOG-1", status: "done" });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const sourceExecutionWorkspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Watchdog project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary project workspace",
+      isPrimary: true,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: sourceExecutionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      sourceIssueId: null,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Watched issue worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-1",
+      status: "done",
+      projectId,
+      projectWorkspaceId,
+      executionWorkspaceId: sourceExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId: sourceId })
+      .where(eq(executionWorkspaces.id, sourceExecutionWorkspaceId));
     const agentId = await seedAgent(companyId);
     await seedWatchdog(companyId, sourceId, agentId);
     const { service, wakes } = createService();
@@ -208,6 +263,11 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       originId: sourceId,
       assigneeAgentId: agentId,
       status: "todo",
+      projectId,
+      projectWorkspaceId,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "agent_default",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
 
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
@@ -246,6 +306,117 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(watchdog?.lastObservedFingerprint).toBe(firstWatchdog?.lastObservedFingerprint);
     expect(watchdog?.triggerCount).toBe(1);
+  });
+
+  it("normalizes a legacy open watchdog review before the same-fingerprint early return", async () => {
+    const companyId = await seedCompany();
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-OPEN-LEGACY", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const watchdogIssueId = watchdog!.watchdogIssueId!;
+    await db.delete(agentWakeupRequests);
+    const legacyProjectId = randomUUID();
+    const legacyWorkspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: legacyProjectId,
+      companyId,
+      name: "Legacy watchdog project",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: legacyWorkspaceId,
+      companyId,
+      projectId: legacyProjectId,
+      mode: "shared_workspace",
+      strategyType: "agent_default",
+      name: "Legacy shared workspace",
+      status: "active",
+      providerType: "local_fs",
+    });
+    await db
+      .update(issues)
+      .set({
+        executionWorkspaceId: legacyWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "shared_workspace" },
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(wakes).toHaveLength(1);
+    const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
+    expect(watchdogIssue).toMatchObject({
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "agent_default",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+  });
+
+  it("normalizes a legacy watchdog review before the queued-wake early return", async () => {
+    const companyId = await seedCompany();
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-QUEUED-LEGACY", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const watchdogIssueId = watchdog!.watchdogIssueId!;
+    const legacyProjectId = randomUUID();
+    const legacyWorkspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: legacyProjectId,
+      companyId,
+      name: "Legacy queued watchdog project",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: legacyWorkspaceId,
+      companyId,
+      projectId: legacyProjectId,
+      mode: "shared_workspace",
+      strategyType: "agent_default",
+      name: "Legacy queued shared workspace",
+      status: "active",
+      providerType: "local_fs",
+    });
+    await db
+      .update(issues)
+      .set({
+        executionWorkspaceId: legacyWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "shared_workspace" },
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, watchdogIssueId));
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      status: "queued",
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: watchdogIssueId },
+    });
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
+    expect(watchdogIssue).toMatchObject({
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "agent_default",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
   });
 
   it("re-wakes a same-fingerprint watchdog review stuck in stale in_review", async () => {
@@ -430,8 +601,81 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes.length).toBe(2);
   });
 
+  it("clears a legacy inherited workspace when resuming a reusable watchdog issue", async () => {
+    const companyId = await seedCompany();
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const inheritedWorkspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Watchdog recovery project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Recovery project workspace",
+      isPrimary: true,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: inheritedWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Legacy inherited worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-LEGACY",
+      status: "done",
+      projectId,
+      projectWorkspaceId,
+    });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    await db
+      .update(issues)
+      .set({
+        status: "done",
+        executionWorkspaceId: inheritedWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, watchdogIssueId));
+    await db
+      .update(issues)
+      .set({ status: "blocked", updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(issues.id, childId));
+
+    const resumed = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(resumed).toMatchObject({ checked: 1, triggered: 1 });
+    const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
+    expect(watchdogIssue).toMatchObject({
+      projectId,
+      projectWorkspaceId,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "agent_default",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+  });
+
   it("does not let an old terminal watchdog review mark a newer observed fingerprint reviewed", async () => {
     const companyId = await seedCompany();
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-STALE", status: "done" });
     const childId = await seedIssue(companyId, { parentId: sourceId, status: "done" });
     const agentId = await seedAgent(companyId);
@@ -451,6 +695,13 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       invocationSource: "assignment",
       contextSnapshot: { issueId: watchdogIssueId },
     });
+    await db
+      .update(issues)
+      .set({
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "shared_workspace" },
+      })
+      .where(eq(issues.id, watchdogIssueId));
 
     await db
       .update(issues)
@@ -477,6 +728,9 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(reopenedWatchdogIssue).toMatchObject({
       status: "todo",
       originFingerprint: newerFingerprint,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "agent_default",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
     const reviewActivities = await db
       .select()

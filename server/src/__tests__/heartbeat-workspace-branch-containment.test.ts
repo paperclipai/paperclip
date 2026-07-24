@@ -1045,6 +1045,154 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     });
   });
 
+  it("realizes a watchdog review in a fresh project-bound worktree without a project isolation policy", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const agentId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const watchdogIssueId = randomUUID();
+    const sourceWorkspaceId = randomUUID();
+    const issuePrefix = `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Watchdog realization",
+      issuePrefix,
+      status: "active",
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Shared-policy project",
+      status: "active",
+      executionWorkspacePolicy: {
+        enabled: false,
+        defaultMode: "shared_workspace",
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: repoRoot,
+      isPrimary: true,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Watchdog reviewer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Watched issue",
+      status: "done",
+      priority: "medium",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      responsibleUserId: "responsible-user",
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree" },
+      },
+    });
+    await db.insert(executionWorkspaces).values({
+      id: sourceWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      sourceIssueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Watched issue worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+    await db
+      .update(issues)
+      .set({ executionWorkspaceId: sourceWorkspaceId })
+      .where(eq(issues.id, sourceIssueId));
+    await db.insert(issues).values({
+      id: watchdogIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      parentId: sourceIssueId,
+      title: "Watchdog review",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      originKind: "task_watchdog",
+      originId: sourceIssueId,
+      originFingerprint: "task_watchdog_stop:test",
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "agent_default",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree" },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "task_watchdog_stopped_subtree",
+      payload: { issueId: watchdogIssueId },
+      contextSnapshot: { issueId: watchdogIssueId, wakeReason: "task_watchdog_stopped_subtree" },
+    });
+
+    expect(run).not.toBeNull();
+    if (!run) throw new Error("Expected watchdog wakeup to queue a heartbeat run");
+    await heartbeat.resumeQueuedRuns();
+    const finishedRun = await waitForRunToFinish(heartbeat, run.id);
+    expect(finishedRun?.status).toBe("succeeded");
+
+    const [watchdogIssue] = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, watchdogIssueId));
+    expect(watchdogIssue?.executionWorkspaceId).toBeTruthy();
+    expect(watchdogIssue?.executionWorkspaceId).not.toBe(sourceWorkspaceId);
+    const [realizedWorkspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, watchdogIssue!.executionWorkspaceId!));
+    expect(realizedWorkspace).toMatchObject({
+      id: watchdogIssue!.executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      sourceIssueId: watchdogIssueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+    });
+    expect(realizedWorkspace?.cwd).not.toBe(repoRoot);
+  });
+
   it.each([
     ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, null],
     ["workspace-runtime persisted restore", "persisted_restore" as const, "source-workspace"],

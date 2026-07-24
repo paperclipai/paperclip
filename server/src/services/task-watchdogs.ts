@@ -27,6 +27,7 @@ import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
 const TASK_WATCHDOG_LIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const TASK_WATCHDOG_RUNNING_RUN_STATUSES = ["running"] as const;
 const TASK_WATCHDOG_WAKE_REQUEST_STATUSES = ["queued", "deferred_issue_execution"] as const;
 const TASK_WATCHDOG_TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
 const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -38,6 +39,10 @@ const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed
 // false-positive stopped-subtree review. The periodic watchdog reconciler
 // re-evaluates after the window, so a genuinely idle issue still triggers.
 const TASK_WATCHDOG_FIRST_RUN_GRACE_MS = 15_000;
+
+function watchdogExecutionWorkspaceSettings() {
+  return { mode: "isolated_workspace" } as const;
+}
 
 type ActorFields = {
   agentId?: string | null;
@@ -1076,6 +1081,34 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return Boolean(run || issueRun || wake);
   }
 
+  async function hasRunningPathForIssue(companyId: string, issueId: string) {
+    const [run, issueRun] = await Promise.all([
+      db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, [...TASK_WATCHDOG_RUNNING_RUN_STATUSES]),
+          sql`(${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}
+            OR ${heartbeatRuns.contextSnapshot}->>'taskId' = ${issueId})`,
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: heartbeatRuns.id })
+        .from(issues)
+        .innerJoin(heartbeatRuns, eq(issues.executionRunId, heartbeatRuns.id))
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.id, issueId),
+          inArray(heartbeatRuns.status, [...TASK_WATCHDOG_RUNNING_RUN_STATUSES]),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+    return Boolean(run || issueRun);
+  }
+
   async function sameFingerprintWatchdogReviewIsStillOpen(
     watchdogIssue: IssueRow | null,
     stopFingerprint: string,
@@ -1121,6 +1154,31 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .then((rows) => rows[0] ?? null),
     ]);
     return Boolean(interaction || approval);
+  }
+
+  async function normalizeReusableWatchdogIssueWorkspace(input: {
+    watchdogIssue: IssueRow;
+    sourceIssue: IssueRow;
+  }) {
+    if (await hasRunningPathForIssue(input.watchdogIssue.companyId, input.watchdogIssue.id)) {
+      return input.watchdogIssue;
+    }
+
+    const workspaceSettings = watchdogExecutionWorkspaceSettings();
+    const needsNormalization = input.watchdogIssue.projectId !== input.sourceIssue.projectId ||
+      input.watchdogIssue.projectWorkspaceId !== input.sourceIssue.projectWorkspaceId ||
+      input.watchdogIssue.executionWorkspaceId !== null ||
+      input.watchdogIssue.executionWorkspacePreference !== "agent_default" ||
+      JSON.stringify(input.watchdogIssue.executionWorkspaceSettings) !== JSON.stringify(workspaceSettings);
+    if (!needsNormalization) return input.watchdogIssue;
+
+    return await issuesSvc.update(input.watchdogIssue.id, {
+      projectId: input.sourceIssue.projectId,
+      projectWorkspaceId: input.sourceIssue.projectWorkspaceId,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "agent_default",
+      executionWorkspaceSettings: workspaceSettings,
+    }) ?? input.watchdogIssue;
   }
 
   async function markTerminalWatchdogIssueReviewed(watchdog: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
@@ -1196,9 +1254,16 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           assigneeAgentId: input.watchdog.watchdogAgentId,
           parentId: input.sourceIssue.id,
           projectId: input.sourceIssue.projectId,
+          projectWorkspaceId: input.sourceIssue.projectWorkspaceId,
           goalId: input.sourceIssue.goalId,
           billingCode: input.sourceIssue.billingCode,
           originFingerprint: input.classification.stopFingerprint,
+          // A review may have been created before workspace isolation was
+          // enforced. Reset legacy state before reusing it so recovery cannot
+          // resume work in the watched issue's checkout.
+          executionWorkspaceId: null,
+          executionWorkspacePreference: "agent_default",
+          executionWorkspaceSettings: watchdogExecutionWorkspaceSettings(),
         }) ?? fallback
         : fallback;
       if (!shouldReopen && watchdogIssue.originFingerprint !== input.classification.stopFingerprint) {
@@ -1243,13 +1308,19 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         priority: input.sourceIssue.priority,
         parentId: input.sourceIssue.id,
         projectId: input.sourceIssue.projectId,
+        projectWorkspaceId: input.sourceIssue.projectWorkspaceId,
         goalId: input.sourceIssue.goalId,
         assigneeAgentId: input.watchdog.watchdogAgentId,
         originKind: TASK_WATCHDOG_ORIGIN_KIND,
         originId: input.sourceIssue.id,
         originFingerprint: input.classification.stopFingerprint,
         billingCode: input.sourceIssue.billingCode,
-        inheritExecutionWorkspaceFromIssueId: input.sourceIssue.id,
+        // Watchdog reviews are reusable control-plane issues, not source-tree
+        // work. Explicitly opt out of parent workspace inheritance so a
+        // review gets a fresh isolated workspace bound to its own issue.
+        executionWorkspaceId: null,
+        executionWorkspacePreference: "agent_default",
+        executionWorkspaceSettings: watchdogExecutionWorkspaceSettings(),
       })
       .catch(async (error: unknown) => {
         if (!isActiveTaskWatchdogUniqueConflict(error)) throw error;
@@ -1299,6 +1370,23 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       watchdog.companyId,
       sourceIssue.id,
     ))?.id ?? null;
+    let existingWatchdogIssue = existingWatchdogIssueId
+      ? await db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, watchdog.companyId),
+          eq(issues.id, existingWatchdogIssueId),
+          visibleIssueCondition(),
+        ))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    if (existingWatchdogIssue) {
+      existingWatchdogIssue = await normalizeReusableWatchdogIssueWorkspace({
+        watchdogIssue: existingWatchdogIssue,
+        sourceIssue,
+      });
+    }
     if (existingWatchdogIssueId && await hasLivePathForIssue(watchdog.companyId, existingWatchdogIssueId)) {
       await db
         .update(issueWatchdogs)
@@ -1310,17 +1398,6 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(eq(issueWatchdogs.id, watchdog.id));
       return { state: "watchdog_live" as const, classification, watchdogIssueId: existingWatchdogIssueId };
     }
-    const existingWatchdogIssue = existingWatchdogIssueId
-      ? await db
-        .select()
-        .from(issues)
-        .where(and(
-          eq(issues.companyId, watchdog.companyId),
-          eq(issues.id, existingWatchdogIssueId),
-          visibleIssueCondition(),
-        ))
-        .then((rows) => rows[0] ?? null)
-      : null;
     if (await sameFingerprintWatchdogReviewIsStillOpen(existingWatchdogIssue, classification.stopFingerprint)) {
       if (
         watchdog.watchdogIssueId !== existingWatchdogIssue!.id ||
