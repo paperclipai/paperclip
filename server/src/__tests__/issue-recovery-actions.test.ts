@@ -204,11 +204,11 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
     };
   }
 
-  function app() {
+  function app(actor: Express.Request["actor"] = { type: "board", source: "local_implicit" }) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      (req as any).actor = { type: "board", source: "local_implicit" };
+      (req as any).actor = actor;
       next();
     });
     app.use("/api", issueRoutes(db, {} as any));
@@ -322,6 +322,27 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
     expect(await db.select().from(issueDeliveryReceipts)).toHaveLength(1);
   });
 
+  it("creates a distinct receipt when terminal output changes with the same evidence", async () => {
+    const fixture = await seedReceiptIssue();
+    const workProduct = await deliveryWorkProduct(fixture.issueId);
+    const first = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt(workProduct),
+    });
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, fixture.issueId));
+    const second = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt(workProduct, { summary: "Corrected final delivery summary." }),
+    });
+
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.body.deliveryReceipt).toMatchObject({ summary: "Corrected final delivery summary." });
+    const stored = await db.select().from(issueDeliveryReceipts);
+    expect(stored).toHaveLength(2);
+    expect(new Set(stored.map((row) => row.outputDigest))).toHaveLength(2);
+  });
+
   it("does not require a receipt for ordinary in-review transitions", async () => {
     const fixture = await seedReceiptIssue();
     const response = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({ status: "in_review" });
@@ -354,6 +375,57 @@ describeEmbeddedPostgres("delivery receipt transitions", () => {
       primaryWorkProductKey: workProduct.id,
       revision: workProduct.updatedAt.toISOString(),
     });
+  });
+
+  it("denies receipt reads across company boundaries", async () => {
+    const allowed = await seedReceiptIssue();
+    const denied = await seedReceiptIssue();
+    const workProduct = await deliveryWorkProduct(denied.issueId);
+    await request(app()).patch(`/api/issues/${denied.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt(workProduct),
+    });
+
+    const response = await request(app({
+      type: "board",
+      userId: "board-user",
+      companyIds: [allowed.companyId],
+      memberships: [{ companyId: allowed.companyId, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+      source: "local_implicit",
+    } as Express.Request["actor"])).get(`/api/issues/${denied.issueId}/delivery-receipts`);
+
+    expect(response.status).toBe(403);
+  });
+
+  it("packages oversized text as an inspectable document and preserves binary inspection URLs", async () => {
+    const fixture = await seedReceiptIssue();
+    const workProduct = await deliveryWorkProduct(fixture.issueId);
+    const oversized = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt(workProduct, {
+        format: "document",
+        documentOnly: true,
+        inlineText: undefined,
+        summary: "The 20k+ character report is available as an inspectable document.",
+        inspectionUrl: "https://example.test/deliveries/report.pdf",
+      }),
+    });
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, fixture.issueId));
+    const binary = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt(workProduct, {
+        format: "work_product",
+        inlineText: undefined,
+        inspectionUrl: "https://example.test/deliveries/mockup.png",
+        metadata: { contentType: "image/png", bytes: 2_400_000 },
+      }),
+    });
+
+    expect(oversized.status, JSON.stringify(oversized.body)).toBe(200);
+    expect(oversized.body.deliveryReceipt).toMatchObject({ documentOnly: true, inspectionUrl: "https://example.test/deliveries/report.pdf" });
+    expect(binary.status, JSON.stringify(binary.body)).toBe(200);
+    expect(binary.body.deliveryReceipt).toMatchObject({ format: "work_product", inspectionUrl: "https://example.test/deliveries/mockup.png" });
   });
 });
 

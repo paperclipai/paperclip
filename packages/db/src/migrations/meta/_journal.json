@@ -1289,6 +1289,13 @@
       "when": 1784908800000,
       "tag": "0185_issue_delivery_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "7",
+      "when": 1784995200000,
+      "tag": "0186_delivery_receipt_output_identity",
+      "breakpoints": true
     }
   ]
 }

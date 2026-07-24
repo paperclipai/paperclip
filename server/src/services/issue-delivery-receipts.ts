@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueDeliveryReceipts, issueRecoveryActions, issues } from "@paperclipai/db";
@@ -17,7 +18,7 @@ export type DeliveryReceiptInput = {
   metadata?: Record<string, unknown>;
 };
 
-export type ReceiptPublication = { id: string; sourceIssueId: string; reused: boolean };
+export type ReceiptPublication = { id: string; sourceIssueId: string; outputDigest: string; reused: boolean };
 
 export type DeliveryReceiptView = {
   id: string;
@@ -25,6 +26,7 @@ export type DeliveryReceiptView = {
   producerIssueId: string;
   primaryWorkProductKey: string;
   revision: string;
+  outputDigest: string;
   format: string;
   summary: string;
   inlineText: string | null;
@@ -36,7 +38,9 @@ export type DeliveryReceiptView = {
 };
 
 /**
- * Receipts are deliberately keyed by requester-facing source + product + revision.
+ * Receipts are deliberately keyed by requester-facing source + evidence revision +
+ * terminal output digest. A work-product revision alone is not a terminal delivery
+ * identity because the requester-visible text or inspection surface can change.
  * A child may only project to its direct parent; authorization of that parent is
  * checked by the route before this service is invoked.
  */
@@ -45,13 +49,15 @@ export function issueDeliveryReceiptService(db: Db) {
     tx: DbOrTransaction,
     input: { companyId: string; producerIssueId: string; sourceIssueId: string; createdByRunId?: string | null; receipt: DeliveryReceiptInput },
   ): Promise<ReceiptPublication> {
+    const outputDigest = digestReceiptOutput(input.receipt);
     const existing = await tx.select({ id: issueDeliveryReceipts.id }).from(issueDeliveryReceipts).where(and(
       eq(issueDeliveryReceipts.companyId, input.companyId),
       eq(issueDeliveryReceipts.sourceIssueId, input.sourceIssueId),
       eq(issueDeliveryReceipts.primaryWorkProductKey, input.receipt.primaryWorkProductKey),
       eq(issueDeliveryReceipts.revision, input.receipt.revision),
+      eq(issueDeliveryReceipts.outputDigest, outputDigest),
     )).then((rows) => rows[0] ?? null);
-    if (existing) return { id: existing.id, sourceIssueId: input.sourceIssueId, reused: true };
+    if (existing) return { id: existing.id, sourceIssueId: input.sourceIssueId, outputDigest, reused: true };
 
     const created = await tx.insert(issueDeliveryReceipts).values({
       companyId: input.companyId,
@@ -59,6 +65,7 @@ export function issueDeliveryReceiptService(db: Db) {
       producerIssueId: input.producerIssueId,
       primaryWorkProductKey: input.receipt.primaryWorkProductKey,
       revision: input.receipt.revision,
+      outputDigest,
       format: input.receipt.format,
       summary: input.receipt.summary,
       inlineText: input.receipt.inlineText ?? null,
@@ -67,7 +74,7 @@ export function issueDeliveryReceiptService(db: Db) {
       metadata: input.receipt.metadata ?? {},
       createdByRunId: input.createdByRunId ?? null,
     }).returning({ id: issueDeliveryReceipts.id }).then((rows) => rows[0]);
-    return { id: created!.id, sourceIssueId: input.sourceIssueId, reused: false };
+    return { id: created!.id, sourceIssueId: input.sourceIssueId, outputDigest, reused: false };
   }
 
   async function hasReceipt(companyId: string, sourceIssueId: string) {
@@ -87,6 +94,7 @@ export function issueDeliveryReceiptService(db: Db) {
       producerIssueId: row.producerIssueId,
       primaryWorkProductKey: row.primaryWorkProductKey,
       revision: row.revision,
+      outputDigest: row.outputDigest,
       format: row.format,
       summary: row.summary,
       inlineText: row.inlineText,
@@ -115,7 +123,7 @@ export function issueDeliveryReceiptService(db: Db) {
         cause: "missing_delivery_receipt",
         fingerprint: "missing_delivery_receipt:v1",
         evidence: { source: "terminal_transition" },
-        nextAction: "Publish a requester-visible delivery receipt before requesting terminal or review status.",
+        nextAction: "Publish a requester-visible delivery receipt before requesting terminal done status.",
         maxAttempts: 1,
         attemptCount: 1,
         lastAttemptAt: new Date(),
@@ -125,4 +133,27 @@ export function issueDeliveryReceiptService(db: Db) {
   }
 
   return { publish, hasReceipt, listForSource, openMissingReceiptRecovery };
+}
+
+/** Canonical, order-independent identity for all requester-visible output fields. */
+function digestReceiptOutput(receipt: DeliveryReceiptInput): string {
+  const output = {
+    format: receipt.format,
+    summary: receipt.summary,
+    inlineText: receipt.inlineText ?? null,
+    inspectionUrl: receipt.inspectionUrl ?? null,
+    documentOnly: receipt.documentOnly ?? false,
+    metadata: stableJson(receipt.metadata ?? {}),
+  };
+  return createHash("sha256").update(JSON.stringify(output)).digest("hex");
+}
+
+function stableJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, stableJson(item)]));
+  }
+  return value;
 }

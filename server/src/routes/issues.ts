@@ -8000,6 +8000,7 @@ export function issueRoutes(
     const terminalDoneRequested =
       updateFields.status === "done" && updateFields.status !== existing.status;
     let deliveryReceiptSourceIssueId: string | null = null;
+    let publishedDeliveryReceiptId: string | null = null;
     if (terminalDoneRequested) {
       if (!deliveryReceipt) {
         await deliveryReceiptsSvc.openMissingReceiptRecovery({
@@ -8171,13 +8172,14 @@ export function issueRoutes(
             if (currentWorkProduct.updatedAt.toISOString() !== deliveryReceipt.revision) {
               throw unprocessable("Delivery receipt revision does not match the current delivered work product");
             }
-            await deliveryReceiptsSvc.publish(tx, {
+            const publication = await deliveryReceiptsSvc.publish(tx, {
               companyId: existing.companyId,
               producerIssueId: existing.id,
               sourceIssueId: deliveryReceiptSourceIssueId,
               createdByRunId: actor.runId ?? null,
               receipt: deliveryReceipt,
             });
+            publishedDeliveryReceiptId = publication.id;
           }
           return svc.update(id, {
             ...updateFields,
@@ -8300,11 +8302,7 @@ export function issueRoutes(
     }
     if (terminalDoneRequested && deliveryReceiptSourceIssueId) {
       const receipts = await deliveryReceiptsSvc.listForSource(issue.companyId, deliveryReceiptSourceIssueId);
-      const matchingReceipt = receipts.find((receipt) =>
-        receipt.producerIssueId === existing.id &&
-        receipt.primaryWorkProductKey === deliveryReceipt?.primaryWorkProductKey &&
-        receipt.revision === deliveryReceipt?.revision,
-      );
+      const matchingReceipt = receipts.find((receipt) => receipt.id === publishedDeliveryReceiptId);
       if (matchingReceipt) issueResponse = { ...issueResponse, deliveryReceipt: matchingReceipt };
     }
     await routinesSvc.syncRunStatusForIssue(issue.id);

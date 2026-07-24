@@ -13,6 +13,8 @@ export const issueDeliveryReceipts = pgTable(
     producerIssueId: uuid("producer_issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
     primaryWorkProductKey: text("primary_work_product_key").notNull(),
     revision: text("revision").notNull(),
+    /** Stable digest of the requester-visible terminal output. */
+    outputDigest: text("output_digest").notNull(),
     format: text("format").notNull(),
     summary: text("summary").notNull(),
     inlineText: text("inline_text"),
@@ -30,6 +32,7 @@ export const issueDeliveryReceipts = pgTable(
       table.sourceIssueId,
       table.primaryWorkProductKey,
       table.revision,
+      table.outputDigest,
     ),
   }),
 );
