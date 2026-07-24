@@ -81,12 +81,12 @@ export function AgentSkillReleasePicker({
     >
       <SelectTrigger
         size="sm"
-        className="w-full max-w-[16rem] sm:w-[16rem]"
+        className="w-full max-w-(--sz-16rem) sm:w-(--sz-16rem)"
         aria-label="Skill release"
       >
         <SelectValue placeholder={DEFAULT_LABEL}>{triggerLabel}</SelectValue>
       </SelectTrigger>
-      <SelectContent align="end" className="max-w-[20rem]">
+      <SelectContent align="end" className="max-w-(--sz-20rem)">
         <SelectItem value={RELEASE_DEFAULT_VALUE}>{DEFAULT_LABEL}</SelectItem>
         {releases.map((release) => (
           <SelectItem key={release.id} value={release.id}>
