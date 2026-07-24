@@ -92,6 +92,19 @@ export function summarizeHeartbeatRunResultJson(
   return Object.keys(summary).length > 0 ? summary : null;
 }
 
+// The fallback comment is only posted when a run ends without the agent posting
+// its own comment via the API. In that case `resultJson.summary` can be raw
+// inter-tool narration (assistantTexts concatenated by the adapter), which must
+// never be published verbatim to the board — see BRO-1507 / BRO-1516.
+export const MAX_FALLBACK_COMMENT_CHARS = 1200;
+// Apostrophes are matched as a character class so both the straight (') and
+// curly (’) forms count — agents emit either. Openers are narration phrases a
+// declarative status summary would not begin with ("Fixed X", "13/13 pass").
+const NARRATION_OPENERS =
+  /^(let me\b|i['’]ll\b|i['’]m going\b|i need to\b|i can see\b|now i['’]ll\b|next,? i['’]ll\b|looking at\b|fetching\b|checking\b|first,)/i;
+const FALLBACK_WITHHELD_COMMENT =
+  "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
+
 export function buildHeartbeatRunIssueComment(
   resultJson: Record<string, unknown> | null | undefined,
 ): string | null {
@@ -99,10 +112,17 @@ export function buildHeartbeatRunIssueComment(
     return null;
   }
 
-  return (
+  const text =
     readCommentText(resultJson.summary)
     ?? readCommentText(resultJson.result)
-    ?? readCommentText(resultJson.message)
-    ?? null
-  );
+    ?? readCommentText(resultJson.message);
+  if (!text) {
+    return null;
+  }
+
+  if (text.length > MAX_FALLBACK_COMMENT_CHARS || NARRATION_OPENERS.test(text)) {
+    return FALLBACK_WITHHELD_COMMENT;
+  }
+
+  return text;
 }
