@@ -17,7 +17,8 @@ export const LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES = [
 ] as const;
 
 export const SUCCESSFUL_RUN_HANDOFF_OPTIONS = [
-  "mark_done_or_cancelled",
+  "mark_done",
+  "mark_cancelled",
   "send_for_review_or_ask_for_input",
   "mark_blocked",
   "delegate_or_continue_from_checkpoint",
@@ -473,7 +474,7 @@ export function decideSuccessfulRunHandoff(input: {
   const doneDispositionAllowed = sourceReportedDisposition == null;
   const validDispositionOptions = doneDispositionAllowed
     ? [...SUCCESSFUL_RUN_HANDOFF_OPTIONS]
-    : SUCCESSFUL_RUN_HANDOFF_OPTIONS.filter((option) => option !== "mark_done_or_cancelled");
+    : SUCCESSFUL_RUN_HANDOFF_OPTIONS.filter((option) => option !== "mark_done");
 
   const instruction = buildSuccessfulRunHandoffInstruction({
     issueIdentifier: issue.identifier,

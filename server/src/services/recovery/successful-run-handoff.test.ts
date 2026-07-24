@@ -123,7 +123,8 @@ describe("successful run handoff decision", () => {
       doneDispositionAllowed: false,
       verificationEvidenceStatus: "not_recorded",
     });
-    expect(decision.payload.validDispositionOptions).not.toContain("mark_done_or_cancelled");
+    expect(decision.payload.validDispositionOptions).not.toContain("mark_done");
+    expect(decision.payload.validDispositionOptions).toContain("mark_cancelled");
     expect(decision.instruction).toContain("must not mark this issue `done`");
     expect(successfulRunHandoffDoneGateReason(decision.contextSnapshot)).toContain("reported blocked work");
     expect(successfulRunHandoffDoneGateReason(decision.contextSnapshot, "another-issue")).toBeNull();
@@ -144,7 +145,8 @@ describe("successful run handoff decision", () => {
       doneDispositionAllowed: false,
       verificationEvidenceStatus: "reported_missing",
     });
-    expect(decision.payload.validDispositionOptions).not.toContain("mark_done_or_cancelled");
+    expect(decision.payload.validDispositionOptions).not.toContain("mark_done");
+    expect(decision.payload.validDispositionOptions).toContain("mark_cancelled");
     expect(successfulRunHandoffDoneGateReason(decision.contextSnapshot)).toContain("reported unverified work");
   });
 
@@ -161,7 +163,8 @@ describe("successful run handoff decision", () => {
       doneDispositionAllowed: false,
       verificationEvidenceStatus: "control_plane_evidence_missing",
     });
-    expect(decision.payload.validDispositionOptions).not.toContain("mark_done_or_cancelled");
+    expect(decision.payload.validDispositionOptions).not.toContain("mark_done");
+    expect(decision.payload.validDispositionOptions).toContain("mark_cancelled");
     expect(successfulRunHandoffDoneGateReason(decision.contextSnapshot, issue.id)).toContain(
       "reported no control plane evidence work",
     );
