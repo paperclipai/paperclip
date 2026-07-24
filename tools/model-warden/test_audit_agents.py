@@ -28,3 +28,10 @@ def test_cheap_profile_checked():
     cfg = {"model": "gemma-4-31b-it-mlx", "fallbackModel": "google/gemma-4-12b",
            "modelProfiles": {"cheap": {"adapterConfig": {"model": "mistral-small-3.2-24b-instruct-2506-mlx"}}}}
     assert violations(cfg, ALLOWED)
+
+
+def test_malformed_modelprofiles_does_not_crash():
+    # kaputtes Live-adapter_config: modelProfiles ist kein Dict
+    cfg = {"model": "gemma-4-31b-it-mlx", "fallbackModel": "google/gemma-4-12b",
+           "modelProfiles": ["nicht", "ein", "dict"]}
+    assert violations(cfg, ALLOWED) == []  # kein Crash, cheap fehlt -> erlaubt (None)

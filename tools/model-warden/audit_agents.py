@@ -13,13 +13,22 @@ def _is_allowed(name, allowed):
         return True
     return name in allowed
 
+def _dig(obj, *keys):
+    """Verschachtelte .get()-Kette, robust gegen Nicht-Dict-Zwischenwerte
+    (kaputtes Live-adapter_config crasht sonst violations())."""
+    for k in keys:
+        if not isinstance(obj, dict):
+            return None
+        obj = obj.get(k)
+    return obj
+
 def violations(adapter_config, allowed):
     out = []
     for field in ("model", "fallbackModel", "defaultModel"):
         name = adapter_config.get(field)
         if not _is_allowed(name, allowed):
             out.append(f"{field}: {name}")
-    cheap = (((adapter_config.get("modelProfiles") or {}).get("cheap") or {}).get("adapterConfig") or {}).get("model")
+    cheap = _dig(adapter_config, "modelProfiles", "cheap", "adapterConfig", "model")
     if not _is_allowed(cheap, allowed):
         out.append(f"cheap.model: {cheap}")
     return out
