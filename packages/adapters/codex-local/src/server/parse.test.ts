@@ -115,6 +115,20 @@ describe("isCodexUnknownSessionError", () => {
 });
 
 describe("isCodexTransientUpstreamError", () => {
+  it("classifies MCP transport crashes as transient upstream", () => {
+    expect(
+      isCodexTransientUpstreamError({
+        stderr:
+          "rmcp::transport::worker: worker quit with fatal: Transport channel closed, when UnexpectedContentType(Some(\"text/plain\"))",
+      }),
+    ).toBe(true);
+    expect(
+      isCodexTransientUpstreamError({
+        errorMessage: "MCP tool-server connection reset by peer",
+      }),
+    ).toBe(true);
+  });
+
   it("classifies the remote-compaction high-demand failure as transient upstream", () => {
     expect(
       isCodexTransientUpstreamError({

@@ -8,6 +8,8 @@ import {
 const CODEX_TRANSIENT_UPSTREAM_RE =
   /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
+const CODEX_RETRYABLE_TRANSPORT_RE =
+  /(?:rmcp::transport::worker|transport\s+channel\s+closed|unexpectedcontenttype|connection\s+(?:reset|closed|refused)|broken\s+pipe|network\s+is\s+unreachable|timed?\s*out\s+(?:connecting|waiting)|(?:mcp|tool)[-_\s]server.{0,80}(?:disconnect|transport|connection|closed|unavailable)|error\s+sending\s+request\s+for\s+url)/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 const CODEX_PROVIDER_QUOTA_RE =
@@ -285,9 +287,10 @@ export function isCodexTransientUpstreamError(input: {
   const haystack = buildCodexErrorHaystack(input);
 
   if (isCodexProviderQuotaError(input)) return false;
+  if (CODEX_RETRYABLE_TRANSPORT_RE.test(haystack)) return true;
   if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
-  // Keep automatic retries scoped to the observed remote-compaction/high-demand
-  // failure shape.
+  // Keep provider-side automatic retries scoped to the observed
+  // remote-compaction/high-demand failure shape.
   return CODEX_REMOTE_COMPACTION_RE.test(haystack) || /high\s+demand|temporary\s+errors/i.test(haystack);
 }
 
