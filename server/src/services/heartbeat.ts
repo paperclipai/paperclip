@@ -7669,6 +7669,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { run: current, updated: false as const };
   }
 
+  // Mirrors setRunStatusIfRunning's guarded-update idiom (and claimQueuedRun's
+  // queued -> running flip) for the queued -> cancelled transition: the UPDATE
+  // itself carries the precondition (status = 'queued') so a concurrent claim
+  // of the same row (another scheduler pass, or a manual resume flipping it to
+  // "running") between the SELECT and this UPDATE cannot be clobbered back to
+  // "cancelled". `updated: false` tells the caller the row had already moved
+  // on, so it must not touch the run's wakeup or append a lifecycle event.
+  async function setRunStatusIfQueued(
+    runId: string,
+    status: string,
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({ status, ...patch, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearHeartbeatRunRuntimeStatus(updated.id);
+      }
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "heartbeat.run.status",
+        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
+      });
+      publishRunLifecyclePluginEvent(updated);
+      return { run: updated, updated: true as const };
+    }
+
+    const current = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    return { run: current, updated: false as const };
+  }
+
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
     const eventType =
       run.status === "running"
@@ -11595,16 +11636,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const queueExpiredMessage = `Cancelled because the run waited in queue longer than ${maxQueuedAgeHoursLabel} hours`;
 
     for (const run of expiredQueuedRuns) {
-      const cancelledRun = await setRunStatus(run.id, "cancelled", {
+      // Guard the cancellation on the row still being "queued": another
+      // scheduler pass or a manual resume can claim this exact run (queued ->
+      // running) between the SELECT above and this UPDATE. Without the guard
+      // we would blindly stamp a now-running/finished run back to
+      // "cancelled" and cancel its wakeup out from under it. Only touch the
+      // wakeup and append the lifecycle event when the guarded update
+      // actually transitioned the row.
+      const cancelResult = await setRunStatusIfQueued(run.id, "cancelled", {
         finishedAt: now,
         error: queueExpiredMessage,
         errorCode: "queue_expired",
       });
-      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      if (!cancelResult.updated || !cancelResult.run) continue;
+      const cancelledRun = cancelResult.run;
+      await setWakeupStatus(cancelledRun.wakeupRequestId, "cancelled", {
         finishedAt: now,
         error: queueExpiredMessage,
       });
-      if (!cancelledRun) continue;
       await appendRunEvent(cancelledRun, await nextRunEventSeq(cancelledRun.id), {
         eventType: "lifecycle",
         stream: "system",
