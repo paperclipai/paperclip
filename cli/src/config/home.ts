@@ -1,32 +1,31 @@
-import os from "node:os";
 import path from "node:path";
+import {
+  expandHomePrefix,
+  resolveDefaultBackupDir as resolveSharedDefaultBackupDir,
+  resolveDefaultEmbeddedPostgresDir as resolveSharedDefaultEmbeddedPostgresDir,
+  resolveDefaultLogsDir as resolveSharedDefaultLogsDir,
+  resolveDefaultSecretsKeyFilePath as resolveSharedDefaultSecretsKeyFilePath,
+  resolveDefaultStorageDir as resolveSharedDefaultStorageDir,
+  resolveHomeAwarePath,
+  resolvePaperclipConfigPathForInstance,
+  resolvePaperclipHomeDir,
+  resolvePaperclipInstanceId,
+  resolvePaperclipInstanceRoot as resolveSharedPaperclipInstanceRoot,
+} from "@paperclipai/shared/home-paths";
 
-const DEFAULT_INSTANCE_ID = "default";
-const INSTANCE_ID_RE = /^[a-zA-Z0-9_-]+$/;
-
-export function resolvePaperclipHomeDir(): string {
-  const envHome = process.env.PAPERCLIP_HOME?.trim();
-  if (envHome) return path.resolve(expandHomePrefix(envHome));
-  return path.resolve(os.homedir(), ".paperclip");
-}
-
-export function resolvePaperclipInstanceId(override?: string): string {
-  const raw = override?.trim() || process.env.PAPERCLIP_INSTANCE_ID?.trim() || DEFAULT_INSTANCE_ID;
-  if (!INSTANCE_ID_RE.test(raw)) {
-    throw new Error(
-      `Invalid instance id '${raw}'. Allowed characters: letters, numbers, '_' and '-'.`,
-    );
-  }
-  return raw;
-}
+export {
+  expandHomePrefix,
+  resolveHomeAwarePath,
+  resolvePaperclipHomeDir,
+  resolvePaperclipInstanceId,
+};
 
 export function resolvePaperclipInstanceRoot(instanceId?: string): string {
-  const id = resolvePaperclipInstanceId(instanceId);
-  return path.resolve(resolvePaperclipHomeDir(), "instances", id);
+  return resolveSharedPaperclipInstanceRoot({ instanceId });
 }
 
 export function resolveDefaultConfigPath(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "config.json");
+  return resolvePaperclipConfigPathForInstance({ instanceId });
 }
 
 export function resolveDefaultContextPath(): string {
@@ -38,29 +37,23 @@ export function resolveDefaultCliAuthPath(): string {
 }
 
 export function resolveDefaultEmbeddedPostgresDir(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "db");
+  return resolveSharedDefaultEmbeddedPostgresDir({ instanceId });
 }
 
 export function resolveDefaultLogsDir(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "logs");
+  return resolveSharedDefaultLogsDir({ instanceId });
 }
 
 export function resolveDefaultSecretsKeyFilePath(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "secrets", "master.key");
+  return resolveSharedDefaultSecretsKeyFilePath({ instanceId });
 }
 
 export function resolveDefaultStorageDir(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "data", "storage");
+  return resolveSharedDefaultStorageDir({ instanceId });
 }
 
 export function resolveDefaultBackupDir(instanceId?: string): string {
-  return path.resolve(resolvePaperclipInstanceRoot(instanceId), "data", "backups");
-}
-
-export function expandHomePrefix(value: string): string {
-  if (value === "~") return os.homedir();
-  if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));
-  return value;
+  return resolveSharedDefaultBackupDir({ instanceId });
 }
 
 export function describeLocalInstancePaths(instanceId?: string) {

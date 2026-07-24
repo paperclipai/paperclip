@@ -1,6 +1,6 @@
 #!/usr/bin/env -S node --import tsx
 import fs from "node:fs/promises";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { repoRoot } from "./dev-service-profile.ts";
 
@@ -43,20 +43,6 @@ function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
   return packagePaths;
 }
 
-function isLinkedGitWorktreeCheckout(rootDir: string) {
-  const gitMetadataPath = path.join(rootDir, ".git");
-  if (!existsSync(gitMetadataPath)) return false;
-
-  const stat = lstatSync(gitMetadataPath);
-  if (!stat.isFile()) return false;
-
-  return readFileSync(gitMetadataPath, "utf8").trimStart().startsWith("gitdir:");
-}
-
-if (!isLinkedGitWorktreeCheckout(repoRoot)) {
-  process.exit(0);
-}
-
 const workspacePackagePaths = discoverWorkspacePackagePaths(repoRoot);
 const workspaceDirs = Array.from(
   new Set(
@@ -67,6 +53,11 @@ const workspaceDirs = Array.from(
 ).sort();
 
 function findWorkspaceLinkMismatches(workspaceDir: string): WorkspaceLinkMismatch[] {
+  const nodeModulesDir = path.join(repoRoot, workspaceDir, "node_modules");
+  if (!existsSync(nodeModulesDir)) {
+    return [];
+  }
+
   const packageJson = readJsonFile(path.join(repoRoot, workspaceDir, "package.json"));
   const dependencies = {
     ...(packageJson.dependencies as Record<string, unknown> | undefined),

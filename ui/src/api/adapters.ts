@@ -4,6 +4,24 @@
 
 import { api } from "./client";
 
+export interface AdapterCapabilities {
+  supportsInstructionsBundle: boolean;
+  supportsSkills: boolean;
+  supportsLocalAgentJwt: boolean;
+  requiresMaterializedRuntimeSkills: boolean;
+  supportsModelProfiles: boolean;
+  supportsAcp: boolean;
+}
+
+export interface AcpTargetDescriptor {
+  agentId: string;
+  skillsMode: "ephemeral" | "unsupported";
+  prerequisites: {
+    nodeRange?: string;
+    packages?: string[];
+  };
+}
+
 export interface AdapterInfo {
   type: string;
   label: string;
@@ -11,6 +29,8 @@ export interface AdapterInfo {
   modelsCount: number;
   loaded: boolean;
   disabled: boolean;
+  capabilities: AdapterCapabilities;
+  acp?: AcpTargetDescriptor;
   /** Installed version (for external npm adapters) */
   version?: string;
   /** Package name (for external adapters) */

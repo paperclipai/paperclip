@@ -32,7 +32,7 @@ describe("createCachedViteHtmlRenderer", () => {
     }
   });
 
-  it("reuses the injected dev html shell until a watched file changes", async () => {
+  it("reuses the injected dev html shell until index.html changes", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-vite-html-"));
     tempDirs.push(tempDir);
     const indexPath = path.join(tempDir, "index.html");
@@ -56,6 +56,12 @@ describe("createCachedViteHtmlRenderer", () => {
     expect(first).toBe(second);
     expect(first.match(/\/@vite\/client/g)?.length).toBe(1);
     expect(first).toContain("window.$RefreshReg$");
+
+    const sourcePath = path.join(tempDir, "src", "main.tsx");
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.writeFileSync(sourcePath, "export {};\n", "utf8");
+    watcher.emit("change", sourcePath);
+    expect(await renderer.render("/")).toBe(first);
 
     fs.writeFileSync(
       indexPath,

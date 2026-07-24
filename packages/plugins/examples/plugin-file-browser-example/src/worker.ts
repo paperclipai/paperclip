@@ -65,10 +65,11 @@ const plugin = definePlugin({
   async setup(ctx) {
     ctx.logger.info(`${PLUGIN_NAME} plugin setup`);
 
-    // Expose the current plugin config so UI components can read operator
-    // settings from the canonical instance config store.
-    ctx.data.register("plugin-config", async () => {
-      const config = await ctx.config.get();
+    // Expose the current company-scoped plugin config so UI components can read
+    // operator settings from the canonical config store.
+    ctx.data.register("plugin-config", async (params) => {
+      const companyId = typeof params.companyId === "string" ? params.companyId : "";
+      const config = companyId ? await ctx.config.get(companyId) : null;
       return {
         showFilesInSidebar: config?.showFilesInSidebar === true,
         commentAnnotationMode: config?.commentAnnotationMode ?? "both",
@@ -106,43 +107,46 @@ const plugin = definePlugin({
       }));
     });
 
-    ctx.data.register(
-      "fileList",
-      async (params: Record<string, unknown>) => {
-        const projectId = params.projectId as string;
-        const companyId = typeof params.companyId === "string" ? params.companyId : "";
-        const workspaceId = params.workspaceId as string;
-        const directoryPath = typeof params.directoryPath === "string" ? params.directoryPath : "";
-        if (!projectId || !companyId || !workspaceId) return { entries: [] };
-        const workspaces = await ctx.projects.listWorkspaces(projectId, companyId);
-        const workspace = workspaces.find((w) => w.id === workspaceId);
-        if (!workspace) return { entries: [] };
-        const workspacePath = sanitizeWorkspacePath(workspace.path);
-        if (!workspacePath) return { entries: [] };
-        const dirPath = resolveWorkspace(workspacePath, directoryPath);
-        if (!dirPath) {
-          return { entries: [] };
-        }
-        if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
-          return { entries: [] };
-        }
-        const names = fs.readdirSync(dirPath).sort((a, b) => a.localeCompare(b));
-        const entries = names.map((name) => {
-          const full = path.join(dirPath, name);
-          const stat = fs.lstatSync(full);
-          const relativePath = path.relative(workspacePath, full);
-          return {
-            name,
-            path: relativePath,
-            isDirectory: stat.isDirectory(),
-          };
-        }).sort((a, b) => {
-          if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
-        return { entries };
-      },
-    );
+    async function readFileList(params: Record<string, unknown>) {
+      const projectId = params.projectId as string;
+      const companyId = typeof params.companyId === "string" ? params.companyId : "";
+      const workspaceId = params.workspaceId as string;
+      const directoryPath = typeof params.directoryPath === "string" ? params.directoryPath : "";
+      if (!projectId || !companyId || !workspaceId) return { entries: [] };
+      const workspaces = await ctx.projects.listWorkspaces(projectId, companyId);
+      const workspace = workspaces.find((w) => w.id === workspaceId);
+      if (!workspace) return { entries: [] };
+      const workspacePath = sanitizeWorkspacePath(workspace.path);
+      if (!workspacePath) return { entries: [] };
+      const dirPath = resolveWorkspace(workspacePath, directoryPath);
+      if (!dirPath) {
+        return { entries: [] };
+      }
+      if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+        return { entries: [] };
+      }
+      const names = fs.readdirSync(dirPath).sort((a, b) => a.localeCompare(b));
+      const entries = names.map((name) => {
+        const full = path.join(dirPath, name);
+        const stat = fs.lstatSync(full);
+        const relativePath = path.relative(workspacePath, full);
+        return {
+          name,
+          path: relativePath,
+          isDirectory: stat.isDirectory(),
+        };
+      }).sort((a, b) => {
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      return { entries };
+    }
+
+    ctx.data.register("fileList", readFileList);
+
+    // Mirror `fileList` as an action so the UI can lazily fetch directory
+    // children on tree expand without spawning a usePluginData hook per dir.
+    ctx.actions.register("loadFileList", readFileList);
 
     ctx.data.register(
       "fileContent",

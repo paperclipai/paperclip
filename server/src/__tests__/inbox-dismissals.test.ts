@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   approvals,
   companies,
@@ -14,6 +17,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { errorHandler } from "../middleware/index.js";
+import { inboxDismissalRoutes } from "../routes/inbox-dismissals.js";
 import { inboxDismissalService } from "../services/inbox-dismissals.ts";
 import { sidebarBadgeService } from "../services/sidebar-badges.ts";
 
@@ -43,6 +48,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     await db.delete(inboxDismissals);
     await db.delete(joinRequests);
     await db.delete(invites);
+    await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(approvals);
     await db.delete(agents);
@@ -73,7 +79,61 @@ describeEmbeddedPostgres("inbox dismissals", () => {
 
     expect(dismissals).toHaveLength(1);
     expect(dismissals[0]?.itemKey).toBe("approval:approval-1");
+    expect(dismissals[0]?.kind).toBe("dismiss");
+    expect(dismissals[0]?.snoozedUntil).toBeNull();
     expect(new Date(dismissals[0]?.dismissedAt ?? 0).toISOString()).toBe(secondDismissedAt.toISOString());
+  });
+
+  it("snoozes and restores dismissal records through the route", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        source: "local_implicit",
+        userId,
+        companyIds: [companyId],
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", inboxDismissalRoutes(db));
+    app.use(errorHandler);
+
+    await request(app)
+      .post(`/api/companies/${companyId}/inbox-dismissals`)
+      .send({ itemKey: "attention:approval:old", kind: "snooze", snoozedUntil: "2020-01-01T00:00:00.000Z" })
+      .expect(400);
+
+    const snoozedUntil = "2099-01-01T00:00:00.000Z";
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/inbox-dismissals`)
+      .send({ itemKey: "attention:approval:approval-1", kind: "snooze", snoozedUntil })
+      .expect(201);
+
+    expect(createRes.body).toMatchObject({
+      companyId,
+      userId,
+      itemKey: "attention:approval:approval-1",
+      kind: "snooze",
+      snoozedUntil,
+    });
+
+    await request(app)
+      .delete(`/api/companies/${companyId}/inbox-dismissals/${encodeURIComponent("attention:approval:approval-1")}`)
+      .expect(204);
+
+    await expect(dismissalsSvc.list(companyId, userId)).resolves.toEqual([]);
   });
 
   it("honors dismissal timestamps and resurfaces approvals with newer activity", async () => {

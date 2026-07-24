@@ -10,6 +10,11 @@ import {
   companies,
   companyMemberships,
   createDb,
+  documentAnnotationAnchorSnapshots,
+  documentAnnotationComments,
+  documentAnnotationThreads,
+  documentRevisions,
+  documents,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -18,6 +23,7 @@ import {
   principalPermissionGrants,
   projectWorkspaces,
   projects,
+  routineDocuments,
   routineRuns,
   routines,
   routineTriggers,
@@ -77,7 +83,7 @@ function registerRoutineServiceMock() {
 }
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -96,6 +102,9 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(documentAnnotationAnchorSnapshots);
+    await db.delete(documentAnnotationComments);
+    await db.delete(documentAnnotationThreads);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(heartbeatRunEvents);
@@ -106,7 +115,10 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await db.delete(projectWorkspaces);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(routineDocuments);
     await db.delete(routines);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
@@ -135,12 +147,14 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerRoutineServiceMock();
+    vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+    vi.clearAllMocks();
   });
 
   async function createApp(actor: Record<string, unknown>) {
     const [{ routineRoutes }, { errorHandler }] = await Promise.all([
-      vi.importActual<typeof import("../routes/routines.js")>("../routes/routines.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      import("../routes/routines.js"),
+      import("../middleware/index.js"),
     ]);
     const app = express();
     app.use(express.json());
@@ -253,8 +267,9 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       });
 
     expect([200, 201], JSON.stringify(triggerRes.body)).toContain(triggerRes.status);
-    expect(triggerRes.body.trigger.kind).toBe("schedule");
-    expect(triggerRes.body.trigger.enabled).toBe(true);
+    const createdTrigger = triggerRes.body.trigger ?? triggerRes.body;
+    expect(createdTrigger.kind).toBe("schedule");
+    expect(createdTrigger.enabled).toBe(true);
     expect(triggerRes.body.secretMaterial).toBeNull();
 
     const runRes = await postRoutineRun(app, routineId, {
@@ -267,10 +282,18 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(runRes.body.source).toBe("manual");
     expect(runRes.body.linkedIssueId).toBeTruthy();
 
+    const listRes = await request(app).get(`/api/companies/${companyId}/routines`);
+    expect(listRes.status).toBe(200);
+    const listed = listRes.body.find((r: { id: string }) => r.id === routineId);
+    expect(listed).toBeDefined();
+    expect(listed.triggers).toHaveLength(1);
+    expect(listed.triggers[0].cronExpression).toBe("0 10 * * 1-5");
+    expect(listed.triggers[0].timezone).toBe("UTC");
+
     const detailRes = await request(app).get(`/api/routines/${routineId}`);
     expect(detailRes.status).toBe(200);
     expect(detailRes.body.triggers).toHaveLength(1);
-    expect(detailRes.body.triggers[0]?.id).toBe(triggerRes.body.trigger.id);
+    expect(detailRes.body.triggers[0]?.id).toBe(createdTrigger.id);
     expect(detailRes.body.recentRuns).toHaveLength(1);
     expect(detailRes.body.recentRuns[0]?.id).toBe(runRes.body.id);
     expect(detailRes.body.activeIssue?.id).toBe(runRes.body.linkedIssueId);

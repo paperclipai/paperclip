@@ -13,7 +13,10 @@ export type ToastTone = "info" | "success" | "warn" | "error";
 
 export interface ToastAction {
   label: string;
-  href: string;
+  /** Navigate on click (mutually exclusive with `onClick`). */
+  href?: string;
+  /** Run a callback on click, e.g. an undo (mutually exclusive with `href`). */
+  onClick?: () => void;
 }
 
 export interface ToastInput {
@@ -184,6 +187,10 @@ export function useToastActions() {
     throw new Error("useToastActions must be used within a ToastProvider");
   }
   return context;
+}
+
+export function useOptionalToastActions() {
+  return useContext(ToastActionsContext);
 }
 
 export function useToast() {

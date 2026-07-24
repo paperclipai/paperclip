@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
+import { resolvePaperclipHomeDir } from "../home-paths.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,25 +43,30 @@ interface AdapterSettings {
 // Paths
 // ---------------------------------------------------------------------------
 
-const PAPERCLIP_DIR = path.join(os.homedir(), ".paperclip");
-const ADAPTER_PLUGINS_DIR = path.join(PAPERCLIP_DIR, "adapter-plugins");
-const ADAPTER_PLUGINS_STORE_PATH = path.join(PAPERCLIP_DIR, "adapter-plugins.json");
-const ADAPTER_SETTINGS_PATH = path.join(PAPERCLIP_DIR, "adapter-settings.json");
+function adapterPluginPaths() {
+  const paperclipDir = resolvePaperclipHomeDir();
+  return {
+    adapterPluginsDir: path.join(paperclipDir, "adapter-plugins"),
+    adapterPluginsStorePath: path.join(paperclipDir, "adapter-plugins.json"),
+    adapterSettingsPath: path.join(paperclipDir, "adapter-settings.json"),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // In-memory caches (invalidated on write)
 // ---------------------------------------------------------------------------
 
-let storeCache: AdapterPluginRecord[] | null = null;
-let settingsCache: AdapterSettings | null = null;
+let storeCache: { path: string; records: AdapterPluginRecord[] } | null = null;
+let settingsCache: { path: string; settings: AdapterSettings } | null = null;
 
 // ---------------------------------------------------------------------------
 // Store functions
 // ---------------------------------------------------------------------------
 
-function ensureDirs(): void {
-  fs.mkdirSync(ADAPTER_PLUGINS_DIR, { recursive: true });
-  const pkgJsonPath = path.join(ADAPTER_PLUGINS_DIR, "package.json");
+function ensureDirs(): string {
+  const { adapterPluginsDir } = adapterPluginPaths();
+  fs.mkdirSync(adapterPluginsDir, { recursive: true });
+  const pkgJsonPath = path.join(adapterPluginsDir, "package.json");
   if (!fs.existsSync(pkgJsonPath)) {
     fs.writeFileSync(pkgJsonPath, JSON.stringify({
       name: "paperclip-adapter-plugins",
@@ -70,44 +75,55 @@ function ensureDirs(): void {
       description: "Managed directory for Paperclip external adapter plugins. Do not edit manually.",
     }, null, 2) + "\n");
   }
+  return adapterPluginsDir;
 }
 
 function readStore(): AdapterPluginRecord[] {
-  if (storeCache) return storeCache;
+  const { adapterPluginsStorePath } = adapterPluginPaths();
+  if (storeCache?.path === adapterPluginsStorePath) return storeCache.records;
   try {
-    const raw = fs.readFileSync(ADAPTER_PLUGINS_STORE_PATH, "utf-8");
+    const raw = fs.readFileSync(adapterPluginsStorePath, "utf-8");
     const parsed = JSON.parse(raw);
-    storeCache = Array.isArray(parsed) ? (parsed as AdapterPluginRecord[]) : [];
+    storeCache = {
+      path: adapterPluginsStorePath,
+      records: Array.isArray(parsed) ? (parsed as AdapterPluginRecord[]) : [],
+    };
   } catch {
-    storeCache = [];
+    storeCache = { path: adapterPluginsStorePath, records: [] };
   }
-  return storeCache;
+  return storeCache.records;
 }
 
 function writeStore(records: AdapterPluginRecord[]): void {
   ensureDirs();
-  fs.writeFileSync(ADAPTER_PLUGINS_STORE_PATH, JSON.stringify(records, null, 2), "utf-8");
-  storeCache = records;
+  const { adapterPluginsStorePath } = adapterPluginPaths();
+  fs.writeFileSync(adapterPluginsStorePath, JSON.stringify(records, null, 2), "utf-8");
+  storeCache = { path: adapterPluginsStorePath, records };
 }
 
 function readSettings(): AdapterSettings {
-  if (settingsCache) return settingsCache;
+  const { adapterSettingsPath } = adapterPluginPaths();
+  if (settingsCache?.path === adapterSettingsPath) return settingsCache.settings;
   try {
-    const raw = fs.readFileSync(ADAPTER_SETTINGS_PATH, "utf-8");
+    const raw = fs.readFileSync(adapterSettingsPath, "utf-8");
     const parsed = JSON.parse(raw);
-    settingsCache = parsed && Array.isArray(parsed.disabledTypes)
-      ? (parsed as AdapterSettings)
-      : { disabledTypes: [] };
+    settingsCache = {
+      path: adapterSettingsPath,
+      settings: parsed && Array.isArray(parsed.disabledTypes)
+        ? (parsed as AdapterSettings)
+        : { disabledTypes: [] },
+    };
   } catch {
-    settingsCache = { disabledTypes: [] };
+    settingsCache = { path: adapterSettingsPath, settings: { disabledTypes: [] } };
   }
-  return settingsCache;
+  return settingsCache.settings;
 }
 
 function writeSettings(settings: AdapterSettings): void {
   ensureDirs();
-  fs.writeFileSync(ADAPTER_SETTINGS_PATH, JSON.stringify(settings, null, 2), "utf-8");
-  settingsCache = settings;
+  const { adapterSettingsPath } = adapterPluginPaths();
+  fs.writeFileSync(adapterSettingsPath, JSON.stringify(settings, null, 2), "utf-8");
+  settingsCache = { path: adapterSettingsPath, settings };
 }
 
 // ---------------------------------------------------------------------------
@@ -143,8 +159,7 @@ export function getAdapterPluginByType(type: string): AdapterPluginRecord | unde
 }
 
 export function getAdapterPluginsDir(): string {
-  ensureDirs();
-  return ADAPTER_PLUGINS_DIR;
+  return ensureDirs();
 }
 
 // ---------------------------------------------------------------------------

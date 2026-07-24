@@ -19,6 +19,7 @@
  */
 
 import { fork, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
@@ -39,9 +40,12 @@ import {
 } from "@paperclipai/plugin-sdk";
 import type {
   JsonRpcId,
+  PluginInvocationContext,
+  PluginInvocationScope,
   JsonRpcResponse,
   JsonRpcRequest,
   JsonRpcNotification,
+  WorkerHostCallContext,
   HostToWorkerMethodName,
   HostToWorkerMethods,
   WorkerToHostMethodName,
@@ -57,8 +61,8 @@ import { logger } from "../middleware/logger.js";
 /** Default timeout for RPC calls in milliseconds. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
-/** Hard upper bound for any RPC timeout (5 minutes). Prevents unbounded waits. */
-const MAX_RPC_TIMEOUT_MS = 5 * 60 * 1_000;
+/** Hard upper bound for any RPC timeout (15 minutes). Prevents unbounded waits. */
+const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
 
 /** Timeout for the initialize RPC call. */
 const INITIALIZE_TIMEOUT_MS = 15_000;
@@ -108,6 +112,7 @@ export type WorkerStatus =
  */
 export type WorkerToHostHandler<M extends WorkerToHostMethodName> = (
   params: WorkerToHostMethods[M][0],
+  context?: WorkerHostCallContext,
 ) => Promise<WorkerToHostMethods[M][1]>;
 
 /**
@@ -166,6 +171,8 @@ export interface WorkerStartOptions {
   };
   /** Host API version. */
   apiVersion: number;
+  /** Host-derived plugin database namespace, when declared. */
+  databaseNamespace?: string | null;
   /** Handlers for worker→host RPC calls. */
   hostHandlers: WorkerToHostHandlers;
   /** Default timeout for RPC calls (ms). Defaults to 30s. */
@@ -176,6 +183,17 @@ export interface WorkerStartOptions {
   execArgv?: string[];
   /** Environment variables passed to the child process. */
   env?: Record<string, string>;
+  /**
+   * Companies this worker may act on from proactive (no-invocation) worker→host
+   * calls — the plugin's configured companies. Seeded onto the handle at
+   * creation, BEFORE the child process spawns, so a proactive plugin that
+   * issues host calls during setup() (e.g. the chat gateway's one-shot
+   * `events.subscribe`, which runs while `startWorker` is still awaiting the
+   * initialize response) is already authorized when those calls arrive. The set
+   * can still be replaced at runtime via `setProactiveCompanyScopes` (e.g. on a
+   * config change). Never widens access beyond the listed companies (LOOA-695).
+   */
+  proactiveCompanyScopes?: readonly string[];
   /**
    * Callback for stream notifications from the worker (streams.open/emit/close).
    * The host wires this to the PluginStreamBus to fan out events to SSE clients.
@@ -197,6 +215,13 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
   /** Timestamp when the request was sent. */
   sentAt: number;
+  /** Active host-owned invocation id attached to this host→worker call. */
+  invocationId?: string;
+}
+
+interface ActiveInvocation {
+  scope: PluginInvocationScope;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +278,13 @@ export interface PluginWorkerHandle {
    * Send a fire-and-forget notification to the worker (no response expected).
    */
   notify(method: string, params: unknown): void;
+
+  /**
+   * Authorize the set of companies this worker may act on from proactive
+   * (non-invocation) context. Replaces any previously-authorized set. See the
+   * proactive-company-scope note in `createPluginWorkerHandle` for rationale.
+   */
+  setProactiveCompanyScopes(companyIds: readonly string[]): void;
 
   /** Subscribe to worker events. */
   on<K extends WorkerHandleEventName>(
@@ -323,6 +355,12 @@ export interface PluginWorkerManager {
   isRunning(pluginId: string): boolean;
 
   /**
+   * Authorize the companies a plugin's worker may act on from proactive
+   * (non-invocation) context. No-op if the worker is not registered.
+   */
+  setProactiveCompanyScopes(pluginId: string, companyIds: readonly string[]): void;
+
+  /**
    * Stop all managed workers. Called during server shutdown.
    */
   stopAll(): Promise<void>;
@@ -377,6 +415,34 @@ export function createPluginWorkerHandle(
   // Pending RPC requests awaiting a response
   const pendingRequests = new Map<string | number, PendingRequest>();
   let nextRequestId = 1;
+  const activeInvocations = new Map<string, ActiveInvocation>();
+
+  // ------------------------------------------------------------------
+  // Proactive company scopes (LOOA-629)
+  // ------------------------------------------------------------------
+  // A proactive plugin (e.g. the chat gateway) does company-scoped work from
+  // its own timers/loops — not inside a host-issued top-level invocation
+  // (onEvent/performAction/executeTool/configChanged). Those worker→host calls
+  // carry no `paperclipInvocationId`, so the governed-access gate
+  // (host-client-factory.ts) rejects any company-scoped request with
+  // "company context is required" (regression class from #9557). The host
+  // authorizes a bounded set of companies — the plugin's configured companies,
+  // set by the loader after startup config delivery — for such proactive work.
+  // A no-invocation call that references one of these companies resolves to
+  // that company's scope; a call referencing any other company stays denied,
+  // and in-invocation calls keep their strict single-company match.
+  //
+  // Seeded from options at handle creation — before the child process is
+  // spawned — so a proactive plugin's setup()-time host calls (which land while
+  // `startWorker` is still awaiting initialize) are authorized in time. The
+  // loader used to call setProactiveCompanyScopes only AFTER startWorker
+  // resolved, which was too late for the gateway's one-shot events.subscribe
+  // and left outbound push permanently dead (LOOA-695).
+  const proactiveCompanyScopes = new Set<string>();
+  for (const id of options.proactiveCompanyScopes ?? []) {
+    const trimmed = readNonEmptyString(id);
+    if (trimmed) proactiveCompanyScopes.add(trimmed);
+  }
 
   // Optional methods reported by the worker during initialization
   let supportedMethods: string[] = [];
@@ -420,6 +486,14 @@ export function createPluginWorkerHandle(
     }
     const serialized = serializeMessage(message as any);
     childProcess.stdin.write(serialized);
+  }
+
+  function errorCodeForWorkerHostError(err: unknown): number {
+    const code = (err as { code?: unknown } | null)?.code;
+    const pluginErrorCodes: readonly number[] = Object.values(PLUGIN_RPC_ERROR_CODES);
+    return typeof code === "number" && pluginErrorCodes.includes(code)
+      ? code
+      : JSONRPC_ERROR_CODES.INTERNAL_ERROR;
   }
 
   // -----------------------------------------------------------------------
@@ -473,13 +547,134 @@ export function createPluginWorkerHandle(
     pending.resolve(response);
   }
 
+  function readNonEmptyString(value: unknown): string | null {
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  function deriveInvocationScope(
+    method: HostToWorkerMethodName | string,
+    params: unknown,
+  ): PluginInvocationScope | null {
+    if (!isRecord(params)) return null;
+
+    const directCompanyId = readNonEmptyString(params.companyId);
+    if (directCompanyId) return { companyId: directCompanyId };
+
+    if (method === "performAction" && isRecord(params.actorContext)) {
+      const companyId = readNonEmptyString(params.actorContext.companyId);
+      return companyId ? { companyId } : null;
+    }
+
+    if (method === "executeTool" && isRecord(params.runContext)) {
+      const companyId = readNonEmptyString(params.runContext.companyId);
+      return companyId ? { companyId } : null;
+    }
+
+    if (method === "onEvent" && isRecord(params.event)) {
+      const companyId = readNonEmptyString(params.event.companyId);
+      return companyId ? { companyId } : null;
+    }
+
+    return null;
+  }
+
+  function registerInvocation(scope: PluginInvocationScope, ttlMs?: number): PluginInvocationContext {
+    const invocation: PluginInvocationContext = {
+      id: randomUUID(),
+      scope,
+    };
+    const entry: ActiveInvocation = { scope };
+    if (ttlMs !== undefined) {
+      entry.timer = setTimeout(() => {
+        activeInvocations.delete(invocation.id);
+      }, ttlMs);
+      if (entry.timer.unref) entry.timer.unref();
+    }
+    activeInvocations.set(invocation.id, entry);
+    return invocation;
+  }
+
+  function clearInvocation(invocation: PluginInvocationContext | null): void {
+    if (!invocation) return;
+    const entry = activeInvocations.get(invocation.id);
+    if (entry?.timer) clearTimeout(entry.timer);
+    activeInvocations.delete(invocation.id);
+  }
+
+  /**
+   * Extract the single company a worker→host call references, mirroring the SDK
+   * governed-access gate's own derivation (host-client-factory.ts
+   * `requestedCompanyScope`) so a proactive call resolves to exactly the company
+   * the gate would require:
+   *   - explicit `params.companyId`;
+   *   - a company-scoped state key (`scopeKind: "company"` + `scopeId`);
+   *   - `events.subscribe`'s `params.filter.companyId` (how the SDK's
+   *     `ctx.events.on(name, { companyId }, fn)` issues its subscribe).
+   *
+   * Returns null whenever the gate treats the call as a wildcard (`companies.list`,
+   * a `scopeKind: "company"` key with no `scopeId`) or as referencing no company
+   * (instance-scoped state, an unfiltered subscribe). A wildcard is deliberately
+   * NOT granted proactively: proactive resolution only ever admits a single,
+   * explicit company, never "all". This keeps the resolver and the gate in
+   * lockstep in the functional direction (LOOA-693 AC#4 / LOOA-695).
+   */
+  function referencedCompanyId(method: string, params: unknown): string | null {
+    // Gate returns { kind: "all" } for companies.list regardless of params —
+    // never a single company — so proactive access declines it here.
+    if (method === "companies.list") return null;
+    if (!isRecord(params)) return null;
+    const direct = readNonEmptyString(params.companyId);
+    if (direct) return direct;
+    if (params.scopeKind === "company") {
+      // scopeId present → that company; absent → wildcard ("all") in the gate,
+      // which we never grant proactively → null.
+      return readNonEmptyString(params.scopeId);
+    }
+    if (method === "events.subscribe" && isRecord(params.filter)) {
+      return readNonEmptyString(params.filter.companyId);
+    }
+    return null;
+  }
+
+  function contextForWorkerMessage(message: JsonRpcRequest | JsonRpcNotification): WorkerHostCallContext {
+    const invocationId = readNonEmptyString(
+      (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
+    );
+    if (!invocationId) {
+      // No host-issued invocation is being echoed. This is a genuinely
+      // proactive worker→host call (timer/loop). If it references a company the
+      // plugin is authorized to act on proactively, resolve it to that
+      // company's scope so the governed-access gate admits it. This never
+      // widens access beyond the plugin's configured companies, and only
+      // applies when the worker is NOT inside a host-issued invocation (which
+      // would carry an id and keep its strict single-company match below).
+      const proactiveCompanyId = referencedCompanyId(
+        message.method,
+        (message as { params?: unknown }).params,
+      );
+      if (proactiveCompanyId && proactiveCompanyScopes.has(proactiveCompanyId)) {
+        return { invocationScope: { companyId: proactiveCompanyId } };
+      }
+      const hasActiveInvocation = activeInvocations.size > 0 ||
+        Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
+      return hasActiveInvocation ? { invalidInvocationScope: true } : {};
+    }
+    const entry = activeInvocations.get(invocationId);
+    if (!entry) return { invalidInvocationScope: true };
+    return { invocationScope: entry.scope };
+  }
+
   /**
    * Handle a JSON-RPC request from the worker (worker→host call).
    */
   async function handleWorkerRequest(request: JsonRpcRequest): Promise<void> {
     const method = request.method as WorkerToHostMethodName;
     const handler = options.hostHandlers[method] as
-      | ((params: unknown) => Promise<unknown>)
+      | ((params: unknown, context?: WorkerHostCallContext) => Promise<unknown>)
       | undefined;
 
     if (!handler) {
@@ -499,7 +694,7 @@ export function createPluginWorkerHandle(
     }
 
     try {
-      const result = await handler(request.params);
+      const result = await handler(request.params, contextForWorkerMessage(request));
       sendMessage({
         jsonrpc: JSONRPC_VERSION,
         id: request.id,
@@ -512,7 +707,7 @@ export function createPluginWorkerHandle(
         sendMessage(
           createErrorResponse(
             request.id,
-            JSONRPC_ERROR_CODES.INTERNAL_ERROR,
+            errorCodeForWorkerHostError(err),
             errorMessage,
           ),
         );
@@ -570,12 +765,28 @@ export function createPluginWorkerHandle(
       notification.method === "streams.close"
     ) {
       const params = (notification.params ?? {}) as Record<string, unknown>;
+      const companyId = String(params.companyId ?? "");
+      const context = contextForWorkerMessage(notification);
+      if (context.invalidInvocationScope) {
+        log.warn(
+          { method: notification.method, companyId },
+          "dropping plugin stream notification with invalid invocation scope",
+        );
+        return;
+      }
+      const allowedCompanyId = context.invocationScope?.companyId;
+      if (allowedCompanyId && companyId !== allowedCompanyId) {
+        log.warn(
+          { method: notification.method, companyId, allowedCompanyId },
+          "dropping plugin stream notification outside invocation company scope",
+        );
+        return;
+      }
 
       // Track open channels so we can emit synthetic close on crash
       if (notification.method === "streams.open") {
         const ch = String(params.channel ?? "");
-        const co = String(params.companyId ?? "");
-        if (ch) openStreamChannels.set(ch, co);
+        if (ch) openStreamChannels.set(ch, companyId);
       } else if (notification.method === "streams.close") {
         openStreamChannels.delete(String(params.channel ?? ""));
       }
@@ -651,7 +862,9 @@ export function createPluginWorkerHandle(
     // Handle process errors (e.g. spawn failure)
     child.on("error", (err) => {
       log.error({ err: err.message }, "worker process error");
-      emitter.emit("error", { pluginId, error: err });
+      if (emitter.listenerCount("error") > 0) {
+        emitter.emit("error", { pluginId, error: err });
+      }
       if (status === "starting") {
         setStatus("crashed");
         rejectAllPending(
@@ -756,6 +969,10 @@ export function createPluginWorkerHandle(
       );
     }
     pendingRequests.clear();
+    for (const invocation of activeInvocations.values()) {
+      if (invocation.timer) clearTimeout(invocation.timer);
+    }
+    activeInvocations.clear();
   }
 
   // -----------------------------------------------------------------------
@@ -828,6 +1045,7 @@ export function createPluginWorkerHandle(
       config: options.config,
       instanceInfo: options.instanceInfo,
       apiVersion: options.apiVersion,
+      databaseNamespace: options.databaseNamespace ?? null,
     };
 
     try {
@@ -1003,7 +1221,7 @@ export function createPluginWorkerHandle(
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
   ): Promise<HostToWorkerMethods[M][1]> {
-    return new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
+    const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       if (!childProcess?.stdin?.writable) {
         reject(
           new Error(
@@ -1015,6 +1233,8 @@ export function createPluginWorkerHandle(
 
       const id = nextRequestId++;
       const timeout = Math.min(timeoutMs ?? rpcTimeoutMs, MAX_RPC_TIMEOUT_MS);
+      const invocationScope = deriveInvocationScope(method, params);
+      const invocation = invocationScope ? registerInvocation(invocationScope) : null;
 
       // Guard against double-settlement. When a process exits all pending
       // requests are rejected via rejectAllPending(), but the timeout timer
@@ -1027,6 +1247,7 @@ export function createPluginWorkerHandle(
         settled = true;
         clearTimeout(timer);
         pendingRequests.delete(id);
+        clearInvocation(invocation);
         fn(value);
       };
 
@@ -1054,16 +1275,21 @@ export function createPluginWorkerHandle(
         },
         timer,
         sentAt: Date.now(),
+        invocationId: invocation?.id,
       };
 
       pendingRequests.set(id, pending);
 
       try {
-        const request = createRequest(method, params, id);
+        const request = {
+          ...createRequest(method, params, id),
+          ...(invocation ? { paperclipInvocation: invocation } : {}),
+        };
         sendMessage(request);
       } catch (err) {
         clearTimeout(timer);
         pendingRequests.delete(id);
+        clearInvocation(invocation);
         reject(
           new Error(
             `Failed to send "${method}" to worker: ${
@@ -1073,6 +1299,14 @@ export function createPluginWorkerHandle(
         );
       }
     });
+
+    // Some call sites hand these promises across async boundaries before
+    // attaching their own handlers. Mark the promise as handled here so a
+    // worker-side JSON-RPC error can fail the caller without killing the host
+    // process via an unhandled rejection.
+    void rpcPromise.catch(() => undefined);
+
+    return rpcPromise;
   }
 
   // -----------------------------------------------------------------------
@@ -1122,13 +1356,17 @@ export function createPluginWorkerHandle(
 
     notify(method: string, params: unknown) {
       if (status !== "running") return;
+      const invocationScope = deriveInvocationScope(method, params);
+      const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
       try {
         sendMessage({
           jsonrpc: JSONRPC_VERSION,
           method,
           params,
+          ...(invocation ? { paperclipInvocation: invocation } : {}),
         });
       } catch {
+        clearInvocation(invocation);
         log.warn({ method }, "failed to send notification to worker");
       }
     },
@@ -1145,6 +1383,14 @@ export function createPluginWorkerHandle(
       listener: (payload: WorkerHandleEvents[K]) => void,
     ) {
       emitter.off(event, listener);
+    },
+
+    setProactiveCompanyScopes(companyIds: readonly string[]): void {
+      proactiveCompanyScopes.clear();
+      for (const id of companyIds) {
+        const trimmed = readNonEmptyString(id);
+        if (trimmed) proactiveCompanyScopes.add(trimmed);
+      }
     },
 
     diagnostics(): WorkerDiagnostics {
@@ -1299,6 +1545,10 @@ export function createPluginWorkerManager(
     isRunning(pluginId: string): boolean {
       const handle = workers.get(pluginId);
       return handle?.status === "running";
+    },
+
+    setProactiveCompanyScopes(pluginId: string, companyIds: readonly string[]): void {
+      workers.get(pluginId)?.setProactiveCompanyScopes(companyIds);
     },
 
     async stopAll(): Promise<void> {

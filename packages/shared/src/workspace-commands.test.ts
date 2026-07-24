@@ -53,4 +53,26 @@ describe("workspace command helpers", () => {
 
     expect(match).toEqual(expect.objectContaining({ id: "runtime-web" }));
   });
+
+  it("does not match a stale runtime service after the configured command changes", () => {
+    const workspaceRuntime = {
+      commands: [
+        { id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth", cwd: "." },
+      ],
+    };
+    const command = findWorkspaceCommandDefinition(workspaceRuntime, "web");
+    expect(command).not.toBeNull();
+
+    const match = matchWorkspaceRuntimeServiceToCommand(command!, [
+      {
+        id: "runtime-web",
+        serviceName: "web",
+        command: "pnpm dev",
+        cwd: "/repo",
+        configIndex: null,
+      },
+    ]);
+
+    expect(match).toBeNull();
+  });
 });

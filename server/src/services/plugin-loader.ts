@@ -29,9 +29,10 @@ import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
+import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type {
   PaperclipPluginManifestV1,
   PluginLauncherDeclaration,
@@ -48,9 +49,15 @@ import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
 import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
+import { pluginDatabaseService } from "./plugin-database.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+export const REPO_ROOT = path.resolve(__dirname, "../../..");
+export const BUNDLED_LOCAL_PLUGIN_ROOT = path.join(REPO_ROOT, "packages", "plugins");
+export const STANDALONE_BUNDLED_PLUGIN_ROOT = path.join(BUNDLED_LOCAL_PLUGIN_ROOT, "sandbox-providers");
+export const LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS = 120_000;
+const STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE = "@paperclipai/plugin-sdk";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -77,6 +84,62 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
 );
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
+
+/**
+ * Model-provider API keys that sandbox-provider plugins (e.g.
+ * `@paperclipai/plugin-kubernetes`) are allowed to read from the
+ * server's process environment so they can inject them into per-run
+ * pod Secrets. All other host env vars remain stripped from plugin
+ * workers (see `PluginWorkerManager.spawnProcess`). The passthrough
+ * is gated on the plugin manifest declaring
+ * `environment.drivers.register` — non-sandbox plugins never receive
+ * these keys.
+ */
+const ADAPTER_ENV_PASSTHROUGH = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "OPENROUTER_API_KEY",
+];
+
+/**
+ * In-cluster Kubernetes service-discovery vars. A sandbox-provider plugin that
+ * runs in-cluster (e.g. `@paperclipai/plugin-kubernetes` with inCluster=true)
+ * builds its API client via `KubeConfig.loadFromCluster()`, which reads these
+ * to construct the apiserver URL. Without them the worker fails with "Invalid
+ * URL" at lease acquisition. The CA + token are files under
+ * /var/run/secrets/kubernetes.io/serviceaccount and are readable directly.
+ * Gated, like ADAPTER_ENV_PASSTHROUGH, on environment-driver registration.
+ */
+const K8S_IN_CLUSTER_ENV_PASSTHROUGH = [
+  "KUBERNETES_SERVICE_HOST",
+  "KUBERNETES_SERVICE_PORT",
+  "KUBERNETES_SERVICE_PORT_HTTPS",
+];
+
+export function buildPluginWorkerEnv(input: {
+  manifest: Pick<PaperclipPluginManifestV1, "capabilities">;
+  instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
+  processEnv?: NodeJS.ProcessEnv;
+}): Record<string, string> {
+  const processEnv = input.processEnv ?? process.env;
+  const env: Record<string, string> = {
+    PAPERCLIP_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
+    PAPERCLIP_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
+  };
+  const canRegisterEnvironmentDrivers = Array.isArray(input.manifest.capabilities)
+    && input.manifest.capabilities.includes("environment.drivers.register");
+  if (!canRegisterEnvironmentDrivers) return env;
+
+  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH]) {
+    const value = processEnv[key];
+    if (value && value.trim().length > 0) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
 
 // ---------------------------------------------------------------------------
 // Discovery result types
@@ -127,6 +190,19 @@ export interface PluginDiscoveryResult {
   sources: PluginSource[];
 }
 
+type PluginEntrypointKey = "manifest" | "worker" | "ui";
+
+type PluginEntrypointPath = {
+  key: PluginEntrypointKey;
+  absolutePath: string;
+};
+
+type LocalPluginBuildCommand = {
+  file: string;
+  args: string[];
+  cwd: string;
+};
+
 function getDeclaredPageRoutePaths(manifest: PaperclipPluginManifestV1): string[] {
   return (manifest.ui?.slots ?? [])
     .filter((slot): slot is PluginUiSlotDeclaration => slot.type === "page" && typeof slot.routePath === "string" && slot.routePath.length > 0)
@@ -146,6 +222,9 @@ export interface PluginLoaderOptions {
    * Defaults to ~/.paperclip/plugins/
    */
   localPluginDir?: string;
+
+  /** Optional direct Postgres connection used for plugin DDL migrations. */
+  migrationDb?: Db;
 
   /**
    * Whether to scan the local filesystem directory for plugins.
@@ -244,6 +323,8 @@ export interface PluginRuntimeServices {
   instanceInfo: {
     instanceId: string;
     hostVersion: string;
+    deploymentMode?: "local_trusted" | "authenticated";
+    deploymentExposure?: "private" | "public";
   };
 }
 
@@ -533,6 +614,263 @@ async function readPackageJson(
   }
 }
 
+function buildLocalPluginBuildCommand(pkgJson: Record<string, unknown>): string | null {
+  const packageName = pkgJson["name"];
+  if (typeof packageName !== "string" || packageName.trim().length === 0) return null;
+  return `pnpm --filter ${packageName} build`;
+}
+
+function readPackageDependencyNames(
+  pkgJson: Record<string, unknown>,
+  field: "dependencies" | "optionalDependencies",
+): string[] {
+  const deps = pkgJson[field];
+  if (deps === null || typeof deps !== "object" || Array.isArray(deps)) return [];
+  return Object.keys(deps as Record<string, unknown>);
+}
+
+function resolvePackageInstallPath(packageRoot: string, packageName: string): string {
+  return path.join(packageRoot, "node_modules", ...packageName.split("/"));
+}
+
+function isPathWithin(root: string, target: string): boolean {
+  const relativePath = path.relative(root, target);
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+export function isRepoBundledPluginPath(
+  packageRoot: string,
+  options: { repoRoot?: string } = {},
+): boolean {
+  const repoPluginsRoot = path.join(options.repoRoot ?? REPO_ROOT, "packages", "plugins");
+  return isPathWithin(repoPluginsRoot, packageRoot);
+}
+
+export function isStandaloneBundledPluginPath(
+  packageRoot: string,
+  options: { repoRoot?: string } = {},
+): boolean {
+  const repoRoot = options.repoRoot ?? REPO_ROOT;
+  return isPathWithin(path.join(repoRoot, "packages", "plugins", "sandbox-providers"), packageRoot);
+}
+
+export function resolveDeclaredPluginEntrypoints(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+): PluginEntrypointPath[] {
+  const paperclipPlugin = pkgJson["paperclipPlugin"];
+  if (
+    paperclipPlugin === null
+    || typeof paperclipPlugin !== "object"
+    || Array.isArray(paperclipPlugin)
+  ) {
+    return [];
+  }
+
+  const entrypoints: PluginEntrypointPath[] = [];
+  for (const key of ["manifest", "worker", "ui"] as const) {
+    const relativePath = (paperclipPlugin as Record<string, unknown>)[key];
+    if (typeof relativePath === "string" && relativePath.length > 0) {
+      entrypoints.push({
+        key,
+        absolutePath: path.resolve(packageRoot, relativePath),
+      });
+    }
+  }
+
+  return entrypoints;
+}
+
+export function listMissingDeclaredPluginEntrypoints(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+): PluginEntrypointPath[] {
+  return resolveDeclaredPluginEntrypoints(packageRoot, pkgJson).filter(
+    (entrypoint) => !existsSync(entrypoint.absolutePath),
+  );
+}
+
+function listMissingStandaloneBundledPluginRuntimeDependencies(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+): string[] {
+  // optionalDependencies are intentionally allowed to be absent (e.g.
+  // platform-specific packages), so they must not be treated as required here —
+  // otherwise post-build verification fails even when install/build succeeded.
+  const dependencyNames = new Set<string>([
+    STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE,
+    ...readPackageDependencyNames(pkgJson, "dependencies"),
+  ]);
+
+  return [...dependencyNames].filter(
+    (packageName) => !existsSync(resolvePackageInstallPath(packageRoot, packageName)),
+  );
+}
+
+function formatLocalPluginManualBuildHint(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+  options: { processEnv?: NodeJS.ProcessEnv; repoRoot?: string } = {},
+): string {
+  if (!isRepoBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) return "";
+
+  const manualBuildCommand = buildLocalPluginRecoveryCommand(packageRoot, pkgJson, { repoRoot: options.repoRoot });
+  if (!manualBuildCommand) return "";
+
+  const autoBuildDisabled = (options.processEnv ?? process.env)["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"] === "1"
+    ? " Auto-build is disabled by PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD=1."
+    : "";
+
+  return `${autoBuildDisabled} Run \`${manualBuildCommand}\` from the repo root and retry.`;
+}
+
+function buildStandaloneBundledPluginInstallArgs(
+  packageRoot: string,
+): string[] {
+  const packageLockfilePath = path.join(packageRoot, "pnpm-lock.yaml");
+  return existsSync(packageLockfilePath)
+    ? ["install", "--ignore-workspace", "--frozen-lockfile"]
+    : ["install", "--ignore-workspace", "--no-lockfile"];
+}
+
+function buildStandaloneBundledPluginInstallCommand(
+  packageRoot: string,
+): string {
+  return `pnpm ${buildStandaloneBundledPluginInstallArgs(packageRoot).join(" ")}`;
+}
+
+function buildLocalPluginRecoveryCommand(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+  options: { repoRoot?: string } = {},
+): string | null {
+  if (isStandaloneBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) {
+    const repoRoot = options.repoRoot ?? REPO_ROOT;
+    const relativePath = path.relative(repoRoot, packageRoot) || ".";
+    const installCommand = buildStandaloneBundledPluginInstallCommand(packageRoot);
+    return `cd ${relativePath} && ${installCommand} && pnpm build`;
+  }
+
+  return buildLocalPluginBuildCommand(pkgJson);
+}
+
+function buildLocalPluginBuildCommands(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+  options: {
+    repoRoot?: string;
+    needsBuild?: boolean;
+    needsStandaloneRuntimeBootstrap?: boolean;
+  } = {},
+): LocalPluginBuildCommand[] {
+  if (isStandaloneBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) {
+    const commands: LocalPluginBuildCommand[] = [];
+    const shouldInstallStandaloneRuntime =
+      options.needsStandaloneRuntimeBootstrap === true
+      || (!existsSync(path.join(packageRoot, "node_modules")) && options.needsBuild !== false);
+
+    if (shouldInstallStandaloneRuntime) {
+      commands.push({
+        file: "pnpm",
+        args: buildStandaloneBundledPluginInstallArgs(packageRoot),
+        cwd: packageRoot,
+      });
+    }
+
+    if (options.needsBuild !== false) {
+      commands.push({
+        file: "pnpm",
+        args: ["build"],
+        cwd: packageRoot,
+      });
+    }
+    return commands;
+  }
+
+  const packageName = pkgJson["name"];
+  if (typeof packageName !== "string" || packageName.trim().length === 0) return [];
+  return [{
+    file: "pnpm",
+    args: ["--filter", packageName, "build"],
+    cwd: options.repoRoot ?? REPO_ROOT,
+  }];
+}
+
+export async function ensureLocalPluginBuilt(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+  options: {
+    processEnv?: NodeJS.ProcessEnv;
+    repoRoot?: string;
+    execFileAsyncImpl?: (
+      file: string,
+      args: readonly string[],
+      options: { cwd: string; timeout: number },
+    ) => Promise<{ stdout: string; stderr: string }>;
+  } = {},
+): Promise<void> {
+  const processEnv = options.processEnv ?? process.env;
+  if (processEnv["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"] === "1") return;
+  if (!isRepoBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) return;
+
+  const missingEntrypoints = listMissingDeclaredPluginEntrypoints(packageRoot, pkgJson);
+  const missingStandaloneRuntimeDeps = isStandaloneBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })
+    ? listMissingStandaloneBundledPluginRuntimeDependencies(packageRoot, pkgJson)
+    : [];
+  if (missingEntrypoints.length === 0 && missingStandaloneRuntimeDeps.length === 0) return;
+
+  const packageName = pkgJson["name"];
+  const manualBuildCommand = buildLocalPluginRecoveryCommand(packageRoot, pkgJson, { repoRoot: options.repoRoot });
+  if (typeof packageName !== "string" || packageName.trim().length === 0 || !manualBuildCommand) return;
+
+  const runExecFileAsync = options.execFileAsyncImpl ?? execFileAsync;
+  const buildCommands = buildLocalPluginBuildCommands(packageRoot, pkgJson, {
+    repoRoot: options.repoRoot,
+    needsBuild: missingEntrypoints.length > 0,
+    needsStandaloneRuntimeBootstrap: missingStandaloneRuntimeDeps.length > 0,
+  });
+
+  try {
+    for (const command of buildCommands) {
+      await runExecFileAsync(
+        command.file,
+        command.args,
+        { cwd: command.cwd, timeout: LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS },
+      );
+    }
+  } catch (error) {
+    const stderr = typeof (error as { stderr?: unknown }).stderr === "string"
+      ? (error as { stderr: string }).stderr.trim()
+      : "";
+    const timeoutMessage = (error as { killed?: unknown }).killed === true
+      ? ` after timing out at ${LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS}ms`
+      : "";
+    const stderrMessage = stderr.length > 0 ? ` stderr: ${stderr}` : "";
+    throw new Error(
+      `Failed to auto-build bundled local plugin ${packageName}${timeoutMessage}. ` +
+        `Run \`${manualBuildCommand}\` from the repo root and retry.${stderrMessage}`,
+    );
+  }
+
+  const stillMissingEntrypoints = listMissingDeclaredPluginEntrypoints(packageRoot, pkgJson);
+  const stillMissingStandaloneRuntimeDeps = isStandaloneBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })
+    ? listMissingStandaloneBundledPluginRuntimeDependencies(packageRoot, pkgJson)
+    : [];
+  if (stillMissingEntrypoints.length > 0 || stillMissingStandaloneRuntimeDeps.length > 0) {
+    const missingDetails: string[] = [];
+    if (stillMissingEntrypoints.length > 0) {
+      missingDetails.push(`built entrypoints: ${stillMissingEntrypoints.map((entrypoint) => entrypoint.key).join(", ")}`);
+    }
+    if (stillMissingStandaloneRuntimeDeps.length > 0) {
+      missingDetails.push(`runtime dependencies: ${stillMissingStandaloneRuntimeDeps.join(", ")}`);
+    }
+    throw new Error(
+      `Bundled local plugin ${packageName} is still missing ${missingDetails.join("; ")} after auto-build. ` +
+        `Run \`${manualBuildCommand}\` from the repo root and retry.`,
+    );
+  }
+}
+
 /**
  * Resolve the manifest entrypoint from a package.json and package root.
  *
@@ -735,6 +1073,7 @@ export function pluginLoader(
 ): PluginLoader {
   const {
     localPluginDir = DEFAULT_LOCAL_PLUGIN_DIR,
+    migrationDb = db,
     enableLocalFilesystem = true,
     enableNpmDiscovery = true,
   } = options;
@@ -865,10 +1204,17 @@ export function pluginLoader(
     const pkgJson = await readPackageJson(resolvedPackagePath);
     if (!pkgJson) throw new Error(`Missing package.json at ${resolvedPackagePath}`);
 
+    if (localPath) {
+      await ensureLocalPluginBuilt(resolvedPackagePath, pkgJson);
+    }
+
     const manifestPath = resolveManifestPath(resolvedPackagePath, pkgJson);
     if (!manifestPath || !existsSync(manifestPath)) {
+      const manualBuildHint = localPath
+        ? formatLocalPluginManualBuildHint(resolvedPackagePath, pkgJson)
+        : "";
       throw new Error(
-        `Package ${resolvedPackageName} at ${resolvedPackagePath} does not appear to be a Paperclip plugin (no manifest found).`,
+        `Package ${resolvedPackageName} at ${resolvedPackagePath} does not appear to be a Paperclip plugin (no manifest found).${manualBuildHint}`,
       );
     }
 
@@ -927,7 +1273,10 @@ export function pluginLoader(
 
     try {
       // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
-      const mod = await import(manifestPath) as Record<string, unknown>;
+      const manifestUrl = pathToFileURL(manifestPath);
+      const manifestStat = await stat(manifestPath);
+      manifestUrl.searchParams.set("mtime", String(Math.trunc(manifestStat.mtimeMs)));
+      const mod = await import(manifestUrl.href) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
     } catch (err) {
@@ -937,6 +1286,51 @@ export function pluginLoader(
     }
 
     return manifestValidator.parseOrThrow(raw);
+  }
+
+  async function loadManifestFromPackageRoot(
+    packageRoot: string,
+  ): Promise<PaperclipPluginManifestV1 | null> {
+    const pkgJson = await readPackageJson(packageRoot);
+    if (!pkgJson) return null;
+
+    const manifestPath = resolveManifestPath(packageRoot, pkgJson);
+    if (!manifestPath || !existsSync(manifestPath)) return null;
+
+    return loadManifestFromPath(manifestPath);
+  }
+
+  async function refreshPluginManifestFromPackage(
+    plugin: PluginRecord,
+    packageRoot: string,
+  ): Promise<PluginRecord> {
+    const manifest = await loadManifestFromPackageRoot(packageRoot);
+    if (!manifest) {
+      throw new Error(`Plugin package ${plugin.packageName} no longer exposes a Paperclip manifest`);
+    }
+    if (manifest.id !== plugin.pluginKey) {
+      throw new Error(
+        `Plugin manifest ID '${manifest.id}' does not match installed plugin '${plugin.pluginKey}'`,
+      );
+    }
+
+    if (JSON.stringify(manifest) === JSON.stringify(plugin.manifestJson)) {
+      return plugin;
+    }
+
+    await registry.update(plugin.id, {
+      packageName: plugin.packageName,
+      version: manifest.version,
+      manifest,
+    });
+
+    return {
+      ...plugin,
+      version: manifest.version,
+      apiVersion: manifest.apiVersion,
+      categories: manifest.categories,
+      manifestJson: manifest,
+    };
   }
 
   /**
@@ -1251,22 +1645,43 @@ export function pluginLoader(
 
     async installPlugin(installOptions: PluginInstallOptions): Promise<DiscoveredPlugin> {
       const discovered = await fetchAndValidate(installOptions);
+      const manifest = discovered.manifest!;
 
-      // Step 6: Persist install record in Postgres (include packagePath for local installs so the worker can be resolved)
-      await registry.install(
-        {
-          packageName: discovered.packageName,
-          packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
-        },
-        discovered.manifest!,
-      );
+      // Step 6: Persist install record and apply plugin-owned schema migrations
+      // in one database transaction. If migration validation fails, the plugin
+      // row, namespace record, migration ledger, and created schema all roll back.
+      const installDb = manifest.database ? migrationDb : db;
+      await installDb.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const txRegistry = pluginRegistryService(txDb);
+        const installed = await txRegistry.install(
+          {
+            packageName: discovered.packageName,
+            packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
+          },
+          manifest,
+        );
+
+        if (!installed) {
+          throw new Error(`Plugin install did not return a registry row: ${manifest.id}`);
+        }
+
+        if (manifest.database) {
+          await pluginDatabaseService(txDb).applyMigrations(
+            installed.id,
+            manifest,
+            discovered.packagePath,
+            { persistFailure: false },
+          );
+        }
+      });
 
       log.info(
         {
-          pluginId: discovered.manifest!.id,
+          pluginId: manifest.id,
           packageName: discovered.packageName,
           version: discovered.version,
-          capabilities: discovered.manifest!.capabilities,
+          capabilities: manifest.capabilities,
         },
         "plugin-loader: plugin installed successfully",
       );
@@ -1658,9 +2073,10 @@ export function pluginLoader(
    * `error` in the database when activation fails.
    */
   async function activatePlugin(plugin: PluginRecord): Promise<PluginLoadResult> {
-    const manifest = plugin.manifestJson;
     const pluginId = plugin.id;
     const pluginKey = plugin.pluginKey;
+    let activePlugin = plugin;
+    let manifest = activePlugin.manifestJson;
 
     const registered: PluginLoadResult["registered"] = {
       worker: false,
@@ -1700,29 +2116,63 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // 1. Resolve worker entrypoint
       // ------------------------------------------------------------------
-      const workerEntrypoint = resolveWorkerEntrypoint(plugin, localPluginDir);
+      const packageRoot = resolvePluginPackageRoot(activePlugin, localPluginDir);
+      activePlugin = await refreshPluginManifestFromPackage(activePlugin, packageRoot);
+      manifest = activePlugin.manifestJson;
+      const workerEntrypoint = resolveWorkerEntrypoint(activePlugin, localPluginDir);
 
       // ------------------------------------------------------------------
-      // 2. Build host handlers for this plugin
+      // 2. Apply restricted database migrations before worker startup
+      // ------------------------------------------------------------------
+      const databaseNamespace = manifest.database
+        ? (await pluginDatabaseService(migrationDb).applyMigrations(pluginId, manifest, packageRoot))?.namespaceName ?? null
+        : null;
+
+      // ------------------------------------------------------------------
+      // 3. Build host handlers for this plugin
       // ------------------------------------------------------------------
       const hostHandlers = buildHostHandlers(pluginId, manifest);
 
       // ------------------------------------------------------------------
-      // 3. Retrieve plugin config (if any)
+      // 4. Bootstrap worker config
       // ------------------------------------------------------------------
-      let config: Record<string, unknown> = {};
+      // Plugin configuration is company-scoped. Workers receive an empty
+      // bootstrap config and must use ctx.config.get(companyId) at runtime.
+      // Stored config is delivered right after the worker starts (step 5b) via
+      // the same configChanged path an operator config-save uses.
+      const config: Record<string, unknown> = {};
+
+      // ------------------------------------------------------------------
+      // 4b. Load stored company configs BEFORE starting the worker
+      // ------------------------------------------------------------------
+      // The worker authorizes its proactive (no-invocation) company scopes from
+      // its configured companies. A proactive plugin — e.g. the chat gateway —
+      // issues its one-shot events.subscribe calls from setup(), which runs
+      // while startWorker is still awaiting the worker's initialize response, so
+      // the authorized company set must be seeded onto the worker handle BEFORE
+      // startWorker spawns the process — not after startWorker resolves.
+      // Setting it afterwards (the previous ordering) was too late for those
+      // setup()-time subscribes: the governed-access gate rejected every one
+      // with "company context is required" and outbound push stayed dead
+      // (eventSubscriptions: 0) for the worker's life (LOOA-695). The same rows
+      // drive startup config delivery in step 5b below. Listing is best-effort:
+      // if it fails the worker still starts, just with no proactive access.
+      let configRows: Awaited<ReturnType<typeof registry.listConfigs>> = [];
       try {
-        const configRow = await registry.getConfig(pluginId);
-        if (configRow && typeof configRow === "object" && "configJson" in configRow) {
-          config = (configRow as { configJson: Record<string, unknown> }).configJson ?? {};
-        }
-      } catch {
-        // Config may not exist yet — use empty object
-        log.debug({ pluginId }, "plugin-loader: no config found, using empty config");
+        configRows = await registry.listConfigs(pluginId);
+      } catch (listErr) {
+        log.debug(
+          {
+            pluginId,
+            pluginKey,
+            err: listErr instanceof Error ? listErr.message : String(listErr),
+          },
+          "plugin-loader: could not list stored configs before worker start",
+        );
       }
 
       // ------------------------------------------------------------------
-      // 4. Spawn worker process
+      // 5. Spawn worker process
       // ------------------------------------------------------------------
       const workerOptions: WorkerStartOptions = {
         entrypointPath: workerEntrypoint,
@@ -1730,14 +2180,22 @@ export function pluginLoader(
         config,
         instanceInfo,
         apiVersion: manifest.apiVersion,
+        databaseNamespace,
         hostHandlers,
         autoRestart: true,
+        env: buildPluginWorkerEnv({ manifest, instanceInfo }),
+        // Authorize the worker to act on each configured company from its
+        // proactive loops/timers (LOOA-629). Seeded here so it is in place
+        // before any setup()-time worker→host call (LOOA-695). The authorized
+        // set is exactly the plugin's configured companies — proactive access
+        // never reaches an unconfigured company.
+        proactiveCompanyScopes: configRows.map((row) => row.companyId),
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
-      if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
       }
 
@@ -1750,7 +2208,57 @@ export function pluginLoader(
       );
 
       // ------------------------------------------------------------------
-      // 5. Sync job declarations and register with scheduler
+      // 5b. Deliver stored configuration to the freshly-started worker
+      // ------------------------------------------------------------------
+      // The worker is spawned with an empty bootstrap config and is expected to
+      // read company-scoped config via ctx.config.get(companyId). That call
+      // only resolves inside a company-scoped invocation (event/action/tool),
+      // so a proactive plugin that does company work from setup() — e.g. the
+      // chat gateway opening a Slack Socket Mode connection — can never read
+      // its own config and comes up inert. Replay each configured company's
+      // config through the same configChanged path an operator config-save
+      // uses (routes/plugins.ts), so the worker receives it at startup.
+      // Best-effort: a worker that doesn't implement onConfigChanged
+      // (METHOD_NOT_IMPLEMENTED) or is momentarily unavailable simply keeps the
+      // runtime ctx.config.get(companyId) model. onConfigChanged is idempotent
+      // for well-behaved plugins, so replaying an unchanged config is safe.
+      //
+      // Reuses the `configRows` loaded in step 4b (which also seeded the
+      // worker's proactive company scopes before startup); no second listConfigs
+      // round-trip is needed here.
+      for (const row of configRows) {
+        try {
+          await workerManager.call(pluginId, "configChanged", {
+            config: (row.configJson ?? {}) as Record<string, unknown>,
+            companyId: row.companyId,
+          });
+        } catch (configErr) {
+          // A single-tenant worker fails closed (CROSS_TENANT_CONFIG) rather
+          // than collapse onto a second company's config — surface that at
+          // warn so the misconfiguration (multiple distinct companies
+          // configured for a single-tenant plugin) is visible, instead of
+          // being lost in the best-effort debug stream.
+          const code = (configErr as { code?: number } | null)?.code;
+          const details = {
+            pluginId,
+            pluginKey,
+            companyId: row.companyId,
+            code,
+            err: configErr instanceof Error ? configErr.message : String(configErr),
+          };
+          if (code === PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG) {
+            log.warn(
+              details,
+              "plugin-loader: startup config delivery rejected — single-tenant plugin configured for multiple companies",
+            );
+          } else {
+            log.debug(details, "plugin-loader: startup config delivery skipped for company");
+          }
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // 6. Sync job declarations and register with scheduler
       // ------------------------------------------------------------------
       const jobDeclarations = manifest.jobs ?? [];
       if (jobDeclarations.length > 0) {
@@ -1812,7 +2320,7 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const toolDeclarations = manifest.tools ?? [];
       if (toolDeclarations.length > 0) {
-        toolDispatcher.registerPluginTools(pluginKey, manifest);
+        toolDispatcher.registerPluginTools(pluginKey, manifest, pluginId);
         registered.tools = toolDeclarations.length;
 
         log.info(
@@ -1828,13 +2336,13 @@ export function pluginLoader(
         {
           pluginId,
           pluginKey,
-          version: plugin.version,
+          version: activePlugin.version,
           registered,
         },
         "plugin-loader: plugin activated successfully",
       );
 
-      return { plugin, success: true, registered };
+      return { plugin: activePlugin, success: true, registered };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
 
@@ -1858,7 +2366,7 @@ export function pluginLoader(
       }
 
       return {
-        plugin,
+        plugin: activePlugin,
         success: false,
         error: errorMessage,
         registered,
@@ -1937,6 +2445,26 @@ function resolveWorkerEntrypoint(
       `Checked: ${path.resolve(packageDir, workerRelPath)}, ` +
       `${path.resolve(directDir, workerRelPath)}`,
   );
+}
+
+function resolvePluginPackageRoot(
+  plugin: PluginRecord & { packagePath?: string | null },
+  localPluginDir: string,
+): string {
+  if (plugin.packagePath && existsSync(plugin.packagePath)) {
+    return path.resolve(plugin.packagePath);
+  }
+
+  const packageName = plugin.packageName;
+  const packageDir = packageName.startsWith("@")
+    ? path.join(localPluginDir, "node_modules", ...packageName.split("/"))
+    : path.join(localPluginDir, "node_modules", packageName);
+  if (existsSync(packageDir)) return packageDir;
+
+  const directDir = path.join(localPluginDir, packageName);
+  if (existsSync(directDir)) return directDir;
+
+  throw new Error(`Package root not found for plugin "${plugin.pluginKey}"`);
 }
 
 function resolveManagedInstallPackageDir(localPluginDir: string, packageName: string): string {

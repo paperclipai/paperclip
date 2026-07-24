@@ -84,6 +84,36 @@ describe("company skill import source parsing", () => {
     expect(parsed.resolvedSource).toBe("https://github.com/vercel-labs/skills");
     expect(parsed.originalSkillsShUrl).toBeNull();
   });
+
+  it("rejects secret-bearing remote URLs without echoing the secret", () => {
+    const source = "https://github.com/acme/private-skill?token=secret#token=secret";
+
+    expect(() => parseSkillImportSourceInput(source)).toThrow(
+      "Remote skill source URLs cannot include credentials, query parameters, or fragments.",
+    );
+    try {
+      parseSkillImportSourceInput(source);
+    } catch (error) {
+      expect((error as Error).message).not.toContain("secret");
+    }
+  });
+
+  it("rejects malformed remote URLs as validation errors", () => {
+    expect(() => parseSkillImportSourceInput("https://")).toThrow(
+      "Invalid remote skill source URL.",
+    );
+  });
+
+  it("canonicalizes clean GitHub URLs before persistence", () => {
+    const parsed = parseSkillImportSourceInput(
+      "https://www.github.com/Vercel-Labs/Agent-Browser/blob/main/skills/Upper/SKILL.MD",
+    );
+
+    expect(parsed.resolvedSource).toBe(
+      "https://github.com/vercel-labs/agent-browser/blob/main/skills/Upper/SKILL.MD",
+    );
+    expect(parsed.originalSkillsShUrl).toBeNull();
+  });
 });
 
 describe("project workspace skill discovery", () => {
@@ -111,10 +141,25 @@ describe("project workspace skill discovery", () => {
     });
 
     expect(discovered).toEqual([
-      { skillDir: path.resolve(workspace), inventoryMode: "project_root" },
-      { skillDir: path.resolve(workspace, ".agents", "skills", "release"), inventoryMode: "full" },
-      { skillDir: path.resolve(workspace, "skills", ".system", "paperclip"), inventoryMode: "full" },
-      { skillDir: path.resolve(workspace, "skills", "find-skills"), inventoryMode: "full" },
+      { skillDir: path.resolve(workspace), directoryRoot: ".", relativePath: ".", inventoryMode: "project_root" },
+      {
+        skillDir: path.resolve(workspace, ".agents", "skills", "release"),
+        directoryRoot: ".agents/skills",
+        relativePath: ".agents/skills/release",
+        inventoryMode: "full",
+      },
+      {
+        skillDir: path.resolve(workspace, "skills", ".system", "paperclip"),
+        directoryRoot: "skills/.system",
+        relativePath: "skills/.system/paperclip",
+        inventoryMode: "full",
+      },
+      {
+        skillDir: path.resolve(workspace, "skills", "find-skills"),
+        directoryRoot: "skills",
+        relativePath: "skills/find-skills",
+        inventoryMode: "full",
+      },
     ]);
   });
 
@@ -145,6 +190,22 @@ describe("project workspace skill discovery", () => {
     ]));
     expect(imported.fileInventory.map((entry) => entry.kind)).toContain("script");
     expect(imported.metadata?.sourceKind).toBe("project_scan");
+  });
+
+  it("rejects symlinks reachable from a project-scanned skill", async () => {
+    const workspace = await makeTempDir("paperclip-linked-skill-file-");
+    const skillDir = path.join(workspace, ".codex", "skills", "linked-file");
+    const outsideFile = path.join(await makeTempDir("paperclip-linked-skill-outside-"), "outside.md");
+    await writeSkillDir(skillDir, "Linked File");
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.writeFile(outsideFile, "outside workspace\n", "utf8");
+    await fs.symlink(outsideFile, path.join(skillDir, "references", "outside.md"));
+
+    await expect(readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      skillDir,
+      { inventoryMode: "full", workspaceRoot: workspace },
+    )).rejects.toThrow(/symbolic link/);
   });
 
   it("parses inline object array items in skill frontmatter metadata", async () => {
@@ -184,6 +245,126 @@ describe("project workspace skill discovery", () => {
         },
       ],
     });
+  });
+
+  it("parses folded and literal block scalar descriptions in skill frontmatter", async () => {
+    const foldedWorkspace = await makeTempDir("paperclip-folded-skill-yaml-");
+    await fs.mkdir(foldedWorkspace, { recursive: true });
+    await fs.writeFile(
+      path.join(foldedWorkspace, "SKILL.md"),
+      [
+        "---",
+        "name: Folded Metadata Skill",
+        "description: >",
+        "  Use when you need website engagement data - sessions,",
+        "  pageviews, and conversions.",
+        "",
+        "---",
+        "",
+        "# Folded Metadata Skill",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const literalWorkspace = await makeTempDir("paperclip-literal-skill-yaml-");
+    await fs.mkdir(literalWorkspace, { recursive: true });
+    await fs.writeFile(
+      path.join(literalWorkspace, "SKILL.md"),
+      [
+        "---",
+        "name: Literal Metadata Skill",
+        "description: |",
+        "  First line.",
+        "  Second line.",
+        "",
+        "metadata:",
+        "  clipNote: |",
+        "    Keep this line.",
+        "    And this one.",
+        "",
+        "  stripNote: |-",
+        "    Strip this line.",
+        "    And this one.",
+        "---",
+        "",
+        "# Literal Metadata Skill",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const stripWorkspace = await makeTempDir("paperclip-strip-skill-yaml-");
+    await fs.mkdir(stripWorkspace, { recursive: true });
+    await fs.writeFile(
+      path.join(stripWorkspace, "SKILL.md"),
+      [
+        "---",
+        "name: Strip Metadata Skill",
+        "description: >-",
+        "  Strip this folded description",
+        "  without a trailing newline.",
+        "---",
+        "",
+        "# Strip Metadata Skill",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const folded = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      foldedWorkspace,
+      { inventoryMode: "full" },
+    );
+    const literal = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      literalWorkspace,
+      { inventoryMode: "full" },
+    );
+    const strip = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      stripWorkspace,
+      { inventoryMode: "full" },
+    );
+
+    expect(folded.description).toBe(
+      "Use when you need website engagement data - sessions, pageviews, and conversions.",
+    );
+    expect(literal.description).toBe("First line.\nSecond line.");
+    expect(literal.metadata).toMatchObject({
+      clipNote: "Keep this line.\nAnd this one.\n",
+      stripNote: "Strip this line.\nAnd this one.",
+    });
+    expect(strip.description).toBe("Strip this folded description without a trailing newline.");
+  });
+
+  it("parses YAML block-scalar chomping variants from SKILL.md frontmatter", async () => {
+    const workspace = await makeTempDir("paperclip-block-scalar-chomp-skill-");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, "SKILL.md"),
+      [
+        "---",
+        "name: Block Scalar Chomp Skill",
+        "description: >-",
+        "  First line",
+        "  second line",
+        "---",
+        "",
+        "# Block Scalar Chomp Skill",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      workspace,
+      { inventoryMode: "full" },
+    );
+
+    expect(imported.description).toBe("First line second line");
   });
 });
 

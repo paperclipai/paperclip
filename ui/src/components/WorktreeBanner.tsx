@@ -17,7 +17,7 @@ export function WorktreeBanner() {
 
   return (
     <div
-      className="relative overflow-hidden border-b px-3 py-1.5 text-[11px] font-medium tracking-[0.2em] uppercase"
+      className="relative overflow-hidden border-b px-3 py-1.5 text-(length:--text-micro) font-medium tracking-(--tracking-caps) uppercase"
       style={{
         backgroundColor: branding.color,
         color: branding.textColor,
@@ -33,7 +33,7 @@ export function WorktreeBanner() {
           type="button"
           onClick={handleCopyName}
           title="Click to copy worktree name"
-          className="truncate font-semibold tracking-[0.12em] cursor-pointer hover:opacity-80 transition-opacity bg-transparent border-none p-0 text-current uppercase text-[11px]"
+          className="truncate font-semibold tracking-(--tracking-eyebrow) cursor-pointer hover:opacity-80 transition-opacity bg-transparent border-none p-0 text-current uppercase text-(length:--text-micro)"
         >
           {copied ? "Copied!" : branding.name}
         </button>

@@ -67,7 +67,8 @@ Validates:
 
 - Server configuration
 - Database connectivity
-- Secrets adapter configuration
+- Secrets adapter configuration, including AWS Secrets Manager non-secret env
+  config when selected
 - Storage configuration
 - Missing key files
 
@@ -80,6 +81,13 @@ pnpm paperclipai configure --section server
 pnpm paperclipai configure --section secrets
 pnpm paperclipai configure --section storage
 ```
+
+`--section secrets` updates the deployment-level provider used as the fallback
+for secrets that do not target a specific company vault. Per-company provider
+vaults (named instances, default vault selection, multiple vaults per provider,
+coming-soon GCP/Vault) live in the board UI under
+`Company Settings → Secrets → Provider vaults` and the
+`/api/companies/{companyId}/secret-provider-configs` API.
 
 ## `paperclipai env`
 

@@ -1,14 +1,18 @@
 export { execute } from "./execute.js";
+export * from "./acp.js";
+export { getConfigSchema } from "./config-schema.js";
 export { listGeminiSkills, syncGeminiSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {
   parseGeminiJsonl,
-  isGeminiUnknownSessionError,
+  isGeminiSessionUnrecoverableError,
+  isGeminiTransientNetworkError,
   describeGeminiFailure,
   detectGeminiAuthRequired,
   isGeminiTurnLimitResult,
 } from "./parse.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
+import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -22,7 +26,7 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(record.sessionId) ??
       readNonEmptyString(record.session_id) ??
       readNonEmptyString(record.sessionID);
-    if (!sessionId) return null;
+    if (!sessionId) return acpxSessionCodec.deserialize(raw);
     const cwd =
       readNonEmptyString(record.cwd) ??
       readNonEmptyString(record.workdir) ??
@@ -44,7 +48,7 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(params.sessionId) ??
       readNonEmptyString(params.session_id) ??
       readNonEmptyString(params.sessionID);
-    if (!sessionId) return null;
+    if (!sessionId) return acpxSessionCodec.serialize(params);
     const cwd =
       readNonEmptyString(params.cwd) ??
       readNonEmptyString(params.workdir) ??
@@ -65,7 +69,9 @@ export const sessionCodec: AdapterSessionCodec = {
     return (
       readNonEmptyString(params.sessionId) ??
       readNonEmptyString(params.session_id) ??
-      readNonEmptyString(params.sessionID)
+      readNonEmptyString(params.sessionID) ??
+      acpxSessionCodec.getDisplayId?.(params) ??
+      null
     );
   },
 };

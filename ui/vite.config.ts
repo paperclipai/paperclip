@@ -2,19 +2,29 @@ import path from "path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { createUiDevWatchOptions } from "./src/lib/vite-watch";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
+  build: {
+    minify: "esbuild",
+  },
+  esbuild:
+    mode === "production"
+      ? {
+          drop: ["console", "debugger"],
+          legalComments: "none",
+        }
+      : undefined,
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
-      lexical: path.resolve(__dirname, "./node_modules/lexical/Lexical.mjs"),
+      lexical: path.resolve(__dirname, "./node_modules/lexical/dist/Lexical.mjs"),
     },
   },
   server: {
     port: 5173,
-    // WSL2 /mnt/ drives don't support inotify — fall back to polling so HMR works
-    watch: process.cwd().startsWith("/mnt/") ? { usePolling: true, interval: 1000 } : undefined,
+    watch: createUiDevWatchOptions(process.cwd()),
     proxy: {
       "/api": {
         target: "http://localhost:3100",
@@ -22,4 +32,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

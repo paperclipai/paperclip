@@ -9,8 +9,11 @@ import {
 } from "@paperclipai/shared";
 import { LogOut, SlidersHorizontal } from "lucide-react";
 import { authApi } from "@/api/auth";
+import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { ModeBadge } from "@/components/access/ModeBadge";
 import { Button } from "../components/ui/button";
+import { Card } from "@/components/ui/card";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -25,8 +28,9 @@ export function InstanceGeneralSettings() {
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
     },
     onError: (error) => {
       setActionError(error instanceof Error ? error.message : "Failed to sign out.");
@@ -35,7 +39,8 @@ export function InstanceGeneralSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
+      { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings" },
       { label: "General" },
     ]);
   }, [setBreadcrumbs]);
@@ -43,6 +48,11 @@ export function InstanceGeneralSettings() {
   const generalQuery = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
+  });
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
   });
 
   const updateGeneralMutation = useMutation({
@@ -83,7 +93,8 @@ export function InstanceGeneralSettings() {
           <h1 className="text-lg font-semibold">General</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Configure instance-wide defaults that affect how operator-visible logs are displayed.
+          Configure instance-wide preferences including log display, keyboard shortcuts, backup
+          retention, and data sharing.
         </p>
       </div>
 
@@ -93,7 +104,40 @@ export function InstanceGeneralSettings() {
         </div>
       )}
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold">Deployment and auth</h2>
+            <ModeBadge
+              deploymentMode={healthQuery.data?.deploymentMode}
+              deploymentExposure={healthQuery.data?.deploymentExposure}
+            />
+          </div>
+          <div className="text-sm text-muted-foreground">
+            {healthQuery.data?.deploymentMode === "local_trusted"
+              ? "Local trusted mode is optimized for a local operator. Browser requests run as local board context and no sign-in is required."
+              : healthQuery.data?.deploymentExposure === "public"
+                ? "Authenticated public mode requires sign-in for board access and is intended for public URLs."
+                : "Authenticated private mode requires sign-in and is intended for LAN, VPN, or other private-network deployments."}
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <StatusBox
+              label="Auth readiness"
+              value={healthQuery.data?.authReady ? "Ready" : "Not ready"}
+            />
+            <StatusBox
+              label="Bootstrap status"
+              value={healthQuery.data?.bootstrapStatus === "bootstrap_pending" ? "Setup required" : "Ready"}
+            />
+            <StatusBox
+              label="Bootstrap invite"
+              value={healthQuery.data?.bootstrapInviteActive ? "Active" : "None"}
+            />
+          </div>
+        </div>
+      </Card>
+
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Censor username in logs</h2>
@@ -110,14 +154,14 @@ export function InstanceGeneralSettings() {
             aria-label="Toggle username log censoring"
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or
+              Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating tasks or
               toggling panels. This is off by default.
             </p>
           </div>
@@ -128,16 +172,16 @@ export function InstanceGeneralSettings() {
             aria-label="Toggle keyboard shortcuts"
           />
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="space-y-5">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Backup retention</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Configure how long to keep automatic database backups at each tier. Daily backups
-              are kept in full, then thinned to one per week and one per month. Backups are
-              compressed with gzip.
+              Configure how long automatic database backups are retained. Backups run roughly
+              every hour and are compressed with gzip. Within the daily window all backups are
+              kept; beyond that, one backup per week and one per month are preserved.
             </p>
           </div>
 
@@ -230,9 +274,9 @@ export function InstanceGeneralSettings() {
             </div>
           </div>
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="space-y-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">AI feedback sharing</h2>
@@ -306,9 +350,9 @@ export function InstanceGeneralSettings() {
             chosen yet.
           </p>
         </div>
-      </section>
+      </Card>
 
-      <section className="rounded-xl border border-border bg-card p-5">
+      <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Sign out</h2>
@@ -326,7 +370,16 @@ export function InstanceGeneralSettings() {
             {signOutMutation.isPending ? "Signing out..." : "Sign out"}
           </Button>
         </div>
-      </section>
+      </Card>
+    </div>
+  );
+}
+
+function StatusBox({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-background px-3 py-3">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-2 text-sm font-medium">{value}</div>
     </div>
   );
 }

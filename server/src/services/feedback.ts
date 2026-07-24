@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, getTableColumns, gte, lte, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gte, isNull, lte, ne, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -89,6 +89,9 @@ type FeedbackTargetRecord = {
   createdAt: Date;
   authorAgentId: string | null;
   authorUserId: string | null;
+  authorType?: string | null;
+  presentation?: unknown;
+  metadata?: unknown;
   createdByRunId: string | null;
   documentId: string | null;
   documentKey: string | null;
@@ -797,8 +800,12 @@ async function resolveFeedbackTarget(
         companyId: issueComments.companyId,
         authorAgentId: issueComments.authorAgentId,
         authorUserId: issueComments.authorUserId,
+        authorType: issueComments.authorType,
+        presentation: issueComments.presentation,
+        metadata: issueComments.metadata,
         createdByRunId: issueComments.createdByRunId,
         body: issueComments.body,
+        deletedAt: issueComments.deletedAt,
         createdAt: issueComments.createdAt,
       })
       .from(issueComments)
@@ -806,6 +813,9 @@ async function resolveFeedbackTarget(
       .then((rows) => rows[0] ?? null);
 
     if (!targetComment || targetComment.issueId !== issue.id || targetComment.companyId !== issue.companyId) {
+      throw notFound("Feedback target not found");
+    }
+    if (targetComment.deletedAt) {
       throw notFound("Feedback target not found");
     }
     if (!targetComment.authorAgentId) {
@@ -820,6 +830,9 @@ async function resolveFeedbackTarget(
       createdAt: targetComment.createdAt,
       authorAgentId: targetComment.authorAgentId,
       authorUserId: targetComment.authorUserId,
+      authorType: targetComment.authorType ?? (targetComment.authorAgentId ? "agent" : targetComment.authorUserId ? "user" : "system"),
+      presentation: targetComment.presentation ?? null,
+      metadata: targetComment.metadata ?? null,
       createdByRunId: targetComment.createdByRunId ?? null,
       documentId: null,
       documentKey: null,
@@ -833,6 +846,9 @@ async function resolveFeedbackTarget(
         createdAt: targetComment.createdAt.toISOString(),
         authorAgentId: targetComment.authorAgentId,
         authorUserId: targetComment.authorUserId,
+        authorType: targetComment.authorType ?? (targetComment.authorAgentId ? "agent" : targetComment.authorUserId ? "user" : "system"),
+        presentation: targetComment.presentation ?? null,
+        metadata: targetComment.metadata ?? null,
         createdByRunId: targetComment.createdByRunId ?? null,
         issuePath,
         targetPath: issuePath ? `${issuePath}#comment-${targetComment.id}` : null,
@@ -918,10 +934,18 @@ async function listIssueContextItems(
         createdAt: issueComments.createdAt,
         authorAgentId: issueComments.authorAgentId,
         authorUserId: issueComments.authorUserId,
+        authorType: issueComments.authorType,
+        presentation: issueComments.presentation,
+        metadata: issueComments.metadata,
         createdByRunId: issueComments.createdByRunId,
+        deletedAt: issueComments.deletedAt,
       })
       .from(issueComments)
-      .where(and(eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id))),
+      .where(and(
+        eq(issueComments.companyId, issue.companyId),
+        eq(issueComments.issueId, issue.id),
+        isNull(issueComments.deletedAt),
+      )),
     db
       .select({
         targetId: documentRevisions.id,
@@ -952,6 +976,9 @@ async function listIssueContextItems(
       createdAt: row.createdAt,
       authorAgentId: row.authorAgentId,
       authorUserId: row.authorUserId,
+      authorType: row.authorType ?? (row.authorAgentId ? "agent" : row.authorUserId ? "user" : "system"),
+      presentation: row.presentation ?? null,
+      metadata: row.metadata ?? null,
       createdByRunId: row.createdByRunId ?? null,
       documentId: null,
       documentKey: null,
@@ -1023,6 +1050,9 @@ async function buildIssueContext(
       createdAt: item.createdAt.toISOString(),
       authorAgentId: item.authorAgentId,
       authorUserId: item.authorUserId,
+      authorType: item.authorType ?? null,
+      presentation: item.presentation ?? null,
+      metadata: item.metadata ?? null,
       createdByRunId: item.createdByRunId,
       documentKey: item.documentKey,
       documentTitle: item.documentTitle,

@@ -1,0 +1,22 @@
+# This plugin uses only stable Kubernetes APIs. No CRD installation is required.
+#
+# Minimum cluster version: Kubernetes 1.27+
+#   - batch/v1 Job (GA since k8s 1.21)
+#   - core/v1 Pod, Secret, Namespace, ServiceAccount, ResourceQuota, LimitRange (GA since k8s 1.0)
+#   - rbac.authorization.k8s.io/v1 Role, RoleBinding (GA since k8s 1.8)
+#   - networking.k8s.io/v1 NetworkPolicy (GA since k8s 1.7)
+#   - Pod Security Standards namespace labels (GA in k8s 1.25)
+#   - fsGroupChangePolicy: OnRootMismatch (GA in k8s 1.23)
+#   - seccompProfile.type: RuntimeDefault (GA in k8s 1.19)
+#
+# Optional CNI prerequisites for FQDN-based egress (egressMode: cilium):
+#   - Cilium >= 1.11 with hubble + DNS proxy enabled
+#   - cilium.io/v2 CiliumNetworkPolicy (provided by Cilium installation)
+#
+# Optional runtime class for microVM isolation (runtimeClassName: kata-fc):
+#   - kata-containers with Firecracker hypervisor
+#   - nested-virt-capable nodes
+#
+# Future backends (not currently required):
+#   - kubernetes-sigs/agent-sandbox (when it reaches v1beta1) as an alternative
+#     backend for warm pools / templates / pause-resume.

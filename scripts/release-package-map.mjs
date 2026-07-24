@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
+const manifestPath = join(repoRoot, "scripts", "release-package-manifest.json");
 const roots = ["packages", "server", "ui", "cli"];
 
 function readJson(filePath) {
@@ -48,6 +49,128 @@ function discoverPublicPackages() {
   return packages;
 }
 
+function loadReleaseManifest() {
+  const manifest = readJson(manifestPath);
+
+  if (!Array.isArray(manifest)) {
+    throw new Error(`expected ${manifestPath} to contain an array.`);
+  }
+
+  return manifest.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`manifest entry ${index + 1} in ${manifestPath} must be an object.`);
+    }
+
+    if (typeof entry.dir !== "string" || entry.dir.length === 0) {
+      throw new Error(`manifest entry ${index + 1} in ${manifestPath} is missing a non-empty "dir".`);
+    }
+
+    if (typeof entry.name !== "string" || entry.name.length === 0) {
+      throw new Error(`manifest entry ${index + 1} in ${manifestPath} is missing a non-empty "name".`);
+    }
+
+    if (typeof entry.publishFromCi !== "boolean") {
+      throw new Error(
+        `manifest entry ${index + 1} (${entry.dir}) in ${manifestPath} must set boolean "publishFromCi".`,
+      );
+    }
+
+    return entry;
+  });
+}
+
+// Sections whose @paperclipai workspace deps are rewritten to the calver release
+// version by replaceWorkspaceDeps() and that consumers resolve at install time.
+const RESOLVED_DEP_SECTIONS = ["dependencies", "optionalDependencies", "peerDependencies"];
+
+// A publishFromCi:true package gets republished at the unified calver version every
+// release, and every @paperclipai/* workspace: dep it declares is rewritten to that
+// same calver version. If the target is NOT publishFromCi:true it never gets a calver
+// publish, so the rewritten spec points at a version that will never exist on npm and
+// the package becomes uninstallable. Detect those edges so the release fails fast
+// instead of shipping a broken canary (e.g. server -> skills-catalog from #8327).
+function findUnpublishableWorkspaceEdges(packages) {
+  const publishFromCiByName = new Map(packages.map((pkg) => [pkg.name, pkg.publishFromCi]));
+  const problems = [];
+
+  for (const pkg of packages) {
+    if (!pkg.publishFromCi) continue;
+
+    for (const section of RESOLVED_DEP_SECTIONS) {
+      const deps = pkg.pkg[section];
+      if (!deps) continue;
+
+      for (const [depName, spec] of Object.entries(deps)) {
+        if (!depName.startsWith("@paperclipai/")) continue;
+        if (typeof spec !== "string" || !spec.startsWith("workspace:")) continue;
+        if (publishFromCiByName.get(depName) === true) continue;
+
+        problems.push(
+          `${pkg.name} (${pkg.dir}) is publishFromCi:true but declares a "${section}" workspace dependency on ${depName}, ` +
+            `which is not publishFromCi:true. The release version rewrite would point ${depName} at the calver version, ` +
+            `but that version is never published, so installs of ${pkg.name} would fail to resolve. ` +
+            `Enable publishFromCi for ${depName} (bootstrap its first npm publish if needed) or drop the workspace dependency.`,
+        );
+      }
+    }
+  }
+
+  return problems;
+}
+
+function buildReleasePackagePlan() {
+  const discoveredPackages = discoverPublicPackages();
+  const manifestEntries = loadReleaseManifest();
+  const packageByDir = new Map(discoveredPackages.map((pkg) => [pkg.dir, pkg]));
+  const manifestByDir = new Map();
+  const problems = [];
+
+  for (const entry of manifestEntries) {
+    if (manifestByDir.has(entry.dir)) {
+      problems.push(`duplicate manifest entry for ${entry.dir}`);
+      continue;
+    }
+
+    manifestByDir.set(entry.dir, entry);
+    const pkg = packageByDir.get(entry.dir);
+
+    if (!pkg) {
+      problems.push(`${entry.dir} is listed in ${manifestPath} but is not a public package in this repo`);
+      continue;
+    }
+
+    if (pkg.name !== entry.name) {
+      problems.push(
+        `${entry.dir} is listed as ${entry.name} in ${manifestPath}, but package.json declares ${pkg.name}`,
+      );
+    }
+  }
+
+  for (const pkg of discoveredPackages) {
+    if (!manifestByDir.has(pkg.dir)) {
+      problems.push(
+        `${pkg.dir} (${pkg.name}) is public but missing from ${manifestPath}; add it with publishFromCi true or false`,
+      );
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new Error(`release package manifest validation failed:\n- ${problems.join("\n- ")}`);
+  }
+
+  const packages = discoveredPackages.map((pkg) => ({
+    ...pkg,
+    publishFromCi: manifestByDir.get(pkg.dir).publishFromCi,
+  }));
+
+  const edgeProblems = findUnpublishableWorkspaceEdges(packages);
+  if (edgeProblems.length > 0) {
+    throw new Error(`release package manifest validation failed:\n- ${edgeProblems.join("\n- ")}`);
+  }
+
+  return packages;
+}
+
 function sortTopologically(packages) {
   const byName = new Map(packages.map((pkg) => [pkg.name, pkg]));
   const visited = new Set();
@@ -57,7 +180,7 @@ function sortTopologically(packages) {
   function visit(pkg) {
     if (visited.has(pkg.name)) return;
     if (visiting.has(pkg.name)) {
-      throw new Error(`cycle detected in public package graph at ${pkg.name}`);
+      throw new Error(`cycle detected in release package graph at ${pkg.name}`);
     }
 
     visiting.add(pkg.name);
@@ -87,6 +210,10 @@ function sortTopologically(packages) {
   return ordered;
 }
 
+function getReleasePackages() {
+  return sortTopologically(buildReleasePackagePlan().filter((pkg) => pkg.publishFromCi));
+}
+
 function replaceWorkspaceDeps(deps, version) {
   if (!deps) return deps;
   const next = { ...deps };
@@ -101,7 +228,7 @@ function replaceWorkspaceDeps(deps, version) {
 }
 
 function setVersion(version) {
-  const packages = sortTopologically(discoverPublicPackages());
+  const packages = getReleasePackages();
 
   for (const pkg of packages) {
     const nextPkg = {
@@ -134,10 +261,24 @@ function setVersion(version) {
 }
 
 function listPackages() {
-  const packages = sortTopologically(discoverPublicPackages());
+  const packages = getReleasePackages();
   for (const pkg of packages) {
     process.stdout.write(`${pkg.dir}\t${pkg.name}\t${pkg.version}\n`);
   }
+}
+
+function checkConfiguration() {
+  const packages = buildReleasePackagePlan();
+  const enabledCount = packages.filter((pkg) => pkg.publishFromCi).length;
+  const disabledCount = packages.length - enabledCount;
+
+  if (enabledCount === 0) {
+    throw new Error(`no packages are enabled for CI publishing in ${manifestPath}`);
+  }
+
+  process.stdout.write(
+    `Release package manifest OK: ${enabledCount} enabled for CI publish, ${disabledCount} disabled pending bootstrap.\n`,
+  );
 }
 
 function usage() {
@@ -145,6 +286,7 @@ function usage() {
     [
       "Usage:",
       "  node scripts/release-package-map.mjs list",
+      "  node scripts/release-package-map.mjs check",
       "  node scripts/release-package-map.mjs set-version <version>",
       "",
     ].join("\n"),
@@ -152,20 +294,37 @@ function usage() {
 }
 
 const [command, arg] = process.argv.slice(2);
+const isDirectRun = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
-if (command === "list") {
-  listPackages();
-  process.exit(0);
-}
-
-if (command === "set-version") {
-  if (!arg) {
-    usage();
-    process.exit(1);
+if (isDirectRun) {
+  if (command === "list") {
+    listPackages();
+    process.exit(0);
   }
-  setVersion(arg);
-  process.exit(0);
+
+  if (command === "check") {
+    checkConfiguration();
+    process.exit(0);
+  }
+
+  if (command === "set-version") {
+    if (!arg) {
+      usage();
+      process.exit(1);
+    }
+    setVersion(arg);
+    process.exit(0);
+  }
+
+  usage();
+  process.exit(1);
 }
 
-usage();
-process.exit(1);
+export {
+  buildReleasePackagePlan,
+  checkConfiguration,
+  discoverPublicPackages,
+  findUnpublishableWorkspaceEdges,
+  getReleasePackages,
+  loadReleaseManifest,
+};

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "slug": "notion",
+  "name": "Notion",
+  "description": "Read and update pages in your Notion workspace.",
+  "categories": [
+    "content"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=notion.so&sz=128"
+  },
+  "urlPatterns": [
+    "https://mcp.notion.com/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer",
+        "dcr"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {
+        "serverUrl": "https://mcp.notion.com/mcp",
+        "authorizationEndpoint": "https://api.notion.com/v1/oauth/authorize",
+        "tokenEndpoint": "https://api.notion.com/v1/oauth/token",
+        "scopesHint": [
+          "read_content",
+          "update_content"
+        ]
+      },
+      "guidanceMd": "Connect Notion for workspace content. Share only the pages and databases agents should use.",
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "workspace",
+        "page",
+        "database"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+{
+  "name": "@paperclipai/hermes-paperclip-adapter",
+  "version": "0.3.1",
+  "description": "Paperclip adapters for Hermes Agent local CLI and Hermes Gateway HTTP/SSE runs",
+  "type": "module",
+  "license": "MIT",
+  "author": "Paperclip",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/adapters/hermes"
+  },
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "homepage": "https://github.com/paperclipai/paperclip/tree/master/packages/adapters/hermes#readme",
+  "keywords": [
+    "paperclip",
+    "hermes",
+    "hermes-agent",
+    "ai-agent",
+    "adapter",
+    "orchestration"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server/index.ts",
+    "./ui": "./src/ui/index.ts",
+    "./cli": "./src/cli/index.ts",
+    "./ui-parser": "./ui-parser.cjs",
+    "./gateway": "./src/gateway/index.ts",
+    "./gateway/server": "./src/gateway/server/index.ts",
+    "./gateway/ui": "./src/gateway/ui/index.ts",
+    "./gateway/cli": "./src/gateway/cli/index.ts",
+    "./gateway/ui-parser": "./gateway-ui-parser.cjs"
+  },
+  "paperclip": {
+    "adapterUiParser": "1.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./server": {
+        "types": "./dist/server/index.d.ts",
+        "import": "./dist/server/index.js"
+      },
+      "./ui": {
+        "types": "./dist/ui/index.d.ts",
+        "import": "./dist/ui/index.js"
+      },
+      "./cli": {
+        "types": "./dist/cli/index.d.ts",
+        "import": "./dist/cli/index.js"
+      },
+      "./ui-parser": "./ui-parser.cjs",
+      "./gateway": {
+        "types": "./dist/gateway/index.d.ts",
+        "import": "./dist/gateway/index.js"
+      },
+      "./gateway/server": {
+        "types": "./dist/gateway/server/index.d.ts",
+        "import": "./dist/gateway/server/index.js"
+      },
+      "./gateway/ui": {
+        "types": "./dist/gateway/ui/index.d.ts",
+        "import": "./dist/gateway/ui/index.js"
+      },
+      "./gateway/cli": {
+        "types": "./dist/gateway/cli/index.d.ts",
+        "import": "./dist/gateway/cli/index.js"
+      },
+      "./gateway/ui-parser": "./gateway-ui-parser.cjs"
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "provenance": true
+  },
+  "files": [
+    "dist",
+    "skills",
+    "ui-parser.cjs",
+    "gateway-ui-parser.cjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:command-resolution": "vitest run src/server/command-resolution.test.ts",
+    "prepack": "node scripts/prepare-publish-package.mjs",
+    "postpack": "node scripts/restore-dev-package.mjs",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "workspace:*",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.21",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
