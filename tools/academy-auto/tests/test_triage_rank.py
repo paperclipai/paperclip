@@ -135,3 +135,45 @@ def test_ranker_is_pinned_to_haiku():
     from academy_auto.triage.rank import RANK_CMD
     assert "--model" in RANK_CMD
     assert RANK_CMD[RANK_CMD.index("--model") + 1] == "haiku"
+
+
+def test_rank_retries_until_valid_pick():
+    """Ein flakiger erster Ranker-Versuch (leer) darf nicht die ganze Nacht kosten."""
+    from academy_auto.triage.rank import rank, RANK_ATTEMPTS
+    cands = [Candidate("tsc", "tsc:a.ts:5:TS1", "a.ts", 5, "err", 50)]
+    calls = {"n": 0}
+    def flaky(prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "kaputt, kein json"          # erster Versuch scheitert
+        return '{"chosen_key":"tsc:a.ts:5:TS1","task_prompt":"fix it","reason":"r"}'
+    pick = rank(cands, ranker=flaky)
+    assert pick is not None and pick.chosen_key == "tsc:a.ts:5:TS1"
+    assert calls["n"] == 2                        # genau ein Retry noetig
+
+
+def test_rank_gives_up_after_max_attempts():
+    from academy_auto.triage.rank import rank, RANK_ATTEMPTS
+    cands = [Candidate("tsc", "tsc:a.ts:5:TS1", "a.ts", 5, "err", 50)]
+    calls = {"n": 0}
+    def always_bad(prompt):
+        calls["n"] += 1
+        return '{"chosen_key":"","task_prompt":"","reason":""}'   # immer ungueltig
+    assert rank(cands, ranker=always_bad) is None
+    assert calls["n"] == RANK_ATTEMPTS            # genau RANK_ATTEMPTS Versuche, dann auf
+
+
+def test_rank_empty_candidates_makes_no_ranker_call():
+    from academy_auto.triage.rank import rank
+    calls = {"n": 0}
+    def r(prompt):
+        calls["n"] += 1; return "{}"
+    assert rank([], ranker=r) is None
+    assert calls["n"] == 0                         # ohne Kandidaten kein Aufruf, kein Retry
+
+
+def test_rank_still_rejects_hallucinated_key_each_attempt():
+    """Der Halluzinations-Schutz bleibt pro Versuch erhalten (erfundener key -> None)."""
+    from academy_auto.triage.rank import rank
+    cands = [Candidate("tsc", "tsc:a.ts:5:TS1", "a.ts", 5, "err", 50)]
+    assert rank(cands, ranker=lambda p: '{"chosen_key":"tsc:erfunden:9:TS9","task_prompt":"x","reason":"y"}') is None

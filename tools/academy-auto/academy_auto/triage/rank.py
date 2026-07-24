@@ -11,6 +11,10 @@ RANK_CMD = ["claude", "-p", "--model", "haiku", "--tools", "", "--strict-mcp-con
 MAX_CANDIDATES = 30
 RANK_TIMEOUT = 180
 
+# Der haiku-Ranker liefert gelegentlich eine leere/kaputte Antwort. Statt die
+# ganze Nacht zu verschenken, wird der (billige) Aufruf einige Male wiederholt.
+RANK_ATTEMPTS = 3
+
 # Quellen, die NIE verdraengt werden duerfen: Issues sind Walters expliziter
 # Steuerhebel — er legt sie bewusst an, sie muessen den Ranker immer erreichen.
 PRIORITY_SOURCES = ("issue",)
@@ -93,7 +97,7 @@ def _default_ranker(prompt: str) -> str:  # pragma: no cover - echter claude-Auf
     return getattr(proc, "stdout", "") or ""
 
 
-def rank(candidates, baseline_red: bool = False, ranker=_default_ranker) -> "Pick | None":
+def _rank_once(candidates, baseline_red: bool = False, ranker=_default_ranker) -> "Pick | None":
     if not candidates:
         return None
     prompt = _build_prompt(candidates, baseline_red)
@@ -111,3 +115,13 @@ def rank(candidates, baseline_red: bool = False, ranker=_default_ranker) -> "Pic
     if not task_prompt:
         return None
     return Pick(chosen_key=key, task_prompt=task_prompt, reason=data.get("reason") or "")
+
+
+def rank(candidates, baseline_red: bool = False, ranker=_default_ranker) -> "Pick | None":
+    if not candidates:
+        return None
+    for _ in range(RANK_ATTEMPTS):
+        pick = _rank_once(candidates, baseline_red=baseline_red, ranker=ranker)
+        if pick is not None:
+            return pick
+    return None
