@@ -4713,6 +4713,7 @@ export function issueRoutes(
     const includeLiveDescendantSummary = parseOptionalBooleanQuery(req.query.includeLiveDescendantSummary);
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
+    const rawUpdatedSince = req.query.updatedSince as string | undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -4779,6 +4780,10 @@ export function issueRoutes(
         return;
       }
     }
+    if (rawUpdatedSince !== undefined && !Number.isFinite(new Date(rawUpdatedSince).getTime())) {
+      res.status(400).json({ error: "updatedSince must be a valid ISO 8601 timestamp when provided" });
+      return;
+    }
     const offset = parsedOffset ?? 0;
 
     const listFilters: IssueFilters = {
@@ -4815,6 +4820,7 @@ export function issueRoutes(
       offset,
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
+      updatedSince: rawUpdatedSince,
     };
     const requestKey = issueListRequestKey({
       req,
