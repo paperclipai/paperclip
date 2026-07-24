@@ -502,14 +502,24 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
-  it("resolves only structured same-company agent mentions", async () => {
+  it("resolves only structured same-company wakeable agent mentions", async () => {
     const companyId = await seedAssignableAgentCompany();
     const otherCompanyId = await seedAssignableAgentCompany();
     const localAgentId = randomUUID();
     const foreignAgentId = randomUUID();
+    const terminatedAgentId = randomUUID();
+    const pausedAgentId = randomUUID();
+    const pendingAgentId = randomUUID();
+    const invalidChainAgentId = randomUUID();
+    const terminatedManagerId = randomUUID();
 
     await db.insert(agents).values([
       agentRow(companyId, { id: localAgentId, name: "LocalAgent" }),
+      agentRow(companyId, { id: terminatedAgentId, name: "TerminatedAgent", status: "terminated" }),
+      agentRow(companyId, { id: pausedAgentId, name: "PausedAgent", status: "paused" }),
+      agentRow(companyId, { id: pendingAgentId, name: "PendingAgent", status: "pending_approval" }),
+      agentRow(companyId, { id: terminatedManagerId, name: "TerminatedManager", status: "terminated" }),
+      agentRow(companyId, { id: invalidChainAgentId, name: "InvalidChainAgent", reportsTo: terminatedManagerId }),
       agentRow(otherCompanyId, { id: foreignAgentId, name: "ForeignAgent" }),
     ]);
 
@@ -517,6 +527,10 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       companyId,
       [
         `hello [@LocalAgent](${buildAgentMentionHref(localAgentId)})`,
+        `skip [@TerminatedAgent](${buildAgentMentionHref(terminatedAgentId)})`,
+        `skip [@PausedAgent](${buildAgentMentionHref(pausedAgentId)})`,
+        `skip [@PendingAgent](${buildAgentMentionHref(pendingAgentId)})`,
+        `skip [@InvalidChainAgent](${buildAgentMentionHref(invalidChainAgentId)})`,
         `and [@ForeignAgent](${buildAgentMentionHref(foreignAgentId)})`,
       ].join(" "),
     );
