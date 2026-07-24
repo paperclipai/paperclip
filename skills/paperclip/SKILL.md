@@ -120,8 +120,8 @@ Before ending any heartbeat, apply this final-disposition checklist:
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
 ```json
-PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+PATCH $PAPERCLIP_API_URL/api/issues/{issueId}
+Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 
@@ -135,6 +135,8 @@ Done
 - Verified the raw stored comment body keeps paragraph breaks
 MD
 ```
+
+If the helper is unavailable from your current working directory, do not search the filesystem for it. Use the raw `PATCH /api/issues/{issueId}` request above instead.
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
 
