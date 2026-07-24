@@ -2573,6 +2573,7 @@ export function buildHostServices(
           reason: params.reason ?? null,
           payload: { prompt: params.prompt },
           contextSnapshot: {
+            wakeReason: params.reason ?? null,
             paperclipAgentMessage: {
               text: params.prompt,
               source: "plugin_invoke",
@@ -3057,6 +3058,7 @@ export function buildHostServices(
           payload: { prompt: params.prompt },
           contextSnapshot: {
             taskKey: session.taskKey,
+            wakeReason: params.reason ?? null,
             wakeSource: "automation",
             wakeTriggerDetail: "system",
             paperclipAgentMessage: {

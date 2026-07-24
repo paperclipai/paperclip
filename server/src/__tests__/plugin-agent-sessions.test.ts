@@ -75,6 +75,7 @@ describe("plugin agent sessions", () => {
         payload: { prompt: "hello" },
         contextSnapshot: {
           taskKey: "plugin:paperclip.gateway:session:session-1",
+          wakeReason: "gateway_chat_message",
           wakeSource: "automation",
           wakeTriggerDetail: "system",
           paperclipAgentMessage: {
