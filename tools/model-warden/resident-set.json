@@ -1,0 +1,14 @@
+{
+  "devices": ["studio", "macbook", "rtx"],
+  "models": [
+    {"device": "studio",  "ps_key": "gemma-4-31b-it-mlx",        "load_key": "gemma-4-31b-it-mlx",        "ctx": 65000, "parallel": 4, "when": "always"},
+    {"device": "studio",  "ps_key": "google/gemma-4-12b",        "load_key": "google/gemma-4-12b",        "ctx": 65024, "parallel": 4, "when": "always"},
+    {"device": "studio",  "ps_key": "qwen/qwen3-coder-30b",      "load_key": "qwen/qwen3-coder-30b",      "ctx": 90000, "parallel": 4, "when": "always"},
+    {"device": "studio",  "ps_key": "openbiollm-llama3-8b.gguf", "load_key": "openbiollm-llama3-8b.gguf", "ctx": 8192,  "parallel": 4, "when": "always"},
+    {"device": "studio",  "ps_key": "text-embedding-bge-m3",     "load_key": "text-embedding-bge-m3",     "ctx": null,  "parallel": null, "when": "always"},
+    {"device": "macbook", "ps_key": "qwen3.6-35b-a3b-mlx",       "load_key": "qwen3.6-35b-a3b-mlx",       "ctx": 98304, "parallel": 4, "when": "always"},
+    {"device": "macbook", "ps_key": "qwen/qwen3-coder-next",     "load_key": "qwen/qwen3-coder-next",     "ctx": 65000, "parallel": 4, "when": "always"},
+    {"device": "rtx",     "ps_key": "qwen/qwen3-coder-next",     "load_key": "qwen/qwen3-coder-next",     "ctx": 131328, "parallel": 4, "when": "day-only"},
+    {"device": "rtx",     "ps_key": "google/gemma-4-12b-qat",    "load_key": "google/gemma-4-12b-qat",    "ctx": 65024, "parallel": 4, "when": "day-only"}
+  ]
+}
