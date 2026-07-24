@@ -19,6 +19,11 @@ describe("isSandboxProviderSupportedForAdapter", () => {
     ).toBe(false);
   });
 
+  it("keeps copilot_local on local execution until remote Copilot home provisioning is supported", () => {
+    expect(adapterSupportsRemoteManagedEnvironments("copilot_local")).toBe(false);
+    expect(supportedEnvironmentDriversForAdapter("copilot_local")).toEqual(["local"]);
+  });
+
   it("treats grok_local as a remote-managed local adapter", () => {
     expect(adapterSupportsRemoteManagedEnvironments("grok_local")).toBe(true);
     expect(supportedEnvironmentDriversForAdapter("grok_local")).toEqual(["local", "ssh", "sandbox"]);

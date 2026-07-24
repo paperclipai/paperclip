@@ -11,7 +11,7 @@ They run in **heartbeats**: short execution windows triggered by a wakeup.
 
 Each heartbeat:
 
-1. Starts the configured agent adapter (for example, Claude CLI or Codex CLI)
+1. Starts the configured agent adapter (for example, Claude CLI, Codex CLI, or GitHub Copilot CLI)
 2. Gives it the current prompt/context
 3. Lets it work until it exits, times out, or is cancelled
 4. Stores results (status, token usage, errors, logs)
@@ -36,6 +36,7 @@ Built-in adapters:
 
 - `claude_local`: runs your local `claude` CLI
 - `codex_local`: runs your local `codex` CLI
+- `copilot_local`: runs your local GitHub `copilot` CLI through ACP
 - `opencode_local`: runs your local `opencode` CLI
 - `cursor`: runs Cursor in background mode
 - `pi_local`: runs an embedded Pi agent locally
@@ -49,7 +50,7 @@ External plugin adapters (install via the adapter manager or API):
 
 - `droid_local`: runs your local Factory Droid CLI (`@henkey/droid-paperclip-adapter`)
 
-For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine. For `hermes_gateway`, Paperclip assumes the Hermes API server is already running, reachable from the Paperclip server, and configured with an API key. The older `@paperclipai/adapter-hermes-gateway` npm package is only a deprecated compatibility shim; the adapter type remains `hermes_gateway`.
+For local CLI adapters (`claude_local`, `codex_local`, `copilot_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine. Copilot authentication checks `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, then `GITHUB_TOKEN`; the account must have a Copilot entitlement. For `hermes_gateway`, Paperclip assumes the Hermes API server is already running, reachable from the Paperclip server, and configured with an API key. The older `@paperclipai/adapter-hermes-gateway` npm package is only a deprecated compatibility shim; the adapter type remains `hermes_gateway`.
 
 ## 3.2 Runtime behavior
 

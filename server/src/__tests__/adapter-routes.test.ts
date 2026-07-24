@@ -356,6 +356,30 @@ describe("adapter routes", () => {
     );
   });
 
+  it("serves the built-in copilot_local ACP config schema", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters/copilot_local/config-schema");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "mode",
+          default: "persistent",
+        }),
+        expect.objectContaining({
+          key: "permissionMode",
+          default: "approve-all",
+        }),
+        expect.objectContaining({
+          key: "warmHandleIdleMs",
+          default: 0,
+        }),
+      ]),
+    );
+  });
+
   it("serves the built-in gemini_local ACP engine config schema", async () => {
     const app = createApp();
 

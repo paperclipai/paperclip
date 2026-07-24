@@ -28,7 +28,7 @@ Create agents from the Agents page. Each agent requires:
 - **Capabilities** — short description of what this agent does
 
 Common adapter choices:
-- `claude_local` / `codex_local` / `opencode_local` / `hermes_local` for local coding agents
+- `claude_local` / `codex_local` / `copilot_local` / `opencode_local` / `hermes_local` for local coding agents
 - `hermes_gateway` / `openclaw_gateway` / `http` for webhook-based external agents
 - `process` for generic local command execution
 
@@ -39,6 +39,8 @@ should call that server. Both are built-in adapter types from the unified
 
 For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).
 Paperclip validates the selected model against live `opencode models` output.
+
+For `copilot_local`, authenticate the host CLI with a supported GitHub OAuth or fine-grained token. Paperclip checks `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, then `GITHUB_TOKEN`.
 
 ## Agent Hiring via Governance
 

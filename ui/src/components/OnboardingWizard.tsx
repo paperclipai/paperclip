@@ -1514,6 +1514,8 @@ export function OnboardingWizard() {
                               ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
                               : adapterType === "codex_local"
                               ? `${effectiveAdapterCommand} exec --json -`
+                              : adapterType === "copilot_local"
+                                ? `${effectiveAdapterCommand} -p "Respond with exactly: hello" --silent --no-auto-update --no-remote --no-remote-export --no-color`
                               : adapterType === "gemini_local"
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
                               : adapterType === "opencode_local"
@@ -1526,6 +1528,7 @@ export function OnboardingWizard() {
                           </p>
                           {adapterType === "cursor" ||
                           adapterType === "codex_local" ||
+                          adapterType === "copilot_local" ||
                           adapterType === "gemini_local" ||
                           adapterType === "opencode_local" ? (
                             <p className="text-muted-foreground">
@@ -1533,6 +1536,8 @@ export function OnboardingWizard() {
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "CURSOR_API_KEY"
+                                  : adapterType === "copilot_local"
+                                    ? "COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
                                     : "OPENAI_API_KEY"}
@@ -1543,6 +1548,8 @@ export function OnboardingWizard() {
                                   ? "agent login"
                                   : adapterType === "codex_local"
                                     ? "codex login"
+                                  : adapterType === "copilot_local"
+                                    ? "copilot login"
                                     : adapterType === "gemini_local"
                                       ? "gemini auth"
                                       : "opencode auth login"}

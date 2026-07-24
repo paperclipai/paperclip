@@ -541,6 +541,11 @@ export interface CreateConfigValues {
   codexAcpNonInteractivePermissions?: "deny" | "fail";
   codexAcpStateDir?: string;
   codexAcpWarmHandleIdleMs?: number;
+  copilotAcpMode?: "persistent" | "oneshot";
+  copilotAcpPermissionMode?: "approve-all" | "approve-reads" | "deny-all";
+  copilotAcpNonInteractivePermissions?: "deny" | "fail";
+  copilotAcpStateDir?: string;
+  copilotAcpWarmHandleIdleMs?: number;
   geminiEngine?: "auto" | "cli" | "acp";
   geminiAcpAgentCommand?: string;
   geminiAcpMode?: "persistent" | "oneshot";

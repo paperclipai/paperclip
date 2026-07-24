@@ -40,6 +40,16 @@ import {
   modelProfiles as codexModelProfiles,
 } from "@paperclipai/adapter-codex-local";
 import {
+  execute as copilotExecute,
+  getConfigSchema as getCopilotConfigSchema,
+  sessionCodec as copilotSessionCodec,
+  testEnvironment as copilotTestEnvironment,
+} from "@paperclipai/adapter-copilot-local/server";
+import {
+  agentConfigurationDoc as copilotAgentConfigurationDoc,
+  models as copilotModels,
+} from "@paperclipai/adapter-copilot-local";
+import {
   execute as cursorExecute,
   listCursorSkills,
   syncCursorSkills,
@@ -284,6 +294,30 @@ const codexLocalAdapter: ServerAdapterModule = {
   getQuotaWindows: codexGetQuotaWindows,
 };
 
+const copilotLocalAdapter: ServerAdapterModule = {
+  type: "copilot_local",
+  execute: copilotExecute,
+  testEnvironment: copilotTestEnvironment,
+  acp: {
+    agentId: "copilot",
+    skillsMode: "unsupported",
+    prerequisites: {
+      nodeRange: ">=22.0.0",
+      packages: ["@github/copilot"],
+    },
+  },
+  sessionCodec: copilotSessionCodec,
+  sessionManagement: getAdapterSessionManagement("copilot_local") ?? undefined,
+  models: copilotModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "copilot", "@github/copilot"),
+  agentConfigurationDoc: copilotAgentConfigurationDoc,
+  getConfigSchema: getCopilotConfigSchema,
+};
+
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
   execute: cursorExecute,
@@ -437,6 +471,7 @@ function registerBuiltInAdapters() {
     acpxLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
+    copilotLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
