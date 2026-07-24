@@ -25,6 +25,18 @@ vi.mock("../services/index.js", () => ({
   deduplicateAgentName: vi.fn(),
   logActivity: vi.fn(),
   notifyHireApproved: vi.fn(),
+  instanceSettingsService: () => ({
+    getVisibility: vi.fn().mockResolvedValue({
+      companySurfaces: [
+        "company.general",
+        "company.members",
+        "company.invites",
+        "company.secrets",
+        "company.plugins",
+      ],
+    }),
+  }),
+  companyStandingService: () => ({ getEffectiveStandings: vi.fn() }),
 }));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

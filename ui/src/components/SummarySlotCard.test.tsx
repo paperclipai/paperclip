@@ -25,7 +25,7 @@ if (!HTMLElement.prototype.hasPointerCapture) {
   });
 }
 
-const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
+const mockAccessApi = vi.hoisted(() => ({ getCurrentBoardAccess: vi.fn() }));
 const mockSummarySlotsApi = vi.hoisted(() => ({
   get: vi.fn(),
   revisions: vi.fn(),
@@ -34,7 +34,7 @@ const mockSummarySlotsApi = vi.hoisted(() => ({
 const mockBuiltInAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({ resume: vi.fn() }));
 
-vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
+vi.mock("@/api/access", () => ({ accessApi: mockAccessApi }));
 vi.mock("@/api/summarySlots", () => ({ summarySlotsApi: mockSummarySlotsApi }));
 vi.mock("@/api/builtInAgents", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/builtInAgents")>()),
@@ -230,7 +230,7 @@ describe("SummarySlotCard", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableSummaries: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ capabilities: { features: { enableSummaries: true } } });
     mockBuiltInAgentsApi.list.mockResolvedValue([readySummarizer()]);
     mockSummarySlotsApi.get.mockResolvedValue({ slot: null, document: null, generatingIssue: null } satisfies GetSummarySlotResponse);
     mockSummarySlotsApi.revisions.mockResolvedValue({ slot: null, revisions: [] } satisfies ListSummarySlotRevisionsResponse);
@@ -249,7 +249,7 @@ describe("SummarySlotCard", () => {
   });
 
   it("renders nothing and does not fetch slots when the summaries flag is off", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableSummaries: false });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ capabilities: { features: { enableSummaries: false } } });
 
     root = renderCard(container);
     await flushQueries();

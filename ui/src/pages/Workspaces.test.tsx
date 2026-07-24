@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { WorkspaceOverviewItem, WorkspaceOverviewResponse } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Workspaces } from "./Workspaces";
+import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
   listOverview: vi.fn(),
@@ -15,12 +16,12 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
   getCloseReadiness: vi.fn(),
   update: vi.fn(),
 }));
-const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
+const mockAccessApi = vi.hoisted(() => ({ getCurrentBoardAccess: vi.fn() }));
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockSummarySlotCard = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/execution-workspaces", () => ({ executionWorkspacesApi: mockExecutionWorkspacesApi }));
-vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
+vi.mock("../api/access", () => ({ accessApi: mockAccessApi }));
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
 }));
@@ -124,7 +125,9 @@ describe("Workspaces", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
+    );
     mockExecutionWorkspacesApi.listOverview.mockResolvedValue(overviewResponse());
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
   });
@@ -180,7 +183,7 @@ describe("Workspaces", () => {
     });
     await flushQueries();
 
-    expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled();
+    expect(mockAccessApi.getCurrentBoardAccess).toHaveBeenCalled();
     expect(mockExecutionWorkspacesApi.listOverview).toHaveBeenCalledWith("company-1", { offset: 0 });
     expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Workspaces summary card");
@@ -213,7 +216,9 @@ describe("Workspaces", () => {
   });
 
   it("keeps the isolated-workspaces feature flag redirect", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }),
+    );
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     await act(async () => {

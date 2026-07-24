@@ -1080,6 +1080,36 @@ export interface PluginCompaniesClient {
    * Get one company by ID.
    */
   get(companyId: string): Promise<Company | null>;
+
+  /**
+   * Declare the calling plugin's standing for a company (spec §5).
+   *
+   * `blocked` stops new agent runs for the company at the run-start gate;
+   * `grace` only warns; `active` (or clearing) removes the plugin's verdict.
+   * Rows are always scoped to the calling plugin — other plugins' standings
+   * are unaffected, and the effective standing is the most severe row.
+   *
+   * Requires the `company.standing.write` capability.
+   */
+  setStanding(
+    companyId: string,
+    input: {
+      status: "active" | "grace" | "blocked";
+      /** Short machine code, e.g. `"subscription_lapsed"`. */
+      reason: string;
+      /** Human text shown in banners and run-start errors. */
+      message: string;
+      /** Optional deep link, e.g. the billing page. */
+      actionUrl?: string;
+    },
+  ): Promise<void>;
+
+  /**
+   * Remove the calling plugin's standing row for a company (idempotent).
+   *
+   * Requires the `company.standing.write` capability.
+   */
+  clearStanding(companyId: string): Promise<void>;
 }
 
 /**

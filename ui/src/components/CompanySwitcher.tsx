@@ -1,6 +1,8 @@
 import { ChevronsUpDown, Plus, Settings } from "lucide-react";
 import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
+import { type EffectiveStanding } from "@paperclipai/shared";
+import { useBoardCapabilities } from "@/hooks/useFeatures";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,6 +27,24 @@ function statusDotColor(status?: string): string {
   }
 }
 
+function StandingBadge({ companyId, standing }: { companyId: string; standing?: EffectiveStanding }) {
+  if (!standing || (standing.status !== "grace" && standing.status !== "blocked")) return null;
+  const blocked = standing.status === "blocked";
+  return (
+    <span
+      data-testid={`company-standing-badge-${companyId}`}
+      data-standing={standing.status}
+      className={
+        blocked
+          ? "ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-red-100 text-red-800 dark:bg-red-500/15 dark:text-red-200"
+          : "ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200"
+      }
+    >
+      {blocked ? "Blocked" : "Attention"}
+    </span>
+  );
+}
+
 interface CompanySwitcherProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -36,6 +56,12 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
   const sidebarCompanies = companies.filter((company) => company.status !== "archived");
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
+
+  // Standing badges (spec §5.4): an owner with many companies must not miss a
+  // lapsed one. Fail-safe — unknown standings render no badge.
+  const { data: boardAccess } = useBoardCapabilities();
+  const companyStandings: Record<string, EffectiveStanding> =
+    boardAccess?.capabilities?.companyStandings ?? {};
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -66,6 +92,7 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
           >
             <span className={`h-2 w-2 rounded-full shrink-0 mr-2 ${statusDotColor(company.status)}`} />
             <span className="truncate">{company.name}</span>
+            <StandingBadge companyId={company.id} standing={companyStandings[company.id]} />
           </DropdownMenuItem>
         ))}
         {sidebarCompanies.length === 0 && (

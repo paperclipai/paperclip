@@ -182,10 +182,12 @@ export interface HostServices {
     log(params: WorkerToHostMethods["log"][0]): Promise<void>;
   };
 
-  /** Provides `companies.list`, `companies.get`. */
+  /** Provides `companies.list`, `companies.get`, `companies.setStanding`, `companies.clearStanding`. */
   companies: {
     list(params: WorkerToHostMethods["companies.list"][0]): Promise<WorkerToHostMethods["companies.list"][1]>;
     get(params: WorkerToHostMethods["companies.get"][0]): Promise<WorkerToHostMethods["companies.get"][1]>;
+    setStanding(params: WorkerToHostMethods["companies.setStanding"][0], context?: WorkerHostCallContext): Promise<void>;
+    clearStanding(params: WorkerToHostMethods["companies.clearStanding"][0], context?: WorkerHostCallContext): Promise<void>;
   };
 
   /** Provides `projects.list`, `projects.get`, `projects.listWorkspaces`, `projects.getPrimaryWorkspace`, `projects.getWorkspaceForIssue`. */
@@ -419,6 +421,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Companies
   "companies.list": "companies.read",
   "companies.get": "companies.read",
+  "companies.setStanding": "company.standing.write",
+  "companies.clearStanding": "company.standing.write",
 
   // Projects
   "projects.list": "projects.read",
@@ -799,6 +803,12 @@ export function createHostClientHandlers(
     }),
     "companies.get": gated("companies.get", async (params) => {
       return services.companies.get(params);
+    }),
+    "companies.setStanding": gated("companies.setStanding", async (params, context) => {
+      return services.companies.setStanding(params, context);
+    }),
+    "companies.clearStanding": gated("companies.clearStanding", async (params, context) => {
+      return services.companies.clearStanding(params, context);
     }),
 
     // Projects

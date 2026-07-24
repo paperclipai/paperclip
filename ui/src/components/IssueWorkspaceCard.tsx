@@ -4,7 +4,7 @@ import type { Issue, ExecutionWorkspace } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { environmentsApi } from "../api/environments";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -205,10 +205,7 @@ export function IssueWorkspaceCard({
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(initialEditing);
 
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
+  const { data: experimentalSettings } = useFeatures();
 
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   const policyEnabled = experimentalSettings?.enableIsolatedWorkspaces === true
