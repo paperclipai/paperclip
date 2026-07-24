@@ -23,6 +23,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
   heartbeatService: () => mockHeartbeatService,
   issueService: () => mockIssueService,
   issueTreeControlService: () => mockTreeControlService,

@@ -116,6 +116,7 @@ const annotationComment = {
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
     accessService: () => ({
       canUser: vi.fn(async () => true),
     }),

@@ -23,6 +23,7 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
     assetService: vi.fn(() => ({
       create: createAssetMock,
       getById: getAssetByIdMock,

@@ -51,6 +51,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockRunClaudeLogin = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
 
 vi.mock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
   agentService: () => mockAgentService,
   agentInstructionsService: () => ({}),
   accessService: () => mockAccessService,

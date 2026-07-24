@@ -191,6 +191,7 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
   backfillLegacyToolOAuthTokens: vi.fn(async () => ({
     scannedConnections: 0,
     migratedConnections: 0,

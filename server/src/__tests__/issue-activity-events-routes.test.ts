@@ -39,11 +39,35 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
       feedbackDataSharingPreference: "prompt",
     },
   })),
+  getExperimental: vi.fn(async () => ({
+    enableExternalObjects: false,
+  })),
   listCompanyIds: vi.fn(async () => ["company-1"]),
 }));
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
+const mockDeliveryReceiptService = vi.hoisted(() => ({
+  listForSource: vi.fn(async () => []),
+  openMissingReceiptRecovery: vi.fn(async () => undefined),
+  publish: vi.fn(async () => ({ id: "receipt-1" })),
+}));
+const mockWorkProductService = vi.hoisted(() => ({
+  getById: vi.fn(async (id: string) => ({
+    id,
+    companyId: "company-1",
+    issueId: "11111111-1111-4111-8111-111111111111",
+    updatedAt: new Date("2026-05-01T00:00:00.000Z"),
+  })),
+}));
+
+const deliveryReceipt = {
+  primaryWorkProductKey: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  revision: "2026-05-01T00:00:00.000Z",
+  format: "inline_text",
+  summary: "The requested delivery is available.",
+  inlineText: "Requester-visible delivery text.",
+};
 
 function registerModuleMocks() {
   vi.doMock("../services/access.js", () => ({
@@ -75,6 +99,7 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => mockDeliveryReceiptService,
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
     }),
@@ -119,7 +144,7 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => mockRoutineService,
-    workProductService: () => ({}),
+    workProductService: () => mockWorkProductService,
   }));
 }
 
@@ -200,6 +225,9 @@ describe("issue activity event routes", () => {
         censorUsernameInLogs: false,
         feedbackDataSharingPreference: "prompt",
       },
+    });
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableExternalObjects: false,
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
@@ -378,11 +406,23 @@ describe("issue activity event routes", () => {
           }),
         }),
       }),
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({
+        select: () => ({
+          from: () => ({
+            where: async () => [{
+              id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              companyId: "company-1",
+              issueId: issue.id,
+              updatedAt: new Date("2026-05-01T00:00:00.000Z"),
+            }],
+          }),
+        }),
+      }),
     };
 
     const res = await request(await createApp(dbMock))
       .patch(`/api/issues/${issue.id}`)
-      .send({ status: "done" });
+      .send({ status: "done", deliveryReceipt });
 
     expect(res.status).toBe(200);
     await vi.waitFor(() => {

@@ -489,6 +489,26 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   responsibleUserId: true,
   watchdog: true,
 }).partial().extend({
+  deliveryReceipt: z.object({
+    sourceIssueId: z.string().uuid().optional(),
+    // The work product is the durable delivery evidence. Its id and current
+    // revision are verified by the issue route before a receipt is accepted.
+    primaryWorkProductKey: z.string().uuid(),
+    revision: z.string().datetime(),
+    format: z.enum(["inline_text", "work_product", "document", "url"]),
+    summary: z.string().trim().min(1).max(2000),
+    inlineText: z.string().trim().min(1).max(20000).optional(),
+    inspectionUrl: z.string().url().optional(),
+    documentOnly: z.boolean().optional().default(false),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  }).superRefine((value, ctx) => {
+    if (!value.inlineText && !value.inspectionUrl && !value.documentOnly) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Receipt needs inline text, an inspection URL, or document-only intent" });
+    }
+    if (value.documentOnly && !value.inspectionUrl) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Document-only delivery requires a requester-openable inspection URL" });
+    }
+  }).optional(),
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),

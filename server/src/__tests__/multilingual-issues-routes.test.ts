@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, companyMemberships, createDb } from "@paperclipai/db";
+import { companies, companyMemberships, createDb, issueWorkProducts } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -165,9 +165,30 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
   });
 
   it("preserves multilingual completion comments", async () => {
+    const [workProduct] = await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId: (await request(app).get("/api/issues/LNG-1")).body.id,
+      type: "artifact",
+      provider: "test",
+      title: "Multilingual delivery evidence",
+      status: "approved",
+      reviewState: "approved",
+      isPrimary: true,
+      healthStatus: "healthy",
+    }).returning();
     const completeRes = await request(app)
       .patch("/api/issues/LNG-1")
-      .send({ status: "done", comment: completionNote });
+      .send({
+        status: "done",
+        comment: completionNote,
+        deliveryReceipt: {
+          primaryWorkProductKey: workProduct!.id,
+          revision: workProduct!.updatedAt.toISOString(),
+          format: "inline_text",
+          summary: "完成的多语言交付。",
+          inlineText: completionNote,
+        },
+      });
     expect(completeRes.status, JSON.stringify(completeRes.body)).toBe(200);
     expect(completeRes.body.status).toBe("done");
     expect(completeRes.body.comment.body).toBe(completionNote);

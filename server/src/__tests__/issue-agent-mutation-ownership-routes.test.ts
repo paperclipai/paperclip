@@ -175,6 +175,7 @@ function registerRouteMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
     ISSUE_LIST_DEFAULT_LIMIT: 100,
     ISSUE_LIST_MAX_LIMIT: 500,
     accessService: () => mockAccessService,

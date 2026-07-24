@@ -158,6 +158,7 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
     accessService: () => mockAccessService,
     documentAnnotationService: () => mockAnnotationService,
     logActivity: mockLogActivity,

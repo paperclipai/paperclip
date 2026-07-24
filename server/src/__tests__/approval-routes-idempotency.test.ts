@@ -34,6 +34,7 @@ const mockAccessService = vi.hoisted(() => ({
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
     heartbeatService: () => mockHeartbeatService,

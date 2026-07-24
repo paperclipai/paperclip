@@ -13,6 +13,7 @@ const mockIssueService = vi.hoisted(() => ({
 const mockSpawn = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
   instanceSettingsService: () => ({ getExperimental: mockGetExperimental }),
   issueService: () => mockIssueService,
 }));

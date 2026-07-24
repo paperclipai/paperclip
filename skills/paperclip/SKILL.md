@@ -95,6 +95,10 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
 - If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
+- **Mandatory terminal-delivery step:** before moving an interactive issue to
+  `done`, complete the **Terminal Delivery Receipts** procedure below. Do not
+  treat durable evidence, a work product, a successful run, or a completion
+  comment as a substitute for the requester-visible receipt.
 
 ### Generated Artifacts and Work Products
 
@@ -105,6 +109,46 @@ When work produces or updates an operator-facing engineering output, create or u
 If an important file intentionally remains in the project or execution workspace instead of being uploaded, annotate a work product with `metadata.resourceRef.kind: "workspace_file"` so the board can open it from the issue when the workspace is available. Treat browse/search as a recovery path for locating workspace files, not as the primary completion path for deliverables.
 
 For technical upload instructions, read `references/artifacts.md`.
+
+### Mandatory Terminal Delivery Receipts
+
+Before moving an interactive issue to `done`, create a requester-visible
+delivery receipt in addition to registering the durable completion evidence.
+The work product proves the output exists; the receipt explains what was
+delivered and gives the requester a usable inspection surface. A bare link,
+agent-only log, local path, or successful run is not a delivery receipt.
+
+The receipt includes: a concise outcome summary, output format, the durable
+work-product/evidence reference, and the primary requester-openable inspection
+surface. Keep receipt text audience-safe: never include secrets, private
+incident content, credentials, or inaccessible workspace paths.
+
+- **Small text:** include the final text inline when it fits the configured
+  receipt payload limit, plus its evidence reference.
+- **Oversized text:** persist the full text as a document/artifact and include
+  a concise inline summary plus a direct inspection link.
+- **Documents:** identify the title and revision/version where available and
+  link the requester-openable document surface.
+- **Images/binary outputs:** upload a durable asset/artifact with a preview or
+  download surface; name the asset and describe it briefly in the receipt.
+
+If a child lane produces the source issue's requested output, project a receipt
+to the source issue that links the child's durable evidence and names the child
+as producer. Do not make the requester discover the child issue. Projection
+does not make `parentId` a dependency or complete the source issue by itself.
+
+Only a durable, machine-visible `document_only` override for a named output may
+omit the inline full-content copy. It must name the document inspection surface.
+It never permits link-only completion, an inaccessible document, removal of the
+receipt, or bypassing the durable-evidence gate.
+
+Use a stable delivery identity (source issue, terminal output, and evidence
+references) when creating or repairing receipts. Retrying the same delivery
+must reuse/repair the existing receipt rather than duplicating notifications or
+child-to-source projections. If evidence exists but receipt publication fails,
+record the failure and allow at most one bounded recovery continuation. If it
+still cannot publish a receipt, do not mark `done`; leave an explicit blocked or
+recovery path with the named owner and repair action.
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.

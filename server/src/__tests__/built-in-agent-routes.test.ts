@@ -74,6 +74,7 @@ function builtInState(overrides: Record<string, unknown> = {}) {
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
     accessService: () => mockAccessService,
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,

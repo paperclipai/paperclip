@@ -202,6 +202,7 @@ vi.mock("../routes/authz.js", async () => {
 });
 
 vi.mock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
   agentService: () => mockAgentService,
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
