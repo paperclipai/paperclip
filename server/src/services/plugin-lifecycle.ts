@@ -733,7 +733,19 @@ export function pluginLifecycleManager(
         "plugin lifecycle: starting worker",
       );
 
-      await workerManager.startWorker(pluginId, options);
+      // Resolve the install's company so the worker starts with a populated
+      // `invocationScope`. The plugin's first config row carries the company
+      // that originated the install; a bundled plugin has exactly one. Without
+      // this scope the worker is rejected on its first capability call (e.g.
+      // `config.get`) with "company context is required" and never reaches
+      // `ready`. See PLUGIN_SPEC §13 - Host-Worker Protocol.
+      const configRows = await registry.listConfigs(pluginId);
+      const installCompanyId = configRows[0]?.companyId;
+      const scopedOptions = installCompanyId
+        ? { ...options, invocationScope: { companyId: installCompanyId } }
+        : options;
+
+      await workerManager.startWorker(pluginId, scopedOptions);
       emitDomain("plugin.worker_started", {
         pluginId,
         pluginKey: plugin.pluginKey,
