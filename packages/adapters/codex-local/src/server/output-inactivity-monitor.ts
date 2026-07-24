@@ -34,6 +34,7 @@ export interface CodexOutputInactivityMonitorState {
   outputChunkCount: number;
   outputBytes: number;
   parsedEventCount: number;
+  processActivityCount: number;
 }
 
 export interface CodexOutputInactivityMonitorOptions {
@@ -51,6 +52,7 @@ export interface CodexOutputInactivityMonitorOptions {
 
 export interface CodexOutputInactivityMonitorHandle {
   noteOutputChunk(stream: "stdout" | "stderr", chunk: string): void;
+  noteProcessActivity(): void;
   /** Returns the current state without stopping the timer. */
   state(): CodexOutputInactivityMonitorState;
   /** Cancels any pending timer and returns the final state. */
@@ -85,6 +87,7 @@ export function createCodexOutputInactivityMonitor(
     outputChunkCount: 0,
     outputBytes: 0,
     parsedEventCount: 0,
+    processActivityCount: 0,
   };
   let timerHandle: unknown = null;
   let stopped = false;
@@ -117,6 +120,12 @@ export function createCodexOutputInactivityMonitor(
           }
         }
       }
+      state.lastEventAt = now();
+      arm();
+    },
+    noteProcessActivity() {
+      if (stopped || state.fired) return;
+      state.processActivityCount += 1;
       state.lastEventAt = now();
       arm();
     },

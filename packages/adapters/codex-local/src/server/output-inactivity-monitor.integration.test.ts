@@ -5,6 +5,7 @@ import {
   createCodexOutputInactivityMonitor,
   formatOutputInactivityMonitorErrorMessage,
 } from "./output-inactivity-monitor.js";
+import { createCodexProcessActivityMonitor } from "./process-activity-monitor.js";
 
 const FAKE_CODEX_SCRIPT = `
 process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "abc" }) + "\\n");
@@ -15,6 +16,56 @@ setInterval(() => {}, 60_000);
 `;
 
 describe("codex inactivity monitor (integration: real subprocess)", () => {
+  it.skipIf(process.platform !== "linux")(
+    "allows a long silent build while the child process group is consuming CPU",
+    async () => {
+      const runId = `monitor-active-build-${Date.now()}`;
+      const timeoutMs = 500;
+      const processActivityMonitor: {
+        current: ReturnType<typeof createCodexProcessActivityMonitor> | null;
+      } = { current: null };
+      let monitorFired = false;
+      const monitor = createCodexOutputInactivityMonitor({
+        timeoutMs,
+        onFire: () => {
+          monitorFired = true;
+        },
+      });
+
+      try {
+        const proc = await runChildProcess(
+          runId,
+          process.execPath,
+          ["-e", "const end = Date.now() + 2_000; while (Date.now() < end) {}"],
+          {
+            cwd: process.cwd(),
+            env: process.env as Record<string, string>,
+            timeoutSec: 5,
+            graceSec: 1,
+            onSpawn: async (meta) => {
+              processActivityMonitor.current = createCodexProcessActivityMonitor({
+                pid: meta.pid,
+                processGroupId: meta.processGroupId,
+                intervalMs: 50,
+                onActivity: () => monitor.noteProcessActivity(),
+              });
+            },
+            onLog: async (stream, chunk) => monitor.noteOutputChunk(stream, chunk),
+          },
+        );
+
+        expect(proc.exitCode).toBe(0);
+        expect(proc.timedOut).toBe(false);
+        expect(monitorFired).toBe(false);
+        expect(monitor.state().processActivityCount).toBeGreaterThan(0);
+      } finally {
+        processActivityMonitor.current?.stop();
+        monitor.stop();
+      }
+    },
+    10_000,
+  );
+
   it(
     "kills a codex child that goes silent after one event and surfaces a monitor failure",
     async () => {
@@ -25,6 +76,9 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
       let monitorFired = false;
       let terminationSignal: NodeJS.Signals | null = null;
       let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+      const processActivityMonitor: {
+        current: ReturnType<typeof createCodexProcessActivityMonitor> | null;
+      } = { current: null };
       let elapsedMs = 0;
 
       const kill = (signal: NodeJS.Signals) => {
@@ -69,6 +123,12 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
           graceSec: 1,
           onSpawn: async (meta) => {
             killTarget = { pid: meta.pid, processGroupId: meta.processGroupId };
+            processActivityMonitor.current = createCodexProcessActivityMonitor({
+              pid: meta.pid,
+              processGroupId: meta.processGroupId,
+              intervalMs: 25,
+              onActivity: () => monitor.noteProcessActivity(),
+            });
           },
           onLog: async (stream, chunk) => {
             logs.push({ stream, chunk });
@@ -89,6 +149,7 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
         // We should have observed exactly one parsed JSONL event before silence.
         expect(monitor.state().parsedEventCount).toBe(1);
       } finally {
+        processActivityMonitor.current?.stop();
         monitor.stop();
         if (sigkillTimer) clearTimeout(sigkillTimer);
       }
