@@ -997,7 +997,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }}
               />
             </Field>
-            {isLocal && !props.hidePromptTemplate && (
+            {!props.hidePromptTemplate && (
               <>
                 <Field label="Prompt Template" hint={help.promptTemplate}>
                   <MarkdownEditor
@@ -1016,8 +1016,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     }}
                   />
                 </Field>
-                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100">
-                  Prompt template is replayed on every heartbeat. Keep it compact and dynamic to avoid recurring token cost and cache churn.
+                <div className="rounded-md border border-border bg-muted/25 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                  Optional. Managed instructions live in the Instructions tab. The prompt template controls the run framing sent to the adapter and can use Paperclip template variables.
                 </div>
               </>
             )}
