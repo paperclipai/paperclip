@@ -1324,6 +1324,13 @@
       "when": 1784916885226,
       "tag": "0190_status_card_single_prompt",
       "breakpoints": true
+    },
+    {
+      "idx": 191,
+      "version": "7",
+      "when": 1784916885227,
+      "tag": "0191_company_skill_risk_tier",
+      "breakpoints": true
     }
   ]
 }

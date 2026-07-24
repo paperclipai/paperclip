@@ -47,6 +47,12 @@ export const companySkills = pgTable(
     forkCount: integer("fork_count").notNull().default(0),
     currentVersionId: uuid("current_version_id").references((): AnyPgColumn => companySkillVersions.id, { onDelete: "set null" }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    riskTier: integer("risk_tier").notNull().default(2),
+    riskTierSource: text("risk_tier_source").notNull().default("unclassified"),
+    riskTierRationale: jsonb("risk_tier_rationale").$type<Record<string, unknown>>(),
+    riskTierUpdatedByAgentId: uuid("risk_tier_updated_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    riskTierUpdatedByUserId: text("risk_tier_updated_by_user_id"),
+    riskTierUpdatedAt: timestamp("risk_tier_updated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -58,6 +64,7 @@ export const companySkills = pgTable(
     companySharingScopeIdx: index("company_skills_company_sharing_scope_idx").on(table.companyId, table.sharingScope),
     companyCurrentVersionIdx: index("company_skills_company_current_version_idx").on(table.companyId, table.currentVersionId),
     companyForkedFromIdx: index("company_skills_company_forked_from_idx").on(table.companyId, table.forkedFromSkillId),
+    companyRiskTierIdx: index("company_skills_company_risk_tier_idx").on(table.companyId, table.riskTier),
   }),
 );
 
