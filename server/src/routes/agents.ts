@@ -1632,6 +1632,13 @@ export function agentRoutes(
       };
     }
 
+    if (requestedDesiredSkills.some((entry) => entry.versionId !== null)) {
+      const betaSkillsEnabled = (await instanceSettings.getExperimental()).enableBetaSkills === true;
+      if (!betaSkillsEnabled) {
+        throw badRequest("Beta skill version pins require the Beta skills experimental setting to be enabled.");
+      }
+    }
+
     const { resolved: resolvedRequestedSkillEntries, unresolved: unresolvedDesiredSkillKeys } =
       await companySkills.resolveRequestedSkillEntries(companyId, requestedDesiredSkills, {
         tolerateUnknownReferences: options.tolerateUnknownDesiredSkills,
@@ -1923,10 +1930,6 @@ export function agentRoutes(
       await assertCanUpdateAgent(req, agent);
 
       const requestedSkills = normalizeDesiredSkillSelections(req.body.desiredSkills);
-      const betaSkillsEnabled = (await instanceSettings.getExperimental()).enableBetaSkills === true;
-      if (!betaSkillsEnabled && requestedSkills?.some((entry) => entry.versionId !== null)) {
-        throw badRequest("Beta skill version pins require the Beta skills experimental setting to be enabled.");
-      }
       const {
         adapterConfig: nextAdapterConfig,
         desiredSkills,

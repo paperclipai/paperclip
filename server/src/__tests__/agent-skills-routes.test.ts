@@ -864,6 +864,25 @@ describe.sequential("agent skill routes", () => {
     );
   });
 
+  it("rejects version pins when creating an agent while beta skills are disabled", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "QA Agent",
+        role: "engineer",
+        adapterType: "claude_local",
+        desiredSkills: [{
+          key: "paperclipai/paperclip/paperclip",
+          versionId: "22222222-2222-4222-8222-222222222222",
+        }],
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("Beta skills experimental setting");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
   it("accepts the security role on direct agent creation and preserves it in telemetry", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
@@ -1051,6 +1070,26 @@ describe.sequential("agent skill routes", () => {
         }),
       }),
     );
+  });
+
+  it("rejects version pins in agent hires while beta skills are disabled", async () => {
+    const res = await request(await createApp(createDb(true)))
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "QA Agent",
+        role: "engineer",
+        adapterType: "claude_local",
+        desiredSkills: [{
+          key: "paperclipai/paperclip/paperclip",
+          versionId: "22222222-2222-4222-8222-222222222222",
+        }],
+        adapterConfig: {},
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("Beta skills experimental setting");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
   });
 
   it("preserves hire source issues, icons, desired skills, and approval payload details", async () => {
