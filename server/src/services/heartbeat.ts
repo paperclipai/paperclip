@@ -1583,6 +1583,26 @@ export async function assertPushCapabilityCheckoutValid(input: {
   );
 }
 
+/**
+ * Reconcile the `projectWorkspaceId` for a reused execution workspace.
+ *
+ * A `reuse_existing` workspace can have been persisted with a null
+ * `projectWorkspaceId` (e.g. it was created before its project had a primary
+ * project workspace). When we later restore it for a run whose issue now
+ * expects a concrete project workspace, backfill the column so the launch
+ * guard (`persisted_workspace_missing_project_workspace_id`) stops rejecting
+ * it on every requeue — otherwise `reuse_existing` re-binds the same stale
+ * record forever and the run crash-loops. Prefer the existing binding when
+ * present so we never null out a good value or silently rebind a genuine
+ * mismatch (which the guard still surfaces).
+ */
+export function reconcileReusedExecutionWorkspaceProjectWorkspaceId(
+  existingProjectWorkspaceId: string | null | undefined,
+  resolvedProjectWorkspaceId: string | null | undefined,
+): string | null {
+  return existingProjectWorkspaceId ?? resolvedProjectWorkspaceId ?? null;
+}
+
 export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   adapterType: string;
   agentId: string;
@@ -12670,6 +12690,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "active",
             lastUsedAt: new Date(),
             metadata: nextExecutionWorkspaceMetadata,
+            projectWorkspaceId: reconcileReusedExecutionWorkspaceProjectWorkspaceId(
+              reusableExistingExecutionWorkspace.projectWorkspaceId,
+              resolvedProjectWorkspaceId,
+            ),
           })
         : resolvedProjectId
           ? await executionWorkspacesSvc.create({
