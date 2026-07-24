@@ -315,6 +315,18 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       evidenceDigest: run.evidenceDigest,
       evaluationLeaseExpiresAt: run.evaluationLeaseExpiresAt,
     });
+
+    const historyRun = (await svc.listRuns(routine.id)).find((candidate) => candidate.id === run.id);
+    expect(historyRun).toMatchObject({
+      evaluatorId: run.evaluatorId,
+      evaluatorContractVersion: run.evaluatorContractVersion,
+      evaluationOutcome: "PASS",
+      evaluationResult: run.evaluationResult,
+      evaluatorProvenance: run.evaluatorProvenance,
+      exceptionFingerprint: run.exceptionFingerprint,
+      evidenceDigest: run.evidenceDigest,
+      evaluationLeaseExpiresAt: run.evaluationLeaseExpiresAt,
+    });
   });
 
   it("keeps non-pilot routines on legacy issue-per-run dispatch", async () => {
