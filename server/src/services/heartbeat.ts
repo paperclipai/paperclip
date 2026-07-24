@@ -229,7 +229,7 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
-import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { redactEventPayload, redactKnownSecretValues, redactRunOutputValue, redactSensitiveText } from "../redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -1905,6 +1905,7 @@ const heartbeatRunSqlAsciiSafeColumns = {
 const heartbeatRunLogAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
+  agentId: heartbeatRuns.agentId,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
 } as const;
@@ -12949,6 +12950,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         cwd: executionWorkspace.cwd,
       },
     });
+    const runOutputSecretValues = [
+      ...Object.entries(parseObject(resolvedConfig.env))
+        .filter(([key, value]) => typeof value === "string" && (secretKeys.has(key) || /(?:secret|token|key|password|credential|auth)/i.test(key)))
+        .map(([, value]) => value as string),
+      ...String(process.env.PAPERCLIP_RUN_OUTPUT_REDACTION_VALUES ?? "").split(","),
+    ];
+    const redactRunOutputText = (value: string, currentUserRedactionOptions: CurrentUserRedactionOptions) =>
+      redactKnownSecretValues(
+        redactSensitiveText(redactCurrentUserText(value, currentUserRedactionOptions)),
+        runOutputSecretValues,
+      );
     const runtimeSessionParams = runtimeSessionResolution.sessionParams;
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
@@ -13225,7 +13237,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const sanitizedChunk = compactRunLogChunk(
-          redactCurrentUserText(chunk, currentUserRedactionOptions),
+          redactRunOutputText(chunk, currentUserRedactionOptions),
         );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
@@ -13876,6 +13888,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }),
         adapterResult.summary ?? null,
       );
+      const sanitizedPersistedResultJson = redactRunOutputValue(persistedResultJson, runOutputSecretValues);
 
       const persistedRunWrite = await setRunStatusIfRunning(run.id, status, {
         finishedAt: new Date(),
@@ -13884,10 +13897,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
-        resultJson: persistedResultJson,
+        resultJson: sanitizedPersistedResultJson,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
-        stdoutExcerpt,
-        stderrExcerpt,
+        stdoutExcerpt: redactRunOutputText(stdoutExcerpt, currentUserRedactionOptions),
+        stderrExcerpt: redactRunOutputText(stderrExcerpt, currentUserRedactionOptions),
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
@@ -13951,7 +13964,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           try {
             const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
             if (!existingRunComment) {
-              const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
+              const issueComment = buildHeartbeatRunIssueComment(sanitizedPersistedResultJson);
               if (issueComment) {
                 await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: livenessRun.id });
               }
@@ -14045,11 +14058,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               agentId: agent.id,
               adapterType: agent.adapterType,
               taskKey,
-              sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+              sessionParamsJson: redactRunOutputValue(attachPaperclipSessionMetadataToSessionParams(
                 nextSessionState.params,
                 configuredModel,
                 sessionConfigMetadata,
-              ),
+              ), runOutputSecretValues),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),

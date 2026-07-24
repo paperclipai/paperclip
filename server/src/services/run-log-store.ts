@@ -37,6 +37,7 @@ export interface RunLogStore {
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  remove(handle: RunLogHandle): Promise<void>;
 }
 
 function safeSegments(...segments: string[]) {
@@ -86,7 +87,11 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
 
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
-    await fs.mkdir(dir, { recursive: true });
+    // Explicit modes are required here: recursive mkdir otherwise inherits the
+    // host umask and can leave one agent's transcript directory readable by
+    // another local user.
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    await fs.chmod(dir, 0o700);
   }
 
   async function readLocalRange(
@@ -164,7 +169,10 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       const relPath = path.join(relDir, `${runId}.ndjson`);
       await ensureDir(relDir);
       const absPath = resolveWithin(basePath, relPath);
-      await fs.writeFile(absPath, "", "utf8");
+      // chmod after write is intentional. writeFile does not change an
+      // existing file mode, and a retry must repair a permissive stale file.
+      await fs.writeFile(absPath, "", { encoding: "utf8", mode: 0o600 });
+      await fs.chmod(absPath, 0o600);
       return { store: "local_file", logRef: relPath };
     },
 
@@ -230,6 +238,21 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       if (local) return local;
       // Local file gone (pod rolled) -> serve from the S3 mirror if configured.
       return readS3Range(handle.logRef, offset, limitBytes);
+    },
+
+    async remove(handle) {
+      if (handle.store !== "local_file") return;
+      const absPath = resolveWithin(basePath, handle.logRef);
+      await fs.unlink(absPath).catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== "ENOENT") throw err;
+      });
+      if (s3) {
+        await s3.provider.deleteObject({ objectKey: s3Key(handle.logRef) }).catch((err: NodeJS.ErrnoException) => {
+          // S3 DELETE is normally idempotent. Some compatible providers do
+          // return a not-found error though, which must not make a purge fail.
+          if (err.code !== "ENOENT" && err.name !== "NoSuchKey" && err.name !== "NotFound") throw err;
+        });
+      }
     },
   };
 }

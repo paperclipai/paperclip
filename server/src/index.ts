@@ -51,7 +51,9 @@ import {
   reconcileCloudUpstreamRunsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
+  readRunOutputRetentionDays,
   routineService,
+  startHeartbeatRunOutputRetention,
   toolAccessService,
 } from "./services/index.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
@@ -861,6 +863,12 @@ export async function startServer(): Promise<StartedServer> {
   let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{ skipDrain: boolean }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  let stopRunOutputRetention: (() => void) | null = null;
+  const runOutputRetentionDays = readRunOutputRetentionDays();
+  if (runOutputRetentionDays !== null) {
+    stopRunOutputRetention = startHeartbeatRunOutputRetention(db as any);
+    logger.info({ retentionDays: runOutputRetentionDays }, "heartbeat run output retention enabled");
+  }
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -1235,6 +1243,8 @@ export async function startServer(): Promise<StartedServer> {
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
       heartbeatSchedulerStopped = true;
+      stopRunOutputRetention?.();
+      stopRunOutputRetention = null;
       if (heartbeatSchedulerInterval) {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;

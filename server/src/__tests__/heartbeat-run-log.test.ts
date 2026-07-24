@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compactRunLogChunk } from "../services/heartbeat.js";
+import { redactRunOutputValue } from "../redaction.js";
 
 describe("compactRunLogChunk", () => {
   it("redacts inline base64 image data from structured log chunks", () => {
@@ -39,5 +40,17 @@ describe("compactRunLogChunk", () => {
     expect(compacted).not.toContain("refresh-token-fixture-secret");
     expect(compacted).not.toContain("paperclip-json-secret");
     expect(compacted).not.toContain("paperclip-flag-secret");
+  });
+
+  it("redacts an unmanaged sentinel credential in result and resumable-session values", () => {
+    const sentinel = "unmanaged-sentinel-credential-9d2f5a";
+    const redacted = redactRunOutputValue({
+      summary: `adapter echoed ${sentinel}`,
+      nested: { sessionState: sentinel },
+      values: [sentinel],
+    }, [sentinel]);
+
+    expect(JSON.stringify(redacted)).not.toContain(sentinel);
+    expect(JSON.stringify(redacted)).toContain("***REDACTED***");
   });
 });
