@@ -2139,7 +2139,7 @@ export async function resolveCommandForLogs(
   return (await resolveCommandPath(command, cwd, env)) ?? command;
 }
 
-function quoteForCmd(arg: string) {
+export function quoteForCmd(arg: string) {
   if (!arg.length) return '""';
   const escaped = arg.replace(/"/g, '""');
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
@@ -2152,7 +2152,7 @@ export function sanitizeSshRemoteEnv(
   return sanitizeRemoteExecutionEnv(env, inheritedEnv);
 }
 
-function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
+export function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
   const fallbackRoot = env.SystemRoot || process.env.SystemRoot || "C:\\Windows";
   return path.join(fallbackRoot, "System32", "cmd.exe");
 }

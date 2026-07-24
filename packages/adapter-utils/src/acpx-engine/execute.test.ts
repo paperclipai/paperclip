@@ -1443,6 +1443,13 @@ describe("gemini ACP flag selection", () => {
 
   async function writeFakeGemini(binDir: string, version: string) {
     await fs.mkdir(binDir, { recursive: true });
+    if (process.platform === "win32") {
+      // On Windows a CLI is launched via a `.cmd` shim; a POSIX `#!/bin/sh`
+      // script is not executable, so emit a batch shim instead. This exercises
+      // the real Windows launch path the version probe must support.
+      await fs.writeFile(path.join(binDir, "gemini.cmd"), `@echo off\r\necho ${version}\r\n`);
+      return;
+    }
     const binPath = path.join(binDir, "gemini");
     await fs.writeFile(binPath, `#!/bin/sh\necho "${version}"\n`, { mode: 0o755 });
   }
