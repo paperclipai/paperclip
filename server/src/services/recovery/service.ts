@@ -3093,6 +3093,58 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return existingUnresolvedBlockerIssues(companyId, issueId).then((rows) => rows.map((row) => row.id));
   }
 
+  // A `todo` issue with unresolved blockers can never be dispatched: every wake
+  // is skipped as `issue_dependencies_blocked` before it becomes a run, so the
+  // liveness sweep would re-enqueue it on the next pass and loop at the sweep
+  // cadence until the blocker resolves — indefinitely when the blocker is
+  // parked. Normalize the issue to `blocked` (its correct state) so it leaves
+  // the dispatch candidate set; the existing blocker relations are preserved and
+  // `issue_blockers_resolved` wakes it when the final blocker completes.
+  async function normalizeDependencyBlockedTodoIssue(
+    issue: typeof issues.$inferSelect,
+    unresolvedBlockerIssueIds: string[],
+  ) {
+    const updated = await issuesSvc.update(issue.id, { status: "blocked" });
+    if (!updated) return null;
+
+    const blockers = unresolvedBlockerIssueIds.length > 0
+      ? await db
+        .select({ id: issues.id, identifier: issues.identifier })
+        .from(issues)
+        .where(and(eq(issues.companyId, issue.companyId), inArray(issues.id, unresolvedBlockerIssueIds)))
+      : [];
+    const waitingOn = blockers.length > 0
+      ? formatIssueLinksForComment(blockers)
+      : "its unresolved blockers";
+    await issuesSvc.addComment(
+      issue.id,
+      `This task is waiting on ${waitingOn} to finish. ` +
+        "It will continue automatically when that work is done — there's nothing you need to do. " +
+        "(It was still marked `todo` while blocked, which kept the liveness dispatcher retrying " +
+        "and skipping it; Paperclip moved it to `blocked` so it waits quietly instead.)",
+      {},
+      { authorType: "system" },
+    );
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        status: "blocked",
+        previousStatus: issue.status,
+        source: "recovery.reconcile_dependency_blocked_todo",
+        unresolvedBlockerIssueIds,
+      },
+    });
+    return updated;
+  }
+
   async function resolveContinuationWaitingOnReview(issue: typeof issues.$inferSelect) {
     const existingBlockers = await existingUnresolvedBlockerIssues(issue.companyId, issue.id);
     const openChildren = await db
@@ -3485,6 +3537,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       productiveContinuationObserved: 0,
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
+      dependencyBlockedNormalized: 0,
       successfulRunHandoffEscalated: 0,
       reviewParticipantRequeued: 0,
       escalated: 0,
@@ -3855,6 +3908,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (issue.status === "todo") {
+        // Dispatcher guard: never enqueue a wake the heartbeat would only skip.
+        // This uses the same readiness check as the heartbeat's
+        // issue_dependencies_blocked skip path (including the
+        // workspace-finalize barrier) so the two can never disagree.
+        const dependencyReadiness = await issuesSvc.listDependencyReadiness(
+          issue.companyId,
+          [issue.id],
+        ).then((rows) => rows.get(issue.id) ?? null);
+        if (dependencyReadiness && !dependencyReadiness.isDependencyReady) {
+          const normalized = await normalizeDependencyBlockedTodoIssue(
+            issue,
+            dependencyReadiness.unresolvedBlockerIssueIds,
+          );
+          if (normalized) {
+            result.dependencyBlockedNormalized += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         if (!latestRun) {
           if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
             result.skipped += 1;
