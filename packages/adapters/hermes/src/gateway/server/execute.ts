@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -24,6 +26,9 @@ import {
   isRemotePlainHttp,
   remotePlainHttpDeniedMessage,
 } from "./transport-security.js";
+import { resolveDesiredGatewaySkillSections } from "./managed-skills.js";
+
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -262,6 +267,17 @@ function buildHeaders(input: {
   };
 }
 
+function formatSkillSections(resolvedSkills: Awaited<ReturnType<typeof resolveDesiredGatewaySkillSections>>): string[] {
+  return resolvedSkills.flatMap((skill) => [`### Skill: ${skill.key}`, "", skill.content, ""]);
+}
+
+function appendSkillBlock(text: string, skillSections: string[]): string {
+  if (skillSections.length === 0) return text;
+  return [text, "", "Assigned company skills (Paperclip skill library):", "", ...skillSections]
+    .join("\n")
+    .trim();
+}
+
 function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): string {
   const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
@@ -301,13 +317,19 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
         ]
       : []),
   ];
+  // Skills are appended by the caller (buildRunBody) via appendSkillBlock,
+  // uniformly for both the generated prompt and a custom payloadTemplate.input
+  // override — a skill promised to the agent must never be silently dropped
+  // just because the operator supplied a custom input template.
   return lines.filter((line) => line !== null && line !== undefined).join("\n").trim();
 }
 
-function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
+async function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Promise<Record<string, unknown>> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
-  const input = nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
+  const skillSections = formatSkillSections(await resolveDesiredGatewaySkillSections(ctx.config, __moduleDir));
+  const baseInput = nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
+  const input = appendSkillBlock(baseInput, skillSections);
   const instructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
@@ -837,7 +859,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runHeaders.Authorization,
     runHeaders["X-Hermes-Session-Key"],
   ]);
-  const body = buildRunBody(ctx, sessionKey);
+  let body: Record<string, unknown>;
+  try {
+    body = await buildRunBody(ctx, sessionKey);
+  } catch (err) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_gateway_skill_unavailable",
+      errorMessage: redactText(err instanceof Error ? err.message : String(err)),
+    };
+  }
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
