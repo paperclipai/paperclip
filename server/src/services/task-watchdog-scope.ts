@@ -27,6 +27,7 @@ export type TaskWatchdogMutationScope =
       companyId: string;
       watchedIssueId: string;
       watchdogIssueId: string | null;
+      runId: string;
       stopFingerprint: string | null;
     };
 
@@ -117,6 +118,7 @@ export async function resolveTaskWatchdogMutationScope(
     companyId: watchdog.companyId,
     watchedIssueId: watchdog.issueId,
     watchdogIssueId: watchdog.watchdogIssueId ?? null,
+    runId,
     stopFingerprint: taskWatchdog.stopFingerprint,
   };
 }

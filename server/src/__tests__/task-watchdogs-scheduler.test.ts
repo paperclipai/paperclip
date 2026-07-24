@@ -187,6 +187,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
             "comment_on_watched_subtree_issues",
             "create_child_issues_under_non_watchdog_watched_subtree",
             "create_product_bug_followups_outside_watched_subtree",
+            "refresh_task_watchdog_stop_fingerprint",
             "update_reusable_watchdog_issue",
           ]),
           deniedOperations: expect.arrayContaining([
@@ -519,6 +520,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       watchdogId: watchdog!.id,
       companyId,
       watchedIssueId: sourceId,
+      runId: randomUUID(),
       stopFingerprint: originalFingerprint,
     });
 
@@ -531,6 +533,86 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       latestCommentAt: later.toISOString(),
       latestDocumentAt: new Date(later.getTime() + 1_000).toISOString(),
       latestWorkProductAt: new Date(later.getTime() + 2_000).toISOString(),
+    });
+  });
+
+  it("rolls a watchdog run fingerprint forward when all subtree drift belongs to that run", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-SELF-DRIFT", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const originalFingerprint = watchdog!.lastObservedFingerprint!;
+    const runId = randomUUID();
+    const runStartedAt = new Date();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      startedAt: runStartedAt,
+      contextSnapshot: {
+        issueId: watchdog!.watchdogIssueId,
+        taskWatchdog: {
+          watchedIssueId: sourceId,
+          stopFingerprint: originalFingerprint,
+        },
+      },
+    });
+
+    const later = new Date(runStartedAt.getTime() + 1_000);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: sourceId,
+      authorType: "agent",
+      authorAgentId: agentId,
+      createdByRunId: runId,
+      body: "Watchdog finding from this run.",
+      updatedAt: later,
+      createdAt: later,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId,
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: sourceId,
+      createdAt: later,
+    });
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      runId,
+      stopFingerprint: originalFingerprint,
+    });
+
+    expect(revalidated.allowed, JSON.stringify(revalidated)).toBe(true);
+    expect(revalidated).toMatchObject({
+      repinned: true,
+      previousStopFingerprint: originalFingerprint,
+    });
+    if (!revalidated.allowed) throw new Error("Expected watchdog mutation revalidation to succeed");
+    expect(revalidated.stopFingerprint).not.toBe(originalFingerprint);
+
+    const [storedRun] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(storedRun?.contextSnapshot).toMatchObject({
+      taskWatchdog: {
+        watchedIssueId: sourceId,
+        stopFingerprint: revalidated.stopFingerprint,
+        stopFingerprintPinnedAt: expect.any(String),
+      },
     });
   });
 
@@ -557,6 +639,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       watchdogId: watchdog!.id,
       companyId,
       watchedIssueId: sourceId,
+      runId: randomUUID(),
       stopFingerprint: originalFingerprint,
     });
 

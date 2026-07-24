@@ -480,11 +480,97 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, watchedChildId)));
     expect(nestedWatchdogs).toHaveLength(0);
 
+    const finding = await request(app)
+      .post(`/api/issues/${watchedChildId}/comments`)
+      .send({ body: "Record the watchdog finding before creating follow-up work." });
+    expect(finding.status, JSON.stringify(finding.body)).toBe(201);
+
     const allowedChild = await request(app)
       .post(`/api/issues/${watchedChildId}/children`)
-      .send({ title: "Allowed watched child" });
+      .send({ title: "Allowed watched child", status: "done" });
     expect(allowedChild.status, JSON.stringify(allowedChild.body)).toBe(201);
     expect(allowedChild.body.parentId).toBe(watchedChildId);
+
+    const secondAllowedChild = await request(app)
+      .post(`/api/issues/${watchedChildId}/children`)
+      .send({ title: "Second allowed watched child" });
+    expect(secondAllowedChild.status, JSON.stringify(secondAllowedChild.body)).toBe(201);
+    expect(secondAllowedChild.body.parentId).toBe(watchedChildId);
+  });
+
+  it("lets a watchdog run explicitly refresh its pin after external stopped-subtree drift", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Refresh Watchdog" });
+    const watchedRootId = await seedIssue(companyId, {
+      title: "Watched root",
+      identifier: "WDOG-REFRESH",
+      status: "blocked",
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const boardApp = createApp(companyId);
+    const externalComment = await request(boardApp)
+      .post(`/api/issues/${watchedRootId}/comments`)
+      .send({ body: "External evidence arrived after the watchdog wake." });
+    expect(externalComment.status, JSON.stringify(externalComment.body)).toBe(201);
+
+    const watchdogApp = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+    const refreshed = await request(watchdogApp)
+      .post(`/api/issues/${watchedRootId}/watchdog/refresh`)
+      .send({});
+
+    expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
+    expect(refreshed.body).toMatchObject({
+      state: "stopped",
+      repinned: true,
+    });
+    expect(refreshed.body.stopFingerprint).not.toBe(refreshed.body.previousStopFingerprint);
+
+    const [storedRun] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(storedRun?.contextSnapshot).toMatchObject({
+      taskWatchdog: {
+        watchedIssueId: watchedRootId,
+        stopFingerprint: refreshed.body.stopFingerprint,
+        stopFingerprintPinnedAt: expect.any(String),
+      },
+    });
+
+    const [refreshActivity] = await db
+      .select({ action: activityLog.action, runId: activityLog.runId })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.entityId, watchedRootId),
+        eq(activityLog.action, "issue.task_watchdog_fingerprint_refreshed"),
+      ));
+    expect(refreshActivity).toEqual({
+      action: "issue.task_watchdog_fingerprint_refreshed",
+      runId,
+    });
+
+    const firstChild = await request(watchdogApp)
+      .post(`/api/issues/${watchedRootId}/children`)
+      .send({ title: "First child after explicit refresh", status: "done" });
+    expect(firstChild.status, JSON.stringify(firstChild.body)).toBe(201);
   });
 
   it("routes watchdog-discovered product bugs outside the watched source tree with evidence links", async () => {
