@@ -41,10 +41,14 @@ const mockSecretService = vi.hoisted(() => ({
   resolveSecretValueForAgentAccess: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getVisibility: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
   logActivity: mockLogActivity,
+  instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
 function createApp(actor: Record<string, unknown> = {
@@ -71,6 +75,16 @@ describe("secret routes", () => {
       mock.mockReset();
     }
     mockLogActivity.mockReset();
+    mockInstanceSettingsService.getVisibility.mockReset();
+    mockInstanceSettingsService.getVisibility.mockResolvedValue({
+      companySurfaces: [
+        "company.general",
+        "company.members",
+        "company.invites",
+        "company.secrets",
+        "company.plugins",
+      ],
+    });
   });
 
   it("returns provider health checks for board callers with company access", async () => {

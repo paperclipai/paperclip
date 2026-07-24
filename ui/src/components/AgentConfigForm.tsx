@@ -12,7 +12,7 @@ import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapte
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { environmentsApi } from "../api/environments";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
@@ -233,27 +233,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
     retry: false,
   });
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
+  const { data: experimentalSettings } = useFeatures();
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
 
   // Instance execution policy (general settings). When `executionMode` is
   // "kubernetes" the instance FORCES all execution onto the managed Kubernetes
   // sandbox; "any"/absent leaves the full environment/adapter choice intact.
   // Reuses the same general-settings query the rest of the UI uses.
-  const { data: generalSettings } = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-    retry: false,
-  });
-  const { data: instanceSettings } = useQuery({
-    queryKey: queryKeys.instance.settings,
-    queryFn: () => instanceSettingsApi.get(),
-    retry: false,
-  });
+  const { data: generalSettings } = useFeatures();
 
   const { data: environments = [] } = useQuery<Environment[]>({
     queryKey: selectedCompanyId ? queryKeys.environments.list(selectedCompanyId) : ["environments", "none"],
@@ -424,11 +411,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [currentDefaultEnvironmentId, environments],
   );
   const instanceDefaultEnvironmentId = useMemo(() => {
-    const environmentId = instanceSettings?.defaultEnvironmentId ?? null;
+    const environmentId = generalSettings?.defaultEnvironmentId ?? null;
     if (!environmentId) return "";
     const selected = environments.find((environment) => environment.id === environmentId) ?? null;
     return selected?.driver === "local" ? "" : environmentId;
-  }, [environments, instanceSettings?.defaultEnvironmentId]);
+  }, [environments, generalSettings?.defaultEnvironmentId]);
   const instanceDefaultEnvironment = useMemo(
     () => environments.find((environment) => environment.id === instanceDefaultEnvironmentId) ?? null,
     [environments, instanceDefaultEnvironmentId],

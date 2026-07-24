@@ -5,7 +5,7 @@ import { agentsApi, type OrgNode } from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -198,12 +198,8 @@ export function Agents() {
   const forceListView = isMobile;
   const effectiveView: "list" | "org" = forceListView ? "list" : view;
 
-  const { data: instanceSettings } = useQuery({
-    queryKey: queryKeys.instance.settings,
-    queryFn: () => instanceSettingsApi.get(),
-    enabled: !!selectedCompanyId,
-  });
-  const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
+  const { data: instanceSettings } = useFeatures();
+  const builtInAgentsEnabled = instanceSettings?.enableBuiltInAgents === true;
   const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
   const visibleTabItems = useMemo(
     () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),
@@ -238,7 +234,7 @@ export function Agents() {
     enabled: !!selectedCompanyId && effectiveView === "org",
   });
 
-  const environmentsEnabled = instanceSettings?.experimental.enableEnvironments === true;
+  const environmentsEnabled = instanceSettings?.enableEnvironments === true;
 
   const { data: environments } = useQuery({
     queryKey: queryKeys.environments.list(selectedCompanyId!),

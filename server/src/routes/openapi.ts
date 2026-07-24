@@ -148,6 +148,7 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
+  patchInstanceVisibilitySettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
   updateResourceMembershipSchema,
@@ -3289,6 +3290,23 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/settings/visibility",
+  tags: ["instance"],
+  summary: "Get instance visibility settings",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/instance/settings/visibility",
+  tags: ["instance"],
+  summary: "Update instance visibility settings",
+  request: { body: jsonBody(patchInstanceVisibilitySettingsSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
 
 registry.registerPath({
@@ -4983,6 +5001,27 @@ registry.registerPath({
     })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/plugins/companies/{companyId}/catalog",
+  tags: ["plugins"],
+  summary: "Get company-scoped plugin catalog with enablement state",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/plugins/{pluginId}/companies/{companyId}/enablement",
+  tags: ["plugins"],
+  summary: "Toggle plugin enablement for a company",
+  request: {
+    params: z.object({ pluginId: z.string(), companyId: z.string() }),
+    body: jsonBody(z.object({ enabled: z.boolean() })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Instance database backups ────────────────────────────────────────────────

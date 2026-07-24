@@ -291,8 +291,8 @@ export function usePluginLaunchers(
 ): UsePluginLaunchersResult {
   const queryEnabled = filters.enabled ?? true;
   const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.plugins.uiContributions,
-    queryFn: () => pluginsApi.listUiContributions(),
+    queryKey: [...queryKeys.plugins.uiContributions, filters.companyId ?? null],
+    queryFn: () => pluginsApi.listUiContributions(filters.companyId ?? undefined),
     enabled: queryEnabled,
   });
 

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useCaseHref } from "@/lib/router";
 import { casesApi, type CaseLinkRole } from "@/api/cases";
-import { instanceSettingsApi } from "@/api/instanceSettings";
+import { useFeatures } from "@/hooks/useFeatures";
 import { queryKeys } from "@/lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -20,10 +20,7 @@ const ROLE_LABEL: Record<CaseLinkRole, string> = {
  */
 export function IssueCasesPanel({ issueId }: { issueId: string }) {
   const caseHref = useCaseHref();
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
+  const { data: experimentalSettings } = useFeatures();
   const enabled = experimentalSettings?.enableCases === true;
 
   const casesQuery = useQuery({

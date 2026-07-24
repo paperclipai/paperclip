@@ -6,6 +6,7 @@ import { pluginManifestV1Schema, type PaperclipPluginManifestV1 } from "@papercl
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
+  getCompanySettings: vi.fn(),
 }));
 
 const mockLifecycle = vi.hoisted(() => ({
@@ -473,5 +474,75 @@ describe.sequential("plugin scoped API routes", () => {
     expect(result.error.issues.map((issue) => issue.message).join("\n")).toContain(
       "path must stay inside the plugin api namespace",
     );
+  });
+
+  it("returns 403 and does not dispatch when the plugin is disabled for the company", async () => {
+    const apiRoutes = manifest([
+      {
+        routeKey: "summary.get",
+        method: "GET",
+        path: "/summary",
+        auth: "board",
+        capability: "api.routes.register",
+        companyResolution: { from: "query", key: "companyId" },
+      },
+    ]);
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const { app, workerManager } = await createApp({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      },
+      plugin: {
+        id: pluginId,
+        pluginKey: apiRoutes.id,
+        status: "ready",
+        manifestJson: apiRoutes,
+      },
+    });
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/api/summary?companyId=${companyId}`);
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.getCompanySettings).toHaveBeenCalledWith(pluginId, companyId);
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("dispatches when no company settings row exists for the plugin", async () => {
+    const apiRoutes = manifest([
+      {
+        routeKey: "summary.get",
+        method: "GET",
+        path: "/summary",
+        auth: "board",
+        capability: "api.routes.register",
+        companyResolution: { from: "query", key: "companyId" },
+      },
+    ]);
+    mockRegistry.getCompanySettings.mockResolvedValueOnce(null);
+    const { app, workerManager } = await createApp({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      },
+      plugin: {
+        id: pluginId,
+        pluginKey: apiRoutes.id,
+        status: "ready",
+        manifestJson: apiRoutes,
+      },
+    });
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/api/summary?companyId=${companyId}`);
+
+    expect(res.status).not.toBe(403);
+    expect(mockRegistry.getCompanySettings).toHaveBeenCalledWith(pluginId, companyId);
+    expect(workerManager.call).toHaveBeenCalled();
   });
 });

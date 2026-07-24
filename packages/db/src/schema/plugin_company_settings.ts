@@ -11,9 +11,12 @@ import { plugins } from "./plugins.js";
  * plugin.
  *
  * Rows represent explicit overrides from the default company behavior:
- * - no row => plugin is enabled for the company by default
+ * - no row => the plugin manifest's `companyEnablement.default` applies
+ *   ("on" when the manifest omits it, i.e. enabled by default)
  * - row with `enabled = false` => plugin is disabled for that company
- * - row with `enabled = true` => plugin remains enabled and stores company settings
+ * - row with `enabled = true` => plugin is enabled and stores company settings
+ *
+ * See server/src/services/plugin-company-enablement.ts for the evaluation.
  */
 export const pluginCompanySettings = pgTable(
   "plugin_company_settings",

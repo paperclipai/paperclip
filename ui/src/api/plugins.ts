@@ -192,6 +192,32 @@ export interface PluginLocalFolderSaveInput {
 }
 
 /**
+ * A single entry in a company's plugin catalog, returned by
+ * `GET /plugins/companies/:companyId/catalog`.
+ *
+ * Only `ready`, catalog-eligible plugins are included. `enabled` is the
+ * effective per-company state (manifest `companyEnablement` default +
+ * `plugin_company_settings` row); `locked` marks instance-managed
+ * governance plugins (toggling 409s for non-instance-admins);
+ * `settingsRoutePath` is set when the plugin contributes a
+ * `companySettingsPage` slot, mounted at
+ * `/company/settings/${settingsRoutePath}`.
+ */
+export interface CompanyPluginCatalogItem {
+  pluginId: string;
+  pluginKey: string;
+  displayName: string;
+  version: string;
+  description: string | null;
+  capabilities: string[];
+  enabled: boolean;
+  locked: boolean;
+  defaultEnabled: boolean;
+  hasCompanySettingsPage: boolean;
+  settingsRoutePath: string | null;
+}
+
+/**
  * Plugin management API client.
  *
  * All methods are thin wrappers around the `api` base client. They return
@@ -342,9 +368,16 @@ export const pluginsApi = {
    *   row.launchers.filter((launcher) => launcher.placementZone === "toolbarButton"),
    * );
    * ```
+   *
+   * When companyId is provided, the server also filters out contributions
+   * from plugins disabled for that company (and asserts company access).
    */
-  listUiContributions: () =>
-    api.get<PluginUiContribution[]>("/plugins/ui-contributions"),
+  listUiContributions: (companyId?: string) =>
+    api.get<PluginUiContribution[]>(
+      companyId
+        ? `/plugins/ui-contributions?companyId=${encodeURIComponent(companyId)}`
+        : "/plugins/ui-contributions",
+    ),
 
   // ===========================================================================
   // Plugin configuration endpoints
@@ -428,6 +461,29 @@ export const pluginsApi = {
     api.put<PluginLocalFolderStatus>(
       `/plugins/${pluginId}/companies/${companyId}/local-folders/${encodeURIComponent(folderKey)}`,
       input,
+    ),
+
+  // ===========================================================================
+  // Company plugin catalog endpoints
+  // ===========================================================================
+
+  /**
+   * List the company-scoped plugin catalog: every `ready`, catalog-eligible
+   * plugin with its effective enablement state, lock state, and (when
+   * contributed) company settings route. Used by the CompanyPlugins page.
+   */
+  listCompanyPluginCatalog: (companyId: string) =>
+    api.get<CompanyPluginCatalogItem[]>(`/plugins/companies/${encodeURIComponent(companyId)}/catalog`),
+
+  /**
+   * Enable or disable a plugin for a specific company. Locked plugins
+   * reject non-instance-admin toggles with 409 `plugin_enablement_locked`.
+   * Returns the updated catalog item.
+   */
+  setCompanyPluginEnabled: (pluginId: string, companyId: string, enabled: boolean) =>
+    api.put<CompanyPluginCatalogItem>(
+      `/plugins/${encodeURIComponent(pluginId)}/companies/${encodeURIComponent(companyId)}/enablement`,
+      { enabled },
     ),
 
   // ===========================================================================
