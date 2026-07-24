@@ -395,7 +395,11 @@ export function buildSuccessfulRunHandoffInstruction(input: {
         "1. Mark it `done` (scope complete) or `cancelled` (intentionally stopped).",
         "",
       ]
-      : []),
+      : [
+        "**Was the issue intentionally stopped?**",
+        "1. Mark it `cancelled`. The source evidence forbids `done`, but intentional cancellation remains a valid terminal disposition.",
+        "",
+      ]),
     "**Does someone else need to look at it?**",
     "2. Move it to `in_review` with a real reviewer path — `executionState.currentParticipant`, a human owner via `assigneeUserId`, a pending issue-thread interaction, or a linked pending approval.",
     "",
