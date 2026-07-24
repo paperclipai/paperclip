@@ -224,7 +224,7 @@ export function Layout() {
 
     if (companyPrefix !== matchedCompany.issuePrefix) {
       const suffix = location.pathname.replace(/^\/[^/]+/, "");
-      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}`, { replace: true });
+      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}${location.hash}`, { replace: true });
       return;
     }
 
@@ -244,6 +244,7 @@ export function Layout() {
     matchedCompany,
     location.pathname,
     location.search,
+    location.hash,
     navigate,
     selectionSource,
     selectedCompanyId,
