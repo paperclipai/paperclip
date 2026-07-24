@@ -14719,6 +14719,64 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
 
+        // Staleness guard: a deferred wake whose target lost the issue while it
+        // was parked must not consume this finalization's promotion. Judge with
+        // the same predicates claimQueuedRun applies when a queued run claims;
+        // skipping a stale head here (instead of promoting it into a run that
+        // is immediately stale-cancelled) lets a fresh handoff wake parked
+        // behind it promote in the same pass rather than starving until
+        // unrelated issue activity.
+        const deferredResumeIntent =
+          deferredContextSeed.resumeIntent === true || deferredContextSeed.followUpRequested === true;
+        const deferredIsInteractionWake = allowsIssueInteractionWake(deferredContextSeed);
+        // Comment/mention wakes are issue-scoped rather than ownership-bound
+        // (see the promotion lock update below): they promote even when the
+        // issue is assigned to another agent, exactly as before this guard —
+        // the claim-time staleness gate remains their judge.
+        const deferredIsCommentDrivenWake =
+          deferredCommentIds.length > 0 ||
+          deferred.source === "comment" ||
+          deferred.triggerDetail === "mention" ||
+          deferredWakeReason === "issue_mention" ||
+          deferredWakeReason === "issue_commented" ||
+          deferredWakeReason === "issue_reopened_via_comment";
+        const deferredReviewExecutionState =
+          issue.status === "in_review" ? parseIssueExecutionState(issue.executionState) : null;
+        const deferredReviewParticipant = deferredReviewExecutionState?.currentParticipant ?? null;
+        const deferredIsCurrentReviewParticipant =
+          deferredReviewParticipant?.type === "agent" &&
+          deferredReviewParticipant.agentId === deferred.agentId;
+
+        const deferredStaleError =
+          issue.assigneeAgentId !== deferred.agentId &&
+          !deferredIsInteractionWake &&
+          !deferredIsCurrentReviewParticipant &&
+          !deferredIsCommentDrivenWake
+            ? "Cancelled because issue assignee changed before the queued run could start; the new owner will be woken instead"
+            : (issue.status === "done" || issue.status === "cancelled") &&
+                !deferredResumeIntent &&
+                deferredCommentIds.length === 0
+              ? `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`
+              : issue.status === "in_review" &&
+                  deferredReviewParticipant &&
+                  !deferredIsCurrentReviewParticipant &&
+                  deferredCommentIds.length === 0
+                ? "Cancelled because the in-review participant changed before the queued run could start; the current participant will be woken instead"
+                : null;
+
+        if (deferredStaleError) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "skipped",
+              finishedAt: new Date(),
+              error: deferredStaleError,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
+
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
           (readNonEmptyString(deferred.source) as WakeupOptions["source"]) ?? "automation";
