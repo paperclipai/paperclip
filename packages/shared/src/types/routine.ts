@@ -204,6 +204,14 @@ export interface RoutineRun {
   idempotencyKey: string | null;
   triggerPayload: Record<string, unknown> | null;
   dispatchFingerprint: string | null;
+  evaluatorId?: string | null;
+  evaluatorContractVersion?: string | null;
+  evaluationOutcome?: string | null;
+  evaluationResult?: import("../validators/routine.js").RoutineExceptionEvaluationResultV1 | null;
+  evaluatorProvenance?: Record<string, unknown> | null;
+  exceptionFingerprint?: string | null;
+  evidenceDigest?: string | null;
+  evaluationLeaseExpiresAt?: Date | null;
   linkedIssueId: string | null;
   coalescedIntoRunId: string | null;
   failureReason: string | null;

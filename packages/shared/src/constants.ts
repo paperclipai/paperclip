@@ -575,6 +575,7 @@ export type RoutineVariableType = (typeof ROUTINE_VARIABLE_TYPES)[number];
 
 export const ROUTINE_RUN_STATUSES = [
   "received",
+  "evaluating",
   "coalesced",
   "skipped",
   "issue_created",

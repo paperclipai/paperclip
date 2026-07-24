@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   activityLog,
+  approvals,
   companies,
   companyMemberships,
   companySecretBindings,
@@ -16,6 +17,8 @@ import {
   goals,
   heartbeatRuns,
   issueInboxArchives,
+  issueApprovals,
+  issueComments,
   issueReadStates,
   issues,
   pluginManagedResources,
@@ -38,6 +41,9 @@ import type {
   RoutineRevision,
   RoutineRevisionSnapshotV1,
   RoutineRunSummary,
+  RoutineExceptionEvaluatorBinding,
+  RoutineExceptionEvaluationInputV1,
+  RoutineExceptionEvaluationResultV1,
   RoutineTrigger,
   RoutineTriggerSecretMaterial,
   RoutineVariable,
@@ -76,6 +82,14 @@ import {
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import {
+  createDenyAllRoutineExceptionCapabilityBroker,
+  createRoutineExceptionEvidenceDigest,
+  createRoutineExceptionEvaluatorRegistry,
+  createRoutineExceptionFingerprint,
+  type RoutineExceptionEvaluation,
+  type RoutineExceptionEvaluatorRegistry,
+} from "./routine-exception-evaluation.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -88,6 +102,10 @@ const ACTIVITY_GATE_IGNORED_ACTIONS = [
   "issue.inbox_archived",
   "issue.inbox_unarchived",
 ];
+const POL_EXCEPTION_ROUTINE_IDS = new Set([
+  "ecfe968c-83ff-4592-b216-36ef5e250775",
+  "45fdf473-a846-4a98-bd56-bbaec4bedb34",
+]);
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -264,60 +282,6 @@ function nextResultText(status: string, issueId?: string | null) {
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
   return status;
-}
-
-type ExceptionLedEvaluation = NonNullable<RunRoutine["exceptionLedEvaluation"]>;
-
-function normalizeExceptionFingerprintPart(value: string) {
-  return value
-    .normalize("NFKC")
-    .trim()
-    .toLowerCase()
-    .replace(/\b\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}(?:\.\d+)?z\b/g, "<timestamp>")
-    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/g, "<uuid>")
-    .replace(/\s+/g, " ");
-}
-
-export function createRoutineExceptionFingerprint(input: {
-  routineId: string;
-  contractVersion: string;
-  normalizedRootCause: string;
-  affectedResource: string;
-}) {
-  const parts = [
-    input.routineId.trim(),
-    normalizeExceptionFingerprintPart(input.contractVersion),
-    normalizeExceptionFingerprintPart(input.normalizedRootCause),
-    normalizeExceptionFingerprintPart(input.affectedResource),
-  ];
-  if (parts.some((part) => !part)) throw new Error("Exception fingerprint fields must be non-empty");
-  return crypto.createHash("sha256").update(parts.join("\0")).digest("hex");
-}
-
-function exceptionResourceOriginId(routineId: string, contractVersion: string, affectedResource: string) {
-  const resourceKey = crypto
-    .createHash("sha256")
-    .update(
-      `${normalizeExceptionFingerprintPart(contractVersion)}\0${normalizeExceptionFingerprintPart(affectedResource)}`,
-    )
-    .digest("hex");
-  return `${routineId}:${resourceKey}`;
-}
-
-function approvalClosureFailure(evaluation: ExceptionLedEvaluation) {
-  const evidence = evaluation.approvalClosure;
-  if (!evidence && normalizeExceptionFingerprintPart(evaluation.contractVersion).startsWith("approval-release")) {
-    return "approval closure evidence is missing";
-  }
-  if (!evidence) return null;
-  if (evidence.approvalStatus === "pending") return "approval is non-terminal";
-  if (evidence.approvalIssueId !== evidence.evidenceIssueId) return "approval issue identity mismatch";
-  if (evidence.approvalPrId !== evidence.evidencePrId) return "approval PR identity mismatch";
-  if (evidence.approvalRuntimeId !== evidence.evidenceRuntimeId) return "approval runtime identity mismatch";
-  if (evidence.runtimeState !== "clean") return `runtime state is ${evidence.runtimeState}`;
-  if (!evidence.bootCommitMatches) return "runtime boot commit is stale";
-  if (!evidence.reconciliationMatches) return "approval reconciliation mismatch";
-  return null;
 }
 
 function normalizeWebhookTimestampMs(rawTimestamp: string) {
@@ -677,27 +641,22 @@ export function routineService(
     heartbeat?: IssueAssignmentWakeupDeps;
     pluginWorkerManager?: PluginWorkerManager;
     runtimeEnv?: Record<string, string | undefined>;
-    beforePersistExceptionEvaluation?: (evaluation: ExceptionLedEvaluation) => void | Promise<void>;
+    exceptionEvaluatorRegistry?: RoutineExceptionEvaluatorRegistry;
+    beforeExceptionReconcile?: () => void | Promise<void>;
+    exceptionPilotRoutineIds?: readonly string[];
   } = {},
 ) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
   const instanceSettings = instanceSettingsService(db);
+  const exceptionEvaluatorRegistry = deps.exceptionEvaluatorRegistry ?? createRoutineExceptionEvaluatorRegistry({
+    capabilityBroker: createDenyAllRoutineExceptionCapabilityBroker(),
+  });
+  const exceptionPilotRoutineIds = new Set(deps.exceptionPilotRoutineIds ?? POL_EXCEPTION_ROUTINE_IDS);
   const runtimeEnv = deps.runtimeEnv ?? process.env;
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
   });
-
-  function isExceptionLedPilot(routineId: string) {
-    if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_EXCEPTION_LED_ROUTINES_ENABLED)) return false;
-    const pilotIds = new Set(
-      (runtimeEnv.PAPERCLIP_EXCEPTION_LED_ROUTINE_IDS ?? "")
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean),
-    );
-    return pilotIds.has(routineId);
-  }
 
   async function getRoutineById(id: string) {
     return db
@@ -1082,6 +1041,14 @@ export function routineService(
         idempotencyKey: routineRuns.idempotencyKey,
         triggerPayload: routineRuns.triggerPayload,
         dispatchFingerprint: routineRuns.dispatchFingerprint,
+        evaluatorId: routineRuns.evaluatorId,
+        evaluatorContractVersion: routineRuns.evaluatorContractVersion,
+        evaluationOutcome: routineRuns.evaluationOutcome,
+        evaluationResult: routineRuns.evaluationResult,
+        evaluatorProvenance: routineRuns.evaluatorProvenance,
+        exceptionFingerprint: routineRuns.exceptionFingerprint,
+        evidenceDigest: routineRuns.evidenceDigest,
+        evaluationLeaseExpiresAt: routineRuns.evaluationLeaseExpiresAt,
         routineRevisionId: routineRuns.routineRevisionId,
         linkedIssueId: routineRuns.linkedIssueId,
         coalescedIntoRunId: routineRuns.coalescedIntoRunId,
@@ -1116,6 +1083,14 @@ export function routineService(
         idempotencyKey: row.idempotencyKey,
         triggerPayload: row.triggerPayload as Record<string, unknown> | null,
         dispatchFingerprint: row.dispatchFingerprint,
+        evaluatorId: row.evaluatorId,
+        evaluatorContractVersion: row.evaluatorContractVersion,
+        evaluationOutcome: row.evaluationOutcome,
+        evaluationResult: row.evaluationResult,
+        evaluatorProvenance: row.evaluatorProvenance,
+        exceptionFingerprint: row.exceptionFingerprint,
+        evidenceDigest: row.evidenceDigest,
+        evaluationLeaseExpiresAt: row.evaluationLeaseExpiresAt,
         routineRevisionId: row.routineRevisionId,
         linkedIssueId: row.linkedIssueId,
         coalescedIntoRunId: row.coalescedIntoRunId,
@@ -1674,20 +1649,405 @@ export function routineService(
       );
   }
 
-  async function recordExceptionLedEvaluation(input: {
+  async function resolveExceptionEvaluatorBinding(
+    routine: typeof routines.$inferSelect,
+  ): Promise<RoutineExceptionEvaluatorBinding | null> {
+    if (!exceptionPilotRoutineIds.has(routine.id)) return null;
+    const experimental = await instanceSettings.getExperimental();
+    if (!experimental.routineExceptionEvaluators.enabled) return null;
+    const binding = experimental.routineExceptionEvaluators.bindings
+      .find((candidate) => candidate.routineId === routine.id);
+    if (!binding?.enabled) return null;
+    return binding;
+  }
+
+  function hostUnverifiableEvaluation(input: {
+    binding: RoutineExceptionEvaluatorBinding;
+    code: string;
+    summary: string;
+    startedAt: Date;
+  }): RoutineExceptionEvaluation {
+    const completedAt = new Date();
+    return {
+      result: {
+        schemaVersion: 1,
+        outcome: "UNVERIFIABLE",
+        severity: "high",
+        rootCauseCode: input.code,
+        affectedResource: `routine-evaluator:${input.binding.routineId}`,
+        summary: input.summary.slice(0, 2_000),
+        evidence: [],
+        recoveredFingerprints: [],
+        closureCandidates: [],
+        retryClass: "NONE",
+      },
+      provenance: {
+        evaluatorId: input.binding.evaluatorId,
+        evaluatorContractVersion: input.binding.evaluatorContractVersion,
+        implementationVersion: "host-fallback-v1",
+        serverCommit: process.env.PAPERCLIP_BUILD_SHA?.trim() || "unknown",
+        implementationDigest: "host-generated",
+        bindingDigest: "host-generated",
+        capabilityIdsUsed: [],
+        attemptCount: 0,
+        startedAt: input.startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+      },
+    };
+  }
+
+  async function listOpenRoutineExceptions(
+    routine: typeof routines.$inferSelect,
+  ): Promise<RoutineExceptionEvaluationInputV1["openExceptions"]> {
+    const openIssues = await db
+      .select({ id: issues.id, fingerprint: issues.originFingerprint })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, routine.companyId),
+        eq(issues.originKind, "routine_exception"),
+        eq(issues.originId, routine.id),
+        inArray(issues.status, OPEN_ISSUE_STATUSES),
+        visibleIssueCondition(),
+      ))
+      .limit(100);
+    const result: RoutineExceptionEvaluationInputV1["openExceptions"] = [];
+    for (const issue of openIssues) {
+      if (!issue.fingerprint) continue;
+      const linkedRun = await db
+        .select({
+          result: routineRuns.evaluationResult,
+          contractVersion: routineRuns.evaluatorContractVersion,
+        })
+        .from(routineRuns)
+        .where(and(
+          eq(routineRuns.routineId, routine.id),
+          eq(routineRuns.linkedIssueId, issue.id),
+          eq(routineRuns.exceptionFingerprint, issue.fingerprint),
+          isNotNull(routineRuns.evaluationResult),
+        ))
+        .orderBy(desc(routineRuns.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const rootCauseCode = linkedRun?.result?.rootCauseCode;
+      const affectedResource = linkedRun?.result?.affectedResource;
+      if (!rootCauseCode || !affectedResource || !linkedRun?.contractVersion) continue;
+      result.push({
+        fingerprint: issue.fingerprint,
+        rootCauseCode,
+        affectedResource,
+        evaluatorContractVersion: linkedRun.contractVersion,
+      });
+    }
+    return result;
+  }
+
+  async function validateApprovalClosureCandidates(
+    txDb: Db,
+    companyId: string,
+    result: RoutineExceptionEvaluationResultV1,
+  ) {
+    const approvalCandidates = result.closureCandidates
+      .filter((candidate) => candidate.artifactType === "approval");
+    if (approvalCandidates.length === 0) return null;
+    const evidence = new Map(
+      result.evidence
+        .filter((item) => item.safeValue !== undefined)
+        .map((item) => [item.key, item.safeValue!]),
+    );
+    for (const candidate of approvalCandidates) {
+      const approval = await txDb
+        .select({ id: approvals.id, status: approvals.status })
+        .from(approvals)
+        .where(and(eq(approvals.companyId, companyId), eq(approvals.id, candidate.artifactId)))
+        .then((rows) => rows[0] ?? null);
+      if (!approval || !["approved", "rejected", "cancelled"].includes(approval.status)) {
+        return "APPROVAL_NON_TERMINAL";
+      }
+      if (evidence.get("approval.status") !== approval.status) {
+        return "APPROVAL_EVIDENCE_IDENTITY_MISMATCH";
+      }
+      const linkedIssueId = evidence.get("approval.issueId");
+      if (!linkedIssueId) return "APPROVAL_LINK_EVIDENCE_MISSING";
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(linkedIssueId)) {
+        return "APPROVAL_ISSUE_IDENTITY_MISMATCH";
+      }
+      const linked = await txDb
+        .select({ issueId: issueApprovals.issueId })
+        .from(issueApprovals)
+        .where(and(
+          eq(issueApprovals.companyId, companyId),
+          eq(issueApprovals.approvalId, approval.id),
+          eq(issueApprovals.issueId, linkedIssueId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (!linked) return "APPROVAL_ISSUE_IDENTITY_MISMATCH";
+      const identityPairs = [
+        ["approval.prId", "evidence.prId"],
+        ["approval.runtimeId", "evidence.runtimeId"],
+        ["approval.issueId", "evidence.issueId"],
+      ] as const;
+      for (const [left, right] of identityPairs) {
+        if (!evidence.get(left) || evidence.get(left) !== evidence.get(right)) {
+          return "APPROVAL_EVIDENCE_IDENTITY_MISMATCH";
+        }
+      }
+      if (
+        evidence.get("runtime.state") !== "clean" ||
+        evidence.get("runtime.bootCommitMatches") !== "true" ||
+        evidence.get("runtime.reconciliationMatches") !== "true" ||
+        evidence.get("release.prMerged") !== "true" ||
+        evidence.get("release.smokePassed") !== "true" ||
+        evidence.get("runtime.paperMode") !== "true" ||
+        evidence.get("runtime.emergencyStopped") !== "false"
+      ) {
+        return "APPROVAL_RUNTIME_EVIDENCE_INCOMPLETE";
+      }
+    }
+    return null;
+  }
+
+  async function reconcileTrustedExceptionEvaluation(input: {
     routine: typeof routines.$inferSelect;
     trigger: typeof routineTriggers.$inferSelect | null;
-    source: "manual" | "api";
-    evaluation: ExceptionLedEvaluation;
-    idempotencyKey?: string | null;
+    runId: string;
+    binding: RoutineExceptionEvaluatorBinding;
+    evaluation: RoutineExceptionEvaluation;
     actor?: Actor;
+    nextRunAt?: Date;
+    skipBeforeHook?: boolean;
+    openExceptionFingerprints?: readonly string[];
   }) {
+    if (!input.skipBeforeHook) await deps.beforeExceptionReconcile?.();
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      await tx.execute(
-        sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
-      );
+      const lockedRun = await txDb
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.id, input.runId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedRun) throw new Error("PERSISTENCE_LINKAGE_FAILED: routine run missing");
+      if (lockedRun.status !== "evaluating") return lockedRun;
 
+      let evaluation = input.evaluation;
+      const approvalFailure = await validateApprovalClosureCandidates(
+        txDb,
+        input.routine.companyId,
+        evaluation.result,
+      );
+      if (approvalFailure) {
+        evaluation = hostUnverifiableEvaluation({
+          binding: input.binding,
+          code: approvalFailure,
+          summary: "Approval-release closure evidence was incomplete or mismatched",
+          startedAt: new Date(evaluation.provenance.startedAt),
+        });
+      }
+
+      const result = evaluation.result;
+      const evidenceDigest = createRoutineExceptionEvidenceDigest(result);
+      const fingerprint = result.outcome === "PASS" ? null : createRoutineExceptionFingerprint({
+        evaluatorId: input.binding.evaluatorId,
+        evaluatorContractVersion: input.binding.evaluatorContractVersion,
+        rootCauseCode: result.rootCauseCode!,
+        affectedResource: result.affectedResource,
+      });
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(
+        ${`${input.routine.companyId}:${input.routine.id}:${fingerprint ?? "recovery"}`},
+        0
+      ))`);
+
+      const now = new Date();
+      const finish = async (
+        status: string,
+        linkedIssueId: string | null,
+        coalescedIntoRunId: string | null = null,
+      ) => {
+        const [updated] = await txDb
+          .update(routineRuns)
+          .set({
+            status,
+            evaluationOutcome: result.outcome,
+            evaluationResult: result,
+            evaluatorProvenance: evaluation.provenance,
+            exceptionFingerprint: fingerprint,
+            evidenceDigest,
+            linkedIssueId,
+            coalescedIntoRunId,
+            failureReason: result.outcome === "UNVERIFIABLE" ? result.summary : null,
+            evaluationLeaseExpiresAt: null,
+            completedAt: now,
+            updatedAt: now,
+          })
+          .where(eq(routineRuns.id, input.runId))
+          .returning();
+        await updateRoutineTouchedState({
+          routineId: input.routine.id,
+          triggerId: input.trigger?.id ?? null,
+          triggeredAt: lockedRun.triggeredAt,
+          status,
+          issueId: linkedIssueId,
+          nextRunAt: input.nextRunAt,
+        }, txDb);
+        return updated ?? lockedRun;
+      };
+
+      if (result.outcome === "PASS") {
+        const openFingerprints = new Set(input.openExceptionFingerprints ?? []);
+        const recoveredFingerprints = [...new Set(result.recoveredFingerprints)]
+          .filter((candidate) => openFingerprints.has(candidate));
+        const incidentIds = recoveredFingerprints.length === 0
+          ? []
+          : await txDb
+              .select({ id: issues.id })
+              .from(issues)
+              .where(and(
+                eq(issues.companyId, input.routine.companyId),
+                eq(issues.originKind, "routine_exception"),
+                eq(issues.originId, input.routine.id),
+                inArray(issues.originFingerprint, recoveredFingerprints),
+                inArray(issues.status, OPEN_ISSUE_STATUSES),
+                visibleIssueCondition(),
+              ))
+              .then((rows) => rows.map((row) => row.id));
+        if (incidentIds.length > 0) {
+          await txDb
+            .update(issues)
+            .set({ status: "done", completedAt: now, updatedAt: now })
+            .where(inArray(issues.id, incidentIds));
+        }
+        const residueIds = [...new Set(
+          result.closureCandidates
+            .filter((candidate) => candidate.artifactType === "issue")
+            .map((candidate) => candidate.artifactId),
+        )];
+        const supersededResidueIds = residueIds.length === 0
+          ? []
+          : await txDb
+            .update(issues)
+            .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
+            .where(and(
+              eq(issues.companyId, input.routine.companyId),
+              eq(issues.originKind, "routine_execution"),
+              eq(issues.originId, input.routine.id),
+              inArray(issues.id, residueIds),
+              inArray(issues.status, OPEN_ISSUE_STATUSES),
+            ))
+            .returning({ id: issues.id })
+            .then((rows) => rows.map((row) => row.id));
+        if (incidentIds.length > 0 || supersededResidueIds.length > 0) {
+          await logActivity(txDb, {
+            companyId: input.routine.companyId,
+            actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",
+            actorId: input.actor?.agentId ?? input.actor?.userId ?? "routine-exception-dispatch",
+            agentId: input.actor?.agentId ?? null,
+            runId: input.actor?.runId ?? null,
+            action: "routine.exception_recovered",
+            entityType: "routine_run",
+            entityId: input.runId,
+            details: { routineId: input.routine.id, incidentIds, residueIssueIds: supersededResidueIds },
+          });
+        }
+        return finish("completed", null);
+      }
+
+      const existingIncident = await txDb
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, input.routine.companyId),
+          eq(issues.originKind, "routine_exception"),
+          eq(issues.originId, input.routine.id),
+          eq(issues.originFingerprint, fingerprint!),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          visibleIssueCondition(),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingIncident) {
+        const matchingEvidence = await txDb
+          .select({ id: routineRuns.id })
+          .from(routineRuns)
+          .where(and(
+            eq(routineRuns.linkedIssueId, existingIncident.id),
+            eq(routineRuns.evidenceDigest, evidenceDigest),
+          ))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!matchingEvidence && result.evidence.length > 0) {
+          await txDb.insert(issueComments).values({
+            companyId: input.routine.companyId,
+            issueId: existingIncident.id,
+            authorType: "system",
+            body: `Material evaluator evidence changed on routine run \`${input.runId}\` (digest \`${evidenceDigest}\`).`,
+          });
+        }
+        return finish("coalesced", existingIncident.id, existingIncident.originRunId);
+      }
+
+      const incident = await issueService(txDb).create(input.routine.companyId, {
+        projectId: input.routine.projectId,
+        goalId: input.routine.goalId,
+        parentId: input.routine.parentIssueId,
+        title: `Routine exception: ${input.routine.title}`,
+        description: [
+          result.summary,
+          `Evaluator: \`${input.binding.evaluatorId}\``,
+          `Contract: \`${input.binding.evaluatorContractVersion}\``,
+          `Root cause: \`${result.rootCauseCode}\``,
+          `Affected resource: \`${result.affectedResource}\``,
+          `Evidence is retained on routine run \`${input.runId}\`.`,
+        ].join("\n\n"),
+        status: "todo",
+        priority: result.severity === "critical" ? "critical" : "high",
+        assigneeAgentId: input.routine.assigneeAgentId,
+        createdByAgentId: input.actor?.agentId ?? null,
+        createdByUserId: input.actor?.userId ?? null,
+        responsibleUserId: input.routine.responsibleUserId,
+        trustExplicitResponsibleUserId: true,
+        originKind: "routine_exception",
+        originId: input.routine.id,
+        originRunId: input.runId,
+        originFingerprint: fingerprint!,
+      });
+      await logActivity(txDb, {
+        companyId: input.routine.companyId,
+        actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",
+        actorId: input.actor?.agentId ?? input.actor?.userId ?? "routine-exception-dispatch",
+        agentId: input.actor?.agentId ?? null,
+        runId: input.actor?.runId ?? null,
+        action: "routine.exception_opened",
+        entityType: "issue",
+        entityId: incident.id,
+        details: {
+          routineId: input.routine.id,
+          routineRunId: input.runId,
+          fingerprint,
+          evidenceDigest,
+        },
+      });
+      return finish("issue_created", incident.id);
+    });
+  }
+
+  async function dispatchTrustedExceptionEvaluation(input: {
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect | null;
+    source: "schedule" | "manual" | "api" | "webhook";
+    triggerPayload: Record<string, unknown> | null;
+    idempotencyKey?: string | null;
+    actor?: Actor;
+    nextRunAt?: Date;
+  }) {
+    const binding = await resolveExceptionEvaluatorBinding(input.routine);
+    if (!binding) return null;
+    const triggeredAt = new Date();
+    const claimed = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await tx.execute(sql`select id from ${routines}
+        where ${routines.id} = ${input.routine.id}
+          and ${routines.companyId} = ${input.routine.companyId}
+        for update`);
       if (input.idempotencyKey) {
         const existing = await txDb
           .select()
@@ -1702,200 +2062,213 @@ export function routineService(
           .orderBy(desc(routineRuns.createdAt))
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (existing) return existing;
+        if (existing) return { run: existing, created: false };
       }
-
-      const triggeredAt = new Date();
-      let effectiveEvaluation = input.evaluation;
-      let failureReason: string | null = null;
-      const approvalFailure = approvalClosureFailure(effectiveEvaluation);
-      if (effectiveEvaluation.outcome === "green" && approvalFailure) {
-        failureReason = approvalFailure;
-        effectiveEvaluation = {
-          ...effectiveEvaluation,
-          outcome: "failure",
-          normalizedRootCause: `approval closure refused: ${approvalFailure}`,
-        };
-      }
-
-      try {
-        await deps.beforePersistExceptionEvaluation?.(effectiveEvaluation);
-      } catch (error) {
-        failureReason = error instanceof Error ? error.message : String(error);
-        effectiveEvaluation = {
-          ...effectiveEvaluation,
-          outcome: "failure",
-          normalizedRootCause: "UNVERIFIABLE: evaluation persistence failed",
-        };
-      }
-
-      let fingerprint: string;
-      try {
-        fingerprint = createRoutineExceptionFingerprint({
-          routineId: input.routine.id,
-          contractVersion: effectiveEvaluation.contractVersion,
-          normalizedRootCause:
-            effectiveEvaluation.outcome === "green"
-              ? "green"
-              : effectiveEvaluation.normalizedRootCause ?? "",
-          affectedResource: effectiveEvaluation.affectedResource,
-        });
-      } catch (error) {
-        failureReason = error instanceof Error ? error.message : String(error);
-        effectiveEvaluation = {
-          ...effectiveEvaluation,
-          outcome: "failure",
-          normalizedRootCause: "UNVERIFIABLE: exception fingerprint failed",
-          affectedResource: effectiveEvaluation.affectedResource || "unknown",
-          contractVersion: effectiveEvaluation.contractVersion || "unknown",
-        };
-        fingerprint = createRoutineExceptionFingerprint({
-          routineId: input.routine.id,
-          contractVersion: effectiveEvaluation.contractVersion,
-          normalizedRootCause:
-            effectiveEvaluation.normalizedRootCause ?? "UNVERIFIABLE: exception fingerprint failed",
-          affectedResource: effectiveEvaluation.affectedResource,
-        });
-      }
-
-      const originId = exceptionResourceOriginId(
-        input.routine.id,
-        effectiveEvaluation.contractVersion,
-        effectiveEvaluation.affectedResource,
-      );
-      const [createdRun] = await txDb.insert(routineRuns).values({
-        companyId: input.routine.companyId,
-        routineId: input.routine.id,
-        triggerId: input.trigger?.id ?? null,
-        source: input.source,
-        status: "received",
-        triggeredAt,
-        routineRevisionId: input.routine.latestRevisionId,
-        responsibleUserId: input.routine.responsibleUserId,
-        idempotencyKey: input.idempotencyKey ?? null,
-        triggerPayload: { exceptionLedEvaluation: input.evaluation },
-        dispatchFingerprint: fingerprint,
-        failureReason,
-      }).returning();
-
-      const complete = async (
-        status: string,
-        linkedIssueId: string | null,
-        coalescedIntoRunId: string | null = null,
-      ) => {
-        const [updatedRun] = await txDb.update(routineRuns).set({
-          status,
-          linkedIssueId,
-          coalescedIntoRunId,
-          failureReason,
-          completedAt: triggeredAt,
-          updatedAt: triggeredAt,
-        }).where(eq(routineRuns.id, createdRun.id)).returning();
-        await updateRoutineTouchedState({
+      const [run] = await txDb
+        .insert(routineRuns)
+        .values({
+          companyId: input.routine.companyId,
           routineId: input.routine.id,
           triggerId: input.trigger?.id ?? null,
+          source: input.source,
+          status: "evaluating",
           triggeredAt,
-          status,
-          issueId: linkedIssueId,
-        }, txDb);
-        return updatedRun ?? createdRun;
-      };
-
-      if (effectiveEvaluation.outcome === "green") {
-        const openIncidents = await txDb.select({ id: issues.id }).from(issues).where(and(
-          eq(issues.companyId, input.routine.companyId),
-          eq(issues.originKind, "routine_exception"),
-          eq(issues.originId, originId),
-          inArray(issues.status, OPEN_ISSUE_STATUSES),
-          visibleIssueCondition(),
-        ));
-        const incidentIds = openIncidents.map((incident) => incident.id);
-        if (incidentIds.length > 0) {
-          await txDb.update(issues).set({
-            status: "done",
-            completedAt: triggeredAt,
-            updatedAt: triggeredAt,
-          }).where(inArray(issues.id, incidentIds));
-        }
-
-        const residueIds = [...new Set(effectiveEvaluation.residueIssueIds)];
-        if (residueIds.length > 0) {
-          await txDb.update(issues).set({
-            status: "cancelled",
-            cancelledAt: triggeredAt,
-            updatedAt: triggeredAt,
-          }).where(and(
-            eq(issues.companyId, input.routine.companyId),
-            eq(issues.originKind, "routine_execution"),
-            eq(issues.originId, input.routine.id),
-            inArray(issues.id, residueIds),
-            inArray(issues.status, OPEN_ISSUE_STATUSES),
-          ));
-        }
-
-        await logActivity(txDb, {
-          companyId: input.routine.companyId,
-          actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",
-          actorId: input.actor?.agentId ?? input.actor?.userId ?? "routine-exception-dispatch",
-          agentId: input.actor?.agentId ?? null,
-          runId: input.actor?.runId ?? null,
-          action: "routine.exception_recovered",
-          entityType: "routine_run",
-          entityId: createdRun.id,
-          details: { routineId: input.routine.id, originId, incidentIds, residueIssueIds: residueIds },
-        });
-        return complete("completed", null);
-      }
-
-      const existingIncident = await txDb.select().from(issues).where(and(
-        eq(issues.companyId, input.routine.companyId),
-        eq(issues.originKind, "routine_exception"),
-        eq(issues.originId, originId),
-        eq(issues.originFingerprint, fingerprint),
-        inArray(issues.status, OPEN_ISSUE_STATUSES),
-        visibleIssueCondition(),
-      )).limit(1).then((rows) => rows[0] ?? null);
-      if (existingIncident) {
-        return complete("coalesced", existingIncident.id, existingIncident.originRunId);
-      }
-
-      const rootCause = effectiveEvaluation.normalizedRootCause ?? "UNVERIFIABLE: missing root cause";
-      const incident = await issueService(txDb).create(input.routine.companyId, {
-        projectId: input.routine.projectId,
-        goalId: input.routine.goalId,
-        parentId: input.routine.parentIssueId,
-        title: `Routine exception: ${input.routine.title}`,
-        description: [
-          `Exception-led routine evaluation failed for \`${effectiveEvaluation.affectedResource}\`.`,
-          `Contract: \`${effectiveEvaluation.contractVersion}\``,
-          `Root cause: ${rootCause}`,
-          `Evidence is retained on routine run \`${createdRun.id}\`.`,
-        ].join("\n\n"),
-        status: "blocked",
-        priority: "high",
-        assigneeAgentId: input.routine.assigneeAgentId,
-        createdByAgentId: input.actor?.agentId ?? null,
-        createdByUserId: input.actor?.userId ?? null,
-        responsibleUserId: input.routine.responsibleUserId,
-        trustExplicitResponsibleUserId: true,
-        originKind: "routine_exception",
-        originId,
-        originRunId: createdRun.id,
-        originFingerprint: fingerprint,
-      });
-      await logActivity(txDb, {
-        companyId: input.routine.companyId,
-        actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",
-        actorId: input.actor?.agentId ?? input.actor?.userId ?? "routine-exception-dispatch",
-        agentId: input.actor?.agentId ?? null,
-        runId: input.actor?.runId ?? null,
-        action: "routine.exception_opened",
-        entityType: "issue",
-        entityId: incident.id,
-        details: { routineId: input.routine.id, routineRunId: createdRun.id, originId, fingerprint },
-      });
-      return complete("issue_created", incident.id);
+          routineRevisionId: input.routine.latestRevisionId,
+          responsibleUserId: input.routine.responsibleUserId,
+          idempotencyKey: input.idempotencyKey ?? null,
+          triggerPayload: input.triggerPayload,
+          evaluatorId: binding.evaluatorId,
+          evaluatorContractVersion: binding.evaluatorContractVersion,
+          evaluationLeaseExpiresAt: new Date(triggeredAt.getTime() + 5 * 60_000),
+        })
+        .returning();
+      return { run, created: true };
     });
+    if (!claimed.created || claimed.run.status !== "evaluating") return claimed.run;
+
+    const openExceptions = await listOpenRoutineExceptions(input.routine);
+    const evaluationInput: RoutineExceptionEvaluationInputV1 = {
+      schemaVersion: 1,
+      run: {
+        id: claimed.run.id,
+        companyId: input.routine.companyId,
+        routineId: input.routine.id,
+        routineRevisionId: input.routine.latestRevisionId!,
+        triggerId: input.trigger?.id ?? null,
+        source: input.source,
+        triggeredAt: claimed.run.triggeredAt.toISOString(),
+        idempotencyKey: input.idempotencyKey ?? null,
+      },
+      binding,
+      triggerPayload: input.triggerPayload,
+      openExceptions,
+    };
+    let evaluation: RoutineExceptionEvaluation;
+    try {
+      evaluation = await exceptionEvaluatorRegistry.evaluate(evaluationInput);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const prefix = message.split(":")[0]?.trim() ?? "";
+      const code = /^[A-Z][A-Z0-9_]*$/.test(prefix) ? prefix : "EVALUATOR_UNAVAILABLE";
+      evaluation = hostUnverifiableEvaluation({
+        binding,
+        code,
+        summary: message,
+        startedAt: triggeredAt,
+      });
+    }
+
+    try {
+      const run = await reconcileTrustedExceptionEvaluation({
+        routine: input.routine,
+        trigger: input.trigger,
+        runId: claimed.run.id,
+        binding,
+        evaluation,
+        actor: input.actor,
+        nextRunAt: input.nextRunAt,
+        openExceptionFingerprints: openExceptions.map((exception) => exception.fingerprint),
+      });
+      if (run.status === "issue_created" && run.linkedIssueId) {
+        const incident = await db
+          .select()
+          .from(issues)
+          .where(eq(issues.id, run.linkedIssueId))
+          .then((rows) => rows[0] ?? null);
+        if (incident) {
+          await queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: incident,
+            reason: "issue_assigned",
+            mutation: "create",
+            contextSource: "routine.exception",
+            requestedByActorType: input.source === "schedule" ? "system" : undefined,
+          });
+        }
+      }
+      return run;
+    } catch (error) {
+      logger.error({
+        err: error,
+        routineId: input.routine.id,
+        runId: claimed.run.id,
+      }, "routine exception reconciliation failed; recording fail-closed fallback");
+      const fallback = hostUnverifiableEvaluation({
+        binding,
+        code: "PERSISTENCE_LINKAGE_FAILED",
+        summary: error instanceof Error ? error.message : String(error),
+        startedAt: triggeredAt,
+      });
+      try {
+        const fallbackRun = await reconcileTrustedExceptionEvaluation({
+          routine: input.routine,
+          trigger: input.trigger,
+          runId: claimed.run.id,
+          binding,
+          evaluation: fallback,
+          actor: input.actor,
+          nextRunAt: input.nextRunAt,
+          skipBeforeHook: true,
+          openExceptionFingerprints: openExceptions.map((exception) => exception.fingerprint),
+        });
+        if (fallbackRun.status === "issue_created" && fallbackRun.linkedIssueId) {
+          const incident = await db
+            .select()
+            .from(issues)
+            .where(eq(issues.id, fallbackRun.linkedIssueId))
+            .then((rows) => rows[0] ?? null);
+          if (incident) {
+            await queueIssueAssignmentWakeup({
+              heartbeat,
+              issue: incident,
+              reason: "issue_assigned",
+              mutation: "create",
+              contextSource: "routine.exception.persistence-fallback",
+              requestedByActorType: input.source === "schedule" ? "system" : undefined,
+            });
+          }
+        }
+        return fallbackRun;
+      } catch (fallbackError) {
+        logger.fatal({
+          err: fallbackError,
+          routineId: input.routine.id,
+          runId: claimed.run.id,
+          evaluatorId: binding.evaluatorId,
+          rootCauseCode: "PERSISTENCE_LINKAGE_FAILED",
+        }, "critical routine exception could not be persisted; scheduler must retry the evaluating lease");
+        throw fallbackError;
+      }
+    }
+  }
+
+  async function recoverStaleExceptionEvaluations(now = new Date()) {
+    const staleRuns = await db
+      .select()
+      .from(routineRuns)
+      .where(and(
+        eq(routineRuns.status, "evaluating"),
+        lte(routineRuns.evaluationLeaseExpiresAt, now),
+        isNotNull(routineRuns.evaluatorId),
+        isNotNull(routineRuns.evaluatorContractVersion),
+        isNotNull(routineRuns.routineRevisionId),
+      ))
+      .orderBy(asc(routineRuns.createdAt))
+      .limit(100);
+    let recovered = 0;
+    for (const staleRun of staleRuns) {
+      if (
+        staleRun.evaluatorId !== "pol.runtime-source-of-truth.v1" &&
+        staleRun.evaluatorId !== "pol.approval-release.v1"
+      ) {
+        continue;
+      }
+      const routine = await getRoutineById(staleRun.routineId);
+      if (!routine) continue;
+      const binding: RoutineExceptionEvaluatorBinding = {
+        enabled: true,
+        companyId: staleRun.companyId,
+        routineId: staleRun.routineId,
+        routineRevisionId: staleRun.routineRevisionId!,
+        evaluatorId: staleRun.evaluatorId,
+        evaluatorContractVersion: staleRun.evaluatorContractVersion!,
+        inputSchemaVersion: 1,
+        typedConfig: {},
+        allowedCapabilityIds: [],
+      };
+      const result = await reconcileTrustedExceptionEvaluation({
+        routine,
+        trigger: staleRun.triggerId ? await getTriggerById(staleRun.triggerId) : null,
+        runId: staleRun.id,
+        binding,
+        evaluation: hostUnverifiableEvaluation({
+          binding,
+          code: "ABANDONED_EVALUATION_LEASE",
+          summary: "The evaluator lease expired before reconciliation completed",
+          startedAt: staleRun.triggeredAt,
+        }),
+        skipBeforeHook: true,
+      });
+      if (result.status === "issue_created" && result.linkedIssueId) {
+        const incident = await db
+          .select()
+          .from(issues)
+          .where(eq(issues.id, result.linkedIssueId))
+          .then((rows) => rows[0] ?? null);
+        if (incident) {
+          await queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: incident,
+            reason: "issue_assigned",
+            mutation: "create",
+            contextSource: "routine.exception.stale-lease",
+            requestedByActorType: "system",
+          });
+        }
+      }
+      recovered += 1;
+    }
+    return { recovered };
   }
 
   async function dispatchRoutineRun(input: {
@@ -1953,6 +2326,46 @@ export function routineService(
       .filter((part): part is string => Boolean(part && part.trim()))
       .join("\n\n");
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
+    const exceptionNextRunAt =
+      input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
+        ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, new Date())
+        : undefined;
+    const exceptionRun = await dispatchTrustedExceptionEvaluation({
+      routine: input.routine,
+      trigger: input.trigger,
+      source: input.source,
+      triggerPayload,
+      idempotencyKey: input.idempotencyKey,
+      actor: input.actor,
+      nextRunAt: exceptionNextRunAt ?? undefined,
+    });
+    if (exceptionRun) {
+      if (input.source === "schedule" || input.source === "webhook") {
+        const actorId = input.source === "schedule" ? "routine-scheduler" : "routine-webhook";
+        await logActivity(db, {
+          companyId: input.routine.companyId,
+          actorType: "system",
+          actorId,
+          action: "routine.run_triggered",
+          entityType: "routine_run",
+          entityId: exceptionRun.id,
+          details: {
+            routineId: input.routine.id,
+            triggerId: input.trigger?.id ?? null,
+            source: exceptionRun.source,
+            status: exceptionRun.status,
+          },
+        });
+      }
+      const telemetryClient = getTelemetryClient();
+      if (telemetryClient) {
+        trackRoutineRun(telemetryClient, {
+          source: exceptionRun.source,
+          status: exceptionRun.status,
+        });
+      }
+      return exceptionRun;
+    }
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
     const issueOriginKind = managedIssueTemplate?.surfaceVisibility === "plugin_operation" && managedRoutineBinding
@@ -3015,16 +3428,6 @@ export function routineService(
       const trigger = input.triggerId ? await getTriggerById(input.triggerId) : null;
       if (trigger && trigger.routineId !== routine.id) throw forbidden("Trigger does not belong to routine");
       if (trigger && !trigger.enabled) throw conflict("Routine trigger is not active");
-      if (input.exceptionLedEvaluation && isExceptionLedPilot(routine.id)) {
-        return recordExceptionLedEvaluation({
-          routine,
-          trigger,
-          source: input.source,
-          evaluation: input.exceptionLedEvaluation,
-          idempotencyKey: input.idempotencyKey,
-          actor,
-        });
-      }
       return dispatchRoutineRun({
         routine,
         trigger,
@@ -3182,6 +3585,14 @@ export function routineService(
           idempotencyKey: routineRuns.idempotencyKey,
           triggerPayload: routineRuns.triggerPayload,
           dispatchFingerprint: routineRuns.dispatchFingerprint,
+          evaluatorId: routineRuns.evaluatorId,
+          evaluatorContractVersion: routineRuns.evaluatorContractVersion,
+          evaluationOutcome: routineRuns.evaluationOutcome,
+          evaluationResult: routineRuns.evaluationResult,
+          evaluatorProvenance: routineRuns.evaluatorProvenance,
+          exceptionFingerprint: routineRuns.exceptionFingerprint,
+          evidenceDigest: routineRuns.evidenceDigest,
+          evaluationLeaseExpiresAt: routineRuns.evaluationLeaseExpiresAt,
           routineRevisionId: routineRuns.routineRevisionId,
           linkedIssueId: routineRuns.linkedIssueId,
           coalescedIntoRunId: routineRuns.coalescedIntoRunId,
@@ -3242,7 +3653,10 @@ export function routineService(
       }));
     },
 
+    recoverStaleExceptionEvaluations,
+
     tickScheduledTriggers: async (now: Date = new Date()) => {
+      await recoverStaleExceptionEvaluations(now);
       const worktreeActivation = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)
         ? await resolveWorktreeRunExecutionActivationState({
           getExperimental: instanceSettings.getExperimental,

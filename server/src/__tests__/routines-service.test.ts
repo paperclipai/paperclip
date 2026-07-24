@@ -16,6 +16,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueInboxArchives,
+  issueComments,
   issueReadStates,
   issues,
   projectWorkspaces,
@@ -34,6 +35,7 @@ import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
 import { routineService } from "../services/routines.ts";
+import { createRoutineExceptionEvaluatorRegistry } from "../services/routine-exception-evaluation.ts";
 import { secretService } from "../services/secrets.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -62,6 +64,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       process.env.PAPERCLIP_SECRETS_PROVIDER = originalSecretsProviderEnv;
     }
     await db.delete(activityLog);
+    await db.delete(issueComments);
     await db.delete(issueInboxArchives);
     await db.delete(issueReadStates);
     await db.delete(secretAccessEvents);
@@ -91,7 +94,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   async function seedFixture(opts?: {
     runtimeEnv?: Record<string, string | undefined>;
-    beforePersistExceptionEvaluation?: () => void | Promise<void>;
+    beforeExceptionReconcile?: () => void | Promise<void>;
+    exceptionResults?: Array<Record<string, unknown>>;
+    useProductionPilotScope?: boolean;
     wakeup?: (
       agentId: string,
       wakeupOpts: {
@@ -150,9 +155,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       status: "in_progress",
     });
 
-    const svc = routineService(db, {
+    const serviceDeps = {
       runtimeEnv: opts?.runtimeEnv,
-      beforePersistExceptionEvaluation: opts?.beforePersistExceptionEvaluation,
+      beforeExceptionReconcile: opts?.beforeExceptionReconcile,
       heartbeat: {
         wakeup: async (wakeupAgentId, wakeupOpts) => {
           wakeups.push({ agentId: wakeupAgentId, opts: wakeupOpts });
@@ -188,9 +193,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           return { id: queuedRunId };
         },
       },
-    });
+    };
+    const creatorSvc = routineService(db, serviceDeps);
     const issueSvc = issueService(db);
-    const routine = await svc.create(
+    const routine = await creatorSvc.create(
       companyId,
       {
         projectId,
@@ -206,55 +212,130 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       },
       {},
     );
+    const queuedResults = opts?.exceptionResults ?? [];
+    const exceptionEvaluatorRegistry = createRoutineExceptionEvaluatorRegistry({
+      serverCommit: "test-commit",
+      capabilityBroker: {
+        invoke: async (capabilityId) => capabilityId === "process.exec:runtime-watchdog-classifier"
+          ? queuedResults.shift() ?? {
+              schemaVersion: 1,
+              outcome: "PASS",
+              severity: null,
+              rootCauseCode: null,
+              affectedResource: "pol-runtime:test",
+              summary: "green",
+              evidence: [{
+                key: "runtime",
+                source: "fixture",
+                observedAt: new Date().toISOString(),
+                valueDigest: "a".repeat(64),
+              }],
+              recoveredFingerprints: [],
+              closureCandidates: [],
+              retryClass: "NONE",
+            }
+          : {},
+      },
+    });
+    const svc = routineService(db, {
+      ...serviceDeps,
+      exceptionEvaluatorRegistry,
+      ...(opts?.useProductionPilotScope ? {} : { exceptionPilotRoutineIds: [routine.id] }),
+    });
 
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
-  function enableExceptionLedPilot(runtimeEnv: Record<string, string | undefined>, routineId: string) {
-    runtimeEnv.PAPERCLIP_EXCEPTION_LED_ROUTINES_ENABLED = "true";
-    runtimeEnv.PAPERCLIP_EXCEPTION_LED_ROUTINE_IDS = routineId;
+  async function enableExceptionLedPilot(companyId: string, routineId: string, routineRevisionId: string) {
+    await instanceSettingsService(db).updateExperimental({
+      routineExceptionEvaluators: {
+        enabled: true,
+        bindings: [{
+          enabled: true,
+          companyId,
+          routineId,
+          routineRevisionId,
+          evaluatorId: "pol.runtime-source-of-truth.v1",
+          evaluatorContractVersion: "pol.runtime-source-of-truth.v1",
+          inputSchemaVersion: 1,
+          typedConfig: {},
+          allowedCapabilityIds: [
+            "service-config.read:pol-runtime-binding",
+            "http.get:pol-runtime",
+            "sqlite.readonly:pol-runtime-db",
+            "process.exec:runtime-watchdog-classifier",
+          ],
+        }],
+      },
+    });
+  }
+
+  function exceptionResult(rootCauseCode: string, digest = "b".repeat(64)) {
+    return {
+      schemaVersion: 1,
+      outcome: "EXCEPTION",
+      severity: "critical",
+      rootCauseCode,
+      affectedResource: "pol-runtime:test",
+      summary: rootCauseCode,
+      evidence: [{
+        key: "runtime",
+        source: "fixture",
+        observedAt: new Date().toISOString(),
+        valueDigest: digest,
+      }],
+      recoveredFingerprints: [],
+      closureCandidates: [],
+      retryClass: "NONE",
+    };
   }
 
   it("keeps green pilot evaluations auditable without creating a visible issue", async () => {
     const runtimeEnv: Record<string, string | undefined> = {};
-    const { routine, svc } = await seedFixture({ runtimeEnv });
-    enableExceptionLedPilot(runtimeEnv, routine.id);
+    const { companyId, routine, svc } = await seedFixture({ runtimeEnv });
+    await enableExceptionLedPilot(companyId, routine.id, routine.latestRevisionId!);
 
-    const run = await svc.runRoutine(routine.id, {
-      source: "api",
-      exceptionLedEvaluation: {
-        contractVersion: "runtime-sot-v1",
-        outcome: "green",
-        affectedResource: "paper-runtime",
-        evidence: { commit: "abc123" },
-        residueIssueIds: [],
-      },
-    });
+    const run = await svc.runRoutine(routine.id, { source: "api" });
 
     expect(run.status).toBe("completed");
     expect(run.linkedIssueId).toBeNull();
+    expect(run.evaluationOutcome).toBe("PASS");
     expect(await db.select().from(issues).where(eq(issues.companyId, routine.companyId))).toHaveLength(0);
     expect(await db.select().from(routineRuns).where(eq(routineRuns.id, run.id))).toHaveLength(1);
   });
 
+  it("keeps non-pilot routines on legacy issue-per-run dispatch", async () => {
+    const { companyId, routine, svc } = await seedFixture({ useProductionPilotScope: true });
+    await enableExceptionLedPilot(companyId, routine.id, routine.latestRevisionId!);
+
+    const run = await svc.runRoutine(routine.id, { source: "api" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.evaluationOutcome).toBeNull();
+    expect(run.linkedIssueId).toBeTruthy();
+  });
+
+  it("fails closed when a pilot binding is not repinned after a routine revision", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await enableExceptionLedPilot(companyId, routine.id, routine.latestRevisionId!);
+    await svc.update(routine.id, { title: "changed evaluator contract" }, {});
+
+    const run = await svc.runRoutine(routine.id, { source: "api" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.evaluationOutcome).toBe("UNVERIFIABLE");
+    expect(run.evaluationResult?.rootCauseCode).toBe("ROUTINE_REVISION_MISMATCH");
+  });
+
   it("captures the before/after visible issue-volume delta for a green evaluation", async () => {
     const runtimeEnv: Record<string, string | undefined> = {};
-    const { routine, svc } = await seedFixture({ runtimeEnv });
+    const { companyId, routine, svc } = await seedFixture({ runtimeEnv });
     const before = await db.select().from(issues).where(eq(issues.companyId, routine.companyId));
     await svc.runRoutine(routine.id, { source: "api" });
     const afterLegacy = await db.select().from(issues).where(eq(issues.companyId, routine.companyId));
 
-    enableExceptionLedPilot(runtimeEnv, routine.id);
-    await svc.runRoutine(routine.id, {
-      source: "api",
-      exceptionLedEvaluation: {
-        contractVersion: "runtime-sot-v1",
-        outcome: "green",
-        affectedResource: "paper-runtime",
-        evidence: {},
-        residueIssueIds: [],
-      },
-    });
+    await enableExceptionLedPilot(companyId, routine.id, routine.latestRevisionId!);
+    await svc.runRoutine(routine.id, { source: "api" });
     const afterPilot = await db.select().from(issues).where(eq(issues.companyId, routine.companyId));
 
     expect(afterLegacy.length - before.length).toBe(1);
@@ -263,25 +344,19 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   it("coalesces concurrent identical failures while keeping distinct root causes separate", async () => {
     const runtimeEnv: Record<string, string | undefined> = {};
-    const { routine, svc } = await seedFixture({ runtimeEnv });
-    enableExceptionLedPilot(runtimeEnv, routine.id);
-    const evaluation = {
-      contractVersion: "runtime-sot-v1",
-      outcome: "failure" as const,
-      affectedResource: "paper-runtime",
-      normalizedRootCause: "heartbeat stale at 2026-07-21T12:34:56Z run 11111111-1111-4111-8111-111111111111",
-      evidence: {},
-      residueIssueIds: [],
-    };
+    const exceptionResults = [
+      exceptionResult("HEARTBEAT_STALE"),
+      exceptionResult("HEARTBEAT_STALE"),
+      exceptionResult("BOOT_COMMIT_MISMATCH"),
+    ];
+    const { companyId, routine, svc } = await seedFixture({ runtimeEnv, exceptionResults });
+    await enableExceptionLedPilot(companyId, routine.id, routine.latestRevisionId!);
 
     const [first, second] = await Promise.all([
-      svc.runRoutine(routine.id, { source: "api", exceptionLedEvaluation: evaluation }),
-      svc.runRoutine(routine.id, { source: "api", exceptionLedEvaluation: evaluation }),
+      svc.runRoutine(routine.id, { source: "api" }),
+      svc.runRoutine(routine.id, { source: "api" }),
     ]);
-    const distinct = await svc.runRoutine(routine.id, {
-      source: "api",
-      exceptionLedEvaluation: { ...evaluation, normalizedRootCause: "boot commit mismatch" },
-    });
+    const distinct = await svc.runRoutine(routine.id, { source: "api" });
 
     expect([first.status, second.status].sort()).toEqual(["coalesced", "issue_created"]);
     expect(first.linkedIssueId).toBe(second.linkedIssueId);
@@ -291,10 +366,38 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(incidents).toHaveLength(2);
   });
 
+  it("links every duplicate run and comments only when evidence materially changes", async () => {
+    const exceptionResults = [
+      exceptionResult("HEARTBEAT_STALE", "a".repeat(64)),
+      exceptionResult("HEARTBEAT_STALE", "b".repeat(64)),
+      exceptionResult("HEARTBEAT_STALE", "b".repeat(64)),
+    ];
+    const { companyId, routine, svc } = await seedFixture({ exceptionResults });
+    await enableExceptionLedPilot(companyId, routine.id, routine.latestRevisionId!);
+
+    const first = await svc.runRoutine(routine.id, { source: "api" });
+    const second = await svc.runRoutine(routine.id, { source: "api" });
+    const third = await svc.runRoutine(routine.id, { source: "api" });
+
+    expect(first.linkedIssueId).toBe(second.linkedIssueId);
+    expect(second.linkedIssueId).toBe(third.linkedIssueId);
+    const linkedRuns = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.linkedIssueId, first.linkedIssueId!));
+    expect(linkedRuns).toHaveLength(3);
+    const evidenceComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, first.linkedIssueId!));
+    expect(evidenceComments).toHaveLength(1);
+  });
+
   it("recovers the canonical incident and explicitly listed residue exactly once", async () => {
     const runtimeEnv: Record<string, string | undefined> = {};
-    const { companyId, issueSvc, routine, svc } = await seedFixture({ runtimeEnv });
-    enableExceptionLedPilot(runtimeEnv, routine.id);
+    const exceptionResults = [exceptionResult("HEARTBEAT_STALE")];
+    const { companyId, issueSvc, routine, svc } = await seedFixture({ runtimeEnv, exceptionResults });
+    await enableExceptionLedPilot(companyId, routine.id, routine.latestRevisionId!);
     const residue = await issueSvc.create(companyId, {
       projectId: routine.projectId,
       title: "legacy pilot residue",
@@ -305,102 +408,119 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       originId: routine.id,
       originRunId: randomUUID(),
     });
-    const failure = await svc.runRoutine(routine.id, {
-      source: "api",
-      exceptionLedEvaluation: {
-        contractVersion: "runtime-sot-v1",
-        outcome: "failure",
-        affectedResource: "paper-runtime",
-        normalizedRootCause: "heartbeat stale",
-        evidence: {},
-        residueIssueIds: [],
-      },
-    });
+    const failure = await svc.runRoutine(routine.id, { source: "api" });
     const green = {
-      contractVersion: "runtime-sot-v1",
-      outcome: "green" as const,
-      affectedResource: "paper-runtime",
-      evidence: {},
-      residueIssueIds: [residue.id],
+      schemaVersion: 1,
+      outcome: "PASS",
+      severity: null,
+      rootCauseCode: null,
+      affectedResource: "pol-runtime:test",
+      summary: "recovered",
+      evidence: [{
+        key: "runtime",
+        source: "fixture",
+        observedAt: new Date().toISOString(),
+        valueDigest: "c".repeat(64),
+      }],
+      recoveredFingerprints: [failure.exceptionFingerprint!],
+      closureCandidates: [{
+        artifactType: "issue",
+        artifactId: residue.id,
+        recommendation: "supersede",
+      }],
+      retryClass: "NONE",
     };
-    await svc.runRoutine(routine.id, { source: "api", exceptionLedEvaluation: green });
-    await svc.runRoutine(routine.id, { source: "api", exceptionLedEvaluation: green });
+    exceptionResults.push(green, green);
+    await svc.runRoutine(routine.id, { source: "api" });
+    await svc.runRoutine(routine.id, { source: "api" });
 
     const [incidentAfter] = await db.select().from(issues).where(eq(issues.id, failure.linkedIssueId!));
     const [residueAfter] = await db.select().from(issues).where(eq(issues.id, residue.id));
     expect(incidentAfter?.status).toBe("done");
     expect(residueAfter?.status).toBe("cancelled");
+    const recoveries = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "routine.exception_recovered"));
+    expect(recoveries).toHaveLength(1);
   });
 
   it("fails closed to an UNVERIFIABLE incident when evidence persistence fails", async () => {
     const runtimeEnv: Record<string, string | undefined> = {};
-    const { routine, svc } = await seedFixture({
+    const { companyId, routine, svc } = await seedFixture({
       runtimeEnv,
-      beforePersistExceptionEvaluation: () => {
+      beforeExceptionReconcile: () => {
         throw new Error("simulated persistence failure");
       },
     });
-    enableExceptionLedPilot(runtimeEnv, routine.id);
+    await enableExceptionLedPilot(companyId, routine.id, routine.latestRevisionId!);
 
-    const run = await svc.runRoutine(routine.id, {
-      source: "api",
-      exceptionLedEvaluation: {
-        contractVersion: "runtime-sot-v1",
-        outcome: "green",
-        affectedResource: "paper-runtime",
-        evidence: {},
-        residueIssueIds: [],
-      },
-    });
+    const run = await svc.runRoutine(routine.id, { source: "api" });
     const [incident] = await db.select().from(issues).where(eq(issues.id, run.linkedIssueId!));
     expect(run.status).toBe("issue_created");
     expect(run.failureReason).toContain("simulated persistence failure");
-    expect(incident?.description).toContain("UNVERIFIABLE");
+    expect(run.evaluationOutcome).toBe("UNVERIFIABLE");
+    expect(incident?.description).toContain("PERSISTENCE_LINKAGE_FAILED");
   });
 
-  it("refuses approval-release recovery when terminal evidence identities do not match", async () => {
+  it("recovers an abandoned evaluator lease once as UNVERIFIABLE", async () => {
+    const { routine, svc } = await seedFixture();
+    const staleAt = new Date("2026-07-24T00:00:00.000Z");
+    const [staleRun] = await db.insert(routineRuns).values({
+      companyId: routine.companyId,
+      routineId: routine.id,
+      source: "schedule",
+      status: "evaluating",
+      triggeredAt: new Date(staleAt.getTime() - 60_000),
+      routineRevisionId: routine.latestRevisionId,
+      evaluatorId: "pol.runtime-source-of-truth.v1",
+      evaluatorContractVersion: "pol.runtime-source-of-truth.v1",
+      evaluationLeaseExpiresAt: staleAt,
+    }).returning();
+
+    expect(await svc.recoverStaleExceptionEvaluations(new Date(staleAt.getTime() + 1))).toEqual({
+      recovered: 1,
+    });
+    expect(await svc.recoverStaleExceptionEvaluations(new Date(staleAt.getTime() + 2))).toEqual({
+      recovered: 0,
+    });
+
+    const [recoveredRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, staleRun.id));
+    expect(recoveredRun?.evaluationOutcome).toBe("UNVERIFIABLE");
+    expect(recoveredRun?.evaluationResult?.rootCauseCode).toBe("ABANDONED_EVALUATION_LEASE");
+  });
+
+  it("refuses approval-release closure when approval evidence is non-terminal or missing", async () => {
     const runtimeEnv: Record<string, string | undefined> = {};
-    const { routine, svc } = await seedFixture({ runtimeEnv });
-    enableExceptionLedPilot(runtimeEnv, routine.id);
+    const exceptionResults = [{
+      schemaVersion: 1,
+      outcome: "PASS",
+      severity: null,
+      rootCauseCode: null,
+      affectedResource: "approval-release:test",
+      summary: "recommend closure",
+      evidence: [{
+        key: "approval.status",
+        source: "fixture",
+        observedAt: new Date().toISOString(),
+        valueDigest: "d".repeat(64),
+        safeValue: "pending",
+      }],
+      recoveredFingerprints: [],
+      closureCandidates: [{
+        artifactType: "approval",
+        artifactId: randomUUID(),
+        recommendation: "close",
+      }],
+      retryClass: "NONE",
+    }];
+    const { companyId, routine, svc } = await seedFixture({ runtimeEnv, exceptionResults });
+    await enableExceptionLedPilot(companyId, routine.id, routine.latestRevisionId!);
 
-    const run = await svc.runRoutine(routine.id, {
-      source: "api",
-      exceptionLedEvaluation: {
-        contractVersion: "approval-release-v1",
-        outcome: "green",
-        affectedResource: "release-42",
-        evidence: {},
-        residueIssueIds: [],
-        approvalClosure: {
-          approvalStatus: "pending",
-          approvalIssueId: randomUUID(),
-          evidenceIssueId: randomUUID(),
-          approvalPrId: "42",
-          evidencePrId: "43",
-          approvalRuntimeId: "runtime-a",
-          evidenceRuntimeId: "runtime-b",
-          runtimeState: "unknown",
-          bootCommitMatches: false,
-          reconciliationMatches: false,
-        },
-      },
-    });
-
+    const run = await svc.runRoutine(routine.id, { source: "api" });
     expect(run.status).toBe("issue_created");
-    expect(run.failureReason).toBe("approval is non-terminal");
-
-    const missingEvidence = await svc.runRoutine(routine.id, {
-      source: "api",
-      exceptionLedEvaluation: {
-        contractVersion: "approval-release-v1",
-        outcome: "green",
-        affectedResource: "release-43",
-        evidence: {},
-        residueIssueIds: [],
-      },
-    });
-    expect(missingEvidence.status).toBe("issue_created");
-    expect(missingEvidence.failureReason).toBe("approval closure evidence is missing");
+    expect(run.evaluationOutcome).toBe("UNVERIFIABLE");
+    expect(run.evaluationResult?.rootCauseCode).toBe("APPROVAL_NON_TERMINAL");
   });
 
   async function armWorktreeExecution(cutoff: Date, instanceId = "worktree-routines-test") {

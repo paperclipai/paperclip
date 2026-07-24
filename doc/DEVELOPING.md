@@ -180,14 +180,22 @@ For normal issue work, start with the smallest targeted check that proves the ch
 
 ### Exception-led routine pilot
 
-Routine API runs can record a deterministic `exceptionLedEvaluation` without creating the normal execution issue. The path is disabled by default and applies only when both settings are present:
+Exception-led evaluation is a host-owned, default-off path for the two POL
+paper/shadow pilot routines. Routine API payloads, descriptions, variables,
+plugins, and agent output cannot supply evaluator implementations or results.
 
-```sh
-PAPERCLIP_EXCEPTION_LED_ROUTINES_ENABLED=true
-PAPERCLIP_EXCEPTION_LED_ROUTINE_IDS=<routine-uuid>,<routine-uuid>
-```
+Instance-admin configuration under
+`experimental.routineExceptionEvaluators` must enable the global gate and pin
+each binding to the exact company, routine revision, registered evaluator,
+contract version, input schema, and capability allow-list. Only the registered
+`pol.runtime-source-of-truth.v1` and `pol.approval-release.v1` evaluators are
+accepted, and only the two compiled pilot routine IDs may enter evaluation.
+A changed routine revision fails closed until the binding is repinned.
 
-Green evaluations retain a routine-run record and create no issue. Failed evaluations create or reuse a high-priority incident keyed by routine, contract version, normalized root cause, and affected resource. Remove the routine id from the allowlist or disable the feature flag to restore issue-per-run dispatch.
+Green evaluations retain a routine-run record and create no issue. Exceptions
+create or reuse a high-priority incident keyed by evaluator, contract,
+root-cause code, and affected resource. Disable the global or per-binding gate
+to restore issue-per-run dispatch without deleting run or incident history.
 
 ## One-Command Local Run
 
