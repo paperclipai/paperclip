@@ -40,6 +40,17 @@ import {
   modelProfiles as codexModelProfiles,
 } from "@paperclipai/adapter-codex-local";
 import {
+  execute as commandCodeExecute,
+  testEnvironment as commandCodeTestEnvironment,
+  sessionCodec as commandCodeSessionCodec,
+  listCommandCodeModels,
+} from "@paperclipai/adapter-commandcode-local/server";
+import {
+  agentConfigurationDoc as commandCodeAgentConfigurationDoc,
+  models as commandCodeModels,
+  modelProfiles as commandCodeModelProfiles,
+} from "@paperclipai/adapter-commandcode-local";
+import {
   execute as cursorExecute,
   listCursorSkills,
   syncCursorSkills,
@@ -284,6 +295,24 @@ const codexLocalAdapter: ServerAdapterModule = {
   getQuotaWindows: codexGetQuotaWindows,
 };
 
+const commandCodeLocalAdapter: ServerAdapterModule = {
+  type: "commandcode_local",
+  execute: commandCodeExecute,
+  testEnvironment: commandCodeTestEnvironment,
+  sessionCodec: commandCodeSessionCodec,
+  sessionManagement: getAdapterSessionManagement("commandcode_local") ?? undefined,
+  models: commandCodeModels,
+  modelProfiles: commandCodeModelProfiles,
+  listModels: listCommandCodeModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "commandcode", "command-code@latest"),
+  agentConfigurationDoc: commandCodeAgentConfigurationDoc,
+};
+
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
   execute: cursorExecute,
@@ -437,6 +466,7 @@ function registerBuiltInAdapters() {
     acpxLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
+    commandCodeLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
