@@ -100,6 +100,34 @@ export function inferHeartbeatRunStopReason(input: {
   return "adapter_failed";
 }
 
+/**
+ * Resolves the `error_code` recorded on a heartbeat run.
+ *
+ * For `timed_out` outcomes this honors the adapter's own errorCode when set
+ * (e.g. `sandbox_exec_timeout` when the sandbox exec channel dropped before
+ * the adapter's configured wall-clock budget elapsed) and only falls back to
+ * the generic `"timeout"` when the adapter did not classify the timeout
+ * itself. Other outcomes are unchanged from prior behavior.
+ */
+export function resolveHeartbeatRunErrorCode(input: {
+  outcome: HeartbeatRunOutcome;
+  adapterErrorCode?: string | null;
+  cancelledErrorCode?: string | null;
+  responsibleUserDenialCode?: string | null;
+}): string | null {
+  const { outcome, adapterErrorCode, cancelledErrorCode, responsibleUserDenialCode } = input;
+  if (outcome === "timed_out") {
+    return adapterErrorCode ?? "timeout";
+  }
+  if (outcome === "cancelled") {
+    return cancelledErrorCode ?? "cancelled";
+  }
+  if (outcome === "failed") {
+    return adapterErrorCode ?? responsibleUserDenialCode ?? "adapter_failed";
+  }
+  return null;
+}
+
 export function buildHeartbeatRunStopMetadata(input: {
   adapterType: string;
   adapterConfig: Record<string, unknown> | null | undefined;
