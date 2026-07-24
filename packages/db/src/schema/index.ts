@@ -12,6 +12,7 @@ export { boardApiKeys } from "./board_api_keys.js";
 export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { companyMemberships } from "./company_memberships.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";
+export { companyUserPushSubscriptions } from "./company_user_push_subscriptions.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
 export { companySkillPolicies } from "./company_skill_policies.js";
 export { invites } from "./invites.js";
