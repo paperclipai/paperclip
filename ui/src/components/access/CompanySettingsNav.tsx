@@ -1,13 +1,16 @@
+import { useMemo } from "react";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
+import { useBoardCapabilities } from "@/hooks/useFeatures";
 
 const items = [
   { value: "general", label: "General", href: "/company/settings" },
   { value: "cloud-upstream", label: "Cloud upstream", href: "/company/settings/cloud-upstream" },
   { value: "members", label: "Members", href: "/company/settings/members" },
   { value: "invites", label: "Invites", href: "/company/settings/invites" },
+  { value: "plugins", label: "Plugins", href: "/company/settings/plugins" },
   { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
   { value: "instance-profile", label: "Instance profile", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/profile` },
   { value: "instance-general", label: "Instance general", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/general` },
@@ -70,6 +73,10 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "invites";
   }
 
+  if (pathname.includes("/company/settings/plugins")) {
+    return "plugins";
+  }
+
   if (pathname.includes("/company/settings/secrets")) {
     return "secrets";
   }
@@ -81,9 +88,28 @@ export function CompanySettingsNav() {
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = getCompanySettingsTab(location.pathname);
+  const { data: boardAccess } = useBoardCapabilities();
+  const exposedSurfaces = new Set(boardAccess?.capabilities.exposedSurfaces ?? []);
+  const isInstanceAdmin = boardAccess?.isInstanceAdmin === true;
+  const cloudSyncEnabled = boardAccess?.capabilities.features.enableCloudSync === true;
+
+  const visibleItems = useMemo(
+    () =>
+      items.filter((item) => {
+        if (item.value === "general") return exposedSurfaces.has("company.general");
+        if (item.value === "cloud-upstream") return cloudSyncEnabled;
+        if (item.value === "members") return exposedSurfaces.has("company.members");
+        if (item.value === "invites") return exposedSurfaces.has("company.invites");
+        if (item.value === "plugins") return exposedSurfaces.has("company.plugins");
+        if (item.value === "secrets") return exposedSurfaces.has("company.secrets");
+        if (item.value === "instance-profile") return true; // per-user, always visible
+        return isInstanceAdmin; // all remaining instance-* tabs
+      }),
+    [boardAccess, cloudSyncEnabled, isInstanceAdmin], // exposedSurfaces derives from boardAccess
+  );
 
   function handleTabChange(value: string) {
-    const nextTab = items.find((item) => item.value === value);
+    const nextTab = visibleItems.find((item) => item.value === value);
     if (!nextTab || nextTab.value === activeTab) return;
     navigate(nextTab.href);
   }
@@ -91,7 +117,7 @@ export function CompanySettingsNav() {
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange}>
       <PageTabBar
-        items={items.map(({ value, label }) => ({ value, label }))}
+        items={visibleItems.map(({ value, label }) => ({ value, label }))}
         value={activeTab}
         onValueChange={handleTabChange}
         align="start"

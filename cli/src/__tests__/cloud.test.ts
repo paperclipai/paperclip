@@ -8,6 +8,7 @@ import {
   buildBundleFromLocalCompany,
   cloudCommandExitCodes,
   connectCloud,
+  pushCloud,
   resolveDeviceCodeExpiresAt,
 } from "../commands/client/cloud.js";
 import {
@@ -76,6 +77,41 @@ describe("cloud CLI helpers", () => {
 
     expect(connection.accessToken).toBe("upt_test");
     expect(getCloudConnection("https://cloud.example.test")?.token.id).toBe("token-1");
+  });
+
+  it("gates cloud push on cli-auth/me capabilities.features.enableCloudSync, not the admin-only instance settings endpoint", async () => {
+    const requestedUrls: string[] = [];
+    globalThis.fetch = vi.fn(async (url) => {
+      requestedUrls.push(String(url));
+      return jsonResponse({
+        capabilities: { features: { enableCloudSync: false } },
+      });
+    }) as typeof fetch;
+
+    await expect(pushCloud({ company: "local-company-1", json: true })).rejects.toThrow(
+      /Cloud sync is disabled/i,
+    );
+
+    expect(requestedUrls.some((url) => url.endsWith("/api/cli-auth/me"))).toBe(true);
+    expect(requestedUrls.some((url) => url.includes("/api/instance/settings"))).toBe(false);
+  });
+
+  it("proceeds past the cloud-sync gate once cli-auth/me reports enableCloudSync true", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/api/cli-auth/me")) {
+        return jsonResponse({
+          capabilities: { features: { enableCloudSync: true } },
+        });
+      }
+      return jsonResponse({ error: "not_found" }, 404);
+    }) as typeof fetch;
+
+    // No cloud connection is stored for this test's tempHome, so once the
+    // gate passes the next failure is the (unrelated) missing-connection
+    // error rather than the "Cloud sync is disabled" message.
+    await expect(pushCloud({ company: "local-company-1", json: true })).rejects.toThrow(
+      /No cloud connection found/i,
+    );
   });
 
   it("hard-blocks incompatible transfer schema versions with the stable schema exit code", () => {

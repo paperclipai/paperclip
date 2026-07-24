@@ -12,7 +12,7 @@ import { Bot, Clock3, History, Loader2, RefreshCw, Sparkles } from "lucide-react
 
 import { agentsApi } from "@/api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "@/api/builtInAgents";
-import { instanceSettingsApi } from "@/api/instanceSettings";
+import { useFeatures } from "@/hooks/useFeatures";
 import { summarySlotsApi, type SummarySlotSelector } from "@/api/summarySlots";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { ConfigureBuiltInAgentModal } from "@/components/ConfigureBuiltInAgentModal";
@@ -149,11 +149,10 @@ export function SummarySlotCard({
     ? { companyId, scopeKind, scopeId, slotKey }
     : null;
 
-  const experimentalQuery = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
-  const summariesEnabled = experimentalQuery.data?.enableSummaries === true;
+  // PR-1: /instance/settings/experimental is instance-admin-only; read the
+  // enableSummaries flag from the capabilities.features payload instead.
+  const featuresQuery = useFeatures();
+  const summariesEnabled = featuresQuery.data?.enableSummaries === true;
 
   const builtInAgentsQuery = useQuery({
     queryKey: queryKeys.builtInAgents.list(companyId ?? "__none__"),
@@ -246,7 +245,7 @@ export function SummarySlotCard({
   const generationFailed = slotQuery.data?.slot?.status === "failed";
   const canGenerateFirstSummary = summarizerState?.status === "ready";
 
-  if (experimentalQuery.isLoading || !summariesEnabled) return null;
+  if (featuresQuery.isLoading || !summariesEnabled) return null;
 
   const startGeneration = () => {
     if (!selector || generateMutation.isPending) return;

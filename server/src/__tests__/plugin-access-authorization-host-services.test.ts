@@ -7,6 +7,7 @@ import {
   companyMemberships,
   createDb,
   invites,
+  plugins,
   principalPermissionGrants,
 } from "@paperclipai/db";
 import { buildHostServices } from "../services/plugin-host-services.js";
@@ -17,7 +18,7 @@ import {
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
-const pluginId = "plugin-record-id";
+const pluginId = randomUUID();
 
 function createEventBusStub() {
   return {
@@ -49,6 +50,19 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-access-authz-");
     db = createDb(tempDb.connectionString);
+    // The per-company enablement gate (buildHostServices -> ensurePluginAvailableForCompany)
+    // fails closed on an unknown plugin id, so every buildHostServices(db, pluginId, ...) call
+    // in this suite needs a matching `plugins` row. No plugin_company_settings row is ever
+    // seeded for the companies these tests create, so the manifest default ("on", since
+    // manifestJson is empty here) keeps every existing assertion behaving as before.
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.host-services-gate-fixture",
+      packageName: "@paperclipai/host-services-gate-fixture",
+      version: "0.1.0",
+      manifestJson: {},
+      status: "ready",
+    });
   }, 20_000);
 
   afterEach(async () => {

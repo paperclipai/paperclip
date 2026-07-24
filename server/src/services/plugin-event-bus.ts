@@ -146,7 +146,7 @@ function passesFilter(event: PluginEvent, filter: EventFilter | null): boolean {
  * });
  * ```
  */
-export function createPluginEventBus(): PluginEventBus {
+export function createPluginEventBus(options: PluginEventBusOptions = {}): PluginEventBus {
   // Subscription registry: pluginKey → list of subscriptions
   const registry = new Map<string, Subscription[]>();
 
@@ -173,6 +173,23 @@ export function createPluginEventBus(): PluginEventBus {
     const errors: Array<{ pluginId: string; error: unknown }> = [];
     const promises: Promise<void>[] = [];
 
+    // Per-emit, per-plugin memoized enablement check. A fresh cache per call
+    // to `emit` keeps this cheap (at most one lookup per plugin per event)
+    // without leaking state across unrelated events.
+    const deliverableCache = new Map<string, Promise<boolean>>();
+    const isDeliverable = (pluginId: string, companyId: string): Promise<boolean> => {
+      if (!options.isPluginDeliverableForCompany) return Promise.resolve(true);
+      const cached = deliverableCache.get(pluginId);
+      if (cached) return cached;
+      const result = options
+        .isPluginDeliverableForCompany(pluginId, companyId)
+        // Fail open: an enablement-lookup failure must not silently drop
+        // events. The checker is responsible for logging its own errors.
+        .catch(() => true);
+      deliverableCache.set(pluginId, result);
+      return result;
+    };
+
     for (const [pluginId, subs] of registry) {
       for (const sub of subs) {
         if (!matchesPattern(event.eventType, sub.eventPattern)) continue;
@@ -186,9 +203,16 @@ export function createPluginEventBus(): PluginEventBus {
         // exceptions become rejections. Each .catch() swallows the rejection
         // and records it — the promise always resolves, so Promise.all never rejects.
         promises.push(
-          Promise.resolve().then(() => sub.handler(event)).catch((error: unknown) => {
-            errors.push({ pluginId, error });
-          }),
+          Promise.resolve()
+            .then(async () => {
+              if (event.companyId && !(await isDeliverable(pluginId, event.companyId))) {
+                return;
+              }
+              await sub.handler(event);
+            })
+            .catch((error: unknown) => {
+              errors.push({ pluginId, error });
+            }),
         );
       }
     }
@@ -313,6 +337,29 @@ export function createPluginEventBus(): PluginEventBus {
 export interface PluginEventBusEmitResult {
   /** Errors thrown by individual handlers, keyed by the plugin that failed. */
   errors: Array<{ pluginId: string; error: unknown }>;
+}
+
+/**
+ * Options for {@link createPluginEventBus}.
+ */
+export interface PluginEventBusOptions {
+  /**
+   * When set, events carrying a (truthy) `companyId` are only delivered to
+   * a given plugin's subscriptions when this resolves `true` for
+   * `(pluginKey, companyId)` — i.e. per-company plugin enablement. The bus
+   * registers subscriptions under the manifest `pluginKey` (see
+   * `forPlugin`/`subsFor`), so that is what this checker receives — not
+   * the plugin's database uuid. Events without a `companyId` are always
+   * delivered and this checker is never consulted for them.
+   *
+   * If the checker's promise rejects, delivery fails open (the event is
+   * still delivered) so an enablement-lookup failure can never silently
+   * drop events; the checker is responsible for logging its own errors.
+   */
+  isPluginDeliverableForCompany?: (
+    pluginKey: string,
+    companyId: string,
+  ) => Promise<boolean>;
 }
 
 /**

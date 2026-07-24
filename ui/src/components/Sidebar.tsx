@@ -36,7 +36,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { attentionApi } from "../api/attention";
 import { heartbeatsApi } from "../api/heartbeats";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { queryKeys } from "../lib/queryKeys";
 import { attentionBadgeCount } from "../lib/attention";
 import { useInboxBadge } from "../hooks/useInboxBadge";
@@ -58,10 +58,7 @@ export function Sidebar() {
   const { isMobile, collapsed, collapseLocked, peeking, toggleCollapsed, setCollapsed } = useSidebar();
   const rail = collapsed && !peeking;
   const inboxBadge = useInboxBadge(selectedCompanyId);
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
+  const { data: experimentalSettings } = useFeatures();
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,

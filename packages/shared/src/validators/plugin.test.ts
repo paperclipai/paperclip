@@ -246,3 +246,82 @@ describe("plugin UI slot validators", () => {
     expect(parsed.error.issues.some((issue) => issue.message.includes("reserved by the host"))).toBe(true);
   });
 });
+
+describe("plugin manifest companyEnablement", () => {
+  const baseManifest = {
+    id: "paperclip.company-enablement-fixture",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Company Enablement Fixture",
+    description: "Manifest fixture for companyEnablement validation.",
+    author: "Paperclip",
+    categories: ["ui"],
+    capabilities: ["ui.dashboardWidget.register"],
+    entrypoints: {
+      worker: "./dist/worker.js",
+      ui: "./dist/ui.js",
+    },
+    ui: {
+      slots: [
+        {
+          type: "dashboardWidget",
+          id: "fixture-widget",
+          displayName: "Fixture Widget",
+          exportName: "FixtureWidget",
+        },
+      ],
+    },
+  };
+
+  it("accepts a manifest without companyEnablement (default on)", () => {
+    const parsed = pluginManifestV1Schema.parse(baseManifest);
+    expect(parsed.companyEnablement).toBeUndefined();
+  });
+
+  it("accepts default on and default off", () => {
+    expect(
+      pluginManifestV1Schema.parse({
+        ...baseManifest,
+        companyEnablement: { default: "on" },
+      }).companyEnablement,
+    ).toEqual({ default: "on" });
+    expect(
+      pluginManifestV1Schema.parse({
+        ...baseManifest,
+        companyEnablement: { default: "off" },
+      }).companyEnablement,
+    ).toEqual({ default: "off" });
+  });
+
+  it("accepts locked with a default", () => {
+    const parsed = pluginManifestV1Schema.parse({
+      ...baseManifest,
+      companyEnablement: { default: "off", locked: true },
+    });
+    expect(parsed.companyEnablement).toEqual({ default: "off", locked: true });
+  });
+
+  it("rejects an invalid default value", () => {
+    const result = pluginManifestV1Schema.safeParse({
+      ...baseManifest,
+      companyEnablement: { default: "maybe" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects companyEnablement without a default", () => {
+    const result = pluginManifestV1Schema.safeParse({
+      ...baseManifest,
+      companyEnablement: { locked: true },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects unknown keys in companyEnablement", () => {
+    const result = pluginManifestV1Schema.safeParse({
+      ...baseManifest,
+      companyEnablement: { default: "on", unexpectedKey: true },
+    });
+    expect(result.success).toBe(false);
+  });
+});
