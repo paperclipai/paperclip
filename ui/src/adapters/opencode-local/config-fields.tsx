@@ -1,11 +1,10 @@
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
-  ToggleField,
   DraftInput,
-  help,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
+import { DangerToggleField } from "../../components/DangerToggleField";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -20,7 +19,35 @@ export function OpenCodeLocalConfigFields({
   eff,
   mark,
   hideInstructionsFile,
+  configurationSection = "runtime",
 }: AdapterConfigFieldsProps) {
+  if (configurationSection === "danger") {
+    return (
+      <DangerToggleField
+        label="Skip permission prompts"
+        description="Runs unattended by auto-approving every adapter permission prompt. The agent can take any action its environment allows without asking."
+        toggleTestId="danger-skip-permissions"
+        confirmTitle="Skip permission prompts?"
+        confirmBody="Runs unattended by auto-approving every adapter permission prompt. The agent can take any action its environment allows without asking."
+        confirmActionLabel="Skip permissions"
+        checked={
+          isCreate
+            ? values!.dangerouslySkipPermissions
+            : eff(
+                "adapterConfig",
+                "dangerouslySkipPermissions",
+                config.dangerouslySkipPermissions !== false,
+              )
+        }
+        onChange={(v) =>
+          isCreate
+            ? set!({ dangerouslySkipPermissions: v })
+            : mark("adapterConfig", "dangerouslySkipPermissions", v)
+        }
+      />
+    );
+  }
+
   return (
     <>
       {!hideInstructionsFile && (
@@ -49,24 +76,6 @@ export function OpenCodeLocalConfigFields({
           </div>
         </Field>
       )}
-      <ToggleField
-        label="Skip permissions"
-        hint={help.dangerouslySkipPermissions}
-        checked={
-          isCreate
-            ? values!.dangerouslySkipPermissions
-            : eff(
-                "adapterConfig",
-                "dangerouslySkipPermissions",
-                config.dangerouslySkipPermissions !== false,
-              )
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslySkipPermissions: v })
-            : mark("adapterConfig", "dangerouslySkipPermissions", v)
-        }
-      />
     </>
   );
 }

@@ -2,7 +2,7 @@ import * as React from "react";
 import { StrictMode } from "react";
 import * as ReactDOM from "react-dom";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter } from "@/lib/router";
+import { RouterProvider } from "@/lib/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
@@ -18,6 +18,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
+import { createAppRouter } from "./lib/app-router";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
@@ -52,33 +53,35 @@ function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNod
   return <BreadcrumbProvider companyName={selectedCompany?.name ?? null}>{children}</BreadcrumbProvider>;
 }
 
+const router = createAppRouter(
+  <CompanyProvider>
+    <EditorAutocompleteProvider>
+      <ToastProvider>
+        <LiveUpdatesProvider>
+          <TooltipProvider>
+            <CompanyAwareBreadcrumbProvider>
+              <SidebarProvider>
+                <PanelProvider>
+                  <PluginLauncherProvider>
+                    <DialogProvider>
+                      <App />
+                    </DialogProvider>
+                  </PluginLauncherProvider>
+                </PanelProvider>
+              </SidebarProvider>
+            </CompanyAwareBreadcrumbProvider>
+          </TooltipProvider>
+        </LiveUpdatesProvider>
+      </ToastProvider>
+    </EditorAutocompleteProvider>
+  </CompanyProvider>,
+);
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <BrowserRouter>
-          <CompanyProvider>
-            <EditorAutocompleteProvider>
-              <ToastProvider>
-                <LiveUpdatesProvider>
-                  <TooltipProvider>
-                    <CompanyAwareBreadcrumbProvider>
-                      <SidebarProvider>
-                        <PanelProvider>
-                          <PluginLauncherProvider>
-                            <DialogProvider>
-                              <App />
-                            </DialogProvider>
-                          </PluginLauncherProvider>
-                        </PanelProvider>
-                      </SidebarProvider>
-                    </CompanyAwareBreadcrumbProvider>
-                  </TooltipProvider>
-                </LiveUpdatesProvider>
-              </ToastProvider>
-            </EditorAutocompleteProvider>
-          </CompanyProvider>
-        </BrowserRouter>
+        <RouterProvider router={router} />
       </ThemeProvider>
     </QueryClientProvider>
   </StrictMode>

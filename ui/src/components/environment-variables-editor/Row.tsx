@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   KeyRound,
+  Lock,
   MoreHorizontal,
   ShieldAlert,
   Type as TypeIcon,
@@ -37,6 +38,34 @@ const nameInputClass =
 const valueTextInputClass =
   "min-w-0 flex-1 bg-transparent px-2 py-1.5 text-sm font-mono outline-none placeholder:text-muted-foreground/40";
 
+/**
+ * Per-row SOURCE badge (wireframe 04): plain / secret / user / locked.
+ * `locked` marks reserved (e.g. PAPERCLIP_*) keys so they read as
+ * runtime-provided rather than silently stripped (PAP-14732).
+ */
+function SourceBadge({ source, reserved }: { source: RowSource; reserved?: boolean }) {
+  const spec = reserved
+    ? { label: "locked", Icon: Lock, cls: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300" }
+    : source === "secret"
+      ? { label: "secret", Icon: KeyRound, cls: "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300" }
+      : source === "user_secret"
+        ? { label: "user", Icon: UserRound, cls: "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300" }
+        : { label: "plain", Icon: TypeIcon, cls: "border-border bg-muted/40 text-muted-foreground" };
+  const { Icon } = spec;
+  return (
+    <span
+      aria-label={`Source: ${spec.label}`}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-(length:--text-nano) font-medium",
+        spec.cls,
+      )}
+    >
+      <Icon className="size-3" />
+      {spec.label}
+    </span>
+  );
+}
+
 type SecretPopoverState = { mode: "create" | "store"; name: string; value: string } | null;
 export interface EnvironmentVariableDirtyFields {
   name: boolean;
@@ -50,6 +79,8 @@ export interface EnvironmentVariableRowProps {
   userSecretDefinitions?: readonly UserSecretDefinition[];
   recentlyUsedSecrets?: readonly CompanySecret[];
   disabled?: boolean;
+  /** Name matches a reserved prefix (e.g. PAPERCLIP_*) — render as a locked row. */
+  reserved?: boolean;
   nameIssue: NameIssue | null;
   showNameIssue: boolean;
   dirtyFields: EnvironmentVariableDirtyFields;
@@ -74,6 +105,7 @@ export function EnvironmentVariableRow({
   userSecretDefinitions,
   recentlyUsedSecrets,
   disabled,
+  reserved,
   nameIssue,
   showNameIssue,
   dirtyFields,
@@ -561,7 +593,8 @@ export function EnvironmentVariableRow({
       ) : null}
 
       {/* Actions cell — mobile col 2 line 1 / desktop col 3 */}
-      <div className="col-start-2 row-start-1 flex items-center justify-end gap-0.5 self-start @[40rem]/env:col-start-3 @[40rem]/env:self-center">
+      <div className="col-start-2 row-start-1 flex items-center justify-end gap-1 self-start @[40rem]/env:col-start-3 @[40rem]/env:self-center">
+        <SourceBadge source={row.source} reserved={reserved} />
         {row.source === "text" && !sensitive && (row.name.trim() || row.textValue) ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild disabled={disabled}>

@@ -201,11 +201,49 @@ function normalizeRuntimeConfigForNewAgent(runtimeConfig: unknown): Record<strin
   return normalizedRuntimeConfig;
 }
 
-function diffConfigSnapshot(
+function diffRecordFields(
+  before: unknown,
+  after: unknown,
+  prefix: string,
+): string[] {
+  const beforeRecord = isPlainRecord(before) ? before : {};
+  const afterRecord = isPlainRecord(after) ? after : {};
+  return [...new Set([...Object.keys(beforeRecord), ...Object.keys(afterRecord)])]
+    .sort()
+    .filter((field) => !jsonEqual(beforeRecord[field], afterRecord[field]))
+    .map((field) => `${prefix}.${field}`);
+}
+
+export function diffConfigSnapshot(
   before: AgentConfigSnapshot,
   after: AgentConfigSnapshot,
 ): string[] {
-  return CONFIG_REVISION_FIELDS.filter((field) => !jsonEqual(before[field], after[field]));
+  const changedKeys: string[] = [];
+  for (const field of CONFIG_REVISION_FIELDS) {
+    if (jsonEqual(before[field], after[field])) continue;
+    if (field === "adapterConfig") {
+      changedKeys.push(...diffRecordFields(before.adapterConfig, after.adapterConfig, field));
+      continue;
+    }
+    if (field === "runtimeConfig") {
+      const beforeRuntime = isPlainRecord(before.runtimeConfig) ? before.runtimeConfig : {};
+      const afterRuntime = isPlainRecord(after.runtimeConfig) ? after.runtimeConfig : {};
+      const runtimeFields = [...new Set([...Object.keys(beforeRuntime), ...Object.keys(afterRuntime)])].sort();
+      for (const runtimeField of runtimeFields) {
+        if (jsonEqual(beforeRuntime[runtimeField], afterRuntime[runtimeField])) continue;
+        if (runtimeField === "heartbeat") {
+          changedKeys.push(...diffRecordFields(beforeRuntime.heartbeat, afterRuntime.heartbeat, "runtimeConfig.heartbeat"));
+        } else if (runtimeField === "modelProfiles") {
+          changedKeys.push(...diffRecordFields(beforeRuntime.modelProfiles, afterRuntime.modelProfiles, "runtimeConfig.modelProfiles"));
+        } else {
+          changedKeys.push(`runtimeConfig.${runtimeField}`);
+        }
+      }
+      continue;
+    }
+    changedKeys.push(field);
+  }
+  return changedKeys;
 }
 
 function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$inferInsert> {
@@ -926,6 +964,7 @@ export function agentService(db: Db) {
           name: agentApiKeys.name,
           responsibleUserId: agentApiKeys.responsibleUserId,
           scopeConfig: agentApiKeys.scopeConfig,
+          lastUsedAt: agentApiKeys.lastUsedAt,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
@@ -936,6 +975,7 @@ export function agentService(db: Db) {
           name: row.name,
           scope: normalizeAgentApiKeyScope(row.scopeConfig),
           responsibleUserId: row.responsibleUserId,
+          lastUsedAt: row.lastUsedAt,
           createdAt: row.createdAt,
           revokedAt: row.revokedAt,
         }))),

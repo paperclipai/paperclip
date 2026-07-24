@@ -7,6 +7,7 @@ import {
   help,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
+import { DangerToggleField } from "../../components/DangerToggleField";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
@@ -30,6 +31,7 @@ export function CodexLocalConfigFields({
   mark,
   models,
   hideInstructionsFile,
+  configurationSection = "runtime",
 }: AdapterConfigFieldsProps) {
   const rawEngine = isCreate
     ? values!.codexEngine ?? "auto"
@@ -52,6 +54,33 @@ export function CodexLocalConfigFields({
     : fastModeSupported
       ? "Fast mode consumes credits/tokens much faster than standard Codex runs."
       : `Fast mode currently only works on ${supportedModelsLabel} or manual model IDs. Paperclip will ignore this toggle until the model is switched.`;
+
+  if (configurationSection === "danger") {
+    return (
+      <DangerToggleField
+        label="Bypass sandbox (Codex)"
+        description="Removes filesystem/network restrictions."
+        toggleTestId="danger-bypass-sandbox"
+        confirmTitle="Bypass sandbox?"
+        confirmBody="Removes filesystem/network restrictions. Codex runs can read, write, and reach the network without sandbox containment."
+        confirmActionLabel="Bypass sandbox"
+        checked={
+          isCreate
+            ? values!.dangerouslyBypassSandbox
+            : eff(
+                "adapterConfig",
+                "dangerouslyBypassApprovalsAndSandbox",
+                bypassEnabled,
+              )
+        }
+        onChange={(v) =>
+          isCreate
+            ? set!({ dangerouslyBypassSandbox: v })
+            : mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", v)
+        }
+      />
+    );
+  }
 
   return (
     <>
@@ -209,24 +238,6 @@ export function CodexLocalConfigFields({
           </div>
         </Field>
       )}
-      <ToggleField
-        label="Bypass sandbox"
-        hint={help.dangerouslyBypassSandbox}
-        checked={
-          isCreate
-            ? values!.dangerouslyBypassSandbox
-            : eff(
-                "adapterConfig",
-                "dangerouslyBypassApprovalsAndSandbox",
-                bypassEnabled,
-              )
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslyBypassSandbox: v })
-            : mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", v)
-        }
-      />
       <ToggleField
         label="Enable search"
         hint={help.search}
