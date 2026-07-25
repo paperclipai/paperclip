@@ -3,6 +3,7 @@ export const API_PREFIX = "/api";
 export const API = {
   health: `${API_PREFIX}/health`,
   companies: `${API_PREFIX}/companies`,
+  companyPluginCurrentState: `${API_PREFIX}/companies/:companyId/plugins/:pluginKey/current`,
   companyFolders: `${API_PREFIX}/companies/:companyId/folders`,
   companyFolder: `${API_PREFIX}/companies/:companyId/folders/:folderId`,
   companyFolderMove: `${API_PREFIX}/companies/:companyId/folders/:folderId/move`,

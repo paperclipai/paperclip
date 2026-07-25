@@ -31,6 +31,14 @@ Current limitations to keep in mind:
 - Scoped plugin API routes are JSON-only and must be declared in `apiRoutes`.
   They mount under `/api/plugins/:pluginId/api/*`; plugins cannot shadow core
   API routes.
+- Core exposes one narrow company-authorized registry read at
+  `GET /api/companies/:companyId/plugins/:pluginKey/current`. It resolves only
+  the exact key from the current `plugins` row and returns presence, lifecycle
+  status, registry identity, plugin/API versions, and `updatedAt` for a two-read
+  fingerprint. It does not expose list inventory, manifests, configuration,
+  package paths, credentials, or error text; global plugin list/detail routes
+  remain board-only. Responses use `Cache-Control: no-store` so a two-read
+  preflight cannot be satisfied by a stale HTTP cache.
 
 In practice, that means the current implementation is a good fit for local development and self-hosted persistent deployments, but not yet for multi-instance cloud plugin distribution.
 
