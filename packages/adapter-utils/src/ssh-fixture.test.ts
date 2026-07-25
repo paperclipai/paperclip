@@ -213,7 +213,10 @@ describe("ssh env-lab fixture", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(sentinel);
-    const launchers = await runSshCommand(config, "find /tmp -maxdepth 1 -name 'paperclip-ssh-command-*' -print");
+    const launchers = await runSshCommand(
+      config,
+      "find /tmp -maxdepth 1 \\( -name 'paperclip-ssh-command-*' -o -name 'paperclip-ssh-launch-*' \\) -print",
+    );
     expect(launchers.stdout).toBe("");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
