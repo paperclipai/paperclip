@@ -2544,6 +2544,7 @@ async function listIssueBlockerAttentionMap(
 const issueListSelect = {
   id: issues.id,
   companyId: issues.companyId,
+  locked: issues.locked,
   projectId: issues.projectId,
   projectWorkspaceId: issues.projectWorkspaceId,
   goalId: issues.goalId,
