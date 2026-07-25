@@ -66,10 +66,12 @@ profanity-free. Sharper language in a sweary edition is permitted only in the
 subtitle, strapline, or a divider body—never titles, headers, listing metadata,
 or filenames.
 
-Every printable brand is locked to maroon `#620306`, a checksum-pinned
-foreground logo and original source, RGB, no bleed/crop marks, and a 13 mm
-home-print margin. Dastardly Print and AroidAtlas use the identical shared
-template system; never fork templates by brand.
+Every printable brand is locked to its own declared registry accent, a
+checksum-pinned foreground logo and original source, RGB, no bleed/crop marks,
+and a 13 mm home-print margin. Dastardly Print is `#620306`; AroidAtlas is
+`#2F5233`. Any unknown brand, token/registry mismatch, or cross-brand colour
+leakage fails closed. Both brands use the identical shared template system;
+never fork templates by brand.
 
 ## Required flow
 
