@@ -97,6 +97,13 @@ const manifest: PaperclipPluginManifestV1 = {
             minimum: 1,
             description: "Hard ceiling on a single run's wall-clock time (default: 3600).",
           },
+          timeoutMs: {
+            type: "integer",
+            minimum: 1,
+            maximum: 86400000,
+            description:
+              "RPC budget in milliseconds for lease lifecycle calls (acquire/resume/release/execute). Default 30000 (paperclip-server default). Raise it for clusters where the first dispatch is slow to bootstrap the tenant namespace or pull the runtime image.",
+          },
           adapterType: {
             type: "string",
             description:

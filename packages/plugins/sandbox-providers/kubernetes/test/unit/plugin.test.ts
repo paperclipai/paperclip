@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import plugin from "../../src/plugin.js";
+import manifest from "../../src/manifest.js";
 
 describe("plugin", () => {
   it("exports the kubernetes driver", () => {
@@ -58,6 +59,26 @@ describe("plugin", () => {
     });
     expect(result.ok).toBe(true);
     expect(result.normalizedConfig?.backend).toBe("job");
+  });
+
+  // paperclip-server reads `timeoutMs` off the normalized driver config to size
+  // the RPC budget for lease lifecycle calls. A key the schema does not declare
+  // is stripped during normalization, so an operator-set value would never
+  // reach the server.
+  it("validateConfig round-trips timeoutMs into normalizedConfig", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { inCluster: true, timeoutMs: 180_000 },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.normalizedConfig?.timeoutMs).toBe(180_000);
+  });
+
+  it("the driver manifest advertises timeoutMs so operators can set it", () => {
+    const configSchema = manifest.environmentDrivers?.[0]?.configSchema as {
+      properties?: Record<string, { type?: string }>;
+    };
+    expect(configSchema.properties?.timeoutMs?.type).toBe("integer");
   });
 
   it("validateConfig rejects unknown backend value", async () => {

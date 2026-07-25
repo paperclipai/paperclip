@@ -31,6 +31,21 @@ describe("kubernetesProviderConfigSchema", () => {
     ).toThrow();
   });
 
+  it("keeps timeoutMs, the RPC budget paperclip-server reads off the config", () => {
+    const parsed = parseKubernetesProviderConfig({ inCluster: true, timeoutMs: 180_000 });
+    expect(parsed.timeoutMs).toBe(180_000);
+  });
+
+  it("leaves timeoutMs absent when it is not configured (server default applies)", () => {
+    const parsed = parseKubernetesProviderConfig({ inCluster: true });
+    expect(parsed.timeoutMs).toBeUndefined();
+  });
+
+  it("rejects a non-positive or non-integer timeoutMs", () => {
+    expect(() => parseKubernetesProviderConfig({ inCluster: true, timeoutMs: 0 })).toThrow();
+    expect(() => parseKubernetesProviderConfig({ inCluster: true, timeoutMs: 1.5 })).toThrow();
+  });
+
   it("rejects egressAllowCidrs entries that are not valid CIDR", () => {
     expect(() =>
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),

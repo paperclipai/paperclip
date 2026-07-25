@@ -34,6 +34,19 @@ export const kubernetesProviderConfigSchema = z
     podActivityDeadlineSec: z.number().int().positive().default(3600),
 
     /**
+     * RPC budget (ms) paperclip-server grants this environment's lease lifecycle
+     * calls (acquire / resume / release / realizeWorkspace / execute). The server
+     * reads the key off the driver config; without it the 30s default applies,
+     * which is tight for a first dispatch that bootstraps a whole tenant
+     * namespace (ServiceAccount, RBAC, quotas, network policies) and then waits
+     * on the runtime image pull. Declared here because the schema strips keys it
+     * does not know: an operator-set value would otherwise be dropped during
+     * normalization and never reach the server. Recommended: 180000 or more on
+     * clusters with slow first-dispatch bootstrap.
+     */
+    timeoutMs: z.number().int().positive().max(86_400_000).optional(),
+
+    /**
      * The adapter type that Jobs in this environment will run.
      * Each Kubernetes environment is bound to one adapter; create multiple
      * environments for different adapters.
