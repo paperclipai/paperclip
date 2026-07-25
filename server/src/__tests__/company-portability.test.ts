@@ -74,6 +74,7 @@ const secretSvc = {
 const agentInstructionsSvc = {
   exportFiles: vi.fn(),
   materializeManagedBundle: vi.fn(),
+  removeManagedBundle: vi.fn(),
 };
 
 vi.mock("../services/companies.js", () => ({
@@ -142,6 +143,7 @@ describe("company portability", () => {
       config,
       secretKeys: new Set<string>(),
     }));
+    agentInstructionsSvc.removeManagedBundle.mockResolvedValue(undefined);
     issueSvc.listComments.mockResolvedValue([]);
     issueSvc.addComment.mockResolvedValue({
       id: "comment-imported",
@@ -2552,6 +2554,116 @@ describe("company portability", () => {
       name: "ClaudeCoder",
       adapterType: "process",
     }));
+  });
+
+  it("rejects unavailable explicit agent models during preview", async () => {
+    const previousBedrock = process.env.CLAUDE_CODE_USE_BEDROCK;
+    const previousRegion = process.env.AWS_REGION;
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "eu-west-1";
+    try {
+      const portability = companyPortabilityService({} as any);
+      const preview = await portability.previewImport({
+        source: {
+          type: "inline",
+          files: {
+            "COMPANY.md": "---\nname: Import\nincludes:\n  - agents/coder/AGENTS.md\n---\n",
+            "agents/coder/AGENTS.md": "---\nname: Coder\nslug: coder\n---\n",
+            ".paperclip.yaml": [
+              "schema: paperclip/v1",
+              "agents:",
+              "  coder:",
+              "    adapter:",
+              "      type: claude_local",
+              "      config:",
+              "        model: eu.anthropic.claude-sonnet-5",
+              "",
+            ].join("\n"),
+          },
+        },
+        include: {
+          company: true,
+          agents: true,
+          projects: false,
+          issues: false,
+          skills: false,
+        },
+        target: {
+          mode: "new_company",
+          newCompanyName: "Import",
+        },
+        collisionStrategy: "rename",
+      });
+
+      expect(preview.errors).toContain(
+        'Agent coder model "eu.anthropic.claude-sonnet-5" is not available for adapter claude_local.',
+      );
+    } finally {
+      if (previousBedrock === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK;
+      else process.env.CLAUDE_CODE_USE_BEDROCK = previousBedrock;
+      if (previousRegion === undefined) delete process.env.AWS_REGION;
+      else process.env.AWS_REGION = previousRegion;
+    }
+  });
+
+  it("rolls back new-company imports and cleans managed instructions on failure", async () => {
+    const transaction = vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback({}));
+    companySvc.create.mockReset().mockResolvedValue({
+      id: "company-atomic",
+      name: "Atomic Company",
+      requireBoardApprovalForNewAgents: false,
+    });
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-atomic",
+      companyId: "company-atomic",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      status: input.status,
+    }));
+    agentInstructionsSvc.materializeManagedBundle.mockResolvedValue({
+      adapterConfig: {},
+      bundle: {},
+    });
+    issueSvc.create.mockRejectedValueOnce(new Error("issue create failed"));
+    const portability = companyPortabilityService({ transaction } as any);
+
+    await expect(portability.importBundle({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": [
+            "---",
+            "name: Atomic Company",
+            "includes:",
+            "  - agents/engineer/AGENTS.md",
+            "  - tasks/fail/TASK.md",
+            "---",
+            "",
+          ].join("\n"),
+          "agents/engineer/AGENTS.md": "---\nname: Engineer\nslug: engineer\n---\n",
+          "tasks/fail/TASK.md": "---\nname: Fail\nslug: fail\nassignee: engineer\n---\n",
+        },
+      },
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: true,
+        skills: false,
+      },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Atomic Company",
+      },
+      collisionStrategy: "rename",
+    }, "user-1")).rejects.toThrow("issue create failed");
+
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(agentInstructionsSvc.removeManagedBundle).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "agent-atomic" }),
+    );
   });
 
   it("preserves agent role from frontmatter when extension block omits it", async () => {

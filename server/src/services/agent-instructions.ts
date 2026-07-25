@@ -722,6 +722,10 @@ export function agentInstructionsService() {
     return { bundle, adapterConfig };
   }
 
+  async function removeManagedBundle(agent: AgentLike): Promise<void> {
+    await fs.rm(resolveManagedInstructionsRoot(agent), { recursive: true, force: true });
+  }
+
   return {
     getBundle,
     readFile,
@@ -731,5 +735,6 @@ export function agentInstructionsService() {
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
     materializeManagedBundle,
+    removeManagedBundle,
   };
 }
