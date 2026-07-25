@@ -465,6 +465,40 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
+  it("refuses to switch an existing agent onto a disabled adapter", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["external_test"]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterType: "external_test" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(
+      'Adapter "external_test" is not available on this instance',
+    );
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("still lets an agent already on a disabled adapter be edited", async () => {
+    // Disabling an adapter must not make the agents that already use it
+    // uneditable — only NEW selections of it are refused.
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["codex_local"]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
   it("still creates an agent on an adapter that is registered and enabled", async () => {
     const { registerServerAdapter } = await import("../adapters/index.js");
     registerServerAdapter(externalAdapter);

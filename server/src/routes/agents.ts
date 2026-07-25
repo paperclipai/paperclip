@@ -2998,8 +2998,15 @@ export function agentRoutes(
       patchData.adapterConfig = adapterConfig;
     }
 
+    // Switching an existing agent ONTO another adapter is a new selection, so
+    // it gets the selectable check; keeping the agent's current adapter (even
+    // one since disabled) stays allowed, so a disabled harness does not make an
+    // existing agent uneditable.
     const requestedAdapterType = hasOwn(patchData, "adapterType")
-      ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
+      ? (() => {
+        const next = assertKnownAdapterType(patchData.adapterType as string | null | undefined);
+        return next === existing.adapterType ? next : assertSelectableAdapterType(next);
+      })()
       : existing.adapterType;
     let requestedRuntimeConfig: Record<string, unknown> | null = null;
     if (hasOwn(patchData, "runtimeConfig")) {
