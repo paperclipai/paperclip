@@ -14,6 +14,7 @@ const accessServiceMock = vi.hoisted(() => ({
 const logActivityMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
   accessService: () => accessServiceMock,
   agentService: () => ({
     getById: vi.fn(),

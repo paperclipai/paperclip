@@ -12,6 +12,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
     sidebarPreferenceService: () => mockSidebarPreferenceService,
     logActivity: mockLogActivity,
   }));

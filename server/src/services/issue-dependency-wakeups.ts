@@ -29,7 +29,7 @@ export async function findExistingIssueBlockersResolvedWake(
     idempotencyKey: string;
   },
 ) {
-  return db
+  const rows = await db
     .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status })
     .from(agentWakeupRequests)
     .where(
@@ -38,9 +38,8 @@ export async function findExistingIssueBlockersResolvedWake(
         eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
         inArray(agentWakeupRequests.status, [...IDEMPOTENT_DEPENDENCY_WAKE_STATUSES]),
       ),
-    )
-    .limit(1)
-    .then((rows) => rows[0] ?? null);
+    );
+  return rows[0] ?? null;
 }
 
 export async function findExistingIssueBlockersResolvedWakeForAnyKey(
@@ -53,7 +52,7 @@ export async function findExistingIssueBlockersResolvedWakeForAnyKey(
   const idempotencyKeys = [...new Set(input.idempotencyKeys.filter(Boolean))];
   if (idempotencyKeys.length === 0) return null;
 
-  return db
+  const rows = await db
     .select({
       id: agentWakeupRequests.id,
       status: agentWakeupRequests.status,
@@ -66,7 +65,6 @@ export async function findExistingIssueBlockersResolvedWakeForAnyKey(
         inArray(agentWakeupRequests.idempotencyKey, idempotencyKeys),
         inArray(agentWakeupRequests.status, [...IDEMPOTENT_DEPENDENCY_WAKE_STATUSES]),
       ),
-    )
-    .limit(1)
-    .then((rows) => rows[0] ?? null);
+    );
+  return rows[0] ?? null;
 }

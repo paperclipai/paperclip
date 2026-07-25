@@ -4,6 +4,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async () => null));
+const mockDeliveryReceiptService = vi.hoisted(() => ({
+  listForSource: vi.fn(async () => []),
+  openMissingReceiptRecovery: vi.fn(async () => undefined),
+  publish: vi.fn(async () => ({ id: "receipt-1" })),
+}));
+const mockWorkProductService = vi.hoisted(() => ({
+  getById: vi.fn(async (id: string) => ({
+    id,
+    companyId: "company-1",
+    issueId: id === "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" ? "child-1" : "issue-1",
+    updatedAt: new Date("2026-05-01T00:00:00.000Z"),
+  })),
+  listForIssue: vi.fn(async () => []),
+}));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
@@ -19,6 +33,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  issueDeliveryReceiptService: () => mockDeliveryReceiptService,
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
   }),
@@ -51,6 +66,9 @@ vi.mock("../services/index.js", () => ({
   getIssueContinuationSummaryDocument: vi.fn(async () => null),
   instanceSettingsService: () => ({
     get: vi.fn(),
+    getExperimental: vi.fn(async () => ({
+      enableExternalObjects: false,
+    })),
     listCompanyIds: vi.fn(),
   }),
   issueApprovalService: () => ({}),
@@ -85,9 +103,7 @@ vi.mock("../services/index.js", () => ({
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
-  workProductService: () => ({
-    listForIssue: vi.fn(async () => []),
-  }),
+  workProductService: () => mockWorkProductService,
 }));
 
 vi.mock("../services/issue-dependency-wakeups.js", async () => {
@@ -100,7 +116,10 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
   };
 });
 
-async function createApp() {
+async function createApp(
+  receiptIssueId = "issue-1",
+  receiptWorkProductId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+) {
   const emptyRows: unknown[] = [];
   const whereResult = {
     limit: vi.fn(async () => emptyRows),
@@ -113,6 +132,18 @@ async function createApp() {
     select: vi.fn(() => ({
       from: vi.fn(() => query),
     })),
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({
+      select: () => ({
+        from: () => ({
+          where: async () => [{
+            id: receiptWorkProductId,
+            companyId: "company-1",
+            issueId: receiptIssueId,
+            updatedAt: new Date("2026-05-01T00:00:00.000Z"),
+          }],
+        }),
+      }),
+    }),
   };
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -207,7 +238,16 @@ describe("issue dependency wakeups in issue routes", () => {
       },
     ]);
 
-    const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
+    const res = await request(await createApp()).patch("/api/issues/issue-1").send({
+      status: "done",
+      deliveryReceipt: {
+        primaryWorkProductKey: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        revision: "2026-05-01T00:00:00.000Z",
+        format: "inline_text",
+        summary: "The blocker completion is available.",
+        inlineText: "Requester-visible completion text.",
+      },
+    });
     expect(res.status).toBe(200);
     await vi.waitFor(() => {
       expect(mockWakeup).toHaveBeenCalledWith(
@@ -363,7 +403,16 @@ describe("issue dependency wakeups in issue routes", () => {
       childIssueSummaryTruncated: false,
     });
 
-    const res = await request(await createApp()).patch("/api/issues/child-1").send({ status: "done" });
+    const res = await request(await createApp("child-1", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")).patch("/api/issues/child-1").send({
+      status: "done",
+      deliveryReceipt: {
+        primaryWorkProductKey: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        revision: "2026-05-01T00:00:00.000Z",
+        format: "inline_text",
+        summary: "The child completion is available.",
+        inlineText: "Requester-visible completion text.",
+      },
+    });
     expect(res.status).toBe(200);
     await vi.waitFor(() => {
       expect(mockWakeup).toHaveBeenCalledWith(

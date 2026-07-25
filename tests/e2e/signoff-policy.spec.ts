@@ -257,6 +257,30 @@ async function createIssueWithPolicy(ctx: TestContext, title: string, stages?: u
   return issue;
 }
 
+async function createDeliveryReceipt(ctx: TestContext, issueId: string) {
+  const workProductRes = await ctx.boardRequest.post(`${BASE_URL}/api/issues/${issueId}/work-products`, {
+    data: {
+      type: "artifact",
+      provider: "e2e",
+      title: "Signoff delivery evidence",
+      status: "approved",
+      reviewState: "approved",
+      isPrimary: true,
+      healthStatus: "healthy",
+      summary: "Requester-visible signoff delivery.",
+    },
+  });
+  expect(workProductRes.ok()).toBe(true);
+  const workProduct = await workProductRes.json();
+  return {
+    primaryWorkProductKey: workProduct.id,
+    revision: workProduct.updatedAt,
+    format: "inline_text",
+    summary: "The signoff delivery is approved and complete.",
+    inlineText: "Final requester-visible signoff delivery.",
+  };
+}
+
 test.describe("Signoff execution policy", () => {
   let ctx: TestContext;
 
@@ -291,6 +315,7 @@ test.describe("Signoff execution policy", () => {
   test("happy path: executor → review → approval → done", async ({ page }) => {
     const issue = await createIssueWithPolicy(ctx, "Signoff happy path");
     const issueId = issue.id;
+    const deliveryReceipt = await createDeliveryReceipt(ctx, issueId);
 
     // Verify policy was saved
     expect(issue.executionPolicy).toBeTruthy();
@@ -341,7 +366,7 @@ test.describe("Signoff execution policy", () => {
     // Step 5: Approver approves → should complete
     const step5Res = await agentPatch(
       ctx.boardRequest, ctx.approver, issueId,
-      { status: "done", comment: "Approved. Ship it." },
+      { status: "done", comment: "Approved. Ship it.", deliveryReceipt },
     );
     expect(step5Res.ok()).toBe(true);
     const step5Issue = await step5Res.json();
@@ -446,6 +471,7 @@ test.describe("Signoff execution policy", () => {
     const issue = await createIssueWithPolicy(ctx, "Signoff review-only", [
       { type: "review", participants: [{ type: "agent", agentId: ctx.reviewer.agentId }] },
     ]);
+    const deliveryReceipt = await createDeliveryReceipt(ctx, issue.id);
 
     // Executor marks done → routes to reviewer
     const doneRes = await agentCheckoutAndPatch(
@@ -458,7 +484,7 @@ test.describe("Signoff execution policy", () => {
     // Reviewer approves → should complete immediately (no approval stage)
     const approveRes = await agentPatch(
       ctx.boardRequest, ctx.reviewer, issue.id,
-      { status: "done", comment: "LGTM." },
+      { status: "done", comment: "LGTM.", deliveryReceipt },
     );
     expect(approveRes.ok()).toBe(true);
     const doneIssue = await approveRes.json();

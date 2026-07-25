@@ -26,6 +26,7 @@ const mockCatalogModule = vi.hoisted(() => ({
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
   }));

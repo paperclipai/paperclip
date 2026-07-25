@@ -1331,6 +1331,20 @@
       "when": 1784916885227,
       "tag": "0191_status_card_mentioned_issue_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 192,
+      "version": "7",
+      "when": 1784995200000,
+      "tag": "0192_issue_delivery_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 193,
+      "version": "7",
+      "when": 1784995200001,
+      "tag": "0193_delivery_receipt_output_identity",
+      "breakpoints": true
     }
   ]
 }

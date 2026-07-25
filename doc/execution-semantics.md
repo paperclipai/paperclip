@@ -228,7 +228,7 @@ The accepted interaction by itself is only evidence that the plan was approved. 
 
 If the live run disappears, Paperclip must repair, resume, or visibly block the existing claim. It must not leave the source issue in a state where a second run can interpret the same acceptance as fresh permission to create sibling issues again.
 
-Once decomposition completes and the umbrella's remaining work is "wait for the children to finish," the umbrella must hold a first-class waiting path — a `blocked`-by-children state — not merely `in_progress` resting on `parentId` rollup. `parentId` is not a dependency (§6), so an `in_progress` umbrella with no run, no wake, and no blockers looks stranded to recovery. If the executor instead parks the continuation as waiting-for-review, recovery converts that park into the missing dependency wait (§9.2, "Deliberate wait is not a lost run").
+Once decomposition completes and the umbrella's remaining work is "wait for the children to finish," the umbrella must hold a first-class waiting path — a `blocked`-by-children state — not merely `in_progress` resting on `parentId` rollup. `parentId` is not a dependency (§6), so an `in_progress` umbrella with no run, no wake, and no blockers looks stranded to recovery. If the executor instead parks the continuation as waiting-for-review, recovery converts that park into the missing dependency wait (§10.2, "Deliberate wait is not a lost run").
 
 ### Concurrent and repeat attempts
 
@@ -467,7 +467,103 @@ A blocker chain is covered only when its unresolved leaf is live or explicitly w
 
 A `blocked` issue is stalled when the unresolved blocker leaf has no active run, queued wake, typed participant, pending interaction or approval, user owner, external owner/action, or recovery action. In that case the parent should show the first stalled leaf instead of presenting the dependency as calmly covered.
 
-## 9. Crash and Restart Recovery
+## 9. Terminal Delivery Contract
+
+`done` is a terminal state for the issue's execution, but an interactive issue is
+not delivered merely because a run succeeded or an artifact exists. Terminal
+completion has two separate, required records:
+
+1. **Durable completion evidence** proves that the declared output exists. It
+   remains governed by the execution-contract work-product rules; a comment,
+   local path, or run exit does not satisfy it.
+2. **A requester-visible delivery receipt** tells the requester what was
+   delivered and gives them a usable way to inspect it. The receipt is a
+   durable issue activity/surface, not an agent-only log.
+
+The receipt is a delivery layer, not a replacement for evidence. Conversely,
+evidence is not a default delivery layer: a link-only work product with no
+requester-facing explanation is insufficient unless the explicit
+document-only override below applies.
+
+### 9.1 Receipt contents and visibility
+
+A receipt must identify the delivered outcome, the output format, the durable
+evidence/work-product reference or references, and the primary inspection
+surface. It must use an audience-safe summary; secrets, private incident data,
+credentials, and inaccessible local filesystem paths are never receipt content.
+The normal receipt also contains a concise inline delivery summary so a
+requester can understand the outcome without reconstructing the issue thread.
+
+The primary inspection surface depends on the output:
+
+- **Small text.** Put the final text inline in the receipt when it fits the
+  configured receipt payload limit, with the durable evidence reference beside
+  it. Do not substitute a vague "updated" message or a bare link.
+- **Oversized text.** Upload or persist the complete text as an inspectable
+  document/artifact, then put a concise inline summary and direct inspection
+  link in the receipt. The payload limit changes packaging, not the evidence or
+  visibility requirement.
+- **Documents.** Deliver the durable document reference, title, and revision
+  or immutable version where available. The receipt states what the document
+  contains and links to the requester-openable document surface rather than
+  relying on a document comment or workspace path.
+- **Images and other binary/visual outputs.** Deliver an uploaded durable asset
+  or artifact with a requester-openable preview/download surface. The receipt
+  identifies the asset and provides concise visual/contextual description; an
+  internal generation log, filename alone, or text-only claim is not delivery.
+
+### 9.2 Child-to-source projection
+
+When a child execution lane produces the output requested by its source issue,
+the source issue must receive a projected delivery receipt that links the
+child's durable evidence and identifies the child lane as the producer. This
+projection makes the requester-facing source thread inspectable without making
+them discover a child lane. It does not erase the child receipt, transfer child
+ownership, or make `parentId` a dependency. A source issue still becomes
+`done` only when its own declared evidence and terminal conditions are met.
+
+### 9.3 Explicit document-only override
+
+The requester or approved execution contract may explicitly select
+`document_only` delivery for a named output. The override must be durable,
+machine-visible, scoped to that output, and state the document inspection
+surface. It permits the receipt to omit an inline copy of the full content; it
+does not permit a link-only completion, removal of the receipt, inaccessible
+documents, or bypassing durable evidence. Silence, file size, and an agent's
+preference are not overrides.
+
+### 9.4 Idempotency and bounded repair
+
+Receipt creation is idempotent for the delivery identity: source issue,
+terminal transition/output, and durable evidence references. Retrying the same
+completion must reuse the existing receipt or safely repair that receipt; it
+must not duplicate requester notifications or project the same child result
+repeatedly. New evidence or a new requested output creates a new identity, not
+a mutation of an unrelated delivered result.
+
+If durable evidence exists but the matching receipt is absent or could not be
+published, Paperclip records the failed delivery identity and queues at most
+one bounded recovery continuation to create or repair it. If that continuation
+cannot establish a requester-visible receipt, it must not mark the issue done
+or retry indefinitely: retain the evidence and surface an explicit blocked or
+recovery action with the owner and repair required. Unchanged failed receipt
+state must reuse the same recovery fingerprint.
+
+### 9.5 Reconciliation with execution invariants
+
+This contract preserves three existing invariants:
+
+1. **Productive work continues.** Receipt publication is part of terminal
+   delivery, not a reason to park useful execution; an agent continues work
+   until the output can be evidenced and delivered.
+2. **Only real blockers stop work.** A missing receipt is a delivery defect,
+   not permission to invent an external blocker. Use `blocked` only when a
+   named owner or dependency actually prevents the repair.
+3. **No infinite loops.** Completion and child projection are idempotent, and
+   receipt repair has one bounded continuation followed by a visible recovery
+   or blocker path rather than repeated wakes.
+
+## 10. Crash and Restart Recovery
 
 Paperclip now treats crash/restart recovery as a stranded-assigned-work problem, not just a stranded-run problem.
 
@@ -514,19 +610,19 @@ A continuation that the staleness gate cancelled with `issue_continuation_waitin
 Recovery rule for a parked-for-review continuation:
 
 - if the issue has a real waiting target — open (non-terminal) sub-tasks or existing unresolved blockers — Paperclip converts the deliberate wait into a first-class dependency wait: it sets the issue `blocked` by those issues, keeps the original assignee, and posts a plain-language comment explaining that the task will resume automatically when its dependencies finish. The issue then self-resumes through the normal `issue_blockers_resolved` path; no recovery action or escalation owner is involved
-- if the issue has no waiting target, the park is indistinguishable from a genuine strand and falls through to the standard §9.2 escalation, preserving stranded detection
+- if the issue has no waiting target, the park is indistinguishable from a genuine strand and falls through to the standard §10.2 escalation, preserving stranded detection
 
 An accepted interaction supersedes a continuation park recorded before that acceptance. A queued continuation carrying a parseable `interactionResolvedAt` must not be cancelled solely because an older continuation summary says to wait for review or approval. Interaction-continuation recovery is bounded: after three consecutive continuation wakes are cancelled without a run starting, recovery converts a real dependency wait when one exists or escalates the missing execution path visibly instead of requeueing forever.
 
 This keeps the post-decomposition umbrella (§7) on a real waiting path instead of relying on `parentId` rollup, which §6 does not treat as a dependency.
 
-### 9.3 Recovery model-profile lane
+### 10.3 Recovery model-profile lane
 
 Cheap model profiles are only for status-only operational recovery overhead. Paperclip may request `modelProfile: "cheap"` for bounded recovery-owner work that updates task liveness, clears bad status, records a disposition, or asks for human/manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`.
 
 Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
 
-## 10. Startup and Periodic Reconciliation
+## 11. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
 
@@ -540,7 +636,7 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
-## 11. Task Watchdog for Issue Trees
+## 12. Task Watchdog for Issue Trees
 
 A task watchdog watches a configured issue subtree after that subtree has stopped moving. It is a product-level verification and recovery mechanism for selected work, not a process monitor.
 
@@ -620,7 +716,7 @@ If the watchdog moved work forward, Paperclip should not mark the old fingerprin
 
 Task watchdogs must not silently mark source work done from prose comments, must not duplicate child trees for the same accepted plan revision, and must not create another task-watchdog issue for the same source issue.
 
-## 12. Silent Active-Run Watchdog
+## 13. Silent Active-Run Watchdog
 
 An active run can still be unhealthy even when its process is `running`. Paperclip treats prolonged output silence as a watchdog signal, not as proof that the run is failed.
 
@@ -672,7 +768,7 @@ This is distinct from productivity review. Productivity review asks whether an a
 
 Detached process cleanup is operational hygiene, not source issue liveness. Cleanup should be best-effort and auditable. If cleanup fails but the source issue is already terminal with same-run durable evidence, Paperclip should preserve the cleanup failure on the run/watchdog audit trail and route only the cleanup concern to bounded recovery when a real owner/action remains.
 
-## 13. Auto-Recover vs Explicit Recovery vs Human Escalation
+## 14. Auto-Recover vs Explicit Recovery vs Human Escalation
 
 Paperclip uses three different recovery outcomes, depending on how much it can safely infer.
 
@@ -716,7 +812,7 @@ Examples:
 
 In these cases Paperclip should leave a visible issue/comment trail instead of silently retrying.
 
-## 14. What This Does Not Mean
+## 15. What This Does Not Mean
 
 These semantics do not change V1 into an auto-reassignment system.
 
@@ -733,7 +829,7 @@ The recovery model is intentionally conservative:
 - open an explicit recovery action when the system can identify a bounded recovery owner/action
 - escalate visibly when the system cannot safely keep going
 
-## 15. Practical Interpretation
+## 16. Practical Interpretation
 
 For a board operator, the intended meaning is:
 

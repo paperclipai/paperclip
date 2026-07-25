@@ -32,6 +32,7 @@ vi.mock("../services/activity.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
   accessService: () => mockAccessService,
   issueService: () => mockIssueService,
   heartbeatService: () => mockHeartbeatService,

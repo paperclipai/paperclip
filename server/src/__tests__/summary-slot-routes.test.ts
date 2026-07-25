@@ -61,6 +61,7 @@ function generatingIssue(overrides: Record<string, unknown> = {}) {
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    issueDeliveryReceiptService: () => ({}),
     accessService: () => mockAccessService,
     heartbeatService: () => ({ wakeup: mockHeartbeatWakeup }),
     instanceSettingsService: () => mockInstanceSettingsService,
