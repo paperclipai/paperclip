@@ -28,6 +28,24 @@ instances/**/data/workspace-operation-logs/
 # Per-agent PARA memory + life folders are runtime agent state (daily notes, projects)
 instances/**/agents/*/instructions/life/
 instances/**/agents/*/instructions/memory/
+# Paperclip's bundled skill library — installed at runtime from the catalog,
+# not authored by us. Repos stay clean of vendored skills; the engine re-fetches
+# on next agent boot.
+instances/**/skills/
+# Per-company runtime state owned by Paperclip core (the overlay adds
+# `shared/` + `agents/<id>/instructions/` only — those are explicitly un-ignored below).
+# Order matters: more specific patterns override less specific ones in .gitignore.
+instances/**/companies/*/heartbeats/
+instances/**/companies/*/projects/
+instances/**/companies/*/workspaces/
+# Other Paperclip companies (not part of our overlay) — Paperclip core owns them
+# entirely. Only the Genesis company `4b7fd6fc-...` is part of the overlay.
+instances/default/companies/*/
+!instances/default/companies/4b7fd6fc-b920-430e-a3bd-defc09fc4326/
+# Per-agent identity files managed by Paperclip core at runtime
+# (avatar, model_profile, status). NOT the instructions/ subfolder.
+instances/**/agents/*/avatar*
+instances/**/agents/*/model_profile*
 
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs
