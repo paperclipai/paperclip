@@ -803,14 +803,18 @@ function createSandboxEnvironmentDriver(
             `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but that plugin is currently ${pluginProvider.resolved.plugin.status}.`,
           );
         }
-        if (pluginProvider.state === "worker_unavailable") {
-          throw new Error(
-            `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but its worker is not running.`,
-          );
-        }
+        // Check the wiring before the worker state. A server process with no
+        // plugin worker manager can never see a running worker, so reporting it
+        // as "worker is not running" sends debugging after a healthy worker
+        // instead of the missing dependency.
         if (!pluginWorkerManager) {
           throw new Error(
             `Sandbox provider "${parsed.config.provider}" is installed, but sandbox plugin workers are unavailable in this server process.`,
+          );
+        }
+        if (pluginProvider.state === "worker_unavailable") {
+          throw new Error(
+            `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but its worker is not running.`,
           );
         }
 
