@@ -2,14 +2,16 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  assets,
   documents,
   executionWorkspaces,
   heartbeatRuns,
+  issueAttachments,
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
@@ -2306,6 +2308,83 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  /**
+   * Pre-status-change guard for POP-30 (artifact attachments on issues).
+   *
+   * An agent can transition an issue to `in_review`, `done`, or `cancelled`
+   * only if the issue has at least one deliverable attachment. Disk-resident
+   * artifacts in the workspace are not deliverables — they must be uploaded
+   * via POST /api/companies/{companyId}/issues/{issueId}/attachments first.
+   *
+   * Intentionally narrow:
+   *   - Only triggered on agent-initiated PATCH that changes status.
+   *   - Skipped for board users (humans can always override).
+   *   - Skipped for trivial transitions (e.g. -> `blocked`, `todo`, `in_progress`).
+   *   - Skipped when the issue has no assignee (board-only bookkeeping).
+   *   - Skipped when the agent is not the assignee (watchdog / peer — they
+   *     have other guard rails).
+   *   - Same-status PATCHes (e.g. patching description while status is
+   *     already in_review) are not blocked.
+   *
+   * On refusal, writes 422 to the response and returns false.
+   */
+  const ARTIFACT_GUARD_STATUSES = new Set(["in_review", "done", "cancelled"]);
+
+  async function assertAgentStatusTransitionHasAttachment(
+    req: Request,
+    res: Response,
+    db: Db,
+    existing: {
+      id: string;
+      companyId: string;
+      assigneeAgentId: string | null;
+      status: string;
+    },
+    nextStatus: string | undefined,
+  ): Promise<boolean> {
+    if (req.actor.type !== "agent") return true;
+    if (!ARTIFACT_GUARD_STATUSES.has(nextStatus ?? "")) return true;
+    if (existing.assigneeAgentId === null) return true;
+    if (req.actor.agentId !== existing.assigneeAgentId) return true;
+    if (existing.status === nextStatus) return true;
+
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issueAttachments)
+      .innerJoin(
+        assets,
+        and(eq(issueAttachments.assetId, assets.id), eq(assets.companyId, issueAttachments.companyId)),
+      )
+      .where(
+        and(
+          eq(issueAttachments.companyId, existing.companyId),
+          eq(issueAttachments.issueId, existing.id),
+          isNull(issueAttachments.issueCommentId),
+        ),
+      );
+    const attachmentCount = row?.count ?? 0;
+    if (attachmentCount > 0) return true;
+
+    res.status(422).json({
+      error: `Cannot transition issue to '${nextStatus}' without at least one deliverable attachment. Upload artifacts via POST /api/companies/{companyId}/issues/{issueId}/attachments before updating status. See POP-30.`,
+      details: {
+        issueId: existing.id,
+        fromStatus: existing.status,
+        toStatus: nextStatus,
+        attachmentCount,
+        uploadHelp: {
+          endpoint: `/api/companies/${existing.companyId}/issues/${existing.id}/attachments`,
+          method: "POST",
+          bodyType: "multipart/form-data",
+          fileField: "file",
+          helperScript: "scripts/paperclip-upload-artifact.sh",
+          referenceDoc: "skills/paperclip/references/artifacts.md",
+        },
+      },
+    });
+    return false;
   }
 
   async function assertFreshTaskWatchdogSourceMutation(
@@ -5925,6 +6004,17 @@ export function issueRoutes(
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
+    if (
+      !(await assertAgentStatusTransitionHasAttachment(
+        req,
+        res,
+        db,
+        existing,
+        typeof req.body.status === "string" ? req.body.status : undefined,
+      ))
+    ) {
+      return;
+    }
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
