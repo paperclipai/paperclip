@@ -278,6 +278,7 @@ describe("ssh env-lab fixture", () => {
     });
 
     expect(target.args.join(" ")).not.toContain(sentinel);
+    expect(target.args.at(-1)).toMatch(/^exec sh \/tmp\/paperclip-ssh-launch-/);
     const result = await new Promise<string>((resolve, reject) => {
       execFile(target.command, target.args, (error, stdout) => {
         if (error) reject(error);

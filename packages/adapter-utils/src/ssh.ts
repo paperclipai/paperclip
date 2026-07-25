@@ -1199,7 +1199,7 @@ export async function runSshCommand(
       String(config.port),
       `${config.username}@${config.host}`,
       remoteLauncher
-        ? `exec ${shellQuote(remoteLauncher)}`
+        ? `exec sh ${shellQuote(remoteLauncher)}`
         : `sh -c ${shellQuote(remoteScript)}`,
     );
 
