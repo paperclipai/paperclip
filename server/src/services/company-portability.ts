@@ -4633,7 +4633,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
 
       if (include.agents) {
-        const pendingHireApprovalAgentIds: string[] = [];
+        const pendingHireApprovalAgents = new Map<string, Awaited<ReturnType<typeof agents.create>>>();
         for (const planAgent of plan.preview.plan.agentPlans) {
           const manifestAgent = plan.selectedAgents.find((agent) => agent.slug === planAgent.slug);
           if (!manifestAgent) continue;
@@ -4770,10 +4770,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               clearLegacyPromptTemplate: true,
               replaceExisting: true,
             });
-            created = await agents.update(
-              created.id,
-              { adapterConfig: materialized.adapterConfig },
-              { allowPendingApprovalConfigUpdate: requiresApproval },
+            created = await (
+              requiresApproval
+                ? agents.update(
+                    created.id,
+                    { adapterConfig: materialized.adapterConfig },
+                    { allowPendingApprovalConfigUpdate: true },
+                  )
+                : agents.update(created.id, { adapterConfig: materialized.adapterConfig })
             ) ?? created;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
@@ -4785,7 +4789,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             actorUserId ?? null,
           );
           if (requiresApproval) {
-            pendingHireApprovalAgentIds.push(created.id);
+            pendingHireApprovalAgents.set(created.id, created);
           }
           agentStatusById.set(created.id, created.status ?? createdStatus);
           await secrets.syncEnvBindingsForTarget?.(
@@ -4828,11 +4832,18 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           if (!managerId || managerId === agentId) continue;
           try {
             const currentStatus = agentStatusById.get(agentId);
-            await agents.update(
-              agentId,
-              { reportsTo: managerId },
-              { allowPendingApprovalConfigUpdate: currentStatus === "pending_approval" },
+            const updated = await (
+              currentStatus === "pending_approval"
+                ? agents.update(
+                    agentId,
+                    { reportsTo: managerId },
+                    { allowPendingApprovalConfigUpdate: true },
+                  )
+                : agents.update(agentId, { reportsTo: managerId })
             );
+            if (updated && pendingHireApprovalAgents.has(agentId)) {
+              pendingHireApprovalAgents.set(agentId, updated);
+            }
           } catch {
             const managerRef =
               managerSlug
@@ -4844,9 +4855,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
         // Approval payloads must describe the fully materialized agent,
         // including managed instructions and reporting links.
-        for (const agentId of pendingHireApprovalAgentIds) {
-          const created = await agents.getById(agentId);
-          if (!created) throw notFound(`Imported agent ${agentId} disappeared before approval creation.`);
+        for (const created of pendingHireApprovalAgents.values()) {
           await approvals.create(targetCompany.id, {
             type: "hire_agent",
             requestedByAgentId: null,
