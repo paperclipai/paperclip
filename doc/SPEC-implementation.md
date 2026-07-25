@@ -218,6 +218,8 @@ Invariant:
 
 Routine execution issues add a routine-scoped env overlay after project env and before Paperclip runtime-owned keys. Routine env uses the same secret-aware binding format, is stored on `routines.env`, is snapshotted in routine revisions, and resolves secret refs against the routine binding target so routine-owned secrets do not require direct bindings on the executing agent.
 
+An optional revision-pinned routine `preflight` can run a bounded local process before the primary agent adapter. It is allowed only for standard-trust local execution with a run-scoped agent token. Exit zero skips the primary adapter only after the process has moved the execution issue to `done` or `cancelled`; missing pins, remote or low-trust targets, timeouts, non-zero exits, and non-terminal issues fall back to the normal adapter. Successful preflight runs record zero token usage and clear any task session instead of creating or resuming an LLM session.
+
 ## 7.6 `issues` (core task entity)
 
 - `id` uuid pk

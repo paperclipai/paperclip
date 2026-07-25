@@ -214,6 +214,8 @@ responsible user.
 
 Secret-aware env bindings are supported by agents, projects, and routines. Routine env lives in `routines.env`, is captured in `routine_revisions.snapshot`, and routine dispatches store `routine_runs.routine_revision_id` so runtime secret resolution uses the env snapshot that existed when the run was created. Routine secret refs bind with `target_type = 'routine'`, `target_id = routines.id`, and `config_path` values under `env.*`.
 
+Routines may also define a bounded deterministic `preflight` process. The command is stored on `routines.preflight` and captured in the immutable routine revision snapshot. A dispatched run may use only the command from its pinned revision; current routine state is never substituted when the revision is absent or unreadable. Preflight configuration is intentionally excluded from company portability because command paths and binaries are host-local.
+
 For local/default installs, the active provider is `local_encrypted`:
 
 - Secret material is encrypted at rest with a local master key.

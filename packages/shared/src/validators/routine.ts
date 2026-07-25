@@ -61,6 +61,13 @@ export const routineVariableSchema = z.object({
   }
 });
 
+export const routinePreflightSchema = z.object({
+  command: z.string().trim().min(1).max(2_048),
+  args: z.array(z.string().max(8_192)).max(64).optional().default([]),
+  cwd: z.string().trim().min(1).max(4_096).optional().nullable().default(null),
+  timeoutSec: z.number().int().min(1).max(300).optional().default(30),
+}).strict();
+
 export const createRoutineSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   folderId: z.string().uuid().optional().nullable(),
@@ -77,6 +84,7 @@ export const createRoutineSchema = z.object({
   activityGateScope: z.enum(ROUTINE_ACTIVITY_GATE_SCOPES).optional(),
   variables: z.array(routineVariableSchema).optional().default([]),
   env: envConfigSchema.optional().nullable(),
+  preflight: routinePreflightSchema.optional().nullable(),
 });
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;
@@ -104,6 +112,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   activityGateScope: z.enum(ROUTINE_ACTIVITY_GATE_SCOPES).default("company"),
   variables: z.array(routineVariableSchema),
   env: envConfigSchema.nullable().default(null),
+  preflight: routinePreflightSchema.nullable().default(null),
   responsibleUserId: z.string().nullable().default(null),
 }).strict();
 

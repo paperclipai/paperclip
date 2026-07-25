@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createRoutineSchema,
   routineRevisionSnapshotV1Schema,
   routineVariableSchema,
   updateRoutineSchema,
@@ -45,6 +46,30 @@ describe("routine validators", () => {
     expect(parsed.triggers[0]?.publicId).toBe("routine_webhook_123");
     expect(parsed.routine.activityGatePolicy).toBe("always");
     expect(parsed.routine.activityGateScope).toBe("company");
+    expect(parsed.routine.preflight).toBeNull();
+  });
+
+  it("normalizes bounded deterministic preflight commands", () => {
+    expect(createRoutineSchema.parse({
+      title: "Fast health check",
+      preflight: {
+        command: "node",
+        args: ["/opt/paperclip/check.mjs"],
+      },
+    }).preflight).toEqual({
+      command: "node",
+      args: ["/opt/paperclip/check.mjs"],
+      cwd: null,
+      timeoutSec: 30,
+    });
+
+    expect(() => createRoutineSchema.parse({
+      title: "Unbounded health check",
+      preflight: {
+        command: "node",
+        timeoutSec: 301,
+      },
+    })).toThrow();
   });
 
   it("rejects secret-bearing trigger fields in routine revision snapshots", () => {

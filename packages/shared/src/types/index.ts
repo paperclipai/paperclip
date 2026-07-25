@@ -722,6 +722,7 @@ export type {
 export type {
   Routine,
   RoutineEnvConfig,
+  RoutinePreflight,
   RoutineManagedByPlugin,
   RoutineDescriptionDocument,
   RoutineVariable,

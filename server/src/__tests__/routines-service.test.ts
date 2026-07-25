@@ -728,6 +728,56 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(runAfter.dispatchFingerprint).not.toBe(runBefore.dispatchFingerprint);
   });
 
+  it("pins deterministic preflight configuration to the dispatched routine revision", async () => {
+    const { routine, svc } = await seedFixture();
+    const configured = await svc.update(
+      routine.id,
+      {
+        preflight: {
+          command: "node",
+          args: ["/opt/paperclip/check.mjs"],
+          cwd: null,
+          timeoutSec: 30,
+        },
+        baseRevisionId: routine.latestRevisionId,
+      },
+      {},
+    );
+    const dispatched = await svc.runRoutine(routine.id, { source: "manual" });
+
+    const changed = await svc.update(
+      routine.id,
+      {
+        preflight: {
+          command: "node",
+          args: ["/opt/paperclip/check-v2.mjs"],
+          cwd: null,
+          timeoutSec: 45,
+        },
+        baseRevisionId: configured?.latestRevisionId,
+      },
+      {},
+    );
+    const revisions = await svc.listRevisions(routine.id);
+
+    expect(dispatched.routineRevisionId).toBe(configured?.latestRevisionId);
+    expect(dispatched.routineRevisionId).not.toBe(changed?.latestRevisionId);
+    expect(
+      revisions.find((revision) => revision.id === dispatched.routineRevisionId)?.snapshot.routine.preflight,
+    ).toEqual({
+      command: "node",
+      args: ["/opt/paperclip/check.mjs"],
+      cwd: null,
+      timeoutSec: 30,
+    });
+    expect(revisions[0]?.snapshot.routine.preflight).toEqual({
+      command: "node",
+      args: ["/opt/paperclip/check-v2.mjs"],
+      cwd: null,
+      timeoutSec: 45,
+    });
+  });
+
   it("rejects stale routine baseRevisionId updates", async () => {
     const { routine, svc } = await seedFixture();
     const updated = await svc.update(routine.id, { description: "new description" }, {});
