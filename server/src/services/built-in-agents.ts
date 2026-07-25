@@ -21,7 +21,7 @@ import {
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
-import { listAdapterModels } from "../adapters/registry.js";
+import { listAdapterModelProfiles, listAdapterModels } from "../adapters/registry.js";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -865,10 +865,36 @@ export function builtInAgentService(db: Db) {
   async function defaultProvisionInput(companyId: string, definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput) {
     if (input.adapterType || input.adapterConfig) return input;
     if (definition.defaultAdapterType || definition.defaultAdapterConfig) {
+      const adapterType = definition.defaultAdapterType;
+      let adapterConfig = definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined;
+      const configuredModel =
+        adapterConfig && typeof adapterConfig.model === "string"
+          ? adapterConfig.model.trim()
+          : "";
+      if (adapterType && configuredModel) {
+        const availableModels = await listAdapterModels(adapterType);
+        if (
+          availableModels.length > 0
+          && !availableModels.some((model) => model.id === configuredModel)
+        ) {
+          const cheapProfile = (await listAdapterModelProfiles(adapterType))
+            .find((profile) => profile.key === "cheap");
+          const fallbackModel =
+            cheapProfile && typeof cheapProfile.adapterConfig.model === "string"
+              ? cheapProfile.adapterConfig.model.trim()
+              : "";
+          if (fallbackModel && availableModels.some((model) => model.id === fallbackModel)) {
+            adapterConfig = {
+              ...adapterConfig,
+              model: fallbackModel,
+            };
+          }
+        }
+      }
       return {
         ...input,
-        adapterType: definition.defaultAdapterType,
-        adapterConfig: definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined,
+        adapterType,
+        adapterConfig,
       };
     }
     if (!definition.bundle) return input;

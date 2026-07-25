@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { AdapterModel } from "@paperclipai/adapter-utils";
-import { models as DIRECT_MODELS } from "../index.js";
+import type { AdapterModel, AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
+import { modelProfiles as DIRECT_MODEL_PROFILES, models as DIRECT_MODELS } from "../index.js";
 
 const ANTHROPIC_MODELS_ENDPOINT = "/v1/models";
 const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
@@ -151,6 +151,23 @@ export async function listClaudeModels(): Promise<AdapterModel[]> {
 
 export async function refreshClaudeModels(): Promise<AdapterModel[]> {
   return loadClaudeModels({ forceRefresh: true });
+}
+
+export async function listClaudeModelProfiles(): Promise<AdapterModelProfileDefinition[]> {
+  if (!isBedrockEnv()) return DIRECT_MODEL_PROFILES;
+  const models = await listClaudeModels();
+  const cheapModel = models.find((model) => model.id.includes("claude-haiku")) ?? models[0];
+  if (!cheapModel) return [];
+  return [{
+    key: "cheap",
+    label: "Cheap",
+    description: "Use the lower-cost Claude Code lane available in the configured Bedrock region.",
+    adapterConfig: {
+      model: cheapModel.id,
+      effort: "low",
+    },
+    source: "adapter_default",
+  }];
 }
 
 export function resetClaudeModelsCacheForTests() {
