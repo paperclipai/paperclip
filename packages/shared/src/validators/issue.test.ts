@@ -71,6 +71,34 @@ describe("issue validators", () => {
     }).success).toBe(false);
   });
 
+  it("rejects invalid task-scoped network egress CIDRs", () => {
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: {
+        networkEgress: { allowCidrs: ["203.0.113.0/24"] },
+      },
+    }).success).toBe(true);
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: {
+        networkEgress: { allowCidrs: ["999.0.0.0/8"] },
+      },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: {
+        networkEgress: { allowCidrs: ["1.2.3.4/33"] },
+      },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: {
+        networkEgress: { allowCidrs: ["10.0.0.0/8"] },
+      },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: {
+        networkEgress: { allowCidrs: ["0.0.0.0/0"] },
+      },
+    }).success).toBe(false);
+  });
+
   it("keeps issue attribution fields create-only", () => {
     const created = createIssueSchema.parse({
       title: "Preserve attribution input for route checks",

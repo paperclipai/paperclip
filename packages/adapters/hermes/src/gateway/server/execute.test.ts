@@ -144,6 +144,74 @@ describe("execute", () => {
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 
+  it("sends the task brief once on fresh runs and compacts it on stable-session resumes", async () => {
+    const description = "Update launch-card.svg and change the CTA to Try Team free.";
+    const fullTaskMarkdown = [
+      "Paperclip task context:",
+      '- Issue: "PAP-1"',
+      "",
+      "Issue description:",
+      "```text",
+      description,
+      "```",
+    ].join("\n");
+    const compactTaskMarkdown = ["Paperclip task context:", '- Issue: "PAP-1"'].join("\n");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wakeContext = (reason: string) => ({
+      issueId: "issue-1",
+      wakeReason: reason,
+      paperclipTaskMarkdown: fullTaskMarkdown,
+      paperclipTaskMarkdownCompact: compactTaskMarkdown,
+      paperclipWake: {
+        reason,
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          title: "Do the thing",
+          description,
+          descriptionTruncated: false,
+          status: "in_progress",
+        },
+        commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+        comments: [],
+        fallbackFetchNeeded: false,
+      },
+    });
+
+    const freshCtx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    freshCtx.context = wakeContext("issue_assigned");
+    await execute(freshCtx);
+
+    const resumeCtx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    resumeCtx.context = wakeContext("issue_commented");
+    resumeCtx.runtime = {
+      sessionId: "session-1",
+      sessionParams: null,
+      sessionDisplayId: "session-1",
+      taskKey: "PAP-1",
+    };
+    await execute(resumeCtx);
+
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const runBodies = calls
+      .filter(([input]) => String(input).endsWith("/v1/runs"))
+      .map(([, init]) => JSON.parse(String(init?.body)) as { input: string });
+    expect(runBodies).toHaveLength(2);
+    // Fresh run: brief exactly once (task markdown only; wake-prompt copy suppressed).
+    expect(runBodies[0]!.input.split(description)).toHaveLength(2);
+    // Stable-session resume: compact task markdown, no re-sent brief.
+    expect(runBodies[1]!.input).toContain("Paperclip task context:");
+    expect(runBodies[1]!.input).not.toContain(description);
+  });
+
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

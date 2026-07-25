@@ -99,8 +99,8 @@ export function TrainingLibrary() {
     enabled: Boolean(selectedCompanyId),
   });
   const projectsQuery = useQuery({
-    queryKey: ["projects", selectedCompanyId],
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId ?? "", { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: Boolean(selectedCompanyId),
   });
   const records = recordsQuery.data ?? [];

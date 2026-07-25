@@ -49,6 +49,7 @@ import {
   renderPaperclipWakePrompt,
   renderTemplate,
   resolvePaperclipInstanceRootForAdapter,
+  selectPaperclipTaskMarkdown,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   rewriteWorkspaceCwdEnvVarsForExecution,
@@ -81,6 +82,7 @@ import {
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
+import { measureStartupStep } from "./startup-timing.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
@@ -829,7 +831,15 @@ async function prepareCodexSkillRuntime(input: {
   env: Record<string, string>;
   moduleDir: string;
   onLog: AdapterExecutionContext["onLog"];
+  // Step-timing seam: threaded from `buildRuntime` so the nested
+  // `skills.reconcile` boundary (step 3) can emit its own `run.startup.step`
+  // event at its call-site. Both optional — a caller without an event sink or
+  // clock is a plain no-op passthrough (the timing helper guards a missing
+  // `onEvent`), so the codex skill prep behaves identically when unmeasured.
+  onEvent?: AdapterExecutionContext["onEvent"];
+  now?: () => number;
 }): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
+  const now = input.now ?? (() => Date.now());
   const envConfig = parseObject(input.config.env);
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
@@ -851,12 +861,16 @@ async function prepareCodexSkillRuntime(input: {
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "codex" });
   const skillsHome = path.join(effectiveCodexHome, "skills");
   await fs.mkdir(skillsHome, { recursive: true });
-  await reconcileManagedCodexSkills({
-    skillsHome,
-    allSkills,
-    selectedSkills,
-    onLog: input.onLog,
-  });
+  // Step 3 — skills.reconcile: nested inside the codex-home seed (step 2), so it
+  // emits its own boundary event at this call-site.
+  await measureStartupStep({ onEvent: input.onEvent }, now, "skills.reconcile", () =>
+    reconcileManagedCodexSkills({
+      skillsHome,
+      allSkills,
+      selectedSkills,
+      onLog: input.onLog,
+    }),
+  );
 
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
@@ -1208,6 +1222,10 @@ async function buildRuntime(input: {
   deps: AcpxEngineExecutorOptions;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
+  // Injectable monotonic clock for per-step startup timing. Hoisted above the
+  // first instrumented boundary (step 1 `workspace.resolve`, below) so every
+  // `measureStartupStep` call in this function shares one deterministic clock.
+  const nowMs = input.deps.now ?? (() => Date.now());
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const secretsContext = parseObject(context.paperclipSecrets);
   const secretManifest = Array.isArray(secretsContext.manifest) ? secretsContext.manifest : [];
@@ -1240,7 +1258,11 @@ async function buildRuntime(input: {
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  // Step 1 — workspace.resolve: the workspace resolution/fallback chain closes
+  // here on the awaited directory materialization.
+  await measureStartupStep(input.ctx, nowMs, "workspace.resolve", () =>
+    ensureAbsoluteDirectory(cwd, { createIfMissing: true }),
+  );
 
   const acpxAgent = normalizeAgent(config);
   const mode = normalizeMode(config);
@@ -1388,13 +1410,20 @@ async function buildRuntime(input: {
       }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
     );
   } else if (acpxAgent === "codex") {
-    const preparedSkills = await prepareCodexSkillRuntime({
-      companyId: agent.companyId,
-      config,
-      env,
-      moduleDir: input.engine.moduleDir,
-      onLog: input.ctx.onLog,
-    });
+    // Step 2 — codex-home.seed: the codex managed-home + skills preparation.
+    // The nested skills.reconcile boundary (step 3) is timed inside via the
+    // threaded onEvent/now seam.
+    const preparedSkills = await measureStartupStep(input.ctx, nowMs, "codex-home.seed", () =>
+      prepareCodexSkillRuntime({
+        companyId: agent.companyId,
+        config,
+        env,
+        moduleDir: input.engine.moduleDir,
+        onLog: input.ctx.onLog,
+        onEvent: input.ctx.onEvent,
+        now: nowMs,
+      }),
+    );
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
   } else if (acpxAgent === "gemini") {
@@ -1534,7 +1563,6 @@ async function buildRuntime(input: {
   //     re-checks the cache before deciding).
   const stagedRuntimes = input.deps.stagedRuntimes ?? defaultStagedRuntimes;
   const stagingLocks = input.deps.stagingLocks ?? defaultStagingLocks;
-  const nowMs = input.deps.now ?? (() => Date.now());
   const previousParams = parseObject(input.ctx.runtime.sessionParams);
   const isCompatibleResume = isCompatibleSession(previousParams, {
     fingerprint,
@@ -1612,29 +1640,42 @@ async function buildRuntime(input: {
       // verbatim on a later compatible resume. Add/change only — every seam sets
       // (never deletes) its home env var, so a set-based delta is complete.
       const envBeforeStage = { ...env };
-      let freshStagedRuntime: PreparedAdapterExecutionTargetRuntime;
-      let freshTeardown: (() => Promise<void>) | null = null;
-      let freshDispose: (() => Promise<void>) | null = null;
-      if (input.deps.prepareRemoteManagedHome) {
-        const seeded = await input.deps.prepareRemoteManagedHome({
-          acpxAgent,
-          companyId: agent.companyId,
-          runId,
-          config,
-          executionTarget: remoteTarget,
-          workspaceLocalDir: cwd,
-          timeoutSec,
-          env,
-          onLog: input.ctx.onLog,
-          onRuntimeProgress: input.ctx.onRuntimeProgress,
-          stage,
-        });
-        freshStagedRuntime = seeded.stagedRuntime;
-        freshTeardown = seeded.teardown ?? null;
-        freshDispose = seeded.disposeStaged ?? null;
-      } else {
-        freshStagedRuntime = await stage([]);
-      }
+      // Step 4 — stage.sync: ship the workspace (and, via the seam, the managed
+      // home) into the sandbox. Only fires on a fresh stage; a compatible resume
+      // that reuses an already-staged runtime skips this block entirely. The
+      // measured callback returns the staged result so the timing wrap does not
+      // disturb definite-assignment of the outer bindings.
+      const {
+        stagedRuntime: freshStagedRuntime,
+        teardown: freshTeardown,
+        dispose: freshDispose,
+      } = await measureStartupStep(input.ctx, nowMs, "stage.sync", async (): Promise<{
+        stagedRuntime: PreparedAdapterExecutionTargetRuntime;
+        teardown: (() => Promise<void>) | null;
+        dispose: (() => Promise<void>) | null;
+      }> => {
+        if (input.deps.prepareRemoteManagedHome) {
+          const seeded = await input.deps.prepareRemoteManagedHome({
+            acpxAgent,
+            companyId: agent.companyId,
+            runId,
+            config,
+            executionTarget: remoteTarget,
+            workspaceLocalDir: cwd,
+            timeoutSec,
+            env,
+            onLog: input.ctx.onLog,
+            onRuntimeProgress: input.ctx.onRuntimeProgress,
+            stage,
+          });
+          return {
+            stagedRuntime: seeded.stagedRuntime,
+            teardown: seeded.teardown ?? null,
+            dispose: seeded.disposeStaged ?? null,
+          };
+        }
+        return { stagedRuntime: await stage([]), teardown: null, dispose: null };
+      });
       const delta: Record<string, string> = {};
       for (const [key, value] of Object.entries(env)) {
         if (envBeforeStage[key] !== value) delta[key] = value;
@@ -1663,15 +1704,18 @@ async function buildRuntime(input: {
   let runtimeEnv: Record<string, string> = {};
   try {
     if (useRemoteProcessSession) {
-      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
-        runId,
-        target: { ...executionTarget, streamRunLogs: false },
-        runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
-        adapterKey: input.engine.adapterType,
-        timeoutSec,
-        hostApiToken: env.PAPERCLIP_API_KEY,
-        onLog: input.ctx.onLog,
-      });
+      // Step 5 — bridge.paperclip: start the sandbox ACP API callback bridge.
+      paperclipBridge = await measureStartupStep(input.ctx, nowMs, "bridge.paperclip", () =>
+        startAdapterExecutionTargetPaperclipBridge({
+          runId,
+          target: { ...executionTarget, streamRunLogs: false },
+          runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
+          adapterKey: input.engine.adapterType,
+          timeoutSec,
+          hostApiToken: env.PAPERCLIP_API_KEY,
+          onLog: input.ctx.onLog,
+        }),
+      );
       if (paperclipBridge) {
         Object.assign(env, paperclipBridge.env);
         await input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n");
@@ -1682,19 +1726,22 @@ async function buildRuntime(input: {
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+    // Step 6 — bridge.process-session: start the in-sandbox process session.
     processSessionBridge = useRemoteProcessSession
-      ? await startAdapterExecutionTargetProcessSessionBridge({
-          runId,
-          target: executionTarget,
-          runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
-          adapterKey: input.engine.adapterType,
-          command: "sh",
-          args: ["-lc", `exec ${agentCommandShell}`],
-          cwd: sessionCwd,
-          env: runtimeEnv,
-          timeoutSec,
-          onLog: input.ctx.onLog,
-        })
+      ? await measureStartupStep(input.ctx, nowMs, "bridge.process-session", () =>
+          startAdapterExecutionTargetProcessSessionBridge({
+            runId,
+            target: executionTarget,
+            runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
+            adapterKey: input.engine.adapterType,
+            command: "sh",
+            args: ["-lc", `exec ${agentCommandShell}`],
+            cwd: sessionCwd,
+            env: runtimeEnv,
+            timeoutSec,
+            onLog: input.ctx.onLog,
+          }),
+        )
       : null;
   } catch (err) {
     await paperclipBridge?.stop().catch(() => {});
@@ -1919,12 +1966,17 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     !resumedSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession });
+  const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession });
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    resumedSession,
+    // The task-context markdown is the authoritative brief on this lane; keep
+    // the wake prompt's description copy out so the prompt carries it once.
+    suppressIssueDescription: taskContextNote.length > 0,
+  });
   const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
@@ -2558,14 +2610,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     try {
       if (!handle) {
         try {
-          handle = await runtime.ensureSession({
-            sessionKey: prepared.sessionKey,
-            agent: prepared.acpxAgent,
-            mode: prepared.mode,
-            cwd: prepared.cwd,
-            resumeSessionId,
-            sessionOptions: { env: prepared.env },
-          });
+          // Step 7 — acp.handshake: ACP session establishment (session/new or
+          // resume). A throwing handshake still reports its duration before the
+          // resume-retry path below runs.
+          handle = await measureStartupStep(ctx, now, "acp.handshake", () =>
+            runtime.ensureSession({
+              sessionKey: prepared.sessionKey,
+              agent: prepared.acpxAgent,
+              mode: prepared.mode,
+              cwd: prepared.cwd,
+              resumeSessionId,
+              sessionOptions: { env: prepared.env },
+            }),
+          );
         } catch (err) {
           if (!resumeSessionId || !isResumeFailure(err)) throw err;
           clearSession = true;
@@ -2574,13 +2631,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             "stdout",
             `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
           );
-          handle = await runtime.ensureSession({
-            sessionKey: prepared.sessionKey,
-            agent: prepared.acpxAgent,
-            mode: prepared.mode,
-            cwd: prepared.cwd,
-            sessionOptions: { env: prepared.env },
-          });
+          handle = await measureStartupStep(ctx, now, "acp.handshake", () =>
+            runtime.ensureSession({
+              sessionKey: prepared.sessionKey,
+              agent: prepared.acpxAgent,
+              mode: prepared.mode,
+              cwd: prepared.cwd,
+              sessionOptions: { env: prepared.env },
+            }),
+          );
         }
       }
     } catch (err) {

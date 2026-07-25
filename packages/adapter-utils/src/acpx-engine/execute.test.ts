@@ -152,6 +152,7 @@ async function runExecutor(
   const sessionInputs: Record<string, unknown>[] = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
+  const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
   const execute = createAcpxEngineExecutor({
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
@@ -184,10 +185,13 @@ async function runExecutor(
     onMeta: async (payload: unknown) => {
       meta.push(payload as Record<string, unknown>);
     },
+    onEvent: async (event: { eventType: string; payload?: Record<string, unknown> }) => {
+      events.push(event);
+    },
   } as never);
 
   expect(result.exitCode).toBe(0);
-  return { logs, meta, runtimeOptions, configOptions, sessionInputs, result };
+  return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, result };
 }
 
 describe("shared ACPX engine runtime behavior", () => {
@@ -1790,10 +1794,17 @@ describe("ACPX engine remote sandbox staging seam (PR 1: workspace + cwd)", () =
 
   it("test_remote_buildRuntime_crosses_staging_seam", async () => {
     const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
-    const { sessionInputs } = await runExecutor(
+    const { sessionInputs, events } = await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
       { authToken: "real-run-jwt", executionTarget },
     );
+
+    // Crossing the staging seam emits a per-step timing event for the sync.
+    const stageEvent = events.find(
+      (event) => event.eventType === "run.startup.step" && event.payload?.step === "stage.sync",
+    );
+    expect(stageEvent).toBeTruthy();
+    expect(typeof stageEvent!.payload?.durationMs).toBe("number");
 
     // Staging seam crossed exactly once, shipping the HOST worktree.
     expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(1);
@@ -1921,7 +1932,7 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
   it("test_remote_seam_receives_adapter_agnostic_context", async () => {
     const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
     let captured: Record<string, unknown> | null = null;
-    const { sessionInputs } = await runExecutor(
+    const { sessionInputs, events } = await runExecutor(
       {
         agent: "custom",
         agentCommand: "node ./fake-acp.js",
@@ -1940,6 +1951,14 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
         },
       },
     );
+
+    // The managed-home seam runs inside the timed stage.sync boundary, so a
+    // per-step timing event is emitted for it.
+    const stageEvent = events.find(
+      (event) => event.eventType === "run.startup.step" && event.payload?.step === "stage.sync",
+    );
+    expect(stageEvent).toBeTruthy();
+    expect(typeof stageEvent!.payload?.durationMs).toBe("number");
 
     // The engine invoked the seam and used the runtime it staged (session/new
     // binds to the in-sandbox workspace dir the seam returned).
@@ -2657,5 +2676,122 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
     expect(resultB.exitCode).toBe(0);
     expect(events).toContain("enter:run-b");
     expect(events).toContain("exit:run-b");
+  });
+});
+
+describe("ACPX engine per-step startup timing (run.startup.step events)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function stepEvents(events: Array<{ eventType: string; payload?: Record<string, unknown> }>) {
+    return events.filter((event) => event.eventType === "run.startup.step");
+  }
+
+  it("emits a run.startup.step event for each of the 7 bring-up boundaries with numeric durationMs", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    // A configured CODEX_HOME keeps the codex-home seed deterministic (skips the
+    // managed-home copy from the host ~/.codex) so steps 2 and 3 run cleanly.
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const { events } = await runExecutor(
+      {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      { authToken: "real-run-jwt", executionTarget },
+    );
+
+    const steps = stepEvents(events);
+    const seen = new Map(steps.map((event) => [String(event.payload?.step), event]));
+    // A codex bring-up over the remote sandbox lane crosses all 7 boundaries.
+    for (const step of [
+      "workspace.resolve",
+      "codex-home.seed",
+      "skills.reconcile",
+      "stage.sync",
+      "bridge.paperclip",
+      "bridge.process-session",
+      "acp.handshake",
+    ]) {
+      const event = seen.get(step);
+      expect(event, `expected a run.startup.step event for "${step}"`).toBeTruthy();
+      expect(typeof event!.payload?.durationMs).toBe("number");
+      expect(event!.payload?.durationMs as number).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("emits the 5 non-codex boundaries for a custom-agent sandbox bring-up (no codex steps)", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const { events } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget },
+    );
+
+    const emitted = new Set(stepEvents(events).map((event) => String(event.payload?.step)));
+    // The custom-agent lane skips the codex-only skill prep entirely...
+    expect(emitted.has("codex-home.seed")).toBe(false);
+    expect(emitted.has("skills.reconcile")).toBe(false);
+    // ...but still times the shared workspace/stage/bridge/handshake boundaries.
+    for (const step of [
+      "workspace.resolve",
+      "stage.sync",
+      "bridge.paperclip",
+      "bridge.process-session",
+      "acp.handshake",
+    ]) {
+      expect(emitted.has(step), `expected a run.startup.step event for "${step}"`).toBe(true);
+    }
+  });
+
+  it("does not emit startup-step events on a local (non-sandbox) run except workspace.resolve", async () => {
+    const root = await makeTempRoot();
+    const localCwd = path.join(root, "worktree");
+    await fs.mkdir(localCwd, { recursive: true });
+
+    const { events } = await runExecutor({
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      stateDir: path.join(root, "state"),
+      cwd: localCwd,
+    });
+
+    const emitted = new Set(stepEvents(events).map((event) => String(event.payload?.step)));
+    // A local run never crosses the staging seam or starts a bridge, so only the
+    // always-run workspace resolution and the ACP handshake are timed.
+    expect(emitted.has("workspace.resolve")).toBe(true);
+    expect(emitted.has("acp.handshake")).toBe(true);
+    expect(emitted.has("stage.sync")).toBe(false);
+    expect(emitted.has("bridge.paperclip")).toBe(false);
+    expect(emitted.has("bridge.process-session")).toBe(false);
   });
 });
