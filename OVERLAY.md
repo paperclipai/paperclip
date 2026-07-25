@@ -158,6 +158,16 @@ git add -A && git commit -m "overlay: <what changed>"
 python3 scripts/sync-genesis-overlay.py --check    # fails build if out of sync
 ```
 
+## Skill (Hermes)
+
+There is a Hermes skill at `~/.hermes/skills/devops/paperclip-overlay-update/` that captures this workflow as a step-by-step procedure. When you (the human or another agent) want to update the overlay, invoke that skill by name — `paperclip-overlay-update` — and it loads the operational workflow, the conflict-resolution playbook, and the one-shot wrapper script.
+
+- `SKILL.md` — operational workflow (edit canonical → regenerate → verify → commit → rebase → push), 8 numbered steps
+- `references/conflict-resolution.md` — rebase conflict playbook (6 scenarios with resolutions)
+- `scripts/sync-and-deploy.sh` — one-shot wrapper that runs Steps 1-4
+
+Companion skill (the underlying principle): `paperclip-agent-instruction-loading-model` at `~/.hermes/skills/devops/paperclip-agent-instruction-loading-model/`. That skill captures **why** the inline-canonical pattern works (only the entry file `AGENTS.md` is auto-loaded into the system prompt). This OVERLAY.md + the paperclip-overlay-update skill capture **how** to keep it working.
+
 ## Related server-side scripts (not in this repo)
 
 These live on the Lightsail server at `/home/genesismotiondesign.com/lib/` and `/tmp/`. They are versioned by deployment, not by git:
