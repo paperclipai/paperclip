@@ -70,6 +70,7 @@ import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
+import { goalService } from "./goals.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
@@ -2578,6 +2579,20 @@ function readAgentSkillRefs(frontmatter: Record<string, unknown>) {
   ));
 }
 
+function normalizeCompanyGoals(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const goals: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const title = entry.trim();
+    if (!title || seen.has(title)) continue;
+    seen.add(title);
+    goals.push(title);
+  }
+  return goals;
+}
+
 function buildManifestFromPackageFiles(
   files: Record<string, CompanyPortabilityFileEntry>,
   opts?: { sourceLabel?: { companyId: string; companyName: string } | null },
@@ -2663,6 +2678,7 @@ function buildManifestFromPackageFiles(
       path: resolvedCompanyPath,
       name: companyName,
       description: asString(companyFrontmatter.description),
+      goals: normalizeCompanyGoals(companyFrontmatter.goals),
       brandColor: asString(paperclipCompany.brandColor),
       logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
       attachmentMaxBytes:
@@ -3015,6 +3031,7 @@ export function parseGitHubSourceUrl(rawUrl: string) {
 
 export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companies = companyService(db);
+  const goals = goalService(db);
   const agents = agentService(db);
   const assetRecords = assetService(db);
   const instructions = agentInstructionsService();
@@ -3569,12 +3586,17 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     });
 
     const companyPath = "COMPANY.md";
+    const companyGoalTitles = (await goals.list(company.id))
+      .filter((goal) => goal.level === "company" && goal.status === "active")
+      .map((goal) => goal.title.trim())
+      .filter(Boolean);
     files[companyPath] = buildMarkdown(
       {
         name: company.name,
         description: company.description ?? null,
         schema: "agentcompanies/v1",
         slug: rootPath,
+        goals: companyGoalTitles.length > 0 ? companyGoalTitles : undefined,
       },
       "",
     );
@@ -5109,6 +5131,23 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               createdAt: comment.createdAt,
             });
           }
+        }
+      }
+
+      if (include.company && sourceManifest.company?.goals.length) {
+        const existingTitles = new Set(
+          (await goals.list(targetCompany.id))
+            .filter((goal) => goal.level === "company")
+            .map((goal) => goal.title.trim()),
+        );
+        for (const title of sourceManifest.company.goals) {
+          if (existingTitles.has(title)) continue;
+          await goals.create(targetCompany.id, {
+            title,
+            level: "company",
+            status: "active",
+          });
+          existingTitles.add(title);
         }
       }
 

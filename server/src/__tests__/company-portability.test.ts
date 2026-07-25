@@ -76,6 +76,11 @@ const agentInstructionsSvc = {
   materializeManagedBundle: vi.fn(),
 };
 
+const goalSvc = {
+  list: vi.fn(),
+  create: vi.fn(),
+};
+
 vi.mock("../services/companies.js", () => ({
   companyService: () => companySvc,
 }));
@@ -116,6 +121,10 @@ vi.mock("../services/agent-instructions.js", () => ({
   agentInstructionsService: () => agentInstructionsSvc,
 }));
 
+vi.mock("../services/goals.js", () => ({
+  goalService: () => goalSvc,
+}));
+
 vi.mock("../routes/org-chart-svg.js", () => ({
   renderOrgChartPng: vi.fn(async () => Buffer.from("png")),
 }));
@@ -142,6 +151,13 @@ describe("company portability", () => {
       config,
       secretKeys: new Set<string>(),
     }));
+    goalSvc.list.mockResolvedValue([]);
+    goalSvc.create.mockResolvedValue({
+      id: "goal-imported",
+      title: "Imported goal",
+      level: "company",
+      status: "active",
+    });
     issueSvc.listComments.mockResolvedValue([]);
     issueSvc.addComment.mockResolvedValue({
       id: "comment-imported",
@@ -478,6 +494,28 @@ describe("company portability", () => {
     expect(extension).not.toContain("budgetMonthlyCents: 0");
     expect(exported.warnings).toContain("Agent claudecoder command /Users/dotta/.local/bin/claude was omitted from export because it is system-dependent.");
     expect(exported.warnings).toContain("Agent claudecoder PATH override was omitted from export because it is system-dependent.");
+  });
+
+  it("exports only active company-level goals", async () => {
+    goalSvc.list.mockResolvedValue([
+      { title: "Ship the product", level: "company", status: "active" },
+      { title: "Retired objective", level: "company", status: "completed" },
+      { title: "Project objective", level: "project", status: "active" },
+    ]);
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    expect(exported.manifest.company?.goals).toEqual(["Ship the product"]);
+    expect(asTextFile(exported.files["COMPANY.md"])).toContain('- "Ship the product"');
+    expect(asTextFile(exported.files["COMPANY.md"])).not.toContain("Retired objective");
   });
 
   it("exports agent permission grants through the Paperclip extension and manifest", async () => {
@@ -2552,6 +2590,55 @@ describe("company portability", () => {
       name: "ClaudeCoder",
       adapterType: "process",
     }));
+  });
+
+  it("normalizes and idempotently imports company goals", async () => {
+    goalSvc.list.mockResolvedValue([
+      { title: "Already exists", level: "company", status: "active" },
+    ]);
+    const portability = companyPortabilityService({} as any);
+    const input = {
+      source: {
+        type: "inline" as const,
+        files: {
+          "COMPANY.md": [
+            "---",
+            'name: "Goals Company"',
+            "goals:",
+            '  - " Already exists "',
+            '  - "Build the product"',
+            '  - "Build the product"',
+            '  - "   "',
+            "---",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: false,
+        skills: false,
+      },
+      target: {
+        mode: "new_company" as const,
+        newCompanyName: "Goals Company",
+      },
+      collisionStrategy: "rename" as const,
+    };
+
+    const preview = await portability.previewImport(input);
+    expect(preview.manifest.company?.goals).toEqual(["Already exists", "Build the product"]);
+
+    await portability.importBundle(input, "user-1");
+
+    expect(goalSvc.create).toHaveBeenCalledTimes(1);
+    expect(goalSvc.create).toHaveBeenCalledWith("company-imported", {
+      title: "Build the product",
+      level: "company",
+      status: "active",
+    });
   });
 
   it("preserves agent role from frontmatter when extension block omits it", async () => {
