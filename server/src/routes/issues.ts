@@ -3493,8 +3493,18 @@ export function issueRoutes(
     return boundaryDecision;
   }
 
+  // Peer may comment on another agent's closed issue without reopening it.
+  // Covers mention grants AND company-wide Option 1 comments (MEA-1607 / MEA-1638).
+  // Without allow_company_agent here, closed other-owned comments regress to 403 via
+  // assertAgentIssueMutationAllowed.
+  function isPeerCommentOnlyDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision !== true &&
+      (decision.reason === "allow_issue_mention_grant" ||
+        decision.reason === "allow_company_agent");
+  }
+
   function isIssueMentionGrantDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
-    return decision !== true && decision.reason === "allow_issue_mention_grant";
+    return isPeerCommentOnlyDecision(decision);
   }
 
   function isDirectParentReportDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {

@@ -1006,19 +1006,27 @@ export function authorizationService(db: Db) {
       if (input.resource.type !== "issue") {
         return lowTrustDeny("Low-trust issue access is missing an issue resource.");
       }
+      // MEA-1638 / Atlas fail-closed: do NOT company-wide widen issue:comment for
+      // low-trust seats outside their boundary (comment-without-read + write surface).
+      // Low-trust keeps mention-grant only (read+comment coherent). Option 1 is for
+      // ordinary same-company agents in the standard branch below.
+      if (input.action === "issue:comment" && input.directParentReportTarget) {
+        if (
+          input.resource.issueId &&
+          await agentHasMentionGrantOnIssue({
+            action: input.action,
+            companyId: boundary.companyId,
+            issueId: input.resource.issueId,
+            issueAssigneeAgentId: input.resource.assigneeAgentId ?? null,
+            actorAgentId: input.actorAgentId,
+          })
+        ) {
+          return allowIssueMentionGrant(input.action);
+        }
+        return lowTrustDeny("Direct-parent report comments are disabled for low-trust review runs.");
+      }
       if (await issueResourceWithinLowTrustBoundary(boundary, input.resource)) {
         return lowTrustAllow("Allowed inside the low-trust issue boundary.");
-      }
-      // Company-wide issue:comment: same-company agents may comment outside the
-      // low-trust issue/project boundary. Mutations stay boundary-gated.
-      // Mention grants remain valid for issue:read and redundant for comments.
-      // (Direct-parent report was a narrower comment expansion; company-wide supersedes it.)
-      if (input.action === "issue:comment") {
-        return allow({
-          action: input.action,
-          reason: "allow_company_agent",
-          explanation: "Allowed because same-company agents may comment on any company issue.",
-        });
       }
       if (
         input.action !== "issue:mutate" &&

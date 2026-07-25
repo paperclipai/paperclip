@@ -1134,8 +1134,10 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
-  it("allows company-wide issue comments while keeping low-trust read/mutate gated", async () => {
-    const company = await createCompany(db, "CompanyWideCommentAuth");
+  it("keeps low-trust issue:comment fail-closed outside boundary without mention grant", async () => {
+    // MEA-1638 / Atlas: Option 1 is NOT for low-trust seats. Outside their fence
+    // they need a valid mention grant (read+comment coherent); no company-wide write.
+    const company = await createCompany(db, "LowTrustCommentFailClosed");
     const allowedProject = await createProject(db, company.id, "CommentAllowed");
     const targetProject = await createProject(db, company.id, "CommentTarget");
     const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
@@ -1153,7 +1155,7 @@ describeEmbeddedPostgres("authorization service", () => {
       },
     });
     const issue = await createIssue(db, company.id, {
-      title: "Company-wide comment target",
+      title: "Low-trust outside-boundary target",
       projectId: targetProject.id,
       assigneeAgentId: ownerAgent.id,
     });
@@ -1169,16 +1171,11 @@ describeEmbeddedPostgres("authorization service", () => {
       status: issue.status,
     } as const;
 
-    // Option 1: comments are company-wide even outside low-trust project boundary.
     await expect(authorization.decide({
       actor,
       action: "issue:comment",
       resource,
-    })).resolves.toMatchObject({
-      allowed: true,
-      reason: "allow_company_agent",
-    });
-    // Read stays boundary-gated until a valid mention grant.
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
     await expect(authorization.decide({
       actor,
       action: "issue:read",
@@ -1211,7 +1208,7 @@ describeEmbeddedPostgres("authorization service", () => {
       resource,
     })).resolves.toMatchObject({
       allowed: true,
-      reason: "allow_company_agent",
+      reason: "allow_issue_mention_grant",
     });
     await expect(authorization.decide({
       actor,
@@ -1264,7 +1261,7 @@ describeEmbeddedPostgres("authorization service", () => {
       },
     })).resolves.toMatchObject({
       allowed: true,
-      reason: "allow_company_agent",
+      reason: "allow_issue_mention_grant",
     });
   });
 
@@ -1324,13 +1321,11 @@ describeEmbeddedPostgres("authorization service", () => {
       action: "issue:read",
       resource,
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
-    // Comments are company-wide; invalid mentions must not be required (and must not
-    // accidentally widen read/mutate).
     await expect(authorization.decide({
       actor,
       action: "issue:comment",
       resource,
-    })).resolves.toMatchObject({ allowed: true, reason: "allow_company_agent" });
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
     await expect(authorization.decide({
       actor,
       action: "issue:mutate",
@@ -1392,7 +1387,7 @@ describeEmbeddedPostgres("authorization service", () => {
       resource,
     })).resolves.toMatchObject({
       allowed: true,
-      reason: "allow_company_agent",
+      reason: "allow_issue_mention_grant",
     });
     await expect(authorizationService(db).decide({
       actor,
