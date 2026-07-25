@@ -1,4 +1,5 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import { parseAcpxStdoutLine } from "@paperclipai/adapter-utils/acpx-engine/ui";
 
 function safeJsonParse(text: string): unknown {
   try {
@@ -215,6 +216,10 @@ export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry
   }
 
   const type = asString(parsed.type);
+
+  if (type.startsWith("acpx.")) {
+    return parseAcpxStdoutLine(line, ts);
+  }
 
   if (type === "system") {
     const subtype = asString(parsed.subtype);

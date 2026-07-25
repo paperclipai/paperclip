@@ -28,11 +28,16 @@ import {
   companyMemberships,
   companySkills,
   documents,
+  routineRuns,
+  routineTriggers,
+  routineRevisions,
+  routines,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
+import { builtInAgentService } from "./built-in-agents.js";
 
 export interface CompanyActivityActor {
   actorType: "user" | "agent" | "system" | "plugin";
@@ -52,6 +57,7 @@ export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
   const environmentsSvc = environmentService(db);
   const heartbeat = heartbeatService(db);
+  const builtInAgents = builtInAgentService(db);
 
   type CompanyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -131,6 +137,7 @@ export function companyService(db: Db) {
     budgetMonthlyCents: companies.budgetMonthlyCents,
     spentMonthlyCents: companies.spentMonthlyCents,
     attachmentMaxBytes: companies.attachmentMaxBytes,
+    defaultResponsibleUserId: companies.defaultResponsibleUserId,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
     feedbackDataSharingConsentAt: companies.feedbackDataSharingConsentAt,
@@ -262,6 +269,7 @@ export function companyService(db: Db) {
     create: async (data: typeof companies.$inferInsert) => {
       const created = await createCompanyWithUniquePrefix(data);
       await environmentsSvc.ensureLocalEnvironment(created.id);
+      await builtInAgents.autoProvisionBundledAgents(created.id);
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, created.id))
         .then((rows) => rows[0] ?? null);
@@ -452,6 +460,10 @@ export function companyService(db: Db) {
         await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
+        await tx.delete(routineRuns).where(eq(routineRuns.companyId, id));
+        await tx.delete(routineTriggers).where(eq(routineTriggers.companyId, id));
+        await tx.delete(routineRevisions).where(eq(routineRevisions.companyId, id));
+        await tx.delete(routines).where(eq(routines.companyId, id));
         await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
         await tx.delete(documents).where(eq(documents.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));

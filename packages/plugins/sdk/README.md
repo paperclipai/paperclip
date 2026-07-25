@@ -334,6 +334,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `issues.checkout` |
 | | `issues.wakeup` |
 | | `issue.comments.create` |
+| | `issue.comments.create_human_attributed` |
 | | `issue.documents.write` |
 | | `issue.relations.write` |
 | | `activity.log.write` |
@@ -341,6 +342,10 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `telemetry.track` |
 | | `database.namespace.migrate` |
 | | `database.namespace.write` |
+| | `external.objects.detect` |
+| | `external.objects.read` |
+| | `external.objects.write` |
+| | `external.objects.refresh` |
 | **Instance** | `instance.settings.register` |
 | | `plugin.state.read` |
 | | `plugin.state.write` |
@@ -371,6 +376,42 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `ui.action.register` |
 
 Full list in code: import `PLUGIN_CAPABILITIES` from `@paperclipai/plugin-sdk`.
+
+### External Object Reference Providers
+
+Trusted connector plugins can declare generic external object providers in the
+manifest. The host owns URL scanning, sanitized canonical URLs, core storage,
+normalized status rendering, and issue/comment/document write durability. The
+plugin only identifies provider-owned objects and resolves board-safe status
+metadata.
+
+```ts
+objectReferences: [
+  {
+    providerKey: "mocktracker",
+    displayName: "Mock Tracker",
+    objectTypes: ["ticket"],
+    urlPatterns: ["https://mock.example/tickets/:id"],
+    refreshPolicy: { defaultTtlSeconds: 300, staleAfterSeconds: 1800 },
+  },
+],
+capabilities: ["external.objects.detect", "external.objects.read"],
+```
+
+Implement `onDetectExternalObjects()` to map sanitized URL candidates to
+`providerKey`, `objectType`, provider-stable `externalId`, and optional display
+metadata such as `displayKey`/`iconKey`. Implement `onResolveExternalObject()`
+to return a normalized snapshot with `statusCategory`, `statusTone`,
+`statusLabel`, optional `statusIconKey`, board-safe `data`, and freshness
+metadata. Slow or failing plugins are isolated: Paperclip logs the failure and
+continues saving the source issue, comment, or document.
+
+MVP security posture: provider plugins are trusted installs. Manifest
+capabilities gate host APIs and provider invocation paths, but they are not a
+sandbox boundary for untrusted marketplace code. Plugin UI is same-origin
+JavaScript and must not be mounted inline in markdown; inline external-object
+rendering uses host-owned metadata only. Treat untrusted providers as future work
+that requires worker sandboxing plus isolated plugin UI.
 
 ### Restricted Database Namespace
 
@@ -529,6 +570,26 @@ const summary = await ctx.issues.summaries.getOrchestration({
 });
 ```
 
+By default, `ctx.issues.createComment` attributes the comment to the calling
+plugin's own agent (`authorAgentId`). A plugin that relays a message a human
+actually sent — a chat gateway bridging Slack/Telegram replies back onto an
+issue, for example — can instead attribute the comment to that person by
+passing `actorUserId`:
+
+```ts
+await ctx.issues.createComment(issueId, replyText, companyId, {
+  actorUserId: verifiedSlackUser.paperclipUserId,
+});
+```
+
+This requires the `issue.comments.create_human_attributed` capability in
+addition to `issue.comments.create`. The host independently verifies that
+`actorUserId` is an active human member of the issue's company before
+applying the comment — a plugin cannot forge attribution to an arbitrary or
+inactive user id. When the issue has a non-terminal status and an assigned
+agent, a human-attributed comment also wakes that assignee, the same way a
+board user's comment does in the web app.
+
 Required capabilities:
 
 | API | Capability |
@@ -537,6 +598,8 @@ Required capabilities:
 | `ctx.issues.relations.setBlockedBy` / `addBlockers` / `removeBlockers` | `issue.relations.write` |
 | `ctx.issues.getSubtree` | `issue.subtree.read` |
 | `ctx.issues.assertCheckoutOwner` | `issues.checkout` |
+| `ctx.issues.createComment` | `issue.comments.create` |
+| `ctx.issues.createComment` with `actorUserId` | `issue.comments.create` + `issue.comments.create_human_attributed` |
 | `ctx.issues.requestWakeup` / `requestWakeups` | `issues.wakeup` |
 | `ctx.issues.summaries.getOrchestration` | `issues.orchestration.read` |
 

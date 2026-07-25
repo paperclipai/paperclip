@@ -4,11 +4,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DocumentAnnotationLayer } from "./DocumentAnnotationLayer";
 
+const mockBuildAnchorFromContainerSelection = vi.hoisted(() => vi.fn());
+const mockGetContainerTextOffset = vi.hoisted(() => vi.fn());
 const mockRangesForNormalizedSpan = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/document-annotation-selection", () => ({
-  buildAnchorFromContainerSelection: vi.fn(),
-  getContainerTextOffset: vi.fn(),
+  buildAnchorFromContainerSelection: mockBuildAnchorFromContainerSelection,
+  getContainerTextOffset: mockGetContainerTextOffset,
   rangesForNormalizedSpan: mockRangesForNormalizedSpan,
 }));
 
@@ -139,6 +141,104 @@ describe("DocumentAnnotationLayer", () => {
 
     expect(container.querySelector(".paperclip-doc-annotation-highlight")).toBeNull();
     expect(container.querySelector(".paperclip-doc-annotation-hit-target")).toBeNull();
+  });
+
+  it("does not capture annotation comments from editable selections", async () => {
+    const body = document.createElement("div");
+    const editable = document.createElement("div");
+    editable.setAttribute("contenteditable", "true");
+    const text = document.createTextNode("Editing routine instructions");
+    editable.appendChild(text);
+    body.appendChild(editable);
+
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, "Editing".length);
+    const getSelectionSpy = vi.spyOn(window, "getSelection").mockReturnValue({
+      rangeCount: 1,
+      isCollapsed: false,
+      getRangeAt: () => range,
+    } as unknown as Selection);
+    const onPendingAnchorChange = vi.fn();
+    root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root?.render(
+          <DocumentAnnotationLayer
+            containerRef={{ current: body }}
+            markdown="Editing routine instructions"
+            threads={[]}
+            focusedThreadId={null}
+            onThreadFocus={vi.fn()}
+            pendingAnchor={null}
+            onPendingAnchorChange={onPendingAnchorChange}
+            onRequestComment={vi.fn()}
+          />,
+        );
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      });
+
+      await act(async () => {
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+
+      expect(mockGetContainerTextOffset).not.toHaveBeenCalled();
+      expect(mockBuildAnchorFromContainerSelection).not.toHaveBeenCalled();
+      expect(onPendingAnchorChange).toHaveBeenCalledWith(null);
+      expect(container.querySelector('[data-testid="document-annotation-selection-toolbar"]')).toBeNull();
+    } finally {
+      getSelectionSpy.mockRestore();
+    }
+  });
+
+  it("does not capture annotation comments from bare contenteditable selections", async () => {
+    const body = document.createElement("div");
+    const editable = document.createElement("div");
+    editable.setAttribute("contenteditable", "");
+    const text = document.createTextNode("Editing routine instructions");
+    editable.appendChild(text);
+    body.appendChild(editable);
+
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, "Editing".length);
+    const getSelectionSpy = vi.spyOn(window, "getSelection").mockReturnValue({
+      rangeCount: 1,
+      isCollapsed: false,
+      getRangeAt: () => range,
+    } as unknown as Selection);
+    const onPendingAnchorChange = vi.fn();
+    root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root?.render(
+          <DocumentAnnotationLayer
+            containerRef={{ current: body }}
+            markdown="Editing routine instructions"
+            threads={[]}
+            focusedThreadId={null}
+            onThreadFocus={vi.fn()}
+            pendingAnchor={null}
+            onPendingAnchorChange={onPendingAnchorChange}
+            onRequestComment={vi.fn()}
+          />,
+        );
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      });
+
+      await act(async () => {
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+
+      expect(mockGetContainerTextOffset).not.toHaveBeenCalled();
+      expect(mockBuildAnchorFromContainerSelection).not.toHaveBeenCalled();
+      expect(onPendingAnchorChange).toHaveBeenCalledWith(null);
+      expect(container.querySelector('[data-testid="document-annotation-selection-toolbar"]')).toBeNull();
+    } finally {
+      getSelectionSpy.mockRestore();
+    }
   });
 
   it("uses native CSS highlights for visual paint when the browser supports them", async () => {

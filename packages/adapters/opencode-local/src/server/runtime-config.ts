@@ -84,6 +84,14 @@ function parseProviderConfig(
   return Object.keys(providers).length > 0 ? providers : null;
 }
 
+function parseConfiguredModelRef(raw: unknown): { provider: string; model: string } | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0 || slash === trimmed.length - 1) return null;
+  return { provider: trimmed.slice(0, slash), model: trimmed.slice(slash + 1) };
+}
+
 async function readJsonObject(filepath: string): Promise<Record<string, unknown>> {
   try {
     const raw = await fs.readFile(filepath, "utf8");
@@ -162,13 +170,39 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     notes,
   );
   const existingProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
-  const nextProvider = gatewayProviders
+  let nextProvider = gatewayProviders
     ? { ...existingProvider, ...gatewayProviders }
     : existingProvider;
   if (gatewayProviders) {
     notes.push(
       `Injected ${Object.keys(gatewayProviders).length} custom OpenCode provider(s) from PAPERCLIP_OPENCODE_PROVIDERS: ${Object.keys(gatewayProviders).join(", ")}.`,
     );
+  }
+
+  // Register the configured model on its provider's models map. OpenCode resolves
+  // `--model provider/model` only when the model id exists in that map, so ids the
+  // models.dev catalog does not carry — OpenRouter routing variants such as
+  // `openai/gpt-oss-120b:nitro`, or models newer than the bundled catalog — are
+  // otherwise rejected with "Model not found" even though the provider serves them.
+  // An empty entry deep-merges with catalog metadata, so this is a no-op for models
+  // the catalog already knows, and we never clobber an explicit definition from the
+  // user config or PAPERCLIP_OPENCODE_PROVIDERS.
+  const configuredModel = parseConfiguredModelRef(input.config.model);
+  if (configuredModel) {
+    const providerEntry = isPlainObject(nextProvider[configuredModel.provider])
+      ? { ...(nextProvider[configuredModel.provider] as Record<string, unknown>) }
+      : {};
+    const providerModels = isPlainObject(providerEntry.models)
+      ? { ...(providerEntry.models as Record<string, unknown>) }
+      : {};
+    if (!isPlainObject(providerModels[configuredModel.model])) {
+      providerModels[configuredModel.model] = {};
+      providerEntry.models = providerModels;
+      nextProvider = { ...nextProvider, [configuredModel.provider]: providerEntry };
+      notes.push(
+        `Registered configured model ${configuredModel.provider}/${configuredModel.model} in the runtime OpenCode config.`,
+      );
+    }
   }
 
   const nextConfig: Record<string, unknown> = {

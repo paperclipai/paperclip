@@ -23,6 +23,7 @@ import type {
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
+  IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import {
@@ -202,6 +203,7 @@ export function environmentRunOrchestrator(
     agentId: string;
     heartbeatRunId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+    executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
     adapterType: string | null;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
@@ -262,6 +264,7 @@ export function environmentRunOrchestrator(
     heartbeatRunId: string;
     agentId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+    executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   }): Promise<EnvironmentAcquisitionResult> {
     // Step 1: Resolve environment
     const environment = await resolveEnvironment({
@@ -278,6 +281,7 @@ export function environmentRunOrchestrator(
       agentId: input.agentId,
       heartbeatRunId: input.heartbeatRunId,
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
+      executionWorkspaceSettings: input.executionWorkspaceSettings,
       adapterType: input.adapterType ?? null,
     });
 
@@ -291,6 +295,7 @@ export function environmentRunOrchestrator(
       action: "environment.lease_acquired",
       entityType: "environment_lease",
       entityId: leaseRecord.lease.id,
+      issueId: input.issueId,
       details: {
         environmentId: environment.id,
         driver: environment.driver,
@@ -298,6 +303,7 @@ export function environmentRunOrchestrator(
         provider: leaseRecord.lease.provider,
         executionWorkspaceId: leaseRecord.leaseContext.executionWorkspaceId,
         issueId: input.issueId,
+        networkEgress: input.executionWorkspaceSettings?.networkEgress ?? null,
       },
     });
 
@@ -535,6 +541,7 @@ export function environmentRunOrchestrator(
           action: "environment.lease_released",
           entityType: "environment_lease",
           entityId: released.lease.id,
+          issueId: released.lease.issueId,
           details: {
             environmentId: released.lease.environmentId,
             driver: released.environment.driver,

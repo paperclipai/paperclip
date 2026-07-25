@@ -16,6 +16,7 @@ function toWorkspaceOperation(row: WorkspaceOperationRow): WorkspaceOperation {
     companyId: row.companyId,
     executionWorkspaceId: row.executionWorkspaceId ?? null,
     heartbeatRunId: row.heartbeatRunId ?? null,
+    issueId: row.issueId ?? null,
     phase: row.phase as WorkspaceOperationPhase,
     command: row.command ?? null,
     cwd: row.cwd ?? null,
@@ -89,6 +90,7 @@ export function workspaceOperationService(db: Db) {
       companyId: string;
       heartbeatRunId?: string | null;
       executionWorkspaceId?: string | null;
+      issueId?: string | null;
     }): WorkspaceOperationRecorder {
       let executionWorkspaceId = input.executionWorkspaceId ?? null;
       const createdIds: string[] = [];
@@ -136,6 +138,7 @@ export function workspaceOperationService(db: Db) {
             companyId: input.companyId,
             executionWorkspaceId,
             heartbeatRunId: input.heartbeatRunId ?? null,
+            issueId: input.issueId ?? null,
             phase: recordInput.phase,
             command: recordInput.command ?? null,
             cwd: recordInput.cwd ?? null,

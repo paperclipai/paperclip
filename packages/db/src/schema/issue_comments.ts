@@ -1,5 +1,6 @@
 import type {
   IssueCommentAuthorType,
+  IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
   IssueCommentPresentation,
   SourceTrustMetadata,
@@ -20,6 +21,13 @@ export const issueComments = pgTable(
     authorUserId: text("author_user_id"),
     authorType: text("author_type").$type<IssueCommentAuthorType>(),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    // Persisted result of best-effort agent-attribution derivation for comments
+    // authored by a non-human sentinel (e.g. `local-board`). Populated once by a
+    // backfill migration and lazily on read so the load path stops re-scanning
+    // run logs.
+    derivedAuthorAgentId: uuid("derived_author_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    derivedCreatedByRunId: uuid("derived_created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    derivedAuthorSource: text("derived_author_source").$type<IssueCommentDerivedAuthorSource>(),
     body: text("body").notNull(),
     presentation: jsonb("presentation").$type<IssueCommentPresentation | null>(),
     metadata: jsonb("metadata").$type<IssueCommentMetadata | null>(),

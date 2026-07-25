@@ -5,7 +5,7 @@ import { GrokLocalConfigFields } from "./config-fields";
 
 export const grokLocalUIAdapter: UIAdapterModule = {
   type: "grok_local",
-  label: "Grok Build (local)",
+  label: "Grok Build",
   parseStdoutLine: parseGrokStdoutLine,
   createStdoutParser: createGrokStdoutParser,
   ConfigFields: GrokLocalConfigFields,

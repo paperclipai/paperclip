@@ -69,6 +69,18 @@ import type {
 
 const LAST_SECTION_STORAGE_KEY = "paperclip.routineLastSection";
 
+export function buildRoutineProjectOptions(
+  projects: ReadonlyArray<{ id: string; name: string; description?: string | null; archivedAt?: Date | string | null }>,
+): InlineEntityOption[] {
+  return projects
+    .filter((project) => !project.archivedAt)
+    .map((project) => ({
+      id: project.id,
+      label: project.name,
+      searchText: project.description ?? "",
+    }));
+}
+
 const SECTION_TITLES: Record<RoutineSectionKey, string> = {
   overview: "Overview",
   triggers: "Triggers",
@@ -220,8 +232,8 @@ export function RoutineDetail() {
     enabled: !!selectedCompanyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: companyMembers } = useQuery({
@@ -567,16 +579,15 @@ export function RoutineDetail() {
     [agents, recentAssigneeIds],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
-    () =>
-      (projects ?? []).map((project) => ({
-        id: project.id,
-        label: project.name,
-        searchText: project.description ?? "",
-      })),
+    () => buildRoutineProjectOptions(projects ?? []),
     [projects],
   );
   const mentionOptions = useMemo<MentionOption[]>(
-    () => buildMarkdownMentionOptions({ agents, projects, members: companyMembers?.users }),
+    () => buildMarkdownMentionOptions({
+      agents,
+      projects: (projects ?? []).filter((project) => !project.archivedAt),
+      members: companyMembers?.users,
+    }),
     [agents, companyMembers?.users, projects],
   );
 
@@ -777,8 +788,11 @@ export function RoutineDetail() {
         Skip to section
       </a>
 
-      <div className="-m-4 flex min-h-full flex-col md:-m-6">
-        {/* Slim page header — scrolls with the page (not sticky) */}
+      {/* Bounded to the main scroll area's height so the header + sub-nav stay
+          fixed and only the section content below scrolls (no page-level
+          scroll, no competing sticky points). */}
+      <div className="-m-4 flex h-full min-h-0 flex-col overflow-hidden md:-m-6">
+        {/* Slim page header — fixed at the top of the routine layout. */}
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-6">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <textarea
@@ -807,7 +821,7 @@ export function RoutineDetail() {
               <Badge variant="outline" className="hidden shrink-0 gap-1.5 text-xs text-muted-foreground sm:inline-flex">
                 <Sparkles className="h-3 w-3" />
                 {routine.managedByPlugin.pluginDisplayName}
-                <span className="font-mono text-[10px]">{routine.managedByPlugin.resourceKey}</span>
+                <span className="font-mono text-(length:--text-nano)">{routine.managedByPlugin.resourceKey}</span>
               </Badge>
             ) : null}
           </div>
@@ -845,7 +859,7 @@ export function RoutineDetail() {
           <main
             id="routine-section"
             role="main"
-            className="min-w-0 flex-1 px-4 pb-6 pt-10 md:px-8"
+            className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 pb-6 pt-10 md:px-8"
           >
             <section
               aria-labelledby="routine-section-title"

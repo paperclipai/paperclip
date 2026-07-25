@@ -15,7 +15,7 @@ export const companiesListQueryOptions = {
     try {
       return { companies: await companiesApi.list(), unauthorized: false };
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
         return { companies: [], unauthorized: true };
       }
       throw err;

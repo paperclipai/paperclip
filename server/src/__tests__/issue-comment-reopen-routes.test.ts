@@ -79,6 +79,10 @@ const mockIssueRecoveryActionService = vi.hoisted(() => ({
 const mockIssueTreeControlService = vi.hoisted(() => ({
   getActivePauseHoldGate: vi.fn(async () => null),
 }));
+const mockExternalObjectService = vi.hoisted(() => ({
+  syncCommentSafely: vi.fn(async () => undefined),
+  syncIssueSafely: vi.fn(async () => undefined),
+}));
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
@@ -127,6 +131,9 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  companySkillService: () => ({
+    completeTestRunForIssue: vi.fn(async () => null),
+  }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
@@ -156,6 +163,10 @@ vi.mock("../services/index.js", () => ({
   projectService: () => ({}),
   routineService: () => mockRoutineService,
   workProductService: () => ({}),
+}));
+
+vi.mock("../services/external-objects.js", () => ({
+  externalObjectService: () => mockExternalObjectService,
 }));
 
 function createApp() {
@@ -253,6 +264,8 @@ describe.sequential("issue comment reopen routes", () => {
     mockRoutineService.syncRunStatusForIssue.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
+    mockExternalObjectService.syncCommentSafely.mockReset();
+    mockExternalObjectService.syncIssueSafely.mockReset();
     mockTxInsertValues.mockReset();
     mockTxInsert.mockReset();
     mockDbSelect.mockReset();
@@ -276,6 +289,8 @@ describe.sequential("issue comment reopen routes", () => {
     mockHeartbeatService.getRun.mockResolvedValue(null);
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockExternalObjectService.syncCommentSafely.mockResolvedValue(undefined);
+    mockExternalObjectService.syncIssueSafely.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
     mockFeedbackService.saveIssueVote.mockResolvedValue({

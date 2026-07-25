@@ -100,7 +100,10 @@ export class InvocationScopeDeniedError extends Error {
 export interface HostServices {
   /** Provides `config.get`. */
   config: {
-    get(): Promise<Record<string, unknown>>;
+    get(
+      params: WorkerToHostMethods["config.get"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<Record<string, unknown>>;
   };
 
   /** Provides trusted company-scoped local folder helpers. */
@@ -147,7 +150,10 @@ export interface HostServices {
 
   /** Provides `secrets.resolve`. */
   secrets: {
-    resolve(params: WorkerToHostMethods["secrets.resolve"][0]): Promise<string>;
+    resolve(
+      params: WorkerToHostMethods["secrets.resolve"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<string>;
   };
 
   /** Provides `activity.log`. */
@@ -233,6 +239,17 @@ export interface HostServices {
     listComments(params: WorkerToHostMethods["issues.listComments"][0]): Promise<WorkerToHostMethods["issues.listComments"][1]>;
     createComment(params: WorkerToHostMethods["issues.createComment"][0]): Promise<WorkerToHostMethods["issues.createComment"][1]>;
     createInteraction(params: WorkerToHostMethods["issues.createInteraction"][0]): Promise<WorkerToHostMethods["issues.createInteraction"][1]>;
+    listInteractions(params: WorkerToHostMethods["issues.listInteractions"][0]): Promise<WorkerToHostMethods["issues.listInteractions"][1]>;
+    respondInteraction(params: WorkerToHostMethods["issues.respondInteraction"][0]): Promise<WorkerToHostMethods["issues.respondInteraction"][1]>;
+    listAttachments(params: WorkerToHostMethods["issues.listAttachments"][0]): Promise<WorkerToHostMethods["issues.listAttachments"][1]>;
+    getAttachmentContent(params: WorkerToHostMethods["issues.getAttachmentContent"][0]): Promise<WorkerToHostMethods["issues.getAttachmentContent"][1]>;
+  };
+
+  /** Provides `approvals.list`, `approvals.get`, `approvals.decide`. */
+  approvals: {
+    list(params: WorkerToHostMethods["approvals.list"][0]): Promise<WorkerToHostMethods["approvals.list"][1]>;
+    get(params: WorkerToHostMethods["approvals.get"][0]): Promise<WorkerToHostMethods["approvals.get"][1]>;
+    decide(params: WorkerToHostMethods["approvals.decide"][0]): Promise<WorkerToHostMethods["approvals.decide"][1]>;
   };
 
   /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
@@ -439,6 +456,15 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.listComments": "issue.comments.read",
   "issues.createComment": "issue.comments.create",
   "issues.createInteraction": "issue.interactions.create",
+  "issues.listInteractions": "issue.interactions.read",
+  "issues.respondInteraction": "issue.interactions.respond",
+  "issues.listAttachments": "issue.attachments.read",
+  "issues.getAttachmentContent": "issue.attachments.read",
+
+  // Approvals
+  "approvals.list": "approvals.read",
+  "approvals.get": "approvals.read",
+  "approvals.decide": "approvals.respond",
 
   // Issue Documents
   "issues.documents.list": "issue.documents.read",
@@ -570,15 +596,21 @@ export function createHostClientHandlers(
     }
 
     const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
-    if (!allowedCompanyId) return;
 
     if (requested.kind === "all") {
       if (method === "companies.list") return;
+      if (!allowedCompanyId) {
+        throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+      }
       throw new InvocationScopeDeniedError(
         pluginId,
         method,
         `the current invocation is scoped to company "${allowedCompanyId}"`,
       );
+    }
+
+    if (!allowedCompanyId) {
+      throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
     }
 
     if (requested.companyId !== allowedCompanyId) {
@@ -588,6 +620,40 @@ export function createHostClientHandlers(
         `requested company "${requested.companyId}" but the current invocation is scoped to company "${allowedCompanyId}"`,
       );
     }
+  }
+
+  function resolveRequiredCompanyId(
+    method: WorkerToHostMethodName,
+    params: unknown,
+    context?: WorkerHostCallContext,
+  ): string {
+    if (context?.invalidInvocationScope) {
+      throw new InvocationScopeDeniedError(
+        pluginId,
+        method,
+        "the worker referenced a missing, expired, or unknown invocation scope",
+      );
+    }
+
+    const requested = requestedCompanyScope(method, params);
+    const scopedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
+    if (requested.kind === "single") {
+      if (!scopedCompanyId) {
+        throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+      }
+      if (requested.companyId !== scopedCompanyId) {
+        throw new InvocationScopeDeniedError(
+          pluginId,
+          method,
+          `requested company "${requested.companyId}" but the current invocation is scoped to company "${scopedCompanyId}"`,
+        );
+      }
+      return scopedCompanyId;
+    }
+
+    if (scopedCompanyId) return scopedCompanyId;
+
+    throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
   }
 
   /**
@@ -627,8 +693,9 @@ export function createHostClientHandlers(
 
   return {
     // Config
-    "config.get": gated("config.get", async () => {
-      return services.config.get();
+    "config.get": gated("config.get", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("config.get", params, context);
+      return services.config.get({ ...params, companyId }, context);
     }),
 
     "localFolders.declarations": gated("localFolders.declarations", async (params) => {
@@ -696,8 +763,9 @@ export function createHostClientHandlers(
     }),
 
     // Secrets
-    "secrets.resolve": gated("secrets.resolve", async (params) => {
-      return services.secrets.resolve(params);
+    "secrets.resolve": gated("secrets.resolve", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("secrets.resolve", params, context);
+      return services.secrets.resolve({ ...params, companyId }, context);
     }),
 
     // Activity
@@ -834,10 +902,40 @@ export function createHostClientHandlers(
       return services.issues.listComments(params);
     }),
     "issues.createComment": gated("issues.createComment", async (params) => {
+      if (params.actorUserId && !capabilitySet.has("issue.comments.create_human_attributed")) {
+        throw new CapabilityDeniedError(
+          pluginId,
+          "issues.createComment",
+          "issue.comments.create_human_attributed",
+        );
+      }
       return services.issues.createComment(params);
     }),
     "issues.createInteraction": gated("issues.createInteraction", async (params) => {
       return services.issues.createInteraction(params);
+    }),
+    "issues.listInteractions": gated("issues.listInteractions", async (params) => {
+      return services.issues.listInteractions(params);
+    }),
+    "issues.respondInteraction": gated("issues.respondInteraction", async (params) => {
+      return services.issues.respondInteraction(params);
+    }),
+    "issues.listAttachments": gated("issues.listAttachments", async (params) => {
+      return services.issues.listAttachments(params);
+    }),
+    "issues.getAttachmentContent": gated("issues.getAttachmentContent", async (params) => {
+      return services.issues.getAttachmentContent(params);
+    }),
+
+    // Approvals
+    "approvals.list": gated("approvals.list", async (params) => {
+      return services.approvals.list(params);
+    }),
+    "approvals.get": gated("approvals.get", async (params) => {
+      return services.approvals.get(params);
+    }),
+    "approvals.decide": gated("approvals.decide", async (params) => {
+      return services.approvals.decide(params);
     }),
 
     // Issue Documents

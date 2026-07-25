@@ -40,7 +40,7 @@ function AnimatedToast({
   return (
     <li
       className={cn(
-        "pointer-events-auto rounded-sm border shadow-lg backdrop-blur-xl transition-[transform,opacity] duration-200 ease-out",
+        "pointer-events-auto rounded-sm border shadow-lg backdrop-blur-xl transition-(--tp-transform-opacity) duration-200 ease-out",
         visible
           ? "translate-y-0 opacity-100"
           : "translate-y-3 opacity-0",
@@ -56,15 +56,27 @@ function AnimatedToast({
               {toast.body}
             </p>
           )}
-          {toast.action && (
-            <Link
-              to={toast.action.href}
-              onClick={() => onDismiss(toast.id)}
-              className="mt-2 inline-flex text-xs font-medium underline underline-offset-4 hover:opacity-90"
-            >
-              {toast.action.label}
-            </Link>
-          )}
+          {toast.action &&
+            (toast.action.onClick ? (
+              <button
+                type="button"
+                onClick={() => {
+                  toast.action?.onClick?.();
+                  onDismiss(toast.id);
+                }}
+                className="mt-2 inline-flex text-xs font-medium underline underline-offset-4 hover:opacity-90"
+              >
+                {toast.action.label}
+              </button>
+            ) : toast.action.href ? (
+              <Link
+                to={toast.action.href}
+                onClick={() => onDismiss(toast.id)}
+                className="mt-2 inline-flex text-xs font-medium underline underline-offset-4 hover:opacity-90"
+              >
+                {toast.action.label}
+              </Link>
+            ) : null)}
         </div>
         <button
           type="button"
@@ -89,7 +101,7 @@ export function ToastViewport() {
     <aside
       aria-live="polite"
       aria-atomic="false"
-      className="pointer-events-none fixed bottom-3 left-3 z-[120] w-full max-w-sm px-1"
+      className="pointer-events-none fixed bottom-3 left-3 z-(--z-120) w-full max-w-sm px-1"
     >
       <ol className="flex w-full flex-col-reverse gap-2">
         {toasts.map((toast) => (

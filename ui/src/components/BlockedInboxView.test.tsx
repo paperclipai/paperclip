@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, IssueBlockedInboxAttention } from "@paperclipai/shared";
@@ -30,6 +30,14 @@ vi.mock("@/lib/router", () => ({
 }));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  return result;
+}
 
 import { BlockedInboxView } from "./BlockedInboxView";
 import { defaultIssueFilterState } from "../lib/issue-filters";
@@ -121,6 +129,7 @@ const blockedViewProps = {
   issueFilters: defaultIssueFilterState,
   currentUserId: "local-board",
   liveIssueIds: new Set<string>(),
+  subtreeLiveCounts: new Map<string, number>(),
   workspaceFilterContext: {},
   showStatusColumn: true,
   showIdentifierColumn: true,
@@ -302,6 +311,35 @@ describe("BlockedInboxView", () => {
     const titles = Array.from(links).map((a) => a.textContent ?? "");
     expect(titles.some((t) => t.includes("Resume parked work"))).toBe(true);
     expect(titles.some((t) => t.includes("Other unrelated thing"))).toBe(false);
+
+    act(() => root.unmount());
+  });
+
+  it("uses loaded live descendants when blocked inbox rows do not have a server summary", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      {
+        ...makeIssue(
+          "blocked-parent",
+          "PAP-77",
+          "Blocked parent with active child",
+          attention({ reason: "blocked_chain_stalled" }),
+        ),
+        status: "blocked",
+        blockerAttention: null,
+        liveDescendantCount: undefined,
+      } as unknown as Issue,
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView
+        {...blockedViewProps}
+        subtreeLiveCounts={new Map([["blocked-parent", 1]])}
+      />,
+      container,
+    );
+    await waitFor(() => container.querySelector("a") !== null);
+
+    expect(container.querySelector('[aria-label="Blocked · waiting on 1 active sub-task"]')).not.toBeNull();
 
     act(() => root.unmount());
   });

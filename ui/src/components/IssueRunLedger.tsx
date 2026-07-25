@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { ActivityEvent, Issue, Agent } from "@paperclipai/shared";
+import { isResponsibleUserDenialCode, responsibleUserLabel } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
@@ -18,6 +19,7 @@ import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data"
 import { describeRunRetryState } from "../lib/runRetryState";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { SourceResolvedFoldBadge } from "./SourceResolvedFoldBadge";
+import { ResponsibleUserDenialNotice } from "./ResponsibleUserDenialNotice";
 
 type IssueRunLedgerProps = {
   issueId: string;
@@ -28,6 +30,7 @@ type IssueRunLedgerProps = {
   hasLiveRuns: boolean;
   activityEvents?: ActivityEvent[];
   renderActivityEvent?: (event: ActivityEvent) => ReactNode;
+  resolveUserLabel?: (userId: string) => string | null | undefined;
 };
 
 type IssueRunLedgerContentProps = {
@@ -39,6 +42,7 @@ type IssueRunLedgerContentProps = {
   agentMap: ReadonlyMap<string, Pick<Agent, "name">>;
   activityEvents?: ActivityEvent[];
   renderActivityEvent?: (event: ActivityEvent) => ReactNode;
+  resolveUserLabel?: (userId: string) => string | null | undefined;
   pendingWatchdogDecision?: WatchdogDecisionInput["decision"] | null;
   canRecordWatchdogDecisions?: boolean;
   watchdogDecisionError?: string | null;
@@ -117,7 +121,7 @@ const PENDING_LIVENESS_COPY: LivenessCopy = {
 
 const RETRY_PENDING_LIVENESS_COPY: LivenessCopy = {
   label: "Retry pending",
-  tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+  tone: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
   description: "Paperclip queued an automatic retry that has not started yet.",
 };
 
@@ -318,6 +322,7 @@ function stopReasonLabel(run: RunForIssue) {
   if (stopReason === "cancelled") return "cancelled";
   if (stopReason === "paused") return "paused by board";
   if (stopReason === "process_lost") return "process lost";
+  if (stopReason === "unmanaged_background_task_stopped") return "unmanaged background task stopped";
   if (stopReason === "adapter_failed") return "adapter failed";
   if (stopReason === "completed") return timeoutText ? `completed (${timeoutText})` : "completed";
   return timeoutText;
@@ -407,6 +412,7 @@ export function IssueRunLedger({
   hasLiveRuns,
   activityEvents,
   renderActivityEvent,
+  resolveUserLabel,
 }: IssueRunLedgerProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -469,6 +475,7 @@ export function IssueRunLedger({
       agentMap={agentMap}
       activityEvents={activityEvents}
       renderActivityEvent={renderActivityEvent}
+      resolveUserLabel={resolveUserLabel}
       pendingWatchdogDecision={watchdogDecision.variables?.decision ?? null}
       canRecordWatchdogDecisions={canBoardRecordWatchdogDecision(companyId, boardAccess)}
       watchdogDecisionError={watchdogDecisionError}
@@ -486,6 +493,7 @@ export function IssueRunLedgerContent({
   agentMap,
   activityEvents,
   renderActivityEvent,
+  resolveUserLabel,
   pendingWatchdogDecision,
   canRecordWatchdogDecisions = true,
   watchdogDecisionError,
@@ -573,7 +581,7 @@ export function IssueRunLedgerContent({
                 <Link
                   key={child.id}
                   to={`/issues/${child.identifier ?? child.id}`}
-                  className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] hover:bg-accent/40"
+                  className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-(length:--text-micro) hover:bg-accent/40"
                 >
                   <span className="shrink-0 font-mono text-muted-foreground">{child.identifier ?? child.id.slice(0, 8)}</span>
                   <span className="truncate">{child.title}</span>
@@ -581,7 +589,7 @@ export function IssueRunLedgerContent({
                 </Link>
               ))}
               {children.active.length > 4 ? (
-                <span className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground">
+                <span className="rounded-md border border-border px-2 py-1 text-(length:--text-micro) text-muted-foreground">
                   +{children.active.length - 4} more
                 </span>
               ) : null}
@@ -625,7 +633,7 @@ export function IssueRunLedgerContent({
             <div className="mt-2 flex flex-wrap gap-1.5">
               <button
                 type="button"
-                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                className="rounded-md border border-border bg-background/80 px-2 py-1 text-(length:--text-micro) text-foreground hover:bg-background"
                 onClick={() =>
                   onWatchdogDecision({
                     runId: latestSilentRun.runId,
@@ -638,7 +646,7 @@ export function IssueRunLedgerContent({
               </button>
               <button
                 type="button"
-                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                className="rounded-md border border-border bg-background/80 px-2 py-1 text-(length:--text-micro) text-foreground hover:bg-background"
                 onClick={() =>
                   onWatchdogDecision({
                     runId: latestSilentRun.runId,
@@ -653,7 +661,7 @@ export function IssueRunLedgerContent({
               </button>
               <button
                 type="button"
-                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                className="rounded-md border border-border bg-background/80 px-2 py-1 text-(length:--text-micro) text-foreground hover:bg-background"
                 onClick={() =>
                   onWatchdogDecision({
                     runId: latestSilentRun.runId,
@@ -668,7 +676,7 @@ export function IssueRunLedgerContent({
             </div>
           ) : null}
           {watchdogDecisionError ? (
-            <p className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-900 dark:text-red-200">
+            <p className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-(length:--text-micro) text-red-900 dark:text-red-200">
               {watchdogDecisionError}
             </p>
           ) : null}
@@ -695,6 +703,10 @@ export function IssueRunLedgerContent({
             const continuation = continuationLabel(run);
             const retryState = describeRunRetryState(run);
             const agentName = compactAgentName(run, agentMap);
+            const onBehalfOfLabel = run.responsibleUserId
+              ? responsibleUserLabel(resolveUserLabel?.(run.responsibleUserId))
+              : null;
+            const denialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
             const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
             return (
               <article
@@ -710,18 +722,27 @@ export function IssueRunLedgerContent({
                     {run.runId.slice(0, 8)}
                   </Link>
                   <span>by {agentName}</span>
-                  <span className="rounded-md border border-border px-1.5 py-0.5 text-[11px] capitalize text-muted-foreground">
+                  {onBehalfOfLabel ? (
+                    <span
+                      data-testid="run-on-behalf-of"
+                      className="min-w-0 max-w-full truncate text-muted-foreground"
+                      title={`Acting on behalf of ${onBehalfOfLabel}`}
+                    >
+                      on behalf of <span className="text-foreground">{onBehalfOfLabel}</span>
+                    </span>
+                  ) : null}
+                  <span className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) capitalize text-muted-foreground">
                     {statusLabel(run.status)}
                   </span>
                   {run.isLive ? (
-                    <span className="inline-flex items-center gap-1 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[11px] text-cyan-700 dark:text-cyan-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+                    <span className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-(length:--text-micro) text-blue-700 dark:text-blue-300">
+                      <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
                       live
                     </span>
                   ) : null}
                   <span
                     className={cn(
-                      "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+                      "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
                       liveness.tone,
                     )}
                     title={liveness.description}
@@ -729,17 +750,17 @@ export function IssueRunLedgerContent({
                     {liveness.label}
                   </span>
                   {exhausted ? (
-                    <span className="rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:text-red-300">
+                    <span className="rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-red-700 dark:text-red-300">
                       Exhausted
                     </span>
                   ) : null}
                   {continuation ? (
-                    <span className="text-[11px] text-muted-foreground">{continuation}</span>
+                    <span className="text-(length:--text-micro) text-muted-foreground">{continuation}</span>
                   ) : null}
                   {retryState ? (
                     <span
                       className={cn(
-                        "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+                        "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
                         retryState.tone,
                       )}
                     >
@@ -749,7 +770,7 @@ export function IssueRunLedgerContent({
                   {run.outputSilence && RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level] ? (
                     <span
                       className={cn(
-                        "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+                        "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
                         RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level]?.tone,
                       )}
                     >
@@ -767,7 +788,7 @@ export function IssueRunLedgerContent({
                     return (
                       <span
                         className={cn(
-                          "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+                          "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
                           modelProfileBadgeTone(profile),
                         )}
                         title={modelProfileTitle(profile)}
@@ -817,7 +838,7 @@ export function IssueRunLedgerContent({
                   const profile = modelProfileForRun(run);
                   if (!profile?.fallbackReason || profile.applied === profile.requested) return null;
                   return (
-                    <p className="min-w-0 break-words text-[11px] leading-5 text-amber-700 dark:text-amber-300">
+                    <p className="min-w-0 break-words text-(length:--text-micro) leading-5 text-amber-700 dark:text-amber-300">
                       {profile.requested === "cheap"
                         ? "Cheap profile fell back to primary"
                         : `${profile.requested} profile unavailable`}
@@ -831,6 +852,13 @@ export function IssueRunLedgerContent({
                   <p className="min-w-0 break-words text-xs leading-5 text-muted-foreground">
                     {run.livenessReason}
                   </p>
+                ) : null}
+
+                {denialCode ? (
+                  <ResponsibleUserDenialNotice
+                    code={denialCode}
+                    userName={run.responsibleUserId ? resolveUserLabel?.(run.responsibleUserId) : null}
+                  />
                 ) : null}
 
                 {run.nextAction ? (

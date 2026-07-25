@@ -178,6 +178,11 @@ describe("claude remote execution", () => {
     const call = runChildProcess.mock.calls[0] as unknown as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
+    expect(call?.[2]).toContain("--allowedTools");
+    expect(call?.[2]).toContain(
+      "Task AskUserQuestion Bash CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write",
+    );
+    expect(call?.[2]).not.toContain("--dangerously-skip-permissions");
     expect(call?.[2]).toContain("--append-system-prompt-file");
     expect(call?.[2]).toContain(
       `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills/agent-instructions.md`,

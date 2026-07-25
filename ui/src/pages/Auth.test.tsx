@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { AuthPage } from "./Auth";
 
 const getSessionMock = vi.hoisted(() => vi.fn());
@@ -110,11 +111,11 @@ describe("AuthPage", () => {
     });
     await flushReact();
     await flushReact();
-    return root;
+    return { root, queryClient };
   }
 
   it("exposes password-manager metadata and a11y attributes on the sign-in form", async () => {
-    const root = await mount();
+    const { root } = await mount();
 
     const emailInput = container.querySelector('input[name="email"]') as HTMLInputElement;
     const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement;
@@ -147,7 +148,7 @@ describe("AuthPage", () => {
   });
 
   it("uses new-password autocomplete in sign-up mode", async () => {
-    const root = await mount();
+    const { root } = await mount();
 
     const createOne = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Create one",
@@ -172,7 +173,7 @@ describe("AuthPage", () => {
   });
 
   it("renders auth errors in an assertive alert region referenced by the inputs", async () => {
-    const root = await mount();
+    const { root } = await mount();
 
     const inputValueSetter = Object.getOwnPropertyDescriptor(
       HTMLInputElement.prototype,
@@ -208,6 +209,45 @@ describe("AuthPage", () => {
     expect(emailInput.getAttribute("aria-invalid")).toBe("true");
     expect(passwordInput.getAttribute("aria-describedby")).toBe(errorId);
     expect(passwordInput.getAttribute("aria-invalid")).toBe("true");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("invalidates anonymous health metadata after sign-in", async () => {
+    const { root, queryClient } = await mount();
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+    });
+
+    const inputValueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    const emailInput = container.querySelector('input[name="email"]') as HTMLInputElement;
+    const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement;
+
+    await act(async () => {
+      inputValueSetter!.call(emailInput, "jane@example.com");
+      emailInput.dispatchEvent(new Event("input", { bubbles: true }));
+      inputValueSetter!.call(passwordInput, "supersecret");
+      passwordInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const form = container.querySelector("form") as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(signInEmailMock).toHaveBeenCalledWith({
+      email: "jane@example.com",
+      password: "supersecret",
+    });
+    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
 
     await act(async () => {
       root.unmount();

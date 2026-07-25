@@ -776,4 +776,25 @@ export async function ensurePostgresDatabase(
   }
 }
 
+export async function resetPostgresDatabase(
+  url: string,
+  databaseName: string,
+): Promise<"reset"> {
+  const quotedDatabaseName = quoteIdentifier(databaseName);
+  const sql = createUtilitySql(url);
+  try {
+    await sql`
+      select pg_terminate_backend(pid)
+      from pg_stat_activity
+      where datname = ${databaseName}
+        and pid <> pg_backend_pid()
+    `;
+    await sql.unsafe(`drop database if exists ${quotedDatabaseName}`);
+    await sql.unsafe(`create database ${quotedDatabaseName} encoding 'UTF8' lc_collate 'C' lc_ctype 'C' template template0`);
+    return "reset";
+  } finally {
+    await sql.end();
+  }
+}
+
 export type Db = ReturnType<typeof createDb>;

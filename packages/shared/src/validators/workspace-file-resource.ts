@@ -90,7 +90,7 @@ export const resolvedWorkspaceResourceSchema = z.object({
   denialReason: z.string().nullable().optional(),
   capabilities: z.object({
     preview: z.boolean(),
-    download: z.literal(false),
+    download: z.boolean(),
     listChildren: z.boolean(),
   }),
 });

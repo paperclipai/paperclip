@@ -202,6 +202,7 @@ export function buildRemoteGitDeltaBundleScript(input: {
   baseSha: string;
   exportRef: string;
   bundlePath: string;
+  statusPath?: string;
   catBundle?: boolean;
   cleanupBundle?: boolean;
 }): string {
@@ -209,8 +210,10 @@ export function buildRemoteGitDeltaBundleScript(input: {
   const bundlePath = shellQuote(input.bundlePath);
   const exportRef = shellQuote(input.exportRef);
   const baseSha = shellQuote(input.baseSha);
+  const statusPath = input.statusPath ? shellQuote(input.statusPath) : null;
   const cleanupParts = [
     `rm -f ${bundlePath}`,
+    ...(statusPath ? [`rm -f ${statusPath}`] : []),
     `git -C ${remoteDir} update-ref -d ${exportRef} >/dev/null 2>&1 || true`,
   ];
   return [
@@ -227,6 +230,15 @@ export function buildRemoteGitDeltaBundleScript(input: {
     "else",
     `  : > ${bundlePath}`,
     "fi",
+    statusPath
+      ? [
+        `if [ -z "$(git -C ${remoteDir} status --porcelain=v1 --untracked-files=normal)" ]; then`,
+        `  printf clean > ${statusPath}`,
+        "else",
+        `  printf dirty > ${statusPath}`,
+        "fi",
+      ].join("\n")
+      : "",
     input.catBundle ? `cat ${bundlePath}` : "",
   ].filter(Boolean).join("\n");
 }
@@ -318,4 +330,47 @@ export async function integrateImportedGitHead(input: {
   }
 
   throw new Error(`Failed to integrate concurrent remote git history for ${input.importedHead.slice(0, 12)} after multiple retries.`);
+}
+
+export async function resetLocalGitIndexToHead(input: {
+  localDir: string;
+  checkWorkingTreeClean?: boolean;
+}): Promise<void> {
+  try {
+    await runLocalGit(input.localDir, ["reset", "--quiet", "HEAD", "--", "."], {
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (error) {
+    const detail = error && typeof error === "object"
+      ? [
+        (error as { message?: unknown }).message,
+        (error as { stderr?: unknown }).stderr,
+        (error as { stdout?: unknown }).stdout,
+      ].filter((value): value is string => typeof value === "string" && value.trim().length > 0).join("\n")
+      : String(error);
+    throw new Error(`Failed to reset local git index to HEAD after workspace restore: ${detail}`);
+  }
+
+  const stagedDiff = await runLocalGit(input.localDir, ["diff", "--cached", "--name-status", "HEAD", "--"], {
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024,
+  });
+  if (stagedDiff.stdout.trim().length > 0) {
+    throw new Error(
+      `Workspace restore left staged git index changes after reset:\n${stagedDiff.stdout.trim()}`,
+    );
+  }
+
+  if (!input.checkWorkingTreeClean) return;
+
+  const workingTreeDiff = await runLocalGit(input.localDir, ["diff", "--name-status", "HEAD", "--"], {
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024,
+  });
+  if (workingTreeDiff.stdout.trim().length > 0) {
+    console.warn(
+      "[paperclip] Workspace restore preserved local working tree changes after clean sandbox restore.",
+    );
+  }
 }

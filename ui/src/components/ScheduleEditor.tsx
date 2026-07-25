@@ -266,7 +266,13 @@ export function ScheduleEditor({
             onChange={(e) => {
               const nextCron = e.target.value;
               setCustomCron(nextCron);
-              if (getScheduleCronValidation(nextCron).valid) {
+              // Report validity synchronously with the keystroke so consumers can gate
+              // their submit affordance in the same render. Relying solely on the
+              // effect below leaves a one-tick window where an invalid draft still
+              // reads as valid to the parent.
+              const nextValidation = getScheduleCronValidation(nextCron);
+              onValidityChange?.(nextValidation.valid);
+              if (nextValidation.valid) {
                 emitChange("custom", hour, minute, dayOfWeek, dayOfMonth, nextCron);
               }
             }}
@@ -300,7 +306,7 @@ export function ScheduleEditor({
                   emitChange(preset, h, minute, dayOfWeek, dayOfMonth, customCron);
                 }}
               >
-                <SelectTrigger className="w-[120px]">
+                <SelectTrigger className="w-(--sz-120px)">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -319,7 +325,7 @@ export function ScheduleEditor({
                   emitChange(preset, hour, m, dayOfWeek, dayOfMonth, customCron);
                 }}
               >
-                <SelectTrigger className="w-[80px]">
+                <SelectTrigger className="w-(--sz-80px)">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -343,7 +349,7 @@ export function ScheduleEditor({
                   emitChange(preset, hour, m, dayOfWeek, dayOfMonth, customCron);
                 }}
               >
-                <SelectTrigger className="w-[80px]">
+                <SelectTrigger className="w-(--sz-80px)">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -368,6 +374,7 @@ export function ScheduleEditor({
                     variant={dayOfWeek === d.value ? "default" : "outline"}
                     size="sm"
                     className="h-7 px-2 text-xs"
+                    aria-pressed={dayOfWeek === d.value}
                     onClick={() => {
                       setDayOfWeek(d.value);
                       emitChange(preset, hour, minute, d.value, dayOfMonth, customCron);
@@ -390,7 +397,7 @@ export function ScheduleEditor({
                   emitChange(preset, hour, minute, dayOfWeek, dom, customCron);
                 }}
               >
-                <SelectTrigger className="w-[80px]">
+                <SelectTrigger className="w-(--sz-80px)">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

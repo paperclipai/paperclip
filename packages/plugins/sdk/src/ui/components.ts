@@ -338,6 +338,7 @@ export interface IssuesListFilters {
   originId?: string;
   descendantOf?: string;
   includeRoutineExecutions?: boolean;
+  includeLiveDescendantSummary?: boolean;
 }
 
 export interface IssuesListProps {

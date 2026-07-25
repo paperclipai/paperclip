@@ -22,6 +22,8 @@ async function logMembershipChange(
     resourceType: "project" | "agent";
     resourceId: string;
     state: "joined" | "left";
+    starredAt: Date | null;
+    changeKind: "joined" | "left" | "starred" | "unstarred";
     policySource: string;
   },
 ) {
@@ -32,7 +34,8 @@ async function logMembershipChange(
     actorId: actor.actorId,
     agentId: actor.agentId,
     runId: actor.runId,
-    action: `resource_membership.${input.state}`,
+    agentApiKeyId: actor.agentApiKeyId,
+    action: `resource_membership.${input.changeKind}`,
     entityType: input.resourceType,
     entityId: input.resourceId,
     details: {
@@ -40,6 +43,8 @@ async function logMembershipChange(
       resourceType: input.resourceType,
       resourceId: input.resourceId,
       state: input.state,
+      starredAt: input.starredAt,
+      starred: input.starredAt !== null,
       policySource: input.policySource,
     },
   });
@@ -69,19 +74,22 @@ export function resourceMembershipRoutes(db: Db) {
         projectId,
         userId,
         state: req.body.state,
+        starred: req.body.starred,
         actor: req.actor,
       });
-      if (result.changed) {
+      if (result.changed && result.changeKind) {
         await logMembershipChange(db, req, {
           companyId,
           userId,
           resourceType: "project",
           resourceId: projectId,
           state: result.state,
+          starredAt: result.starredAt,
+          changeKind: result.changeKind,
           policySource: result.policySource,
         });
       }
-      const { changed: _changed, policySource: _policySource, ...response } = result;
+      const { changed: _changed, changeKind: _changeKind, policySource: _policySource, ...response } = result;
       res.json(response);
     },
   );
@@ -99,19 +107,22 @@ export function resourceMembershipRoutes(db: Db) {
         agentId,
         userId,
         state: req.body.state,
+        starred: req.body.starred,
         actor: req.actor,
       });
-      if (result.changed) {
+      if (result.changed && result.changeKind) {
         await logMembershipChange(db, req, {
           companyId,
           userId,
           resourceType: "agent",
           resourceId: agentId,
           state: result.state,
+          starredAt: result.starredAt,
+          changeKind: result.changeKind,
           policySource: result.policySource,
         });
       }
-      const { changed: _changed, policySource: _policySource, ...response } = result;
+      const { changed: _changed, changeKind: _changeKind, policySource: _policySource, ...response } = result;
       res.json(response);
     },
   );

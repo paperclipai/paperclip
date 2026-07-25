@@ -30,6 +30,7 @@ import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -243,15 +244,15 @@ function TrustChip({ level, iconOnly = false }: { level: CatalogTeamTrustLevel; 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span
+        <Badge variant="outline"
           className={cn(
-            "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] font-medium",
+            "px-1.5 text-(length:--text-micro)",
             meta.tone,
           )}
         >
           <Icon className="h-3 w-3" />
           {!iconOnly && meta.label}
-        </span>
+        </Badge>
       </TooltipTrigger>
       <TooltipContent>{meta.tip}</TooltipContent>
     </Tooltip>
@@ -270,14 +271,14 @@ const COMPAT_META: Record<
 function CompatChip({ compatibility }: { compatibility: CatalogTeamCompatibility }) {
   const meta = COMPAT_META[compatibility];
   return (
-    <span
+    <Badge variant="outline"
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] font-medium",
+        "px-1.5 text-(length:--text-micro)",
         meta.tone,
       )}
     >
       {meta.label}
-    </span>
+    </Badge>
   );
 }
 
@@ -286,11 +287,11 @@ function ProvenanceBadge({ team }: { team: CatalogTeam }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
+        <Badge variant="outline" className="border-border px-1.5 text-(length:--text-micro) text-muted-foreground">
           <Package className="h-3 w-3" />
           {team.packageName}
           {team.packageVersion ? `@${team.packageVersion}` : ""}
-        </span>
+        </Badge>
       </TooltipTrigger>
       <TooltipContent>Catalog package provenance</TooltipContent>
     </Tooltip>
@@ -516,13 +517,13 @@ function MetricTile({
   Icon: typeof Users2;
 }) {
   return (
-    <div className="rounded-md border border-border bg-card px-3 py-2.5">
+    <Card className="block px-3 py-2.5">
       <div className="flex items-center justify-between">
         <span className="text-xl font-semibold tabular-nums">{value}</span>
         <Icon className="h-4 w-4 text-muted-foreground" />
       </div>
       <span className="text-xs text-muted-foreground">{label}</span>
-    </div>
+    </Card>
   );
 }
 
@@ -537,15 +538,15 @@ export function RequiredSkillsList({ skills }: { skills: CatalogTeamSkillRequire
         >
           <Boxes className="h-3.5 w-3.5 text-muted-foreground" />
           <span className="font-mono text-xs">{skill.ref}</span>
-          <Badge variant="outline" className="ml-auto text-[10px]">
+          <Badge variant="outline" className="ml-auto text-(length:--text-nano)">
             {skill.type}
           </Badge>
           {skill.resolved ? (
-            <Badge variant="outline" className="text-[10px] text-emerald-600 dark:text-emerald-300 border-emerald-500/30">
+            <Badge variant="outline" className="text-(length:--text-nano) text-emerald-600 dark:text-emerald-300 border-emerald-500/30">
               resolved
             </Badge>
           ) : (
-            <Badge variant="outline" className="text-[10px] text-amber-600 dark:text-amber-300 border-amber-500/30">
+            <Badge variant="outline" className="text-(length:--text-nano) text-amber-600 dark:text-amber-300 border-amber-500/30">
               external
             </Badge>
           )}
@@ -571,7 +572,7 @@ export function EnvInputsList({ inputs }: { inputs: CatalogTeamEnvInputSummary[]
             <Badge
               variant="outline"
               className={cn(
-                "ml-auto text-[10px]",
+                "ml-auto text-(length:--text-nano)",
                 input.kind === "secret"
                   ? "text-rose-600 dark:text-rose-300 border-rose-500/30"
                   : "text-muted-foreground",
@@ -580,7 +581,7 @@ export function EnvInputsList({ inputs }: { inputs: CatalogTeamEnvInputSummary[]
               {input.kind}
             </Badge>
             {input.requirement === "required" && (
-              <Badge variant="outline" className="text-[10px]">required</Badge>
+              <Badge variant="outline" className="text-(length:--text-nano)">required</Badge>
             )}
           </li>
         ))}
@@ -618,7 +619,7 @@ export function ExternalSourcesList({ sources }: { sources: CatalogTeamSourceRef
               <li key={`${source.type}:${source.ref}`} className="flex items-center gap-2 px-3 py-2 text-sm">
                 <Icon className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="font-mono text-xs truncate">{source.ref}</span>
-                <span className="ml-auto text-[11px]">
+                <span className="ml-auto text-(length:--text-micro)">
                   {code === "ok" && (
                     <span className="text-emerald-600 dark:text-emerald-300">Pinned</span>
                   )}
@@ -697,7 +698,7 @@ export function TeamDetailPane({
           <div className="min-w-0 space-y-1.5">
             <h2 className="text-base font-semibold">{team.name}</h2>
             <div className="flex flex-wrap items-center gap-1.5">
-              <Badge variant={team.kind === "bundled" ? "secondary" : "outline"} className="text-[10px] capitalize">
+              <Badge variant={team.kind === "bundled" ? "secondary" : "outline"} className="text-(length:--text-nano) capitalize">
                 {team.kind}
               </Badge>
               <span className="text-xs text-muted-foreground">{team.category}</span>
@@ -705,14 +706,14 @@ export function TeamDetailPane({
               <CompatChip compatibility={team.compatibility} />
               <ProvenanceBadge team={team} />
               {isInstalled && !outOfDate && (
-                <Badge variant="secondary" className="gap-1 text-[10px]">
+                <Badge variant="secondary" className="gap-1 text-(length:--text-nano)">
                   <CheckCircle2 className="h-3 w-3" /> Installed
                 </Badge>
               )}
               {outOfDate && (
                 <Badge
                   variant="outline"
-                  className="gap-1 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-600 dark:text-amber-300"
+                  className="gap-1 border-amber-500/40 bg-amber-500/10 text-(length:--text-nano) text-amber-600 dark:text-amber-300"
                 >
                   <ChevronUp className="h-3 w-3" /> Update available
                 </Badge>
@@ -770,7 +771,7 @@ export function TeamDetailPane({
                 <li key={slug} className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm">
                   <FolderKanban className="h-3.5 w-3.5 text-muted-foreground" />
                   <span>{titleCase(slug)}</span>
-                  <span className="ml-auto font-mono text-[11px] text-muted-foreground">{slug}</span>
+                  <span className="ml-auto font-mono text-(length:--text-micro) text-muted-foreground">{slug}</span>
                 </li>
               ))}
             </ul>
@@ -1235,7 +1236,7 @@ function TeamInstallerDialog({
   const body = (
     <>
         {phase === "form" && (
-          <div className="space-y-4 overflow-auto pr-1 md:max-h-[60vh]">
+          <div className="space-y-4 overflow-auto pr-1 md:max-h-(--sz-60vh)">
             {currentStep === "target_manager" && (
               <StepTargetManager
                 team={team}
@@ -1357,7 +1358,7 @@ function TeamInstallerDialog({
   if (isMobileSheet) {
     return (
       <Sheet open={open} onOpenChange={(next) => { if (!next && dismissable) onClose(); }}>
-        <SheetContent side="bottom" className="flex h-[100dvh] flex-col gap-0 p-0">
+        <SheetContent side="bottom" className="flex h-(--sz-100dvh) flex-col gap-0 p-0">
           <SheetHeader className="border-b border-border">
             <SheetTitle>{headerTitle}</SheetTitle>
             {headerDescription && <SheetDescription>{headerDescription}</SheetDescription>}
@@ -1417,9 +1418,9 @@ export function StepTargetManager({
             <li key={slug} className="flex items-center gap-2 border-b border-border/60 px-3 py-2 text-sm last:border-b-0">
               <Crown className="h-3.5 w-3.5 text-amber-500" />
               <span className="font-medium">{titleCase(slug)}</span>
-              <span className="ml-auto rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-300">
+              <Badge variant="ghost" className="ml-auto bg-amber-500/15 text-(length:--text-micro) text-amber-600 dark:text-amber-300">
                 → ?
-              </span>
+              </Badge>
             </li>
           ))}
         </ul>
@@ -1498,7 +1499,7 @@ export function StepSourcePolicy({
               <Icon className="h-3.5 w-3.5 text-muted-foreground" />
               <div className="min-w-0">
                 <p className="font-mono text-xs truncate">{source.ref}</p>
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-(length:--text-micro) text-muted-foreground">
                   {code === "ok" && "pinned"}
                   {code === "unpinned" && "unpinned reference"}
                   {code === "unsupported_in_ui" && "not installable from the browser"}
@@ -1507,7 +1508,7 @@ export function StepSourcePolicy({
               <Badge
                 variant="outline"
                 className={cn(
-                  "ml-auto text-[10px]",
+                  "ml-auto text-(length:--text-nano)",
                   code === "unsupported_in_ui"
                     ? "text-rose-600 dark:text-rose-300 border-rose-500/30"
                     : code === "unpinned"
@@ -1609,9 +1610,9 @@ export function StepSkillPlan({
               <Boxes className="h-3.5 w-3.5 text-muted-foreground" />
               <div className="min-w-0">
                 <p className="font-mono text-xs truncate">{prep.ref}</p>
-                {prep.reason && <p className="text-[11px] text-muted-foreground">{prep.reason}</p>}
+                {prep.reason && <p className="text-(length:--text-micro) text-muted-foreground">{prep.reason}</p>}
               </div>
-              <Badge variant="outline" className={cn("ml-auto text-[10px]", meta.tone)}>
+              <Badge variant="outline" className={cn("ml-auto text-(length:--text-nano)", meta.tone)}>
                 {meta.label}
               </Badge>
             </li>
@@ -1666,7 +1667,7 @@ function PlanRow({
 }) {
   return (
     <li className="flex items-center gap-2 px-3 py-2 text-sm">
-      <Badge variant="outline" className={cn("text-[10px] uppercase", PLAN_ACTION_TONE[action] ?? "border-border")}>
+      <Badge variant="outline" className={cn("text-(length:--text-nano) uppercase", PLAN_ACTION_TONE[action] ?? "border-border")}>
         {action}
       </Badge>
       <span className={cn("font-mono text-xs", action === "skip" && "line-through opacity-60")}>{slug}</span>
@@ -1675,12 +1676,12 @@ function PlanRow({
         <Input
           value={override ?? plannedName}
           onChange={(e) => onRename(slug, e.target.value)}
-          className="h-7 max-w-[14rem] font-mono text-xs"
+          className="h-7 max-w-(--sz-14rem) font-mono text-xs"
         />
       ) : (
         <span className="font-mono text-xs">{plannedName}</span>
       )}
-      {reason && <span className="ml-auto text-[11px] text-muted-foreground">{reason}</span>}
+      {reason && <span className="ml-auto text-(length:--text-micro) text-muted-foreground">{reason}</span>}
     </li>
   );
 }
@@ -1843,7 +1844,7 @@ export function StepPreview({
               <li key={agent.slug} className="flex items-center gap-2 px-3 py-2 text-sm">
                 <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="min-w-0 truncate">{agent.name}</span>
-                <span className="font-mono text-[11px] text-muted-foreground">{agent.slug}</span>
+                <span className="font-mono text-(length:--text-micro) text-muted-foreground">{agent.slug}</span>
                 <Select value={selected} onValueChange={(v) => onAdapterChange(agent.slug, v)}>
                   <SelectTrigger className="ml-auto h-8 w-48">
                     <SelectValue />
@@ -1857,7 +1858,7 @@ export function StepPreview({
               </li>
             );
           })}
-          <li className="px-3 py-1.5 text-[11px] text-muted-foreground">
+          <li className="px-3 py-1.5 text-(length:--text-micro) text-muted-foreground">
             Each imported agent defaults to its package adapter; override here before install.
             Deeper per-adapter model config is editable on the agent after install.
           </li>
@@ -1872,17 +1873,17 @@ export function StepPreview({
             const visible = Boolean(visibleSecretKeys[formKey]);
             const missingRequired = input.requirement === "required" && (secretValues[formKey] ?? "").trim().length === 0;
             return (
-              <li key={formKey} className="grid gap-2 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(14rem,18rem)] sm:items-center">
+              <li key={formKey} className="grid gap-2 px-3 py-2 text-sm sm:grid-cols-(--gtc-56) sm:items-center">
                 <div className="flex min-w-0 items-center gap-2">
                   <KeyRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span className="font-mono text-xs uppercase tracking-wide">{input.key}</span>
                   {input.description && <span className="truncate text-xs text-muted-foreground">{input.description}</span>}
                   {input.requirement === "required" && (
-                    <Badge variant="outline" className="text-[10px]">required</Badge>
+                    <Badge variant="outline" className="text-(length:--text-nano)">required</Badge>
                   )}
                   <Badge
                     variant="outline"
-                    className={cn("ml-auto text-[10px]", input.kind === "secret" ? "text-rose-600 dark:text-rose-300 border-rose-500/30" : "text-muted-foreground")}
+                    className={cn("ml-auto text-(length:--text-nano)", input.kind === "secret" ? "text-rose-600 dark:text-rose-300 border-rose-500/30" : "text-muted-foreground")}
                   >
                     {input.kind}
                   </Badge>
@@ -2054,7 +2055,7 @@ export function TeamRow({
     >
       <div className="flex items-center gap-2">
         <Users2 className={cn("h-3.5 w-3.5 text-muted-foreground", team.kind === "optional" && "opacity-70")} />
-        <span className={cn("line-clamp-2 text-[13px] font-medium", selected && "text-foreground")}>
+        <span className={cn("line-clamp-2 text-(length:--text-compact) font-medium", selected && "text-foreground")}>
           {team.name}
         </span>
         {outOfDate && (
@@ -2079,7 +2080,7 @@ export function TeamRow({
           </Tooltip>
         )}
       </div>
-      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-(length:--text-micro) text-muted-foreground">
         <span>
           {team.counts.agents}a · {team.counts.projects}p · {team.counts.routines}r · {skillCount(team)}s
         </span>
@@ -2111,6 +2112,7 @@ export function TeamCard({
       onClick={onSelect}
       aria-pressed={selected}
       className={cn(
+        // design-allow(card-pattern): interactive <button> tile; Card renders a div and would break button semantics (C5a Run 3)
         "flex aspect-square w-full flex-col gap-2 rounded-lg border border-border bg-card p-4 text-left transition-colors hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         selected && "ring-2 ring-ring",
       )}
@@ -2138,7 +2140,7 @@ export function TeamCard({
       {team.tags.length > 0 && (
         <div className="mt-auto flex flex-wrap gap-1">
           {team.tags.map((tag) => (
-            <Badge key={tag} variant="outline" className="text-[10px]">
+            <Badge key={tag} variant="outline" className="text-(length:--text-nano)">
               {tag}
             </Badge>
           ))}
@@ -2396,7 +2398,7 @@ export function TeamCatalog() {
         {/* List column — full width on < lg, fixed rail on >= lg (design §11) */}
         <div
           className={cn(
-            "w-full overflow-auto border-r border-border lg:w-[28rem] lg:shrink-0",
+            "w-full overflow-auto border-r border-border lg:w-(--sz-28rem) lg:shrink-0",
             !isDesktop && selectedTeam && "hidden",
           )}
         >
@@ -2428,7 +2430,7 @@ export function TeamCatalog() {
             <div>
               {grouped.bundled.length > 0 && (
                 <>
-                  <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                     Bundled · {grouped.bundled.length}
                   </div>
                   {grouped.bundled.map((team) => (
@@ -2443,7 +2445,7 @@ export function TeamCatalog() {
               )}
               {grouped.optional.length > 0 && (
                 <>
-                  <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                     Optional · {grouped.optional.length}
                   </div>
                   {grouped.optional.map((team) => (
@@ -2458,7 +2460,7 @@ export function TeamCatalog() {
               )}
               {grouped.installed.length > 0 && (
                 <>
-                  <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                     Installed · {grouped.installed.length}
                   </div>
                   {grouped.installed.map((team) => (

@@ -60,7 +60,7 @@ const resolvedResource: ResolvedWorkspaceResource = {
   contentType: "text/markdown; charset=utf-8",
   byteSize: 42,
   previewKind: "text",
-  capabilities: { preview: true, download: false, listChildren: false },
+  capabilities: { preview: true, download: true, listChildren: false },
 };
 
 const content: WorkspaceFileContent = {

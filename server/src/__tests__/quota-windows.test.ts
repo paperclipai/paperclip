@@ -511,6 +511,7 @@ describe("fetchClaudeQuota", () => {
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok,
       status,
+      text: async () => JSON.stringify(body),
       json: async () => body,
     } as Response);
   }
@@ -651,6 +652,7 @@ describe("fetchCodexQuota", () => {
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok,
       status,
+      text: async () => JSON.stringify(body),
       json: async () => body,
     } as Response);
   }

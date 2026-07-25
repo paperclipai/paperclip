@@ -6,6 +6,9 @@ export type {
   AdapterRuntimeServiceReport,
   AdapterExecutionResult,
   AdapterInvocationMeta,
+  AdapterRuntimeEvent,
+  AdapterRuntimeMcpServer,
+  AdapterRuntimeMcpAccess,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
@@ -28,6 +31,7 @@ export type {
   ConfigFieldSchema,
   AdapterConfigSchema,
   AdapterRuntimeCommandSpec,
+  AcpTargetDescriptor,
   ServerAdapterModule,
   QuotaWindow,
   ProviderQuotaResult,
@@ -69,6 +73,9 @@ export type {
   RuntimeProgressTarget,
   RuntimeProgressReporter,
   RuntimeProgressReporterOptions,
+  RuntimeStatusPhase,
+  RuntimeStatusSink,
+  RuntimeStatusUpdate,
 } from "./runtime-progress.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.

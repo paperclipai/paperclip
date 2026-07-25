@@ -67,6 +67,7 @@ interface AdapterCapabilities {
   supportsLocalAgentJwt: boolean;
   requiresMaterializedRuntimeSkills: boolean;
   supportsModelProfiles: boolean;
+  supportsAcp: boolean;
 }
 
 interface AdapterInfo {
@@ -77,6 +78,7 @@ interface AdapterInfo {
   loaded: boolean;
   disabled: boolean;
   capabilities: AdapterCapabilities;
+  acp?: ServerAdapterModule["acp"];
   /** True when an external plugin has replaced a built-in adapter of the same type. */
   overriddenBuiltin?: boolean;
   /** True when the external override for a builtin type is currently paused. */
@@ -121,6 +123,7 @@ function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabili
     supportsLocalAgentJwt: adapter.supportsLocalAgentJwt ?? false,
     requiresMaterializedRuntimeSkills: adapter.requiresMaterializedRuntimeSkills ?? false,
     supportsModelProfiles: Boolean(adapter.modelProfiles?.length || adapter.listModelProfiles),
+    supportsAcp: Boolean(adapter.acp),
   };
 }
 
@@ -134,6 +137,7 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
     loaded: true, // If it's in the registry, it's loaded
     disabled: disabledSet.has(adapter.type),
     capabilities: buildAdapterCapabilities(adapter),
+    ...(adapter.acp ? { acp: adapter.acp } : {}),
     overriddenBuiltin: externalRecord ? BUILTIN_ADAPTER_TYPES.has(adapter.type) : undefined,
     overridePaused: BUILTIN_ADAPTER_TYPES.has(adapter.type) ? isOverridePaused(adapter.type) : undefined,
     // Prefer on-disk package.json so the UI reflects bumps without relying on store-only fields.

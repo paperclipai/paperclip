@@ -91,20 +91,37 @@ describe("buildCodexExecArgs", () => {
 
   it("ignores fast mode for unsupported models", () => {
     const result = buildCodexExecArgs({
-      model: "gpt-5.3-codex",
+      model: "gpt-5.3-codex-spark",
       fastMode: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
     expect(result.fastModeApplied).toBe(false);
     expect(result.fastModeIgnoredReason).toContain(
-      "currently only supported on gpt-5.5, gpt-5.4 or manually configured model IDs",
+      "currently only supported on gpt-5.6, gpt-5.5, gpt-5.4 or manually configured model IDs",
     );
     expect(result.args).toEqual([
       "exec",
       "--json",
       "--model",
-      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+      "-",
+    ]);
+  });
+
+  it("ignores fast mode for gpt-5.4-mini", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.4-mini",
+      fastMode: true,
+    });
+
+    expect(result.fastModeRequested).toBe(true);
+    expect(result.fastModeApplied).toBe(false);
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--model",
+      "gpt-5.4-mini",
       "-",
     ]);
   });
@@ -112,7 +129,7 @@ describe("buildCodexExecArgs", () => {
   it("adds --skip-git-repo-check when requested", () => {
     const result = buildCodexExecArgs(
       {
-        model: "gpt-5.3-codex",
+        model: "gpt-5.5",
       },
       { skipGitRepoCheck: true },
     );
@@ -122,7 +139,7 @@ describe("buildCodexExecArgs", () => {
       "--json",
       "--skip-git-repo-check",
       "--model",
-      "gpt-5.3-codex",
+      "gpt-5.5",
       "-",
     ]);
   });

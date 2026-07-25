@@ -165,6 +165,10 @@ export interface IssueExecutionWorkspaceSettings {
   environmentId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
+  networkEgress?: {
+    allowFqdns?: string[];
+    allowCidrs?: string[];
+  } | null;
 }
 
 export interface ExecutionWorkspaceSummary {
@@ -176,6 +180,60 @@ export interface ExecutionWorkspaceSummary {
   branchName: string | null;
   projectWorkspaceId: string | null;
   lastUsedAt: Date;
+}
+
+export interface WorkspaceOverviewLinkedIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  updatedAt: Date;
+}
+
+export interface WorkspaceOverviewPrimaryService {
+  id: string;
+  serviceName: string;
+  status: WorkspaceRuntimeService["status"];
+  url: string | null;
+  port: number | null;
+  healthStatus: WorkspaceRuntimeService["healthStatus"];
+  updatedAt: Date;
+}
+
+export interface WorkspaceOverviewItem {
+  key: string;
+  kind: "execution_workspace";
+  workspaceId: string;
+  workspaceName: string;
+  projectId: string;
+  projectUrlKey: string;
+  projectName: string;
+  mode: ExecutionWorkspaceSummary["mode"];
+  strategyType: ExecutionWorkspaceStrategyType;
+  cwd: string | null;
+  branchName: string | null;
+  lastUpdatedAt: Date;
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string;
+  executionWorkspaceStatus: ExecutionWorkspaceStatus;
+  serviceCount: number;
+  runningServiceCount: number;
+  primaryServiceUrl: string | null;
+  primaryServiceUrlRunning: boolean;
+  primaryService: WorkspaceOverviewPrimaryService | null;
+  hasRuntimeConfig: boolean;
+  linkedIssueCount: number;
+  linkedIssues: WorkspaceOverviewLinkedIssue[];
+}
+
+export interface WorkspaceOverviewResponse {
+  items: WorkspaceOverviewItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  nextOffset: number | null;
 }
 
 export interface ExecutionWorkspace {

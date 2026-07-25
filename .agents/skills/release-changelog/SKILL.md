@@ -23,6 +23,8 @@ intended release date (UTC) plus the next same-day stable patch slot.
 Output:
 
 - `releases/vYYYY.MDD.P.md`
+- a `release` Case, upserted by `(caseType, key)` when Cases are enabled, with a
+  `body` document revision containing the changelog body
 
 Important rules:
 
@@ -141,10 +143,14 @@ Rules:
 
 ## Step 5 — Write the File
 
+The opening line of the changelog must be an H1 of the format `# Paperclip {version}`
+(no braces), e.g. `# Paperclip v2026.618.0`. Always include the `Paperclip ` prefix and
+the `v` on the version.
+
 Template:
 
 ```markdown
-# vYYYY.MDD.P
+# Paperclip vYYYY.MDD.P
 
 > Released: YYYY-MM-DD
 
@@ -184,13 +190,74 @@ List contributors in alphabetical order by GitHub username (case-insensitive).
 
 If there are no contributors left after exclusions, then just skip this section and don't mention it.
 
+## Step 5b — Upsert The Release Case
+
+After writing `releases/vYYYY.MDD.P.md`, emit or refresh the top-level release
+case when the run has Paperclip API context. Use `skills/paperclip/references/cases.md`
+as the API contract. If the API returns `403 Cases are disabled`, report that
+Cases must be enabled and continue with the changelog file only.
+
+Request:
+
+```http
+POST /api/companies/:companyId/cases
+{
+  "caseType": "release",
+  "key": "paperclip-release:vYYYY.MDD.P",
+  "title": "Paperclip vYYYY.MDD.P release",
+  "summary": "Stable Paperclip release notes for vYYYY.MDD.P.",
+  "status": "in_progress",
+  "fields": {
+    "schema_version": 1,
+    "version": "vYYYY.MDD.P",
+    "release_date": "YYYY-MM-DD",
+    "release_patch": 0,
+    "stable": true,
+    "channels": ["changelog", "blog_post", "tweet_storm"],
+    "artifacts": {
+      "changelog_path": "releases/vYYYY.MDD.P.md",
+      "github_release_url": null
+    },
+    "verification": {
+      "typecheck": "unknown",
+      "tests": "unknown",
+      "build": "unknown",
+      "smoke": "unknown"
+    },
+    "notes": null
+  }
+}
+```
+
+This fields schema deliberately exercises every generic field value type:
+string, number, boolean, array, object, and null. Keep the keys stable across
+runs and send the full object on every upsert because fields are replaced, not
+deep-merged.
+
+Then write the changelog into the case body document:
+
+```http
+PUT /api/cases/:releaseCaseId/documents/body
+{
+  "title": "Paperclip vYYYY.MDD.P changelog",
+  "format": "markdown",
+  "body": "<contents of releases/vYYYY.MDD.P.md>",
+  "changeSummary": "Initial stable changelog"
+}
+```
+
+If updating an existing body document, fetch the case first and pass the latest
+`baseRevisionId`. On `409 stale_base_revision`, refetch, merge intentionally,
+and retry once.
+
 ## Step 6 — Review Before Release
 
 Before handing it off:
 
-1. confirm the heading is the stable version only
+1. confirm the H1 heading is `# Paperclip {version}` (e.g. `# Paperclip v2026.618.0`) with the stable version only
 2. confirm there is no `-canary` language in the title or filename
 3. confirm any breaking changes have an upgrade path
-4. present the draft for human sign-off
+4. confirm the `release` case exists or explain why Cases were unavailable
+5. present the draft for human sign-off
 
 This skill never publishes anything. It only prepares the stable changelog artifact.

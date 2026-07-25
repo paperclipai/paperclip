@@ -22,6 +22,7 @@ import {
   Target,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { Card } from "@/components/ui/card";
 
 /* ------------------------------------------------------------------ */
 /*  Canonical verb table — one verb per action, used on every card.    */
@@ -177,7 +178,7 @@ function getIconSpec(
   // Heartbeat — animated when active, static otherwise
   if (action.startsWith("heartbeat.")) {
     if (isActive && action === "heartbeat.invoked") {
-      return { kind: "lucide", Icon: Loader2, color: "text-cyan-600 dark:text-cyan-400", spin: true };
+      return { kind: "lucide", Icon: Loader2, color: "text-blue-600 dark:text-blue-400", spin: true };
     }
     return { kind: "lucide", Icon: Loader2, color: "text-muted-foreground" };
   }
@@ -429,15 +430,15 @@ export function FeedCard({
   const verb = formatVerb(event.action, details, isPinned ? "pinned" : "chronological");
   const iconSpec = getIconSpec(event, details, isActive);
 
-  const mutedTextBase = isMuted ? "text-muted-foreground/70" : "text-[#959596]";
+  const mutedTextBase = isMuted ? "text-muted-foreground/70" : "text-(--hex-959596)";
   const mutedTextHover = isMuted ? "" : "group-hover:text-white";
 
   const card = (
-    <div
+    <Card
       data-fc="card"
       className={cn(
-        "group ml-3 mr-3 md:ml-0 my-2 flex items-center gap-2 rounded-lg border bg-card p-[18px] text-xs",
-        "transition-[background-color,border-color] duration-150",
+        "flex-row group ml-3 mr-3 md:ml-0 my-2 items-center gap-2 p-(--sz-18px) text-xs",
+        "transition-(--tp-background-color-border-color) duration-150",
         content.link && "cursor-pointer hover:bg-accent hover:border-muted-foreground/30",
         className,
       )}
@@ -472,7 +473,7 @@ export function FeedCard({
       <span data-fc="time" className="shrink-0 text-muted-foreground">
         {timeAgo(event.createdAt)}
       </span>
-    </div>
+    </Card>
   );
 
   if (content.link) {

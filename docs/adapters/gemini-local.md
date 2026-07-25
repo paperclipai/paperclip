@@ -1,5 +1,5 @@
 ---
-title: Gemini Local
+title: Gemini CLI
 summary: Gemini CLI local adapter setup and configuration
 ---
 

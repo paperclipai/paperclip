@@ -590,13 +590,26 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   for (const issue of input.issues) {
-    if (issue.status === "blocked") {
+    const hasUnresolvedBlockerEdge = (blockersByBlockedIssueId.get(issue.id) ?? []).some((relation) => {
+      if (relation.companyId !== issue.companyId) return false;
+      const blocker = issuesById.get(relation.blockerIssueId);
+      return Boolean(blocker && blocker.companyId === issue.companyId && blocker.status !== "done");
+    });
+    const shouldInspectBlockedChain = issue.status === "blocked" || (
+      issue.status !== "done" &&
+      issue.status !== "cancelled" &&
+      Boolean(issue.assigneeAgentId) &&
+      hasUnresolvedBlockerEdge
+    );
+
+    let chainFinding: IssueLivenessFinding | null = null;
+    if (shouldInspectBlockedChain) {
       if (unresolvedBlockers.has(issue.id)) continue;
-      const chainFinding = firstBlockedChainFinding(issue, issue, [issue], new Set());
+      chainFinding = firstBlockedChainFinding(issue, issue, [issue], new Set());
       if (chainFinding) findings.push(chainFinding);
     }
 
-    if (issue.status === "in_review" && !unresolvedBlockers.has(issue.id)) {
+    if (issue.status === "in_review" && !chainFinding && !unresolvedBlockers.has(issue.id)) {
       const review = reviewFinding(issue, issue, [issue]);
       if (review) findings.push(review);
     }

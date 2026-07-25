@@ -151,7 +151,7 @@ function SearchResultRowImpl({
               alt=""
               loading="lazy"
               decoding="async"
-              className="h-[88px] w-[88px] shrink-0 rounded-md border border-border bg-muted object-cover"
+              className="h-(--sz-88px) w-(--sz-88px) shrink-0 rounded-md border border-border bg-muted object-cover"
             />
           ) : null}
         </div>
@@ -224,7 +224,7 @@ function SearchResultRowImpl({
               alt=""
               loading="lazy"
               decoding="async"
-              className="h-[88px] w-[88px] shrink-0 rounded-md border border-border bg-muted object-cover"
+              className="h-(--sz-88px) w-(--sz-88px) shrink-0 rounded-md border border-border bg-muted object-cover"
             />
           ) : null}
         </div>
@@ -256,7 +256,11 @@ function SnippetLine({ text, highlights, field, fallbackLabel, multiline = false
         className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/60", multiline && "mt-0.5")}
         aria-hidden
       />
-      <span className="sr-only">{label}: </span>
+      <span
+        className="shrink-0 rounded border border-border bg-muted px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        {label}
+      </span>
       <HighlightedText
         text={text}
         highlights={highlights}

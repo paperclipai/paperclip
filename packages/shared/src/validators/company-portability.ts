@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PERMISSION_KEYS } from "../constants.js";
 import { MAX_COMPANY_ATTACHMENT_MAX_BYTES } from "../constants.js";
 import {
   issueCommentAuthorTypeSchema,
@@ -70,6 +71,10 @@ export const portabilityAgentManifestEntrySchema = z.object({
   adapterConfig: z.record(z.string(), z.unknown()),
   runtimeConfig: z.record(z.string(), z.unknown()),
   permissions: z.record(z.string(), z.unknown()),
+  permissionGrants: z.array(z.object({
+    permissionKey: z.enum(PERMISSION_KEYS),
+    scope: z.record(z.string(), z.unknown()).nullable().default(null),
+  })).default([]),
   budgetMonthlyCents: z.number().int().nonnegative(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
 });

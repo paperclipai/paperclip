@@ -26,8 +26,8 @@ describe("plugin telemetry bridge", () => {
   });
 
   it("prefixes plugin telemetry events before forwarding them to the telemetry client", async () => {
-    const track = vi.fn();
-    mockGetTelemetryClient.mockReturnValue({ track });
+    const trackDynamic = vi.fn();
+    mockGetTelemetryClient.mockReturnValue({ trackDynamic });
 
     const services = buildHostServices(
       {} as never,
@@ -46,14 +46,14 @@ describe("plugin telemetry bridge", () => {
       dimensions: { attempts: 2, success: true },
     });
 
-    expect(track).toHaveBeenCalledWith("plugin.linear.sync_completed", {
+    expect(trackDynamic).toHaveBeenCalledWith("plugin.linear.sync_completed", {
       attempts: 2,
       success: true,
     });
   });
 
   it("rejects invalid bare telemetry event names before prefixing", async () => {
-    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
+    mockGetTelemetryClient.mockReturnValue({ trackDynamic: vi.fn() });
 
     const services = buildHostServices(
       {} as never,
@@ -92,6 +92,9 @@ describe("plugin telemetry bridge", () => {
   });
 
   it("passes telemetry requests through when the plugin declares the capability", async () => {
+    const trackDynamic = vi.fn();
+    mockGetTelemetryClient.mockReturnValue({ trackDynamic });
+
     const services = buildHostServices(
       {} as never,
       "plugin-record-id",
@@ -110,5 +113,8 @@ describe("plugin telemetry bridge", () => {
     });
 
     expect(mockGetTelemetryClient).toHaveBeenCalledTimes(1);
+    expect(trackDynamic).toHaveBeenCalledWith("plugin.linear.sync_completed", {
+      source: "manual",
+    });
   });
 });

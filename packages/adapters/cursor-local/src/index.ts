@@ -1,7 +1,7 @@
 import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 
 export const type = "cursor";
-export const label = "Cursor CLI (local)";
+export const label = "Cursor";
 
 // Cursor CLI is not distributed as an npm package — the official install
 // path is the upstream installer script at cursor.com/install. Other adapters

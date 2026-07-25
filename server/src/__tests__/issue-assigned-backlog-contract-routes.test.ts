@@ -42,6 +42,9 @@ vi.mock("../services/index.js", () => ({
       },
     })),
   }),
+  companySkillService: () => ({
+    completeTestRunForIssue: vi.fn(async () => null),
+  }),
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
   }),
@@ -175,7 +178,7 @@ describe("assigned backlog creation contract", () => {
     }));
     mockIssueService.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) =>
       makeIssue({
-        id: "issue-1",
+        id: String(data.id),
         title: String(data.title),
         status: String(data.status),
         assigneeAgentId: data.assigneeAgentId as string | null | undefined,
@@ -323,7 +326,7 @@ describe("assigned backlog creation contract", () => {
       expect.anything(),
       expect.objectContaining({
         action: "issue.created",
-        entityId: "issue-1",
+        entityId: expect.any(String),
         details: expect.objectContaining({
           status: "backlog",
           statusDefaulted: false,

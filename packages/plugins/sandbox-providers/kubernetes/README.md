@@ -61,7 +61,7 @@ Common optional fields:
 | Field | Default | Purpose |
 |---|---|---|
 | `backend` | `"sandbox-cr"` | `sandbox-cr` (alpha, requires agent-sandbox controller) or `job` (stable, one-shot entrypoint). |
-| `adapterType` | `"claude_local"` | One of the supported adapter types (claude_local, codex_local, gemini_local, cursor_local, opencode_local, acpx_local, pi_local). Determines runtime image + env keys + egress allow-list. |
+| `adapterType` | `"claude_local"` | One of the supported adapter types (claude_local, codex_local, gemini_local, cursor_local, opencode_local, pi_local). Determines runtime image + env keys + egress allow-list. |
 | `namespacePrefix` | `"paperclip-"` | Prefix for the per-company tenant namespace. |
 | `companySlug` | derived from companyId | Override the auto-derived company slug. |
 | `imageRegistry` | (none) | Override the default registry for agent runtime images. |
@@ -76,6 +76,23 @@ Common optional fields:
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
 
 Full JSON Schema in `src/manifest.ts`.
+
+### Task-scoped egress grants
+
+Keep provider-level egress defaults narrow, then grant only the destinations a task needs through its execution workspace settings:
+
+```json
+{
+  "executionWorkspaceSettings": {
+    "networkEgress": {
+      "allowFqdns": ["github.com", "pypi.org"],
+      "allowCidrs": []
+    }
+  }
+}
+```
+
+The provider creates a workload-owned policy selected by the task run label, so the additional destinations do not become reachable from other concurrent agent pods. Cilium mode enforces FQDNs directly. Standard NetworkPolicy mode cannot express FQDNs, so an FQDN grant permits public IPv4 TCP 80/443 for that run while excluding private, loopback, link-local, CGNAT, and multicast ranges. Network failures that look policy-related include the grant path in stderr, and the sandbox exposes the effective policy through `PAPERCLIP_NETWORK_EGRESS_*` environment variables.
 
 ## What gets created in your cluster
 

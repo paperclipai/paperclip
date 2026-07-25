@@ -46,6 +46,9 @@ function secret(partial: Partial<CompanySecret>): CompanySecret {
   return {
     id: "secret-1",
     companyId: "company-1",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
     key: "agent_agent-12_anthropic_api_key",
     name: "agent_agent-12_anthropic_api_key",
     provider: "local_encrypted",

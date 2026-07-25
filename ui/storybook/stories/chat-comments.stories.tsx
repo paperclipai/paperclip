@@ -4,6 +4,7 @@ import type { TranscriptEntry } from "@/adapters";
 import type { LiveRunForIssue } from "@/api/heartbeats";
 import { CommentThread } from "@/components/CommentThread";
 import { IssueChatThread } from "@/components/IssueChatThread";
+import type { MarkdownExternalReferenceMap } from "@/components/MarkdownBody";
 import { RunChatSurface } from "@/components/RunChatSurface";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
@@ -376,14 +377,14 @@ const liveRunTranscript: TranscriptEntry[] = [
 const issueChatComments: IssueChatComment[] = [
   createComment({
     id: "comment-issue-board",
-    body: "Please turn the comment thread into a reviewable chat surface. I need to see operator messages, agent output, system events, and live run progress together.",
+    body: "Please turn the comment thread into a reviewable chat surface. I need to see operator messages, agent output, system events, and live run progress together.\n\nFollow-up tracked in https://github.com/acme/web/pull/241 (merged) and https://github.com/acme/web/pull/243 (review pending).",
     createdAt: new Date("2026-04-20T13:44:00.000Z"),
   }),
   createComment({
     id: "comment-issue-agent",
     authorAgentId: codexAgent.id,
     authorUserId: null,
-    body: "I kept the existing component contracts and added fixtures with realistic Paperclip work: checkout, comments, linked runs, and review feedback.",
+    body: "I kept the existing component contracts and added fixtures with realistic Paperclip work: checkout, comments, linked runs, and review feedback.\n\nFlaky CI lives in https://github.com/acme/web/pull/242 — re-running. Plain control link: https://random.example.com/path stays undecorated.",
     createdAt: new Date("2026-04-20T13:50:00.000Z"),
     runId: "run-issue-chat-01",
     runAgentId: codexAgent.id,
@@ -592,10 +593,12 @@ function ThreadProps({
   comments,
   queuedComments = [],
   timelineEvents = [],
+  externalReferences,
 }: {
   comments: StoryComment[];
   queuedComments?: StoryComment[];
   timelineEvents?: IssueTimelineEvent[];
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   return (
     <CommentThread
@@ -615,9 +618,76 @@ function ThreadProps({
       suggestedAssigneeValue={`agent:${codexAgent.id}`}
       mentions={mentionOptions}
       onInterruptQueued={async () => {}}
+      externalReferences={externalReferences}
     />
   );
 }
+
+const externalReferenceComments: StoryComment[] = [
+  createComment({
+    id: "comment-external-board",
+    body: [
+      "Tracking work that just landed:",
+      "",
+      "- Merged PR: https://github.com/acme/web/pull/241",
+      "- Awaiting review: https://github.com/acme/web/pull/243",
+      "- Auth-blocked: https://app.hubspot.com/leads/99",
+      "- Plain control link (no decoration): https://random.example.com/path",
+    ].join("\n"),
+    createdAt: new Date("2026-04-20T14:02:00.000Z"),
+  }),
+  createComment({
+    id: "comment-external-agent",
+    authorAgentId: codexAgent.id,
+    authorUserId: null,
+    body: [
+      "Confirmed handoff updated.",
+      "Failed CI on https://github.com/acme/web/pull/242 needs a rerun.",
+      "",
+      "```",
+      "Code-fenced URLs stay plain: https://github.com/acme/web/pull/241",
+      "```",
+    ].join("\n"),
+    createdAt: new Date("2026-04-20T14:05:00.000Z"),
+    runId: "run-external-01",
+    runAgentId: codexAgent.id,
+  }),
+];
+
+const externalReferences: MarkdownExternalReferenceMap = {
+  "https://github.com/acme/web/pull/241": {
+    providerKey: "github",
+    objectType: "pull_request",
+    statusCategory: "succeeded",
+    liveness: "fresh",
+    statusLabel: "Merged",
+    displayTitle: "Add external refs",
+  },
+  "https://github.com/acme/web/pull/242": {
+    providerKey: "github",
+    objectType: "pull_request",
+    statusCategory: "failed",
+    liveness: "stale",
+    statusLabel: "CI failed",
+    displayTitle: "Flaky tests",
+  },
+  "https://github.com/acme/web/pull/243": {
+    providerKey: "github",
+    objectType: "pull_request",
+    statusCategory: "waiting",
+    liveness: "fresh",
+    statusLabel: "Awaiting review",
+    displayTitle: "Add liveness overlay",
+  },
+  "https://app.hubspot.com/leads/99": {
+    providerKey: "hubspot",
+    objectType: "lead",
+    statusCategory: "auth_required",
+    liveness: "auth_required",
+    statusLabel: "Reconnect",
+    displayTitle: "Acme deal",
+  },
+};
 
 function CommentThreadMatrix() {
   return (
@@ -634,6 +704,15 @@ function CommentThreadMatrix() {
         </ScenarioCard>
         <ScenarioCard title="Markdown, code, mentions, and links" description="Markdown rendering with code fences, @mentions, links, and a queued reply.">
           <ThreadProps comments={markdownComments} queuedComments={[queuedComment]} />
+        </ScenarioCard>
+        <ScenarioCard
+          title="External object decoration"
+          description="Resolved URLs render with the §2 status chip; an unknown URL stays plain. Code-fenced URLs are not decorated."
+        >
+          <ThreadProps
+            comments={externalReferenceComments}
+            externalReferences={externalReferences}
+          />
         </ScenarioCard>
       </div>
     </Section>
@@ -709,6 +788,7 @@ function IssueChatMatrix() {
             includeSucceededRunsWithoutOutput
             onInterruptQueued={async () => {}}
             onCancelQueued={() => undefined}
+            externalReferences={externalReferences}
           />
         </div>
         <div className="space-y-5">
@@ -786,6 +866,7 @@ function IssueThreadNoticeReview() {
               successfulRunHandoff={{
                 state: "resolved",
                 required: false,
+                hasLiveContinuation: false,
                 sourceRunId: "run-notice-source",
                 correctiveRunId: "run-notice-corrective",
                 assigneeAgentId: codexAgent.id,

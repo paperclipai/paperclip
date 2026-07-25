@@ -215,7 +215,8 @@ describe("approval routes idempotent retries", () => {
       .post("/api/approvals/approval-2/approve")
       .send({});
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Approval not found");
     expect(mockApprovalService.approve).not.toHaveBeenCalled();
   });
 
@@ -232,7 +233,8 @@ describe("approval routes idempotent retries", () => {
       .post("/api/approvals/approval-3/request-revision")
       .send({ decisionNote: "Need changes" });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Approval not found");
     expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
   });
 

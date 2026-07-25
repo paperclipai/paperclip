@@ -48,6 +48,75 @@ describe("issue validators", () => {
     expect(parsed.comment).toBe("Done\n\n- Verified the route");
   });
 
+  it("validates structured unblock descriptors", () => {
+    expect(updateIssueSchema.parse({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: "00000000-0000-4000-8000-000000000001" }, action: "Review the finding" },
+    }).unblockDescriptor).toEqual({
+      owner: { agentId: "00000000-0000-4000-8000-000000000001" },
+      action: "Review the finding",
+    });
+    expect(updateIssueSchema.safeParse({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: "not-a-uuid" }, action: "Review" },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "   " },
+    }).success).toBe(false);
+    expect(createIssueSchema.safeParse({
+      title: "Invalid descriptor status",
+      status: "todo",
+      unblockDescriptor: { owner: "board", action: "Review" },
+    }).success).toBe(false);
+  });
+
+  it("rejects invalid task-scoped network egress CIDRs", () => {
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: {
+        networkEgress: { allowCidrs: ["203.0.113.0/24"] },
+      },
+    }).success).toBe(true);
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: {
+        networkEgress: { allowCidrs: ["999.0.0.0/8"] },
+      },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: {
+        networkEgress: { allowCidrs: ["1.2.3.4/33"] },
+      },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: {
+        networkEgress: { allowCidrs: ["10.0.0.0/8"] },
+      },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: {
+        networkEgress: { allowCidrs: ["0.0.0.0/0"] },
+      },
+    }).success).toBe(false);
+  });
+
+  it("keeps issue attribution fields create-only", () => {
+    const created = createIssueSchema.parse({
+      title: "Preserve attribution input for route checks",
+      createdByUserId: "spoofed-creator",
+      responsibleUserId: "spoofed-responsible",
+    });
+    const updated = updateIssueSchema.parse({
+      title: "Do not update attribution",
+      createdByUserId: "spoofed-creator",
+      responsibleUserId: "spoofed-responsible",
+    });
+
+    expect(created.createdByUserId).toBe("spoofed-creator");
+    expect(created.responsibleUserId).toBe("spoofed-responsible");
+    expect(updated).not.toHaveProperty("createdByUserId");
+    expect(updated).not.toHaveProperty("responsibleUserId");
+  });
+
   it("allows false-positive recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({
@@ -227,12 +296,18 @@ describe("issue validators", () => {
     }).status).toBe("backlog");
   });
 
-  it("defaults issue work mode to standard and accepts ask and planning", () => {
+  it("defaults issue work mode to standard and accepts ask, planning, and skill_test", () => {
     expect(createIssueSchema.parse({ title: "Plan first" }).workMode).toBe("standard");
     expect(createIssueSchema.parse({ title: "Ask first", workMode: "ask" }).workMode).toBe("ask");
     expect(createIssueSchema.parse({ title: "Plan first", workMode: "planning" }).workMode).toBe("planning");
+    expect(createIssueSchema.parse({
+      title: "Harness test",
+      workMode: "skill_test",
+      harnessKind: "skill_test",
+    })).toMatchObject({ workMode: "skill_test", harnessKind: "skill_test" });
     expect(updateIssueSchema.parse({ workMode: "ask" }).workMode).toBe("ask");
     expect(updateIssueSchema.parse({ workMode: "planning" }).workMode).toBe("planning");
+    expect(updateIssueSchema.parse({ workMode: "skill_test" }).workMode).toBe("skill_test");
     expect(suggestedTaskDraftSchema.parse({
       clientKey: "ask-child",
       title: "Ask child",
@@ -243,6 +318,11 @@ describe("issue validators", () => {
       title: "Plan child",
       workMode: "planning",
     }).workMode).toBe("planning");
+    expect(suggestedTaskDraftSchema.parse({
+      clientKey: "skill-test-child",
+      title: "Test child",
+      workMode: "skill_test",
+    }).workMode).toBe("skill_test");
   });
 
   it("validates blocked inbox attention payloads and requires redacted secret fields", () => {

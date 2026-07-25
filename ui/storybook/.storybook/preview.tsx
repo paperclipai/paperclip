@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { Preview } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { WorkTimelineResult } from "@paperclipai/shared";
 import { MemoryRouter } from "@/lib/router";
 import { BreadcrumbProvider } from "@/context/BreadcrumbContext";
 import { CompanyProvider } from "@/context/CompanyContext";
@@ -29,9 +30,38 @@ import {
   storybookSecrets,
   storybookSidebarBadges,
 } from "../fixtures/paperclipData";
+import timelineSample from "../fixtures/workTimeline.human.sample.json";
 import "@mdxeditor/editor/style.css";
 import "./tailwind-entry.css";
 import "./styles.css";
+
+const STORYBOOK_USER_AVATAR =
+  "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=96&q=80";
+
+function withStorybookTimelineDetails(data: WorkTimelineResult): WorkTimelineResult {
+  return {
+    ...data,
+    actors: data.actors.map((actor) => (
+      actor.type === "user" ? { ...actor, avatar: STORYBOOK_USER_AVATAR } : actor
+    )),
+    spans: data.spans.map((span, index) => {
+      const inputTokens = 42_000 + index * 137;
+      const cachedInputTokens = index % 3 === 0 ? 8_000 : 0;
+      const outputTokens = 5_400 + index * 29;
+      return {
+        ...span,
+        usage: span.usage ?? {
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          totalTokens: inputTokens + cachedInputTokens + outputTokens,
+        },
+      };
+    }),
+  };
+}
+
+const storybookTimelineSample = withStorybookTimelineDetails(timelineSample as WorkTimelineResult);
 
 // Install fetch monkeypatch eagerly so any module-load-time fetches (e.g. schema
 // caches in adapter config renderers) hit our fixtures before they reach the
@@ -104,7 +134,7 @@ function installStorybookApiFixtures() {
       return Response.json([
         {
           type: "claude_local",
-          label: "Claude Local",
+          label: "Claude Code",
           source: "builtin",
           modelsCount: 2,
           loaded: true,
@@ -119,7 +149,7 @@ function installStorybookApiFixtures() {
         },
         {
           type: "codex_local",
-          label: "Codex Local",
+          label: "Codex",
           source: "builtin",
           modelsCount: 3,
           loaded: true,
@@ -235,6 +265,24 @@ function installStorybookApiFixtures() {
           ...storybookDashboardSummary,
           companyId,
         });
+      }
+      if (resource === "timeline") {
+        return Response.json(
+          companyId === "company-storybook"
+            ? storybookTimelineSample
+            : {
+                actors: [],
+                spans: [],
+                events: [],
+                edges: [],
+                pagination: { limit: 100, offset: 0, totalIssues: 0, hasMore: false },
+                window: {
+                  from: url.searchParams.get("from") ?? new Date(0).toISOString(),
+                  to: url.searchParams.get("to") ?? new Date(0).toISOString(),
+                  capped: false,
+                },
+              },
+        );
       }
       if (resource === "heartbeat-runs") {
         return Response.json([]);

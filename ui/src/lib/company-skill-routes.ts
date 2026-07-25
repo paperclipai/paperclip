@@ -5,6 +5,7 @@ export type CompanySkillRouteSubject = Pick<CompanySkill | CompanySkillDetail | 
 export type ParsedCompanySkillRoute = {
   skillToken: string | null;
   filePath: string;
+  hasExplicitFilePath: boolean;
 };
 
 export type CompanySkillRouteResolution = {
@@ -54,19 +55,21 @@ function decodeSkillRouteToken(tokenPath: string | undefined) {
 export function parseSkillRoute(routePath: string | undefined): ParsedCompanySkillRoute {
   const segments = (routePath ?? "").split("/").filter(Boolean);
   if (segments.length === 0) {
-    return { skillToken: null, filePath: "SKILL.md" };
+    return { skillToken: null, filePath: "SKILL.md", hasExplicitFilePath: false };
   }
 
   const filesIndex = segments.indexOf("files");
+  const hasExplicitFilePath = filesIndex >= 0;
   const tokenSegments = filesIndex >= 0 ? segments.slice(0, filesIndex) : segments;
   const skillToken = decodeSkillRouteToken(tokenSegments.join("/"));
   if (!skillToken) {
-    return { skillToken: null, filePath: "SKILL.md" };
+    return { skillToken: null, filePath: "SKILL.md", hasExplicitFilePath };
   }
 
   return {
     skillToken,
     filePath: filesIndex >= 0 ? decodeSkillFilePath(segments.slice(filesIndex + 1).join("/")) : "SKILL.md",
+    hasExplicitFilePath,
   };
 }
 
@@ -182,6 +185,19 @@ export function skillRoute(
   const token = typeof skill === "string" ? skill : canonicalSkillRouteToken(skill, skills);
   const basePath = `/skills/${encodeRoutePath(token)}`;
   return effectiveFilePath ? `${basePath}/files/${encodeSkillFilePath(effectiveFilePath)}` : basePath;
+}
+
+export function skillStudioRoute(skillId: string) {
+  return `/skills/studio/${encodeURIComponent(skillId)}`;
+}
+
+export function skillStudioNewRoute(forkFromSkillId?: string | null, folderId?: string | null) {
+  const basePath = "/skills/studio/new";
+  const params: string[] = [];
+  if (forkFromSkillId) params.push(`forkFrom=${encodeURIComponent(forkFromSkillId)}`);
+  if (folderId) params.push(`folderId=${encodeURIComponent(folderId)}`);
+  const query = params.join("&");
+  return query ? `${basePath}?${query}` : basePath;
 }
 
 export function withRouteSkill(

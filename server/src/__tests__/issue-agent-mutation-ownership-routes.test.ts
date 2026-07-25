@@ -20,6 +20,7 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
   getComment: vi.fn(),
+  getDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   list: vi.fn(),
@@ -104,6 +105,35 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
 }));
+const mockExternalObjectService = vi.hoisted(() => ({
+  getIssueSummaries: vi.fn(async () => new Map()),
+  getIssueSummary: vi.fn(async () => ({
+    authRequiredCount: 0,
+    byLiveness: {},
+    byStatusCategory: {},
+    highestSeverity: "muted",
+    objects: [],
+    staleCount: 0,
+    total: 0,
+    unreachableCount: 0,
+  })),
+  getProjectSummary: vi.fn(async () => ({
+    authRequiredCount: 0,
+    byLiveness: {},
+    byStatusCategory: {},
+    highestSeverity: "muted",
+    objects: [],
+    staleCount: 0,
+    total: 0,
+    unreachableCount: 0,
+  })),
+  listForIssue: vi.fn(async () => []),
+  refreshIssueObjects: vi.fn(async () => []),
+  syncCommentSafely: vi.fn(async () => undefined),
+  syncDocumentSafely: vi.fn(async () => undefined),
+  syncIssueSafely: vi.fn(async () => undefined),
+}));
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -136,8 +166,12 @@ function registerRouteMocks() {
     workProductService: () => mockWorkProductService,
   }));
 
+  vi.doMock("../services/external-objects.js", () => ({
+    externalObjectService: () => mockExternalObjectService,
+  }));
+
   vi.doMock("../services/activity-log.js", () => ({
-    logActivity: vi.fn(async () => undefined),
+    logActivity: mockLogActivity,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -146,6 +180,9 @@ function registerRouteMocks() {
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     clampIssueListLimit: (value: number) => Math.min(Math.max(value, 1), 500),
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
     companyService: () => mockCompanyService,
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentService,
@@ -184,7 +221,7 @@ function registerRouteMocks() {
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
     taskWatchdogService: () => mockTaskWatchdogService,
-    logActivity: vi.fn(async () => undefined),
+    logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
@@ -250,9 +287,13 @@ function createRunContextDb(
     return [{ id: runAgentId, companyId: runAgentCompanyId, permissions: {}, role: "engineer", reportsTo: null }];
   };
   const buildQuery = (selection: Record<string, unknown>) => {
+    const rows = rowsForSelection(selection);
     const whereResult = {
       orderBy: vi.fn(async () => []),
-      then: async (resolve: (rows: unknown[]) => unknown) => resolve(rowsForSelection(selection)),
+      limit: vi.fn(() => ({
+        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
+      })),
+      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
     };
     const query = {
       innerJoin: vi.fn(() => query),
@@ -329,6 +370,7 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../services/activity-log.js");
     vi.doUnmock("../services/agents.js");
     vi.doUnmock("../services/documents.js");
+    vi.doUnmock("../services/external-objects.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../services/issues.js");
     vi.doUnmock("../services/work-products.js");
@@ -378,6 +420,12 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.getById.mockReset();
     mockIssueService.getComment.mockReset();
+    mockIssueService.getDependencyReadiness.mockReset();
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: [],
+      isDependencyReady: false,
+      unresolvedBlockerCount: 0,
+    });
     mockIssueService.getRelationSummaries.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockIssueService.list.mockReset();
@@ -462,8 +510,17 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.removeAttachment.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
+    mockLogActivity.mockClear();
     mockDocumentService.upsertIssueDocument.mockReset();
     mockWorkProductService.createForIssue.mockReset();
+    mockExternalObjectService.getIssueSummaries.mockClear();
+    mockExternalObjectService.getIssueSummary.mockClear();
+    mockExternalObjectService.getProjectSummary.mockClear();
+    mockExternalObjectService.listForIssue.mockClear();
+    mockExternalObjectService.refreshIssueObjects.mockClear();
+    mockExternalObjectService.syncCommentSafely.mockClear();
+    mockExternalObjectService.syncDocumentSafely.mockClear();
+    mockExternalObjectService.syncIssueSafely.mockClear();
     mockWorkProductService.getById.mockReset();
     mockWorkProductService.remove.mockReset();
     mockWorkProductService.update.mockReset();
@@ -626,6 +683,22 @@ describe("agent issue mutation checkout ownership", () => {
       contentLength: 6,
     });
     mockStorageService.deleteObject.mockResolvedValue(undefined);
+  });
+
+  it("denies company-wide issue list routes for task bridge keys", async () => {
+    const app = await createApp(peerActor({
+      keyId: "99999999-9999-4999-8999-999999999999",
+      keyScope: {
+        kind: "task_bridge",
+        parentIssueId: issueId,
+      },
+    }));
+
+    const res = await request(app).get(`/api/companies/${companyId}/issues`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Task bridge keys cannot use company-wide issue list APIs");
+    expect(mockIssueService.list).not.toHaveBeenCalled();
   });
 
   it("uses the company-scope fast path on the issue list route", async () => {
@@ -859,7 +932,10 @@ describe("agent issue mutation checkout ownership", () => {
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "Wrong company." });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    // Cross-tenant requests return 404 (not 403) so the response is
+    // indistinguishable from a nonexistent issue — no existence oracle.
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
     expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
@@ -1166,6 +1242,159 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("rejects agent-created issues that supply responsibleUserId", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Spoof responsible user",
+        responsibleUserId: "spoofed-user",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("responsibleUserId");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        actorType: "agent",
+        actorId: ownerAgentId,
+        action: "issue.attribution_spoof_rejected",
+        entityType: "company",
+        details: expect.objectContaining({
+          surface: "issues.create",
+          field: "responsibleUserId",
+          requestedValue: "spoofed-user",
+        }),
+      }),
+    );
+  });
+
+  it("strips agent-supplied createdByUserId and derives attribution from the authenticated actor", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Spoof creator",
+        createdByUserId: "spoofed-user",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        title: "Spoof creator",
+        createdByAgentId: ownerAgentId,
+        createdByUserId: null,
+        actorRunId: ownerRunId,
+      }),
+    );
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.not.objectContaining({
+        createdByUserId: "spoofed-user",
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        actorType: "agent",
+        actorId: ownerAgentId,
+        action: "issue.attribution_spoof_stripped",
+        details: expect.objectContaining({
+          surface: "issues.create",
+          field: "createdByUserId",
+          requestedValue: "spoofed-user",
+        }),
+      }),
+    );
+  });
+
+  it("allows board-created issues to pass explicit responsibleUserId as trusted attribution", async () => {
+    const app = await createApp(boardActor());
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Board-owned work",
+        responsibleUserId: "responsible-board-user",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        title: "Board-owned work",
+        responsibleUserId: "responsible-board-user",
+        createdByUserId: "board-user",
+        trustExplicitResponsibleUserId: true,
+      }),
+    );
+  });
+
+  it("rejects agent-created child issues that supply responsibleUserId", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/children`)
+      .send({
+        title: "Spoof child responsible user",
+        responsibleUserId: "spoofed-user",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        action: "issue.attribution_spoof_rejected",
+        entityType: "issue",
+        entityId: issueId,
+        details: expect.objectContaining({
+          surface: "issues.children.create",
+          field: "responsibleUserId",
+        }),
+      }),
+    );
+  });
+
+  it("rejects accepted-plan child creation when an agent child body supplies responsibleUserId", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/accepted-plan-decompositions`)
+      .send({
+        acceptedPlanRevisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        children: [
+          {
+            title: "Spoof plan child responsible user",
+            responsibleUserId: "spoofed-user",
+          },
+        ],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(mockIssueService.decomposeAcceptedPlan).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        action: "issue.attribution_spoof_rejected",
+        entityType: "issue",
+        entityId: issueId,
+        details: expect.objectContaining({
+          surface: "issues.accepted_plan_decomposition",
+          field: "responsibleUserId",
+        }),
+      }),
+    );
+  });
+
   it("allows board users to set explicit cheap issue assignee profile overrides", async () => {
     const app = await createApp(boardActor());
 
@@ -1291,6 +1520,59 @@ describe("agent issue mutation checkout ownership", () => {
       assigneeAgentId: null,
       title: "Claimable update",
     });
+  });
+
+  it.each([
+    ["board", "board"],
+    ["a company user", { userId: "board-user" }],
+  ])("rejects an agent naming %s as unblock owner", async (_label, unblockOwner) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+
+    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["board", "board"],
+    ["a company user", { userId: "board-user" }],
+  ])("rejects an agent changing an already-blocked issue owner to %s", async (_label, unblockOwner) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
+
+    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
+      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a board actor to name the board as unblock owner", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress" }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(boardActor())).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        unblockDescriptor: { owner: "board", action: "Review the blocker" },
+      }),
+    );
   });
 
   it("rejects peer-agent status updates that would clear a recovery action they do not own", async () => {
@@ -1488,9 +1770,13 @@ describe("agent issue mutation checkout ownership", () => {
         return [{ id: peerAgentId, companyId, permissions: {}, role: "engineer", reportsTo: null }];
       };
       const buildQuery = (selection: Record<string, unknown>) => {
+        const rows = rowsForSelection(selection);
         const whereResult = {
           orderBy: vi.fn(async () => []),
-          then: async (resolve: (rows: unknown[]) => unknown) => resolve(rowsForSelection(selection)),
+          limit: vi.fn(() => ({
+            then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
+          })),
+          then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
         };
         const query = {
           innerJoin: vi.fn(() => query),

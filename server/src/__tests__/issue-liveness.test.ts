@@ -273,6 +273,50 @@ describe("issue graph liveness classifier", () => {
     expect(paused[0]?.state).toBe("blocked_by_uninvokable_assignee");
   });
 
+  it("detects a cancelled blocker on an assigned todo source", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({ status: "todo" }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Cancelled unblock work",
+          status: "cancelled",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      state: "blocked_by_cancelled_issue",
+      recoveryIssueId: blockerId,
+    });
+  });
+
+  it("prefers the blocker finding for an in-review source with a cancelled blocker", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({ status: "in_review" }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Cancelled unblock work",
+          status: "cancelled",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.state).toBe("blocked_by_cancelled_issue");
+  });
+
   it("detects blocker assignees under terminated org ancestors as uninvokable", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [
@@ -490,6 +534,41 @@ describe("issue graph liveness classifier", () => {
 
       expect(findings, testCase.name).toEqual([]);
     }
+  });
+
+  it("still flags a stalled in_review issue when its blocker has an active run", () => {
+    const reviewIssueId = "review-1";
+    const activeBlockerId = "active-blocker-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+        }),
+        issue({
+          id: activeBlockerId,
+          identifier: "PAP-2280",
+          title: "Active blocker",
+          status: "in_progress",
+          assigneeAgentId: coderId,
+        }),
+      ],
+      relations: [{ companyId, blockerIssueId: activeBlockerId, blockedIssueId: reviewIssueId }],
+      agents: [agent(), manager],
+      activeRuns: [{ companyId, issueId: activeBlockerId, agentId: coderId, status: "running" }],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: reviewIssueId,
+      state: "in_review_without_action_path",
+      recoveryIssueId: reviewIssueId,
+    });
   });
 
   it("ignores cross-company waiting paths for stalled in_review issues", () => {

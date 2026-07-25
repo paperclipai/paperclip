@@ -158,6 +158,46 @@ describe("MarkdownBody", () => {
     expect(html).toContain("Plain text");
   });
 
+  it("hides markdown HTML comments instead of rendering placeholder text", () => {
+    const html = renderMarkdown("Before\n\n<!-- -->\n\nAfter");
+
+    expect(html).toContain("Before");
+    expect(html).toContain("After");
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("--&gt;");
+  });
+
+  it("hides escaped HTML comment placeholders before attachment images", () => {
+    const html = renderMarkdown("\\<!-- --> ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("--&gt;");
+  });
+
+  it("hides incomplete streamed HTML comment placeholders before attachment images", () => {
+    const html = renderMarkdown("\\<!-- ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+  });
+
+  it("hides incomplete encoded HTML comment placeholders", () => {
+    const html = renderMarkdown("&lt;!-- -- ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("&amp;lt;!--");
+  });
+
+  it("keeps HTML comment markers when they are literal code content", () => {
+    const inlineHtml = renderMarkdown("Use `<!-- -->` as a literal.");
+    const blockHtml = renderMarkdown("```html\n<!-- keep this example -->\n```");
+
+    expect(inlineHtml).toContain("&lt;!-- --&gt;");
+    expect(blockHtml).toContain("&lt;!-- keep this example --&gt;");
+  });
+
   it("uses soft-break styling by default", () => {
     const html = renderMarkdown("First line\nSecond line");
 
@@ -194,7 +234,7 @@ describe("MarkdownBody", () => {
     ]);
 
     expect(html).toContain('href="/issues/PAP-1271"');
-    expect(html).toContain("text-green-600");
+    expect(html).toContain("var(--status-task-icon-done)");
     expect(html).toContain(">PAP-1271<");
     expect(html).toContain('data-mention-kind="issue"');
     expect(html).toContain("paperclip-markdown-issue-ref");
@@ -235,8 +275,8 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1180"');
     expect(html).toContain(">/issues/PAP-1179<");
     expect(html).toContain(">/PAP/issues/pap-1180<");
-    expect(html).toContain("text-red-600");
-    expect(html).toContain("text-green-600");
+    expect(html).toContain("var(--status-task-icon-blocked)");
+    expect(html).toContain("var(--status-task-icon-done)");
   });
 
   it("does not auto-link non-issue internal route paths", () => {
@@ -258,8 +298,8 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1311"');
     expect(html).toContain(">issue://PAP-1310<");
     expect(html).toContain(">issue://:PAP-1311<");
-    expect(html).toContain("text-green-600");
-    expect(html).toContain("text-red-600");
+    expect(html).toContain("var(--status-task-icon-done)");
+    expect(html).toContain("var(--status-task-icon-blocked)");
   });
 
   it("linkifies issue identifiers inside inline code spans", () => {
@@ -269,7 +309,7 @@ describe("MarkdownBody", () => {
 
     expect(html).toContain('href="/issues/PAP-1271"');
     expect(html).toContain('<code style="overflow-wrap:anywhere;word-break:break-word">PAP-1271</code>');
-    expect(html).toContain("text-green-600");
+    expect(html).toContain("var(--status-task-icon-done)");
     expect(html).toContain("paperclip-markdown-issue-ref");
   });
 
@@ -283,7 +323,7 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-workspace-file-link="true"');
     expect(html).toContain('data-workspace-file-path="videos/90-days-paperclip/out/90-days-paperclip-1x1.mp4"');
     expect(html).toContain("videos/90-days-paperclip/out/90-days-paperclip-1x1.mp4");
-    expect(html).not.toContain("max-w-[38ch]");
+    expect(html).not.toContain("max-w-(--sz-38ch)");
     expect(html).not.toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain('href="/issues/PAP-10306"');
   });
@@ -433,7 +473,7 @@ describe("MarkdownBody", () => {
     const html = renderMarkdown("[https://github.com/paperclipai/paperclip/pull/4099](https://github.com/paperclipai/paperclip/pull/4099)");
 
     expect(html).toContain('<a href="https://github.com/paperclipai/paperclip/pull/4099"');
-    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-[-0.125em]"');
+    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)"');
     // The icon and first character "h" must sit in a no-wrap span so the
     // icon can never be orphaned on the previous line from the URL text.
     expect(html).toMatch(/<span style="white-space:nowrap">.*lucide-github.*?<\/svg>h<\/span>/);
@@ -445,7 +485,7 @@ describe("MarkdownBody", () => {
     const html = renderMarkdown("See https://github.com/paperclipai/paperclip/issues/1778");
 
     expect(html).toContain('<a href="https://github.com/paperclipai/paperclip/issues/1778"');
-    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-[-0.125em]"');
+    expect(html).toContain('class="lucide lucide-github mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)"');
   });
 
   it("does not prefix non-GitHub markdown links with the GitHub icon", () => {
@@ -542,6 +582,26 @@ describe("MarkdownBody", () => {
     ]);
 
     expect(html).toContain('href="/issues/JIRA-2"');
+  });
+
+  it("renders the inline mention status glyph at lg (20px / h-5 w-5)", () => {
+    const html = renderMarkdown("See PAP-1271 for context.", [
+      { identifier: "PAP-1271", status: "in_progress" },
+    ]);
+
+    // Unified glyph at 20px, with the h-5 w-5 class override so the Tailwind
+    // sizing matches the intrinsic SVG size.
+    expect(html).toContain('viewBox="0 0 24 24"');
+    expect(html).toContain('width="20"');
+    expect(html).toContain('height="20"');
+    expect(html).toContain("h-5");
+    expect(html).toContain("w-5");
+    // PAP-243b: the lg glyph is optically centered to the body text
+    // (vertical-align: middle + a 1px lift), not floating off the baseline.
+    expect(html).toContain("align-middle");
+    expect(html).not.toContain("align-(--va-0_125em)");
+    // Legacy h-3 w-3 sizing is gone.
+    expect(html).not.toContain("mr-1 h-3 w-3");
   });
 
   it("never gates explicit internal issue paths, even for unknown prefixes", () => {

@@ -69,6 +69,14 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.modelReasoningEffort = v.thinkingEffort;
+  if (v.codexEngine === "cli" || v.codexEngine === "acp") ac.engine = v.codexEngine;
+  if (v.codexEngine === "acp") {
+    if (v.codexAcpAgentCommand) ac.agentCommand = v.codexAcpAgentCommand;
+    ac.mode = v.codexAcpMode ?? "persistent";
+    ac.nonInteractivePermissions = v.codexAcpNonInteractivePermissions ?? "deny";
+    if (v.codexAcpStateDir) ac.stateDir = v.codexAcpStateDir;
+    ac.warmHandleIdleMs = v.codexAcpWarmHandleIdleMs ?? 0;
+  }
   ac.timeoutSec = 0;
   ac.graceSec = 15;
   const env = parseEnvBindings(v.envBindings);

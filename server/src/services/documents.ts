@@ -39,7 +39,7 @@ export function extractLegacyPlanBody(description: string | null | undefined) {
   return body ? body : null;
 }
 
-function mapIssueDocumentRow(
+export function mapIssueDocumentRow(
   row: {
     id: string;
     companyId: string;
@@ -86,7 +86,7 @@ function mapIssueDocumentRow(
   };
 }
 
-const issueDocumentSelect = {
+export const issueDocumentSelect = {
   id: documents.id,
   companyId: documents.companyId,
   issueId: issueDocuments.issueId,

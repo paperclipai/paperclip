@@ -52,6 +52,7 @@ Paperclip now treats **bind** as a separate concern from auth:
 - login required
 - low-friction URL handling (`auto` base URL mode)
 - private-host trust policy required
+- Better Auth request rate limiting is off by default for private mode to keep local/LAN repair loops from locking out the operator; set `PAPERCLIP_AUTH_RATE_LIMIT_ENABLED=true` to opt in
 - bind can be `loopback`, `lan`, `tailnet`, or `custom`
 
 ## `authenticated + public`
@@ -59,7 +60,9 @@ Paperclip now treats **bind** as a separate concern from auth:
 - login required
 - explicit public URL required
 - stricter deployment checks and failures in doctor
+- Better Auth request rate limiting is on by default; set `PAPERCLIP_AUTH_RATE_LIMIT_ENABLED=false` only when an explicit front-door limiter covers the deployment
 - recommended bind is `loopback` behind a reverse proxy; direct `lan/custom` is advanced
+- local stdio MCP runtime slots fail closed by default; set `PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` only when a trusted worker/runtime host is configured to supervise those processes. Remote HTTP MCP remains the preferred public-hosted path.
 
 ## 4. Onboarding UX Contract
 

@@ -7,6 +7,7 @@ import {
   mergeModelProfileAdapterConfig,
   normalizeModelProfileWakeContext,
   resolveModelProfileApplication,
+  isConfigurationIncompleteFailedRun,
 } from "../services/heartbeat.ts";
 
 const cheapProfile: AdapterModelProfileDefinition = {
@@ -143,5 +144,10 @@ describe("heartbeat model profile application", () => {
     });
 
     expect(contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+  });
+
+  it("treats model resolution failures as non-retryable configuration failures", () => {
+    expect(isConfigurationIncompleteFailedRun({ errorCode: "model_not_found" })).toBe(true);
+    expect(isConfigurationIncompleteFailedRun({ errorCode: "provider_quota" })).toBe(false);
   });
 });

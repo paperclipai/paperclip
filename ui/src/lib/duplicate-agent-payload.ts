@@ -61,6 +61,7 @@ export function buildDuplicateAgentPayload(
     budgetMonthlyCents: agent.budgetMonthlyCents ?? 0,
     permissions: {
       canCreateAgents: Boolean(agent.permissions?.canCreateAgents),
+      canCreateSkills: agent.permissions?.canCreateSkills !== false,
     },
   };
 
