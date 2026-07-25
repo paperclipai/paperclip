@@ -60,11 +60,15 @@ Geräten. Damit fängt die Studio beide Löcher (RTX-Nacht, MacBook-mobil) ab.
 | Modell | Gewicht | ctx | parallel | Rolle |
 |---|---|---|---|---|
 | `qwen3.6-35b-a3b-mlx` | 37,7 | 98k | 4 | Reasoner-Primär (10× C-Suite/PM/Strategie) |
-| `qwen/qwen3-coder-next` | 48,5 | **65k** | 4 | Coder-**Nacht-Fallback** (bewusst 65k, nicht 131k) |
 
-≈ 86 GB Gewichte + KV. **Empirisch zu verifizieren vor JIT-aus** (siehe Risiken).
-Nur noch die zwei großen Modelle → mehr KV-Luft als in der Erstfassung
-(openbiollm nach Studio verschoben).
+≈ 38 GB Gewichte + KV. Nur noch das eine große Modell.
+
+> **Real-Test 2026-07-25 (ENTSCHIEDEN):** `qwen3-coder-next` als MacBook-Nacht-Fallback
+> **verworfen** — echter Ladeversuch scheiterte bei **parallel 1 UND 4** am Guardrail
+> („insufficient system resources"), obwohl der MacBook ~69 GB frei hatte. coder-next
+> braucht >69 GB und passt damit nicht neben `qwen3.6` (49 GiB). **Nacht-Fallback bleibt
+> `qwen3-coder-30b` (Studio, always-on).** Coder-Kette damit zweistufig: coder-next (RTX, tags)
+> → coder-30b (Studio, nachts + ultimativ). Log: `~/.paperclip/logs/coder-next-macbook-test.log`.
 
 ### RTX Pro 6000 (96 GB VRAM, Tages-Boost, nachts aus)
 

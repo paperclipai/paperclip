@@ -5,10 +5,13 @@ HERE = os.path.dirname(__file__)
 
 def test_loads_real_set():
     entries = load_resident_set(os.path.join(HERE, "resident-set.json"))
-    assert len(entries) == 9
+    assert len(entries) == 8
     keys = {(e["load_key"], e["device"]) for e in entries}
-    assert ("qwen/qwen3-coder-next", "macbook") in keys
+    # coder-next lebt NUR auf der RTX (Tages-Boost). Der MacBook-Nacht-Fallback
+    # wurde per Real-Test 2026-07-25 widerlegt (Guardrail p1 UND p4) -> coder-30b (Studio).
+    assert ("qwen/qwen3-coder-next", "macbook") not in keys
     assert ("qwen/qwen3-coder-next", "rtx") in keys
+    assert ("qwen/qwen3-coder-30b", "studio") in keys
 
 def test_rejects_unknown_device(tmp_path):
     p = tmp_path / "bad.json"
