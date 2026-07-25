@@ -119,6 +119,34 @@ const readySandboxesByLease = new Set<string>();
 const RESUME_READY_TIMEOUT_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
 
+/**
+ * True when the lease was granted a task-scoped egress allowance on top of the
+ * provider-level baseline (see createScopedNetworkEgressPolicy).
+ *
+ * Such a lease must ALWAYS be torn down on release, never kept for reuse. The
+ * scoped policy selects the pod by its `paperclip.io/run-id` label, which is
+ * baked in at pod-creation time and therefore stays with a kept-alive pod
+ * forever — a per-task network grant would silently widen egress for whichever
+ * run resumed the lease next. Tearing the workload down cascades the policy
+ * away with it (the policy is owned by the workload) and forces the next run
+ * through acquireLease, which grants exactly its own destinations.
+ *
+ * Both fields are checked: `scopedNetworkPolicyName` records the policy that
+ * was created, `scopedNetworkEgress` the grant that asked for it. They agree in
+ * practice, and requiring both to be empty keeps reuse fail-closed if they ever
+ * do not.
+ */
+function leaseCarriedTaskScopedEgress(
+  leaseMetadata: Record<string, unknown> | null | undefined,
+): boolean {
+  const policyName = leaseMetadata?.scopedNetworkPolicyName;
+  if (typeof policyName === "string" && policyName.length > 0) return true;
+  const grant = parseScopedNetworkEgressGrant({
+    networkEgress: leaseMetadata?.scopedNetworkEgress,
+  });
+  return grant.allowFqdns.length > 0 || grant.allowCidrs.length > 0;
+}
+
 // The workspace remote dir is the confinement root for native file sync. It is
 // recorded on the lease metadata at realizeWorkspace time (`remoteCwd`); require
 // it so a sync can never run without a concrete root to confine every sandbox
@@ -595,8 +623,26 @@ const plugin = definePlugin({
     // Drop the FastUploadInterceptor associated with THIS lease (only).
     // Each lease has its own interceptor instance via uploadInterceptorsByLease,
     // so unrelated concurrent leases keep their in-flight buffers intact.
+    // The readiness cache goes too: a kept-alive pod can still be evicted or
+    // restarted between runs, so the next use must re-confirm it is Ready.
     uploadInterceptorsByLease.delete(params.providerLeaseId);
     readySandboxesByLease.delete(params.providerLeaseId);
+
+    // Reuse: keep the Sandbox CR, its pod, and the per-run Secret so the next
+    // run can resume this lease (see onEnvironmentResumeLease) instead of
+    // paying a cold provision. paperclip-server decides whether to resume the
+    // lease or hard-delete it via onEnvironmentDestroyLease, so nothing is
+    // stranded when the lease stops matching.
+    //
+    // Only `sandbox-cr` qualifies: a Job's pod is terminal once the Job
+    // finishes, so keeping it would leave a lease nothing can exec into.
+    if (
+      config.reuseLease &&
+      leaseBackend === "sandbox-cr" &&
+      !leaseCarriedTaskScopedEgress(params.leaseMetadata)
+    ) {
+      return;
+    }
 
     try {
       await releaseOrchestrator.release(clients, namespace, params.providerLeaseId);

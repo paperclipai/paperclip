@@ -263,3 +263,127 @@ describe("onEnvironmentDestroyLease", () => {
     expect(deleteCr).not.toHaveBeenCalled();
   });
 });
+
+describe("onEnvironmentReleaseLease", () => {
+  function deleteClients() {
+    return {
+      custom: { deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}) },
+      batch: { deleteNamespacedJob: vi.fn().mockResolvedValue({}) },
+      core: {
+        deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+        deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+      },
+    };
+  }
+
+  async function release(input: {
+    config: Record<string, unknown>;
+    leaseMetadata: Record<string, unknown>;
+    providerLeaseId?: string;
+  }) {
+    const clients = deleteClients();
+    h.clients = clients;
+    await plugin.definition.onEnvironmentReleaseLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: input.config,
+      providerLeaseId: input.providerLeaseId ?? "pc-abc",
+      leaseMetadata: input.leaseMetadata,
+    });
+    return clients;
+  }
+
+  it("tears the Sandbox CR down by default (reuseLease unset)", async () => {
+    const clients = await release({
+      config: CONFIG,
+      leaseMetadata: leaseMetadata({ scopedNetworkPolicyName: null }),
+    });
+
+    expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: "paperclip-acme", name: "pc-abc" }),
+    );
+  });
+
+  it("keeps the Sandbox CR alive when reuseLease is on and the lease carried no task-scoped egress grant", async () => {
+    const clients = await release({
+      config: { ...CONFIG, reuseLease: true },
+      leaseMetadata: leaseMetadata({
+        scopedNetworkPolicyName: null,
+        scopedNetworkEgress: { allowFqdns: [], allowCidrs: [] },
+      }),
+    });
+
+    // The pod, its Sandbox CR, and the per-run Secret must all survive, or
+    // there is nothing left for onEnvironmentResumeLease to resume.
+    expect(clients.custom.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+    expect(clients.core.deleteNamespacedPod).not.toHaveBeenCalled();
+    expect(clients.core.deleteNamespacedSecret).not.toHaveBeenCalled();
+  });
+
+  it("destroys a lease that carried a task-scoped egress policy, even with reuseLease on", async () => {
+    // A per-task network grant must never outlive its task: the scoped policy
+    // selects the pod by its run-id label, which a reused pod keeps forever.
+    const clients = await release({
+      config: { ...CONFIG, reuseLease: true },
+      leaseMetadata: leaseMetadata({
+        scopedNetworkPolicyName: "pc-abc-egress",
+        scopedNetworkEgress: { allowFqdns: ["github.com"], allowCidrs: [] },
+      }),
+    });
+
+    expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: "paperclip-acme", name: "pc-abc" }),
+    );
+  });
+
+  it("destroys a lease whose recorded egress grant is non-empty even if the policy name is missing", async () => {
+    const clients = await release({
+      config: { ...CONFIG, reuseLease: true },
+      leaseMetadata: leaseMetadata({
+        scopedNetworkPolicyName: null,
+        scopedNetworkEgress: { allowFqdns: [], allowCidrs: ["203.0.113.0/24"] },
+      }),
+    });
+
+    expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalled();
+  });
+
+  it("treats an empty-string policy name as no grant and keeps the lease", async () => {
+    const clients = await release({
+      config: { ...CONFIG, reuseLease: true },
+      leaseMetadata: leaseMetadata({ scopedNetworkPolicyName: "" }),
+    });
+
+    expect(clients.custom.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+
+  it("destroys job-backend leases regardless of reuseLease", async () => {
+    // The job backend has no resumable workload: a finished Job's pod is
+    // terminal, so keeping it would strand a lease nothing can resume.
+    const clients = await release({
+      config: { inCluster: true, backend: "job", reuseLease: true },
+      providerLeaseId: "pc-job",
+      leaseMetadata: leaseMetadata({
+        jobName: "pc-job",
+        backend: "job",
+        podName: "pc-job-pod",
+        scopedNetworkPolicyName: null,
+      }),
+    });
+
+    expect(clients.batch.deleteNamespacedJob).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: "paperclip-acme", name: "pc-job" }),
+    );
+    expect(clients.custom.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+
+  it("keeps a sandbox-cr lease whose backend is only known from the config", async () => {
+    const clients = await release({
+      config: { ...CONFIG, reuseLease: true },
+      leaseMetadata: { namespace: "paperclip-acme" },
+    });
+
+    expect(clients.custom.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+});

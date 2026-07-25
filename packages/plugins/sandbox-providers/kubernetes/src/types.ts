@@ -66,6 +66,21 @@ export const kubernetesProviderConfigSchema = z
      *   installed, or when you need stable (non-alpha) k8s APIs.
      */
     backend: z.enum(["sandbox-cr", "job"]).default("sandbox-cr"),
+
+    /**
+     * Keep the Sandbox CR and its pod alive on `releaseLease` so paperclip-server
+     * can resume the lease for a later run instead of paying a cold provision
+     * (see `supportsReusableLeases` on the driver manifest).
+     *
+     * Only the `sandbox-cr` backend can be reused: a Job's pod is terminal once
+     * the Job finishes, so there is nothing left to exec into. Leases that
+     * carried a task-scoped egress grant are always torn down on release, so a
+     * per-run network grant can never outlive its run.
+     *
+     * Default false: release tears the workload down, which is what every
+     * existing environment already does.
+     */
+    reuseLease: z.boolean().default(false),
   })
   .refine(
     (cfg) => cfg.inCluster || cfg.kubeconfig,

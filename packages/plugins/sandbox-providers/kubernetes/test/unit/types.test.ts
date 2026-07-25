@@ -36,4 +36,14 @@ describe("kubernetesProviderConfigSchema", () => {
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),
     ).toThrow(/CIDR/i);
   });
+
+  it("defaults reuseLease to false so existing environments keep tearing down on release", () => {
+    expect(parseKubernetesProviderConfig({ inCluster: true }).reuseLease).toBe(false);
+  });
+
+  it("keeps an operator-set reuseLease through normalization", () => {
+    // The schema strips keys it does not declare, so an undeclared reuseLease
+    // would be dropped before the plugin's release path could ever read it.
+    expect(parseKubernetesProviderConfig({ inCluster: true, reuseLease: true }).reuseLease).toBe(true);
+  });
 });
