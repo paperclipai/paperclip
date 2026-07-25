@@ -55,11 +55,6 @@
     "publishFromCi": true
   },
   {
-    "dir": "packages/adapters/ollama-local",
-    "name": "@paperclipai/adapter-ollama-local",
-    "publishFromCi": true
-  },
-  {
     "dir": "packages/adapters/pi-local",
     "name": "@paperclipai/adapter-pi-local",
     "publishFromCi": true
