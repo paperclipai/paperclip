@@ -12,11 +12,18 @@ export interface LocalProcessSandboxPath {
   access: LocalProcessSandboxAccess;
 }
 
+export interface LocalProcessSandboxPathAlias {
+  path: string;
+  target: string;
+}
+
 export interface LocalProcessSandboxOptions {
   workspaceDir: string;
   filesystemScope?: "workspace" | null;
   managedPaths?: LocalProcessSandboxPath[];
   extraPaths?: LocalProcessSandboxPath[];
+  pathAliases?: LocalProcessSandboxPathAlias[];
+  outboundRestorePaths?: string[];
   homeDir?: string | null;
   networkScope?: LocalProcessNetworkScope | null;
   networkAllowlist?: string[];
@@ -319,6 +326,23 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
     if (relativeCwd.startsWith("..") || path.isAbsolute(relativeCwd)) {
       throw new Error(`Sandbox cwd "${cwd}" must be inside workspaceDir "${workspaceDir}".`);
     }
+    const outboundRestorePaths = (input.options.outboundRestorePaths ?? []).map((candidate, index) =>
+      normalizeAbsolutePath(candidate, `Sandbox outboundRestorePaths[${index}]`));
+    for (const [index, extraPath] of (input.options.extraPaths ?? []).entries()) {
+      if (extraPath.access !== "rw") continue;
+      const normalizedExtraPath = normalizeAbsolutePath(extraPath.path, `Sandbox extraPaths[${index}].path`);
+      const relativeToWorkspace = path.relative(workspaceDir, normalizedExtraPath);
+      const synchronized = !relativeToWorkspace.startsWith("..") && !path.isAbsolute(relativeToWorkspace);
+      const restored = outboundRestorePaths.some((restorePath) => {
+        const relative = path.relative(restorePath, normalizedExtraPath);
+        return !relative.startsWith("..") && !path.isAbsolute(relative);
+      });
+      if (!synchronized && !restored) {
+        throw new Error(
+          `Writable sandbox path "${normalizedExtraPath}" is outside synchronized workspace "${workspaceDir}" and has no outbound restore mapping.`,
+        );
+      }
+    }
   }
 
   const bwrapCommand = input.options.command?.trim() || "bwrap";
@@ -354,6 +378,22 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
     for (const managedPath of input.options.managedPaths ?? []) await mount(managedPath.path, managedPath.access);
     for (const extraPath of input.options.extraPaths ?? []) await mount(extraPath.path, extraPath.access);
     await mount(workspaceDir, "rw");
+    for (const [index, alias] of (input.options.pathAliases ?? []).entries()) {
+      const aliasPath = normalizeAbsolutePath(alias.path, `Sandbox pathAliases[${index}].path`);
+      const aliasTarget = normalizeAbsolutePath(alias.target, `Sandbox pathAliases[${index}].target`);
+      const relativeTarget = path.relative(workspaceDir, aliasTarget);
+      if (relativeTarget.startsWith("..") || path.isAbsolute(relativeTarget)) {
+        throw new Error(
+          `Sandbox path alias "${aliasPath}" must target the synchronized workspace "${workspaceDir}".`,
+        );
+      }
+      if (!(await pathExists(aliasTarget))) {
+        throw new Error(`Sandbox path alias target "${aliasTarget}" does not exist.`);
+      }
+      addParentDirectories(args, created, aliasPath);
+      args.push("--bind", aliasTarget, aliasPath);
+      created.add(aliasPath);
+    }
 
     if (networkScope === "allowlist") {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-network-sandbox-"));

@@ -347,6 +347,30 @@ describe("codex_local ACP lane", () => {
     ).rejects.toThrow('filesystemScope must be "workspace"');
   });
 
+  it("selects the CLI lane for in-place realization and rejects explicitly required ACP", async () => {
+    const executionTarget = {
+      kind: "remote" as const,
+      transport: "sandbox" as const,
+      remoteCwd: "/app",
+      workspaceRealization: {
+        mode: "in_place" as const,
+        authoritativeRoot: "/app",
+        pathAliases: [],
+        outboundRestorePaths: [],
+      },
+    };
+    await expect(
+      resolveCodexExecutionEngineForRun({ config: {}, executionTarget }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("without ACP archive staging"),
+    });
+    await expect(
+      resolveCodexExecutionEngineForRun({ config: { engine: "acp" }, executionTarget }),
+    ).rejects.toThrow("In-place workspace realization requires the Codex CLI engine");
+  });
+
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
     setNodeVersion("v22.13.0");
     await expect(

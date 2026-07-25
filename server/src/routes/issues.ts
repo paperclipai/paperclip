@@ -349,6 +349,13 @@ function noopTaskWatchdogService(): TaskWatchdogService {
         includedIssueIds: [],
         stopFingerprint: "task_watchdog_stop:unavailable",
         stoppedLeaves: [],
+        stopSnapshot: {
+          version: 2,
+          fingerprint: "task_watchdog_stop:unavailable",
+          materialLeaves: [],
+          waitsByIssueId: {},
+        },
+        pendingInteractionsByIssueId: {},
       },
     }),
   };

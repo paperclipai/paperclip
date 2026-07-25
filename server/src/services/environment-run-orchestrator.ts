@@ -40,6 +40,7 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
   type AdapterRemoteExecutionSpec,
+  type AdapterWorkspaceRealization,
 } from "@paperclipai/adapter-utils/execution-target";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
@@ -485,6 +486,35 @@ export function environmentRunOrchestrator(
         lease,
         environmentRuntime,
       });
+      const realizationMode = workspaceRealization.mode === "in_place" ? "in_place" : "copy";
+      const authoritativeRoot =
+        typeof workspaceRealization.authoritativeRoot === "string" && workspaceRealization.authoritativeRoot.trim().length > 0
+          ? workspaceRealization.authoritativeRoot.trim()
+          : realizedCwd;
+      const workspaceTargetMetadata: AdapterWorkspaceRealization = {
+        mode: realizationMode,
+        authoritativeRoot,
+        pathAliases: Array.isArray(workspaceRealization.pathAliases)
+          ? workspaceRealization.pathAliases.filter(
+              (entry): entry is { path: string; target: string } =>
+                typeof entry === "object" && entry !== null &&
+                typeof (entry as { path?: unknown }).path === "string" &&
+                typeof (entry as { target?: unknown }).target === "string",
+            )
+          : [],
+        outboundRestorePaths: Array.isArray(workspaceRealization.outboundRestorePaths)
+          ? workspaceRealization.outboundRestorePaths.filter((entry): entry is string => typeof entry === "string")
+          : [],
+      };
+      if (executionTarget) {
+        executionTarget = {
+          ...executionTarget,
+          ...(executionTarget.kind === "remote" && realizationMode === "in_place"
+            ? { remoteCwd: authoritativeRoot }
+            : {}),
+          workspaceRealization: workspaceTargetMetadata,
+        } as AdapterExecutionTarget;
+      }
     } catch (err) {
       throw new EnvironmentRunError(
         "transport_resolution_failed",

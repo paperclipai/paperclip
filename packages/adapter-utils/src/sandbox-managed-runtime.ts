@@ -561,6 +561,7 @@ export async function prepareSandboxManagedRuntime(input: {
   client: SandboxManagedRuntimeClient;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  syncWorkspace?: boolean;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: SandboxManagedRuntimeAsset[];
@@ -571,7 +572,8 @@ export async function prepareSandboxManagedRuntime(input: {
 }): Promise<PreparedSandboxManagedRuntime> {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
-  const gitSnapshot = await readGitWorkspaceSnapshot(input.workspaceLocalDir);
+  const syncWorkspace = input.syncWorkspace !== false;
+  const gitSnapshot = syncWorkspace ? await readGitWorkspaceSnapshot(input.workspaceLocalDir) : null;
   const gitIgnoredExcludes = gitSnapshot?.ignoredPaths;
   const workspaceArchiveExclude = mergeExcludes(
     SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
@@ -587,9 +589,9 @@ export async function prepareSandboxManagedRuntime(input: {
     input.workspaceExclude,
     gitIgnoredExcludes,
   );
-  const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
-    exclude: restoreExclude,
-  });
+  const baselineSnapshot = syncWorkspace
+    ? await captureDirectorySnapshot(input.workspaceLocalDir, { exclude: restoreExclude })
+    : null;
 
   // Prefer the provider's native file transport when it advertised the sync
   // verbs; otherwise every branch below falls back to the byte-identical tar +
@@ -606,7 +608,7 @@ export async function prepareSandboxManagedRuntime(input: {
       ...(gitSnapshot ? [".git"] : []),
       ...(input.preserveAbsentOnRestore ?? []),
     ]);
-    if (gitSnapshot) {
+    if (syncWorkspace && gitSnapshot) {
       await emitRuntimeStatus(input.onRuntimeProgress, "git_sync", "Syncing git history to sandbox");
       await withShallowGitWorkspaceClone({
         localDir: input.workspaceLocalDir,
@@ -648,57 +650,59 @@ export async function prepareSandboxManagedRuntime(input: {
       });
     }
 
-    const workspaceTarPath = path.join(tempDir, "workspace.tar");
-    const workspaceArchiveDir = gitSnapshot ? path.join(tempDir, "workspace-overlay") : input.workspaceLocalDir;
-    await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing workspace to sandbox");
-    if (gitSnapshot) {
-      await copySelectedWorkspaceEntries({
-        sourceDir: input.workspaceLocalDir,
-        targetDir: workspaceArchiveDir,
-        relativePaths: gitSnapshot.overlayPaths,
-        exclude: workspaceArchiveExclude,
+    if (syncWorkspace) {
+      const workspaceTarPath = path.join(tempDir, "workspace.tar");
+      const workspaceArchiveDir = gitSnapshot ? path.join(tempDir, "workspace-overlay") : input.workspaceLocalDir;
+      await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing workspace to sandbox");
+      if (gitSnapshot) {
+        await copySelectedWorkspaceEntries({
+          sourceDir: input.workspaceLocalDir,
+          targetDir: workspaceArchiveDir,
+          relativePaths: gitSnapshot.overlayPaths,
+          exclude: workspaceArchiveExclude,
+        });
+      }
+      await createTarballFromDirectory({
+        localDir: workspaceArchiveDir,
+        archivePath: workspaceTarPath,
+        exclude: gitSnapshot ? undefined : workspaceArchiveExclude,
       });
-    }
-    await createTarballFromDirectory({
-      localDir: workspaceArchiveDir,
-      archivePath: workspaceTarPath,
-      exclude: gitSnapshot ? undefined : workspaceArchiveExclude,
-    });
-    const workspaceTarBytes = await fs.readFile(workspaceTarPath);
-    const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-upload.tar");
-    await input.client.makeDir(runtimeRootDir);
-    const workspaceUpload = makeTransferProgress(
-      input.onProgress,
-      "Syncing",
-      "to",
-      "workspace",
-      { sink: input.onRuntimeProgress, phase: "config_sync" },
-    );
-    await input.client.writeFile(
-      remoteWorkspaceTar,
-      toArrayBuffer(workspaceTarBytes),
-      workspaceUpload.options,
-    );
-    await workspaceUpload.finish(workspaceTarBytes.byteLength, workspaceTarBytes.byteLength);
-    const extractWorkspaceTarCommand = gitSnapshot
-      ? `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
-        `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
-        `rm -f ${shellQuote(remoteWorkspaceTar)}`
-      : `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
-        `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${preserveFindArgs([...preservedNames])} -exec rm -rf -- {} + && ` +
-        `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
-        `rm -f ${shellQuote(remoteWorkspaceTar)}`;
-    await input.client.run(
-      `sh -c ${shellQuote(extractWorkspaceTarCommand)}`,
-      { timeoutMs: input.spec.timeoutMs },
-    );
-    if (gitSnapshot) {
-      await removeDeletedPathsInSandbox({
-        client: input.client,
-        spec: input.spec,
-        remoteDir: workspaceRemoteDir,
-        deletedPaths: gitSnapshot.deletedPaths,
-      });
+      const workspaceTarBytes = await fs.readFile(workspaceTarPath);
+      const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-upload.tar");
+      await input.client.makeDir(runtimeRootDir);
+      const workspaceUpload = makeTransferProgress(
+        input.onProgress,
+        "Syncing",
+        "to",
+        "workspace",
+        { sink: input.onRuntimeProgress, phase: "config_sync" },
+      );
+      await input.client.writeFile(
+        remoteWorkspaceTar,
+        toArrayBuffer(workspaceTarBytes),
+        workspaceUpload.options,
+      );
+      await workspaceUpload.finish(workspaceTarBytes.byteLength, workspaceTarBytes.byteLength);
+      const extractWorkspaceTarCommand = gitSnapshot
+        ? `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
+          `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
+          `rm -f ${shellQuote(remoteWorkspaceTar)}`
+        : `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
+          `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${preserveFindArgs([...preservedNames])} -exec rm -rf -- {} + && ` +
+          `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
+          `rm -f ${shellQuote(remoteWorkspaceTar)}`;
+      await input.client.run(
+        `sh -c ${shellQuote(extractWorkspaceTarCommand)}`,
+        { timeoutMs: input.spec.timeoutMs },
+      );
+      if (gitSnapshot) {
+        await removeDeletedPathsInSandbox({
+          client: input.client,
+          spec: input.spec,
+          remoteDir: workspaceRemoteDir,
+          deletedPaths: gitSnapshot.deletedPaths,
+        });
+      }
     }
 
     for (const asset of input.assets ?? []) {
@@ -793,6 +797,16 @@ export async function prepareSandboxManagedRuntime(input: {
     assetDirs,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
       const restoreSink = onProgress ?? input.onProgress;
+      if (!syncWorkspace) {
+        for (const asset of input.assets ?? []) {
+          if (!asset.restore) continue;
+          await asset.restore({
+            assetDir: path.posix.join(runtimeRootDir, asset.key),
+            readFile: async (remotePath) => toBuffer(await input.client.readFile(remotePath)),
+          });
+        }
+        return;
+      }
       await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
         let importedRef: string | null = null;
         let importedHead: string | null = null;
@@ -902,7 +916,7 @@ export async function prepareSandboxManagedRuntime(input: {
           }
           const gitHeadToIntegrate = importedHead;
           await mergeDirectoryWithBaseline({
-            baseline: baselineSnapshot,
+            baseline: baselineSnapshot!,
             sourceDir: extractedDir,
             targetDir: input.workspaceLocalDir,
             beforeApply: gitHeadToIntegrate

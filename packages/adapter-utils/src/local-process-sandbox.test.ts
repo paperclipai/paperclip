@@ -85,6 +85,46 @@ describe("local process sandbox", () => {
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
   });
 
+  it("binds a confined absolute alias to the synchronized workspace", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-alias-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(workspace);
+
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+        pathAliases: [{ path: "/app", target: workspace }],
+      },
+    });
+
+    expect(target.args).toEqual(expect.arrayContaining(["--bind", workspace, "/app"]));
+  });
+
+  it("rejects writable out-of-tree paths without an outbound restore mapping", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-outbound-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    const outside = path.join(root, "outside");
+    await fs.mkdir(workspace);
+    await fs.mkdir(outside);
+
+    await expect(buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+        extraPaths: [{ path: outside, access: "rw" }],
+      },
+    })).rejects.toThrow("has no outbound restore mapping");
+  });
+
   it("builds a network-only namespace without changing filesystem visibility", async () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-network-sandbox-"));
     cleanup.push(workspace);

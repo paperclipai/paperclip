@@ -81,6 +81,22 @@ export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  const target = readAdapterExecutionTarget({
+    executionTarget: input.executionTarget,
+    legacyRemoteExecution: input.executionTransport?.remoteExecution,
+  });
+  if (target?.workspaceRealization?.mode === "in_place") {
+    if (selection.explicit && selection.engine === "acp") {
+      throw new Error("In-place workspace realization requires the Codex CLI engine; ACP archive staging is not supported.");
+    }
+    return {
+      engine: "cli",
+      explicit: selection.explicit,
+      ...(!selection.explicit
+        ? { fallbackReason: "In-place workspace realization must run without ACP archive staging." }
+        : {}),
+    };
+  }
   const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
   const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
   if (filesystemScope || networkScope) {

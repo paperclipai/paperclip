@@ -271,6 +271,7 @@ export async function prepareCommandManagedRuntime(input: {
   adapterKey: string;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  syncWorkspace?: boolean;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
@@ -325,6 +326,7 @@ export async function prepareCommandManagedRuntime(input: {
           adapterKey: input.adapterKey,
           workspaceLocalDir: input.workspaceLocalDir,
           workspaceRemoteDir,
+          syncWorkspace: input.syncWorkspace,
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
@@ -361,6 +363,7 @@ export async function prepareCommandManagedRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
+    syncWorkspace: input.syncWorkspace,
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
