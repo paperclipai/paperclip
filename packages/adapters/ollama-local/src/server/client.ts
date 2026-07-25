@@ -8,6 +8,52 @@ export type OllamaFailure = {
 
 type JsonRecord = Record<string, unknown>;
 
+function mergeStreamArguments(previous: string, incoming: string): string {
+  if (!previous || incoming.startsWith(previous)) return incoming;
+  if (previous.startsWith(incoming)) return previous;
+  return `${previous}${incoming}`;
+}
+
+function mergeStreamToolCalls(existing: unknown[], incoming: unknown[]): unknown[] {
+  const merged = [...existing];
+
+  for (const [position, rawCall] of incoming.entries()) {
+    if (typeof rawCall !== "object" || rawCall === null || Array.isArray(rawCall)) continue;
+    const call = rawCall as JsonRecord;
+    const index = typeof call.index === "number" && Number.isInteger(call.index) ? call.index : position;
+    const previous = typeof merged[index] === "object" && merged[index] !== null && !Array.isArray(merged[index])
+      ? merged[index] as JsonRecord
+      : {};
+    const previousFunction = typeof previous.function === "object" && previous.function !== null && !Array.isArray(previous.function)
+      ? previous.function as JsonRecord
+      : {};
+    const nextFunction = typeof call.function === "object" && call.function !== null && !Array.isArray(call.function)
+      ? call.function as JsonRecord
+      : {};
+    const argumentChunk = typeof nextFunction.arguments === "string" ? nextFunction.arguments : null;
+    const previousArguments = typeof previousFunction.arguments === "string" ? previousFunction.arguments : "";
+
+    merged[index] = {
+      ...previous,
+      ...call,
+      ...(typeof call.id !== "string" || !call.id ? previous.id ? { id: previous.id } : {} : {}),
+      ...(typeof call.type !== "string" || !call.type ? previous.type ? { type: previous.type } : {} : {}),
+      function: {
+        ...previousFunction,
+        ...nextFunction,
+        ...(typeof nextFunction.name !== "string" || !nextFunction.name
+          ? previousFunction.name ? { name: previousFunction.name } : {}
+          : {}),
+        ...(argumentChunk !== null
+          ? { arguments: mergeStreamArguments(previousArguments, argumentChunk) }
+          : previousFunction.arguments ? { arguments: previousFunction.arguments } : {}),
+      },
+    };
+  }
+
+  return merged.filter((call) => call !== undefined);
+}
+
 function trimUrl(value: string): string {
   return value.trim().replace(/\/+$/, "");
 }
@@ -154,11 +200,15 @@ async function mergeStreamEvent(
     role: "assistant",
     content: "",
   }) as JsonRecord;
-  const toolCalls = Array.isArray(delta?.tool_calls)
+  const incomingToolCalls = Array.isArray(delta?.tool_calls)
     ? delta.tool_calls
     : Array.isArray(message?.tool_calls)
       ? message.tool_calls
       : null;
+  const existingToolCalls = Array.isArray(existingMessage.tool_calls) ? existingMessage.tool_calls : [];
+  const toolCalls = incomingToolCalls
+    ? mergeStreamToolCalls(existingToolCalls, incomingToolCalls)
+    : null;
   const mergedMessage: JsonRecord = {
     ...existingMessage,
     ...(message ?? {}),
