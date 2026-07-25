@@ -68,6 +68,7 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -75,6 +76,7 @@ import {
   detectAdapterModel,
   findActiveServerAdapter,
   findServerAdapter,
+  listServerAdapters,
   listAdapterModels,
   listAdapterModelProfiles,
   refreshAdapterModels,
@@ -945,6 +947,37 @@ export function agentRoutes(
       throw unprocessable(`Unknown adapter type: ${adapterType}`);
     }
     return adapterType;
+  }
+
+  /**
+   * Adapter validation for the paths that CHOOSE a harness for a new agent
+   * (hire + create), as opposed to the paths that operate on an existing one.
+   *
+   * A disabled adapter is one this instance cannot run — most often because a
+   * declarative registry (PAPERCLIP_ADAPTERS) curated it out, which
+   * reconcileAdapterAvailability turns into a disabled type at boot. Registered
+   * but disabled still passes assertKnownAdapterType, so an agent could be
+   * created on it and then fail EVERY run at lease time with
+   * `Adapter "..." is not in the configured adapter registry` — an error that
+   * arrives minutes later, in a run log, with no way back to the choice that
+   * caused it. Refuse at selection time instead, and name what can be chosen.
+   *
+   * Existing agents on a now-disabled adapter are deliberately untouched
+   * (listEnabledServerAdapters documents the same rule: hidden from selection,
+   * still functional for agents that already use them).
+   */
+  function assertSelectableAdapterType(type: string | null | undefined): string {
+    const adapterType = assertKnownAdapterType(type);
+    const disabled = new Set(getDisabledAdapterTypes());
+    if (!disabled.has(adapterType)) return adapterType;
+    const available = listServerAdapters()
+      .map((a) => a.type)
+      .filter((t) => !disabled.has(t))
+      .sort();
+    throw unprocessable(
+      `Adapter "${adapterType}" is not available on this instance. `
+      + `Available adapters: ${available.length > 0 ? available.join(", ") : "(none configured)"}`,
+    );
   }
 
   async function assertAgentDefaultEnvironmentSelection(
@@ -2359,7 +2392,7 @@ export function agentRoutes(
       sourceIssueIds: _sourceIssueIds,
       ...hireInput
     } = req.body;
-    hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
+    hireInput.adapterType = assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
       hireInput.adapterType,
@@ -2554,7 +2587,7 @@ export function agentRoutes(
       instructionsBundle,
       ...createInput
     } = req.body;
-    createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
+    createInput.adapterType = assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
