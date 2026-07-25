@@ -760,8 +760,8 @@ export function Inbox() {
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: labels } = useQuery({
@@ -928,7 +928,7 @@ export function Inbox() {
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!selectedCompanyId,
-    // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
@@ -2599,7 +2599,6 @@ export function Inbox() {
                       issueLinkState={issueLinkState}
                       treeGuides={depth}
                       hideDivider={hasChildren && isExpanded}
-                      externalObjectSummary={externalObjectSummaryByIssueId.get(issue.id) ?? null}
                       selected={selected}
                       className={
                         isArchiving

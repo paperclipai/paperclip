@@ -22,6 +22,62 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      # No dependency cache here: this workflow publishes release images, and
+      # restoring a shared Actions cache into the build inputs would let a
+      # poisoned cache entry reach the published artifact.
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Refresh lockfile for Docker build context
+        run: |
+          set -euo pipefail
+          pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+
+          changed="$(git status --porcelain)"
+          if [ -z "$changed" ]; then
+            echo "Lockfile already matches package metadata."
+            exit 0
+          fi
+
+          if printf '%s\n' "$changed" | grep -Fvq ' pnpm-lock.yaml'; then
+            echo "Unexpected files changed during lockfile refresh:"
+            echo "$changed"
+            exit 1
+          fi
+
+          echo "Using refreshed pnpm-lock.yaml in the Docker build context."
+
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"
+          df -h
+
+          pnpm store prune || true
+          sudo apt-get clean || true
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/share/swift \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/PyPy \
+            /opt/hostedtoolcache/Ruby || true
+          docker system prune -af || true
+
+          echo "Disk after cleanup:"
+          df -h
+
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
         with:
@@ -64,9 +120,50 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          # Pin the self-hosted image to the production stage explicitly:
+          # the Dockerfile now declares a later `cloud` stage, and without a
+          # target the default would silently become that stage.
+          target: production
           platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # The cloud variant carries built bundled plugins for managed
+      # deployments (see the `cloud` stage in the Dockerfile). Published
+      # under the same tag set with a `-cloud` suffix (sha-<short>-cloud,
+      # latest-cloud, <version>-cloud). Reuses the layer cache from the
+      # production build, so this mostly adds the plugin-build layers.
+      - name: Docker meta (cloud)
+        id: meta-cloud
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: |
+            suffix=-cloud,onlatest=true
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+          labels: |
+            io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
+            io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
+
+      - name: Build and push (cloud)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: cloud
+          # Space-separated sandbox-provider directory names to build into
+          # the variant; add here when managed deployments need another.
+          build-args: |
+            CLOUD_BUNDLED_PLUGINS=daytona
+          platforms: linux/amd64,linux/arm64
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta-cloud.outputs.tags }}
+          labels: ${{ steps.meta-cloud.outputs.labels }}

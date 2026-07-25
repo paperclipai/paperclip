@@ -64,8 +64,11 @@ export type {
 export type {
   InstanceExecutionMode,
   InstanceExperimentalSettings,
+  InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
   InstanceSettings,
+  ManagedExperimentalFeatureKey,
+  ManagedSettingMetadata,
   BackupRetentionPolicy,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
@@ -93,6 +96,7 @@ export {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./instance.js";
 export {
   TRUST_PRESETS,
@@ -400,17 +404,29 @@ export type {
   ToolConnectionInstallSnapshot,
   ToolConnectionInstallTargetType,
   ConnectionTokenAttribution,
+  ConnectionRecoverableErrorCode,
+  ConnectionRecoverableErrorPayload,
   ConnectionTokenIssuance,
   ConnectionTokenMintedResponse,
   ConnectionTokenRequest,
   ConnectionTokenResponse,
   ConnectionTokenScope,
+  ConnectionTokenSubject,
   ConnectionTokenUseEnvLeaseResponse,
+  ConnectionUsageDailyBucket,
+  ConnectionUsageResponse,
+  StartConnectionAuthorizationRequest,
+  StartConnectionAuthorizationResponse,
   ToolConnection,
   ToolConnectionHealthStatus,
+  ToolConnectionAuthKind,
+  ToolConnectionOwnership,
   ToolConnectionTransport,
   ToolConnectionStatus,
   ToolConnectionKind,
+  ConnectionGrant,
+  ConnectionGrantKind,
+  ConnectionGrantStatus,
   ToolCredentialSecretRef,
   ToolInvocation,
   ToolInvocationApprovalState,
@@ -493,6 +509,7 @@ export type {
   ToolConnectionTestCallStatus,
   ToolConnectionTestCallStatusPhase,
 } from "./tool-access.js";
+export { CONNECTION_RECOVERABLE_ERROR_CODES } from "./tool-access.js";
 export type {
   IssueWorkProduct,
   IssueWorkProductType,
@@ -544,6 +561,8 @@ export type {
   IssueInboxAttentionKind,
   IssueBlockedInboxAction,
   IssueBlockedInboxAttention,
+  IssueUnblockDescriptor,
+  IssueUnblockOwner,
   IssueBlockedInboxIssueRef,
   IssueBlockedInboxOwner,
   IssueBlockedInboxOwnerType,
@@ -869,3 +888,4 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export * from "./app-definition.js";

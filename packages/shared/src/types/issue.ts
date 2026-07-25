@@ -472,6 +472,13 @@ export interface IssueBlockedInboxAttention {
   };
 }
 
+export type IssueUnblockOwner = { agentId: string } | { userId: string } | "board";
+
+export interface IssueUnblockDescriptor {
+  owner: IssueUnblockOwner;
+  action: string;
+}
+
 export type IssueProductivityReviewTrigger =
   | "no_comment_streak"
   | "long_active_duration"
@@ -754,6 +761,9 @@ export interface Issue {
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
   blockedInboxAttention?: IssueBlockedInboxAttention | null;
+  unblockDescriptor?: IssueUnblockDescriptor | null;
+  blockedTransitionAt?: Date | null;
+  blockedOwnerNotifiedAt?: Date | null;
   productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;

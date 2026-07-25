@@ -99,10 +99,16 @@ describe("resolveCodexInactivityTimeout", () => {
 
 describe("formatOutputInactivityMonitorErrorMessage", () => {
   it("formats minutes and seconds", () => {
-    expect(formatOutputInactivityMonitorErrorMessage(0)).toBe("monitor: no codex output for 0m 0s");
-    expect(formatOutputInactivityMonitorErrorMessage(7 * 60 * 1000)).toBe("monitor: no codex output for 7m 0s");
-    expect(formatOutputInactivityMonitorErrorMessage(7 * 60 * 1000 + 12_000)).toBe("monitor: no codex output for 7m 12s");
-    expect(formatOutputInactivityMonitorErrorMessage(45_000)).toBe("monitor: no codex output for 0m 45s");
+    expect(formatOutputInactivityMonitorErrorMessage(0)).toBe("monitor: no codex activity (output or process) for 0m 0s");
+    expect(formatOutputInactivityMonitorErrorMessage(7 * 60 * 1000)).toBe(
+      "monitor: no codex activity (output or process) for 7m 0s",
+    );
+    expect(formatOutputInactivityMonitorErrorMessage(7 * 60 * 1000 + 12_000)).toBe(
+      "monitor: no codex activity (output or process) for 7m 12s",
+    );
+    expect(formatOutputInactivityMonitorErrorMessage(45_000)).toBe(
+      "monitor: no codex activity (output or process) for 0m 45s",
+    );
   });
 });
 
@@ -180,6 +186,29 @@ describe("createCodexOutputInactivityMonitor (acceptance criteria 1: fires)", ()
       outputBytes: Buffer.byteLength("loading model...\n", "utf8"),
       parsedEventCount: 0,
     });
+    clock.advance(999);
+    expect(fireCount).toBe(0);
+    clock.advance(1);
+    expect(fireCount).toBe(1);
+    monitor.stop();
+  });
+
+  it("resets on process activity without output", () => {
+    const clock = new FakeClock();
+    let fireCount = 0;
+    const monitor = createCodexOutputInactivityMonitor({
+      timeoutMs: 1_000,
+      now: () => clock.now(),
+      setTimer: (cb, ms) => clock.setTimer(cb, ms),
+      clearTimer: (handle) => clock.clearTimer(handle),
+      onFire: () => {
+        fireCount += 1;
+      },
+    });
+
+    clock.advance(900);
+    monitor.noteProcessActivity();
+    expect(monitor.state().processActivityCount).toBe(1);
     clock.advance(999);
     expect(fireCount).toBe(0);
     clock.advance(1);

@@ -165,6 +165,10 @@ export interface IssueExecutionWorkspaceSettings {
   environmentId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
+  networkEgress?: {
+    allowFqdns?: string[];
+    allowCidrs?: string[];
+  } | null;
 }
 
 export interface ExecutionWorkspaceSummary {
@@ -293,6 +297,12 @@ export interface WorkspaceRuntimeService {
 }
 
 export type WorkspaceRealizationTransport = "local" | "ssh" | "sandbox" | "plugin";
+export type WorkspaceRealizationMode = "copy" | "in_place";
+
+export interface WorkspaceRealizationPathAlias {
+  path: string;
+  target: string;
+}
 
 export type WorkspaceRealizationSyncStrategy =
   | "none"
@@ -330,6 +340,10 @@ export interface WorkspaceRealizationRequest {
 
 export interface WorkspaceRealizationRecord {
   version: 1;
+  mode: WorkspaceRealizationMode;
+  authoritativeRoot: string;
+  pathAliases: WorkspaceRealizationPathAlias[];
+  outboundRestorePaths: string[];
   transport: WorkspaceRealizationTransport;
   provider: string | null;
   environmentId: string;

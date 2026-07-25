@@ -42,13 +42,31 @@ import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
-export interface AdapterLocalExecutionTarget {
+export type AdapterWorkspaceRealizationMode = "copy" | "in_place";
+
+export interface AdapterWorkspacePathAlias {
+  path: string;
+  target: string;
+}
+
+export interface AdapterWorkspaceRealization {
+  mode: AdapterWorkspaceRealizationMode;
+  authoritativeRoot: string;
+  pathAliases: AdapterWorkspacePathAlias[];
+  outboundRestorePaths: string[];
+}
+
+interface AdapterExecutionTargetWorkspaceMetadata {
+  workspaceRealization?: AdapterWorkspaceRealization | null;
+}
+
+export interface AdapterLocalExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "local";
   environmentId?: string | null;
   leaseId?: string | null;
 }
 
-export interface AdapterSshExecutionTarget {
+export interface AdapterSshExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "remote";
   transport: "ssh";
   environmentId?: string | null;
@@ -57,7 +75,7 @@ export interface AdapterSshExecutionTarget {
   spec: SshRemoteExecutionSpec;
 }
 
-export interface AdapterSandboxExecutionTarget {
+export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
@@ -1084,6 +1102,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceLocalDir: string;
   timeoutSec?: number;
   workspaceRemoteDir?: string;
+  syncWorkspace?: boolean;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
@@ -1115,6 +1134,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
+      syncWorkspace: input.syncWorkspace,
       assets: input.assets,
       onProgress: input.onProgress,
     });
@@ -1142,6 +1162,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
+    syncWorkspace: input.syncWorkspace,
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,

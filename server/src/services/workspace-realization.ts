@@ -21,6 +21,22 @@ function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map(readString).filter((entry): entry is string => entry !== null)
+    : [];
+}
+
+function readPathAliases(value: unknown): Array<{ path: string; target: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const parsed = parseObject(entry);
+    const aliasPath = readString(parsed.path);
+    const target = readString(parsed.target);
+    return aliasPath && target ? [{ path: aliasPath, target }] : [];
+  });
+}
+
 function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRequest | null {
   const parsed = parseObject(value);
   if (parsed.version !== 1) return null;
@@ -129,9 +145,23 @@ export function buildWorkspaceRealizationRecord(input: {
   const port = readNumber(leaseMetadata.port);
   const username = readString(leaseMetadata.username);
   const sandboxId = readString(leaseMetadata.sandboxId) ?? readString(providerMetadata.sandboxId);
+  const realizationMetadata = {
+    ...parseObject(leaseMetadata.workspaceRealization),
+    ...parseObject(providerMetadata.workspaceRealization),
+    ...providerMetadata,
+  };
+  const mode = realizationMetadata.mode === "in_place" || realizationMetadata.realizationMode === "in_place"
+    ? "in_place" as const
+    : "copy" as const;
+  const authoritativeRoot =
+    readString(realizationMetadata.authoritativeRoot) ??
+    (mode === "in_place" ? remotePath : null) ??
+    input.request.source.localPath;
+  const pathAliases = readPathAliases(realizationMetadata.pathAliases ?? realizationMetadata.workspaceAliases);
+  const outboundRestorePaths = readStringArray(realizationMetadata.outboundRestorePaths);
 
   const sync = (() => {
-    if (transport === "local") {
+    if (mode === "in_place" || transport === "local") {
       return {
         strategy: "none" as const,
         prepare: "Use the realized local execution workspace directly.",
@@ -174,6 +204,10 @@ export function buildWorkspaceRealizationRecord(input: {
 
   return {
     version: 1,
+    mode,
+    authoritativeRoot,
+    pathAliases,
+    outboundRestorePaths,
     transport,
     provider,
     environmentId: input.environment.id,

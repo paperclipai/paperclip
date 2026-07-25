@@ -17,6 +17,10 @@ const routerMock = vi.hoisted(() => ({
   navigate: vi.fn(),
 }));
 
+const externalObjectMocks = vi.hoisted(() => ({
+  summaries: new Map(),
+}));
+
 const apiMocks = vi.hoisted(() => ({
   approvalsList: vi.fn(),
   joinRequestsList: vi.fn(),
@@ -123,6 +127,14 @@ vi.mock("../hooks/useInboxBadge", () => ({
     readItems: new Set(),
     markRead: vi.fn(),
     markUnread: vi.fn(),
+  }),
+}));
+
+vi.mock("../hooks/useIssueExternalObjects", () => ({
+  useIssueExternalObjectSummaries: () => ({
+    summaries: externalObjectMocks.summaries,
+    isLoading: false,
+    isReady: true,
   }),
 }));
 
@@ -255,6 +267,7 @@ function createJoinRequest(
 
 function resetInboxApiMocks() {
   for (const mock of Object.values(apiMocks)) mock.mockReset();
+  externalObjectMocks.summaries.clear();
   routerMock.location.pathname = "/";
   routerMock.location.search = "";
   routerMock.location.hash = "";
@@ -297,6 +310,38 @@ describe("Inbox toolbar", () => {
       clearLocalInboxArchive("company-1", issueId);
     }
     container.remove();
+  });
+
+  it("does not render external-object summaries in inbox rows", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const issue = createIssue({ title: "Inbox row without external object column" });
+    apiMocks.issuesList.mockResolvedValue([issue]);
+    externalObjectMocks.summaries.set(issue.id, {
+      total: 1,
+      highestSeverity: "failed",
+      byStatusCategory: { failed: 1 },
+      objects: [],
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain(issue.title);
+    });
+
+    expect(container.querySelector('[aria-label^="External objects:"]')).toBeNull();
+
+    act(() => root.unmount());
   });
 
   it("shows blocked toolbar controls on the Blocked tab", async () => {
