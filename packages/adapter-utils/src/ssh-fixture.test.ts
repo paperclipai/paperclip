@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildSshSpawnTarget,
   buildSshEnvLabFixtureConfig,
+  createSshCommandManagedRuntimeRunner,
   getSshEnvLabSupport,
   prepareWorkspaceForSshExecution,
   readSshEnvLabFixtureStatus,
@@ -191,6 +192,28 @@ describe("ssh env-lab fixture", () => {
       }),
     ).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
   });
+
+  it("passes managed runtime environment through secure transport", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH env-lab fixture test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const sentinel = "paperclip-managed-runtime-secret-sentinel";
+    const runner = createSshCommandManagedRuntimeRunner({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+    });
+    const result = await runner.execute({
+      command: "sh",
+      args: ["-c", 'printf "%s" "$SSH_MANAGED_SECRET_SENTINEL"'],
+      cwd: started.workspaceDir,
+      env: { SSH_MANAGED_SECRET_SENTINEL: sentinel },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(sentinel);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("passes command environment through secure transport", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
