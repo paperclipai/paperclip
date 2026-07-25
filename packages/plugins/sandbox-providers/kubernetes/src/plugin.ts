@@ -482,6 +482,7 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
+      acquiredForReuse: config.reuseLease,
       scopedNetworkPolicyName,
       scopedNetworkEgress,
       // Native file sync streams over a pod exec; only the sandbox-cr backend
@@ -557,6 +558,9 @@ const plugin = definePlugin({
       secretName,
       phase: check.phase,
       backend: leaseBackend,
+      // Carried, not re-derived from the current config: the acquisition-time
+      // decision is what the server's lease policy was fixed against.
+      acquiredForReuse: params.leaseMetadata?.acquiredForReuse === true,
       scopedNetworkPolicyName:
         typeof params.leaseMetadata?.scopedNetworkPolicyName === "string"
           ? params.leaseMetadata.scopedNetworkPolicyName
@@ -629,10 +633,19 @@ const plugin = definePlugin({
     // Only `sandbox-cr` qualifies: a Job's pod is terminal once the Job
     // finishes, so keeping it would leave a lease nothing can exec into.
     //
+    // Reuse must have been on at BOTH ends. The server fixes a lease's policy
+    // at acquisition and never revisits it, so a lease acquired while reuse was
+    // off stays `ephemeral` and is excluded from resume selection forever;
+    // keeping its workload because the config was flipped on mid-lease would
+    // strand a pod that nothing ever reclaims. Requiring the current config too
+    // keeps the mirror exact: the server also re-checks `reuseLease` before it
+    // will resume anything.
+    //
     // Decided before the API client is built: a kept lease issues no request,
     // so there is nothing to authenticate against.
     if (
       config.reuseLease &&
+      params.leaseMetadata?.acquiredForReuse === true &&
       leaseBackend === "sandbox-cr" &&
       !leaseCarriedTaskScopedEgress(params.leaseMetadata)
     ) {

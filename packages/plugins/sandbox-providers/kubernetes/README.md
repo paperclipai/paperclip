@@ -98,6 +98,11 @@ What to know before turning it on:
   report Ready within 30 seconds, the lease reports itself expired and the run
   falls back to a fresh provision. A Kubernetes pod cannot be revived in place
   the way a stopped VM-backed sandbox can.
+- **Only leases acquired while it was on are kept.** paperclip-server fixes a
+  lease's policy at acquisition, so turning `reuseLease` on takes effect from the
+  next lease onward. Leases already in flight are torn down on release as usual,
+  which is what keeps a mid-lease flip from stranding a pod the server has
+  already written off.
 - **Leases with a task-scoped egress grant are never reused** (below).
 
 ### Task-scoped egress grants

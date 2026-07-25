@@ -105,6 +105,18 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
+  /**
+   * Whether `reuseLease` was on when this lease was acquired.
+   *
+   * paperclip-server fixes a lease's policy (`reuse_by_environment` vs
+   * `ephemeral`) at acquisition and never revisits it, so a lease acquired
+   * while reuse was off can never be resumed no matter what the config says
+   * later. Release therefore requires reuse to have been on at BOTH ends:
+   * turning `reuseLease` on mid-lease must not make release keep a workload
+   * the server has already written off as ephemeral, which nothing would ever
+   * reclaim. Absent (leases from before this field existed) means false.
+   */
+  acquiredForReuse: boolean;
   scopedNetworkPolicyName: string | null;
   scopedNetworkEgress: {
     allowFqdns: string[];

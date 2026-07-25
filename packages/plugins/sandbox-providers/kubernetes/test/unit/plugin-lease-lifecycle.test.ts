@@ -89,6 +89,52 @@ describe("onEnvironmentResumeLease", () => {
     );
   });
 
+  it("carries the acquisition-time reuse stamp onto the resumed lease", async () => {
+    h.clients = {
+      custom: {
+        getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")),
+      },
+      core: {
+        readNamespacedPod: vi.fn().mockResolvedValue({ metadata: {}, status: { phase: "Running" } }),
+      },
+    };
+
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata({ acquiredForReuse: true }),
+    });
+
+    // Re-deriving it from the current config would let a later config flip
+    // change how an already-acquired lease is released.
+    expect(lease.metadata?.acquiredForReuse).toBe(true);
+  });
+
+  it("does not invent a reuse stamp for a lease that never had one", async () => {
+    h.clients = {
+      custom: {
+        getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")),
+      },
+      core: {
+        readNamespacedPod: vi.fn().mockResolvedValue({ metadata: {}, status: { phase: "Running" } }),
+      },
+    };
+
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: { ...CONFIG, reuseLease: true },
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata(),
+    });
+
+    expect(lease.metadata?.acquiredForReuse).toBe(false);
+  });
+
   it("flags a resumed job-backend lease as native-sync-unsupported so the server keeps the base64 fallback", async () => {
     h.clients = {
       batch: {
@@ -311,6 +357,7 @@ describe("onEnvironmentReleaseLease", () => {
     const clients = await release({
       config: { ...CONFIG, reuseLease: true },
       leaseMetadata: leaseMetadata({
+        acquiredForReuse: true,
         scopedNetworkPolicyName: null,
         scopedNetworkEgress: { allowFqdns: [], allowCidrs: [] },
       }),
@@ -331,6 +378,7 @@ describe("onEnvironmentReleaseLease", () => {
     const clients = await release({
       config: { ...CONFIG, reuseLease: true },
       leaseMetadata: leaseMetadata({
+        acquiredForReuse: true,
         scopedNetworkPolicyName: "pc-abc-egress",
         scopedNetworkEgress: { allowFqdns: ["github.com"], allowCidrs: [] },
       }),
@@ -345,6 +393,7 @@ describe("onEnvironmentReleaseLease", () => {
     const clients = await release({
       config: { ...CONFIG, reuseLease: true },
       leaseMetadata: leaseMetadata({
+        acquiredForReuse: true,
         scopedNetworkPolicyName: null,
         scopedNetworkEgress: { allowFqdns: [], allowCidrs: ["203.0.113.0/24"] },
       }),
@@ -356,7 +405,7 @@ describe("onEnvironmentReleaseLease", () => {
   it("treats an empty-string policy name as no grant and keeps the lease", async () => {
     const clients = await release({
       config: { ...CONFIG, reuseLease: true },
-      leaseMetadata: leaseMetadata({ scopedNetworkPolicyName: "" }),
+      leaseMetadata: leaseMetadata({ acquiredForReuse: true, scopedNetworkPolicyName: "" }),
     });
 
     expect(clients.custom.deleteNamespacedCustomObject).not.toHaveBeenCalled();
@@ -372,6 +421,7 @@ describe("onEnvironmentReleaseLease", () => {
         jobName: "pc-job",
         backend: "job",
         podName: "pc-job-pod",
+        acquiredForReuse: true,
         scopedNetworkPolicyName: null,
       }),
     });
@@ -385,9 +435,40 @@ describe("onEnvironmentReleaseLease", () => {
   it("keeps a sandbox-cr lease whose backend is only known from the config", async () => {
     const clients = await release({
       config: { ...CONFIG, reuseLease: true },
-      leaseMetadata: { namespace: "paperclip-acme" },
+      leaseMetadata: { namespace: "paperclip-acme", acquiredForReuse: true },
     });
 
     expect(clients.custom.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+
+  it("destroys a lease acquired while reuse was off, even though reuseLease is on now", async () => {
+    // paperclip-server stamped that lease `ephemeral` and will never resume it,
+    // so keeping its workload would strand a pod nothing can reclaim.
+    const clients = await release({
+      config: { ...CONFIG, reuseLease: true },
+      leaseMetadata: leaseMetadata({ acquiredForReuse: false, scopedNetworkPolicyName: null }),
+    });
+
+    expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: "paperclip-acme", name: "pc-abc" }),
+    );
+  });
+
+  it("destroys a lease predating the acquiredForReuse stamp", async () => {
+    const clients = await release({
+      config: { ...CONFIG, reuseLease: true },
+      leaseMetadata: leaseMetadata({ scopedNetworkPolicyName: null }),
+    });
+
+    expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalled();
+  });
+
+  it("destroys a reuse-acquired lease once reuseLease is turned back off", async () => {
+    const clients = await release({
+      config: CONFIG,
+      leaseMetadata: leaseMetadata({ acquiredForReuse: true, scopedNetworkPolicyName: null }),
+    });
+
+    expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalled();
   });
 });
