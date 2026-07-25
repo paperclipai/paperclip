@@ -96,36 +96,56 @@ describe("onEnvironmentExecute cwd", () => {
 });
 
 describe("onEnvironmentExecute signal", () => {
-  it("reports the terminating signal for a signal-shaped exit code", async () => {
-    h.execInPod.mockResolvedValue({ exitCode: 137, stdout: "", stderr: "" });
-    const result = await execute();
-    expect(result.exitCode).toBe(137);
-    expect(result.signal).toBe("SIGKILL");
-  });
-
-  it("reports no signal for a clean exit", async () => {
+  // The Kubernetes exec API reports no termination signal, so the provider
+  // reports the field explicitly as null rather than claiming an inferred one.
+  it("reports the signal field explicitly on a clean exit", async () => {
     const result = await execute();
     expect(result.exitCode).toBe(0);
     expect(result.signal).toBeNull();
   });
 
-  it("reports no signal for an ordinary non-zero exit", async () => {
-    h.execInPod.mockResolvedValue({ exitCode: 2, stdout: "", stderr: "" });
+  it("never claims a signal for a signal-shaped exit code it cannot observe", async () => {
+    h.execInPod.mockResolvedValue({ exitCode: 137, stdout: "", stderr: "" });
     const result = await execute();
+    expect(result.exitCode).toBe(137);
     expect(result.signal).toBeNull();
   });
 
-  it("reports no signal for an exit code outside the 128+N signal range", async () => {
-    h.execInPod.mockResolvedValue({ exitCode: 200, stdout: "", stderr: "" });
-    const result = await execute();
-    expect(result.signal).toBeNull();
-  });
-
-  it("reports no signal when the exec times out", async () => {
+  it("reports the signal field explicitly when the exec times out", async () => {
     h.execInPod.mockRejectedValue(new Error("execInPod timed out after 5000ms"));
     const result = await execute();
     expect(result.timedOut).toBe(true);
     expect(result.exitCode).toBeNull();
     expect(result.signal).toBeNull();
+  });
+});
+
+describe("onEnvironmentExecute exit-status hints", () => {
+  it("explains what exit code 137 usually means on Kubernetes", async () => {
+    h.execInPod.mockResolvedValue({ exitCode: 137, stdout: "", stderr: "boom\n" });
+    const result = await execute();
+    expect(result.stderr).toContain("boom");
+    expect(result.stderr).toContain("SIGKILL");
+    expect(result.stderr).toContain("memory limit");
+  });
+
+  it("explains what exit code 143 usually means on Kubernetes", async () => {
+    h.execInPod.mockResolvedValue({ exitCode: 143, stdout: "", stderr: "" });
+    const result = await execute();
+    expect(result.stderr).toContain("SIGTERM");
+  });
+
+  it("says the status is not proof of a termination", async () => {
+    h.execInPod.mockResolvedValue({ exitCode: 137, stdout: "", stderr: "" });
+    const result = await execute();
+    expect(result.stderr).toMatch(/reports no signal/);
+  });
+
+  it("leaves stderr untouched for exits that carry no such meaning", async () => {
+    h.execInPod.mockResolvedValue({ exitCode: 2, stdout: "", stderr: "usage: ls\n" });
+    expect((await execute()).stderr).toBe("usage: ls\n");
+
+    h.execInPod.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    expect((await execute()).stderr).toBe("");
   });
 });

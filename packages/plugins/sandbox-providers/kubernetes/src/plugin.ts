@@ -85,38 +85,30 @@ function generateBootstrapToken(): string {
   return randomBytes(32).toString("hex");
 }
 
-// Exit codes a POSIX shell reports for a child killed by a signal: 128 + signal
-// number. The Kubernetes exec API surfaces only the exit code (its V1Status
-// carries no signal cause), so this is the one piece of information available to
-// tell "the process was killed" from "the process exited non-zero" — the
-// difference between an OOM-killed run (137 = SIGKILL, the common Kubernetes
-// case) and a run that simply failed. Only signals 1-15 are mapped: their
-// numbers are identical across the Linux ABIs sandbox pods run on, whereas
-// higher numbers are architecture-dependent. The mapping is a convention, not a
-// guarantee — a command is free to `exit 137` itself — so callers should treat
-// `signal` as diagnostic, exactly as they must for the providers that read it
-// off a real child process.
-const SIGNALS_BY_EXIT_CODE: Record<number, string> = {
-  129: "SIGHUP",
-  130: "SIGINT",
-  131: "SIGQUIT",
-  132: "SIGILL",
-  133: "SIGTRAP",
-  134: "SIGABRT",
-  135: "SIGBUS",
-  136: "SIGFPE",
-  137: "SIGKILL",
-  138: "SIGUSR1",
-  139: "SIGSEGV",
-  140: "SIGUSR2",
-  141: "SIGPIPE",
-  142: "SIGALRM",
-  143: "SIGTERM",
+// Ceiling paperclip-server applies to every plugin RPC (MAX_RPC_TIMEOUT_MS in
+// server/src/services/plugin-worker-manager.ts). A larger `timeoutMs` on this
+// provider's config is accepted — the server's own environment config schema
+// accepts up to 24h — but cannot take effect, so validateConfig warns instead of
+// letting the operator believe a bigger budget applies.
+const HOST_MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
+
+// A Kubernetes exec reports only an exit code: the V1Status it ends with carries
+// an "ExitCode" cause and no termination signal, and the pod's container status
+// describes PID 1, not the process we exec'd. The provider therefore never fills
+// in `signal` — a POSIX 128+N exit status cannot be told apart from a command
+// that chose the same status, so reporting one would state an unobserved
+// termination as fact. The two statuses that do carry operational meaning on
+// Kubernetes instead get a hedged hint appended to stderr, the same way a likely
+// network-policy denial does (see appendNetworkEgressDenyHint).
+const EXIT_STATUS_HINTS: Record<number, string> = {
+  137: "Exit code 137 matches the POSIX 128+signal convention for SIGKILL, which on Kubernetes usually means the process hit the container memory limit.",
+  143: "Exit code 143 matches the POSIX 128+signal convention for SIGTERM, which usually means the pod was evicted, preempted, or asked to shut down.",
 };
 
-function signalFromExitCode(exitCode: number | null): string | null {
-  if (exitCode === null) return null;
-  return SIGNALS_BY_EXIT_CODE[exitCode] ?? null;
+function appendExitStatusHint(stderr: string, exitCode: number | null): string {
+  const hint = exitCode === null ? undefined : EXIT_STATUS_HINTS[exitCode];
+  if (!hint) return stderr;
+  return `${stderr.trimEnd()}\n${hint} The Kubernetes exec API reports no signal, so a command that deliberately exits with this status is indistinguishable.\n`;
 }
 
 // One FastUploadInterceptor instance per active lease. Scoping per lease
@@ -256,6 +248,11 @@ const plugin = definePlugin({
     }
     const warnings: string[] = [];
     const cfg = parsed.data;
+    if (cfg.timeoutMs !== undefined && cfg.timeoutMs > HOST_MAX_RPC_TIMEOUT_MS) {
+      warnings.push(
+        `timeoutMs=${cfg.timeoutMs} exceeds the ${HOST_MAX_RPC_TIMEOUT_MS} ms ceiling paperclip-server applies to every plugin RPC, so lease lifecycle calls will still be abandoned after ${HOST_MAX_RPC_TIMEOUT_MS} ms. Keep the sandbox startup path (namespace bootstrap plus image pull) inside that budget rather than raising this value further.`,
+      );
+    }
     const adapterDefaults = getAdapterDefaults(cfg.adapterType, cfg.adapters);
     const totalFqdns = [...adapterDefaults.allowFqdns, ...cfg.egressAllowFqdns];
     if (cfg.egressMode === "standard" && totalFqdns.length > 0) {
@@ -888,7 +885,7 @@ const plugin = definePlugin({
           }
           return {
             exitCode: flushResult.exitCode,
-            signal: signalFromExitCode(flushResult.exitCode),
+            signal: null,
             timedOut: false,
             stdout: flushResult.stdout,
             stderr: flushResult.stderr,
@@ -964,10 +961,13 @@ const plugin = definePlugin({
 
       return {
         exitCode: execResult.exitCode,
-        signal: signalFromExitCode(execResult.exitCode),
+        signal: null,
         timedOut: false,
         stdout: execResult.stdout,
-        stderr: appendNetworkEgressDenyHint(execResult.stderr, scopedNetworkEgress),
+        stderr: appendExitStatusHint(
+          appendNetworkEgressDenyHint(execResult.stderr, scopedNetworkEgress),
+          execResult.exitCode,
+        ),
         metadata: {
           provider: "kubernetes",
           backend: "sandbox-cr",

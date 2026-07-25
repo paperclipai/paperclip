@@ -74,6 +74,27 @@ describe("plugin", () => {
     expect(result.normalizedConfig?.timeoutMs).toBe(180_000);
   });
 
+  // paperclip-server clamps every plugin RPC at 15 minutes, so a larger budget
+  // cannot take effect. Accepting it (the server's own environment config
+  // schema does) but warning is better than a silent truncation.
+  it("validateConfig warns when timeoutMs exceeds the host RPC ceiling", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { inCluster: true, egressMode: "cilium", timeoutMs: 1_800_000 },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.warnings?.some((w) => w.includes("900000"))).toBe(true);
+  });
+
+  it("validateConfig does not warn for a timeoutMs the host can honor", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { inCluster: true, egressMode: "cilium", timeoutMs: 900_000 },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toBeUndefined();
+  });
+
   it("the driver manifest advertises timeoutMs so operators can set it", () => {
     const configSchema = manifest.environmentDrivers?.[0]?.configSchema as {
       properties?: Record<string, { type?: string }>;

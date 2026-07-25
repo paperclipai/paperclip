@@ -74,7 +74,7 @@ Common optional fields:
 | `serviceAccountAnnotations` | `{}` | Annotations applied to per-tenant ServiceAccount (e.g. IRSA `eks.amazonaws.com/role-arn`). |
 | `jobTtlSecondsAfterFinished` | `900` | Seconds after a Job completes before garbage-collection. |
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
-| `timeoutMs` | `30000` (server default) | RPC budget paperclip-server grants lease lifecycle calls. Raise it (e.g. `180000`) when a company's first dispatch has to bootstrap the tenant namespace and pull the runtime image. |
+| `timeoutMs` | `30000` (server default) | RPC budget paperclip-server grants lease lifecycle calls. Raise it (e.g. `180000`) when a company's first dispatch has to bootstrap the tenant namespace and pull the runtime image. Capped at 15 minutes by the server's plugin RPC ceiling. |
 
 Full JSON Schema in `src/manifest.ts`.
 

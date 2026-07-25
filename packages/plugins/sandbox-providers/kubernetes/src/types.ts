@@ -43,6 +43,10 @@ export const kubernetesProviderConfigSchema = z
      * does not know: an operator-set value would otherwise be dropped during
      * normalization and never reach the server. Recommended: 180000 or more on
      * clusters with slow first-dispatch bootstrap.
+     *
+     * The bound matches the server's own environment config schema, but note
+     * that paperclip-server caps every plugin RPC at 15 minutes: a larger value
+     * is accepted and warned about by validateConfig rather than taking effect.
      */
     timeoutMs: z.number().int().positive().max(86_400_000).optional(),
 

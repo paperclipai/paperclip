@@ -102,7 +102,7 @@ const manifest: PaperclipPluginManifestV1 = {
             minimum: 1,
             maximum: 86400000,
             description:
-              "RPC budget in milliseconds for lease lifecycle calls (acquire/resume/release/execute). Default 30000 (paperclip-server default). Raise it for clusters where the first dispatch is slow to bootstrap the tenant namespace or pull the runtime image.",
+              "RPC budget in milliseconds for lease lifecycle calls (acquire/resume/release/execute). Default 30000 (paperclip-server default). Raise it for clusters where the first dispatch is slow to bootstrap the tenant namespace or pull the runtime image. Values above 900000 cannot take effect: paperclip-server caps every plugin RPC at 15 minutes.",
           },
           adapterType: {
             type: "string",
