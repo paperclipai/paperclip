@@ -1,19 +1,26 @@
-const REMOTE_EXECUTION_ENV_IDENTITY_KEYS = new Set([
-  "PATH",
-  "HOME",
-  "PWD",
-  "SHELL",
-  "USER",
-  "LOGNAME",
-  "NVM_DIR",
-  "TMPDIR",
-  "TMP",
-  "TEMP",
-  "XDG_CONFIG_HOME",
-  "XDG_CACHE_HOME",
-  "XDG_DATA_HOME",
-  "XDG_STATE_HOME",
-  "XDG_RUNTIME_DIR",
+const REMOTE_EXECUTION_INHERITED_ENV_ALLOWLIST = new Set([
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_DEFAULT_REGION",
+  "AWS_PROFILE",
+  "AWS_REGION",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AZURE_OPENAI_API_KEY",
+  "AZURE_OPENAI_ENDPOINT",
+  "CODEX_API_KEY",
+  "GEMINI_API_KEY",
+  "GITHUB_TOKEN",
+  "GOOGLE_API_KEY",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_GEMINI_BASE_URL",
+  "NINEROUTER_API_KEY",
+  "NINEROUTER_KEY",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "XAI_API_KEY",
 ]);
 
 function readEnvValueCaseInsensitive(env: NodeJS.ProcessEnv, key: string): string | undefined {
@@ -34,16 +41,14 @@ export function sanitizeRemoteExecutionEnv(
 ): Record<string, string> {
   const sanitized: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    const normalizedKey = key.toUpperCase();
-    if (!REMOTE_EXECUTION_ENV_IDENTITY_KEYS.has(normalizedKey)) {
+    const inheritedValue = readEnvValueCaseInsensitive(inheritedEnv, key);
+    if (typeof inheritedValue !== "string" || inheritedValue !== value) {
       sanitized[key] = value;
       continue;
     }
-    const inheritedValue = readEnvValueCaseInsensitive(inheritedEnv, key);
-    if (typeof inheritedValue === "string" && inheritedValue === value) {
-      continue;
+    if (REMOTE_EXECUTION_INHERITED_ENV_ALLOWLIST.has(key.toUpperCase())) {
+      sanitized[key] = value;
     }
-    sanitized[key] = value;
   }
   return sanitized;
 }
