@@ -21,6 +21,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # Full history and tags so `git describe` below can compute the
+          # release version to stamp into the image.
+          fetch-depth: 0
+
+      # `.git` is dockerignored, so a running image cannot derive its own
+      # version and otherwise reports the source package.json placeholder in
+      # analytics and the debug panel. Compute it here from the pristine
+      # checkout (real CalVer drift from the nearest release tag) and pass it
+      # into both builds. Empty when no release tag is reachable — the server
+      # then keeps its existing fallbacks.
+      - name: Compute build version
+        id: build-version
+        run: |
+          set -euo pipefail
+          version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Stamping build version: ${version:-<none>}"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -124,6 +142,8 @@ jobs:
           # the Dockerfile now declares a later `cloud` stage, and without a
           # target the default would silently become that stage.
           target: production
+          build-args: |
+            PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
           platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha
@@ -161,6 +181,7 @@ jobs:
           # the variant; add here when managed deployments need another.
           build-args: |
             CLOUD_BUNDLED_PLUGINS=daytona
+            PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
           platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha
