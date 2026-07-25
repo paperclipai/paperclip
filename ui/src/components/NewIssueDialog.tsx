@@ -972,6 +972,7 @@ export function NewIssueDialog() {
     setLabelSearch("");
     setSelectedLabelIds([]);
     setNewLabelName("");
+    setNewLabelColor("#6366f1");
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);
@@ -1005,6 +1006,7 @@ export function NewIssueDialog() {
     setSelectedLabelIds([]);
     setLabelSearch("");
     setNewLabelName("");
+    setNewLabelColor("#6366f1");
   }
 
   function discardDraft() {
@@ -2157,12 +2159,21 @@ export function NewIssueDialog() {
                 autoFocus
               />
               <div className="max-h-44 overflow-y-auto overscroll-contain space-y-0.5">
-                {(labels ?? [])
-                  .filter((label) => {
+                {(() => {
+                  const visibleLabels = (labels ?? []).filter((label) => {
                     if (!labelSearch.trim()) return true;
                     return label.name.toLowerCase().includes(labelSearch.toLowerCase());
-                  })
-                  .map((label) => {
+                  });
+
+                  if (visibleLabels.length === 0) {
+                    return (
+                      <p className="px-2 py-2 text-xs text-muted-foreground">
+                        {(labels ?? []).length === 0 ? "No labels yet." : "No labels match."}
+                      </p>
+                    );
+                  }
+
+                  return visibleLabels.map((label) => {
                     const selected = selectedLabelIds.includes(label.id);
                     return (
                       <button
@@ -2179,10 +2190,8 @@ export function NewIssueDialog() {
                         {selected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" aria-hidden="true" />}
                       </button>
                     );
-                  })}
-                {(labels ?? []).length === 0 && (
-                  <p className="px-2 py-2 text-xs text-muted-foreground">No labels yet.</p>
-                )}
+                  });
+                })()}
               </div>
               <div className="mt-2 border-t border-border pt-2 space-y-1">
                 <div className="flex items-center gap-1">

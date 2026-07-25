@@ -677,6 +677,22 @@ describe("NewIssueDialog", () => {
     expect(titleInput).not.toBeNull();
     await typeTextareaValue(titleInput!, "Labelled task");
 
+    const labelsChip = await (async () => {
+      let found: HTMLButtonElement | undefined;
+      await waitForAssertion(() => {
+        found = Array.from(container.querySelectorAll("button")).find(
+          (button) => button.textContent?.trim() === "Labels",
+        ) as HTMLButtonElement | undefined;
+        expect(found).not.toBeUndefined();
+      });
+      return found!;
+    })();
+
+    await act(async () => {
+      labelsChip.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
     const labelButton = await (async () => {
       let found: HTMLButtonElement | undefined;
       await waitForAssertion(() => {
