@@ -4,6 +4,16 @@ import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
+/**
+ * Ceiling paperclip-server applies to every plugin RPC (MAX_RPC_TIMEOUT_MS in
+ * server/src/services/plugin-worker-manager.ts). A larger `timeoutMs` cannot
+ * take effect, and a validation warning would not reach the operator (the
+ * server only forwards warnings inside the error payload of a rejected config),
+ * so the schema rejects it rather than letting the host shorten it silently.
+ * Keep the manifest's JSON Schema `maximum` in step with this value.
+ */
+export const HOST_MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
+
 export const kubernetesProviderConfigSchema = z
   .object({
     inCluster: z.boolean().default(false),
@@ -42,13 +52,17 @@ export const kubernetesProviderConfigSchema = z
      * on the runtime image pull. Declared here because the schema strips keys it
      * does not know: an operator-set value would otherwise be dropped during
      * normalization and never reach the server. Recommended: 180000 or more on
-     * clusters with slow first-dispatch bootstrap.
-     *
-     * The bound matches the server's own environment config schema, but note
-     * that paperclip-server caps every plugin RPC at 15 minutes: a larger value
-     * is accepted and warned about by validateConfig rather than taking effect.
+     * clusters with slow first-dispatch bootstrap, up to HOST_MAX_RPC_TIMEOUT_MS.
      */
-    timeoutMs: z.number().int().positive().max(86_400_000).optional(),
+    timeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(
+        HOST_MAX_RPC_TIMEOUT_MS,
+        `timeoutMs must not exceed ${HOST_MAX_RPC_TIMEOUT_MS} ms: paperclip-server caps every plugin RPC at 15 minutes, so a larger budget cannot take effect`,
+      )
+      .optional(),
 
     /**
      * The adapter type that Jobs in this environment will run.

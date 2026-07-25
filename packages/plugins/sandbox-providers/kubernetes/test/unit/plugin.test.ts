@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import plugin from "../../src/plugin.js";
 import manifest from "../../src/manifest.js";
+import { HOST_MAX_RPC_TIMEOUT_MS } from "../../src/types.js";
 
 describe("plugin", () => {
   it("exports the kubernetes driver", () => {
@@ -74,32 +75,27 @@ describe("plugin", () => {
     expect(result.normalizedConfig?.timeoutMs).toBe(180_000);
   });
 
-  // paperclip-server clamps every plugin RPC at 15 minutes, so a larger budget
-  // cannot take effect. Accepting it (the server's own environment config
-  // schema does) but warning is better than a silent truncation.
-  it("validateConfig warns when timeoutMs exceeds the host RPC ceiling", async () => {
+  // A validation warning would not reach the operator: the server only
+  // propagates warnings inside the error payload of a REJECTED config
+  // (validatePluginEnvironmentDriverConfig), and drops them on success. A
+  // timeout the host cannot honor therefore has to fail the save.
+  it("validateConfig rejects a timeoutMs above the host RPC ceiling", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig!({
       driverKey: "kubernetes",
-      config: { inCluster: true, egressMode: "cilium", timeoutMs: 1_800_000 },
+      config: { inCluster: true, timeoutMs: 1_800_000 },
     });
-    expect(result.ok).toBe(true);
-    expect(result.warnings?.some((w) => w.includes("900000"))).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.errors?.[0]).toMatch(/15 minutes/);
   });
 
-  it("validateConfig does not warn for a timeoutMs the host can honor", async () => {
-    const result = await plugin.definition.onEnvironmentValidateConfig!({
-      driverKey: "kubernetes",
-      config: { inCluster: true, egressMode: "cilium", timeoutMs: 900_000 },
-    });
-    expect(result.ok).toBe(true);
-    expect(result.warnings).toBeUndefined();
-  });
-
-  it("the driver manifest advertises timeoutMs so operators can set it", () => {
+  it("the driver manifest advertises timeoutMs with the ceiling the host enforces", () => {
     const configSchema = manifest.environmentDrivers?.[0]?.configSchema as {
-      properties?: Record<string, { type?: string }>;
+      properties?: Record<string, { type?: string; maximum?: number }>;
     };
     expect(configSchema.properties?.timeoutMs?.type).toBe("integer");
+    // Keep the operator-facing JSON Schema in step with the zod schema, so the
+    // form cannot offer a value the provider then rejects.
+    expect(configSchema.properties?.timeoutMs?.maximum).toBe(HOST_MAX_RPC_TIMEOUT_MS);
   });
 
   it("validateConfig rejects unknown backend value", async () => {

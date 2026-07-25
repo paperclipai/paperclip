@@ -85,13 +85,6 @@ function generateBootstrapToken(): string {
   return randomBytes(32).toString("hex");
 }
 
-// Ceiling paperclip-server applies to every plugin RPC (MAX_RPC_TIMEOUT_MS in
-// server/src/services/plugin-worker-manager.ts). A larger `timeoutMs` on this
-// provider's config is accepted — the server's own environment config schema
-// accepts up to 24h — but cannot take effect, so validateConfig warns instead of
-// letting the operator believe a bigger budget applies.
-const HOST_MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
-
 // A Kubernetes exec reports only an exit code: the V1Status it ends with carries
 // an "ExitCode" cause and no termination signal, and the pod's container status
 // describes PID 1, not the process we exec'd. The provider therefore never fills
@@ -248,11 +241,6 @@ const plugin = definePlugin({
     }
     const warnings: string[] = [];
     const cfg = parsed.data;
-    if (cfg.timeoutMs !== undefined && cfg.timeoutMs > HOST_MAX_RPC_TIMEOUT_MS) {
-      warnings.push(
-        `timeoutMs=${cfg.timeoutMs} exceeds the ${HOST_MAX_RPC_TIMEOUT_MS} ms ceiling paperclip-server applies to every plugin RPC, so lease lifecycle calls will still be abandoned after ${HOST_MAX_RPC_TIMEOUT_MS} ms. Keep the sandbox startup path (namespace bootstrap plus image pull) inside that budget rather than raising this value further.`,
-      );
-    }
     const adapterDefaults = getAdapterDefaults(cfg.adapterType, cfg.adapters);
     const totalFqdns = [...adapterDefaults.allowFqdns, ...cfg.egressAllowFqdns];
     if (cfg.egressMode === "standard" && totalFqdns.length > 0) {
