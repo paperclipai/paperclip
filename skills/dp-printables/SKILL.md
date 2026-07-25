@@ -16,6 +16,9 @@ Agents may run only:
 ```text
 exemplar-studio printable doctor [--json]
 exemplar-studio printable list-templates [--json]
+exemplar-studio printable brand-scaffold <id> --accent <hex> --logo <path> [--json]
+exemplar-studio printable spec-new <slug> --templates <list> [--out <file>] [--json]
+exemplar-studio printable preview --spec <spec.yaml> --page <n> [--size <id>] [--json]
 exemplar-studio printable generate --spec <spec.yaml> [options] [--json]
 exemplar-studio printable generate-catalogue [--out <dir>] [--json]
 exemplar-studio printable verify <candidate-dir> [--json]
@@ -66,34 +69,46 @@ profanity-free. Sharper language in a sweary edition is permitted only in the
 subtitle, strapline, or a divider body—never titles, headers, listing metadata,
 or filenames.
 
-Every printable brand is locked to its own declared registry accent, a
+Every printable brand is locked to its own declared registry palette, a
 checksum-pinned foreground logo and original source, RGB, no bleed/crop marks,
 and a 13 mm home-print margin. Dastardly Print is `#620306`; AroidAtlas is
-`#2F5233`. Any unknown brand, token/registry mismatch, or cross-brand colour
+led by `#2F5233`. Any unknown brand, token/registry mismatch, or cross-brand tint
 leakage fails closed. Both brands use the identical shared template system;
 never fork templates by brand.
+
+`brand-scaffold` produces a transparency-prepared draft and an unlocked palette
+registry entry for operator review; it does not authorize runtime generation.
+`spec-new` produces a `draft: true` skeleton that the renderer refuses until
+the copy is completed and the draft marker is removed. `preview` emits one
+authoring PNG outside Candidate custody and never updates a golden.
 
 ## Required flow
 
 1. Run `printable doctor --json`; stop on missing dependencies.
-2. Use `list-templates --json` before authoring or changing a spec.
+2. Use `list-templates --json` before authoring or changing a spec. Prefer
+   `spec-new` and non-Candidate `preview` during iteration.
 3. Generate the Candidate. Use layout overrides only when the operator requests
    a diagnostic: `density`, `cover-balance`, `type-scale`, and locked `accent`.
 4. Require every QA check to pass, including logo-visible, logo-fidelity,
    purity, spelling, buyer-copy overflow, file-size budget, selectable text,
-   tagged PDF metadata, listing metadata/images, home-print, determinism, and
-   integrity.
+   tagged PDF metadata, listing metadata/images, all-size parity, home-print,
+   palette isolation, determinism, visual-regression evidence, and integrity.
 5. Run `verify <candidate-dir> --json` independently.
 6. Run `diff` against the requested approved/live/path comparison when one is
    available.
 7. When an approved pointer exists and the operator requests Etsy staging, run
    `handoff-bundle approved --out <dir>`. Require one folder per SKU, both buyer
-   sizes, four exact-Candidate listing tiles and a valid `listing.json`.
+   declared buyer sizes, four exact-Candidate listing tiles and a valid
+   `listing.json`.
 8. Hand off the Candidate directory, portal, build fingerprint, checksums, and
    any unavailable comparison pointer to the human operator. Stop there.
 
 Never edit an immutable Candidate. Revise YAML or governed module source and
 generate a new fingerprint.
+
+The signed live pointer is the visual golden. New SKU/size combinations may
+report a pending baseline; changed representative renders report an explicit
+operator-review warning. Agents never accept or update goldens.
 
 Run `npm run test:isolated` for printable regression or determinism work. Do not
 run the complete Exemplar test suite concurrently with `printable generate` or
