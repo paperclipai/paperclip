@@ -1223,7 +1223,9 @@ export async function runSshCommand(
           `${config.username}@${config.host}`,
           `rm -f -- ${shellQuote(remoteLauncher)}`,
         ];
-        await execFileText("ssh", removeArgs, { timeout: 15_000, maxBuffer: 16 * 1024 }).catch(() => undefined);
+        await execFileText("ssh", removeArgs, { timeout: 15_000, maxBuffer: 16 * 1024 }).catch((error) => {
+          console.warn(`[paperclip] Failed to remove remote SSH launcher ${remoteLauncher}: ${error instanceof Error ? error.message : String(error)}`);
+        });
       }
     }
   } finally {
@@ -1264,34 +1266,44 @@ export async function buildSshSpawnTarget(input: {
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
       : `exec ${remoteCommandParts}`,
   ].join("\n");
-  const remoteLauncher = `/tmp/paperclip-ssh-launch-${randomUUID()}`;
+  const remoteLauncher = envArgs.length > 0
+    ? `/tmp/paperclip-ssh-launch-${randomUUID()}`
+    : null;
 
-  try {
-    await runSshCommand(
-      input.spec,
-      `umask 077; cat > ${shellQuote(remoteLauncher)}; chmod 700 ${shellQuote(remoteLauncher)}`,
-      { stdin: remoteScript, timeoutMs: 15_000, maxBuffer: 16 * 1024 },
-    );
-  } catch (error) {
-    await auth.cleanup();
-    throw error;
+  if (remoteLauncher) {
+    try {
+      await runSshCommand(
+        input.spec,
+        `umask 077; cat > ${shellQuote(remoteLauncher)}; chmod 700 ${shellQuote(remoteLauncher)}`,
+        { stdin: remoteScript, timeoutMs: 15_000, maxBuffer: 16 * 1024 },
+      );
+    } catch (error) {
+      await auth.cleanup();
+      throw error;
+    }
   }
 
   sshArgs.push(
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `exec ${shellQuote(remoteLauncher)}`,
+    remoteLauncher
+      ? `exec ${shellQuote(remoteLauncher)}`
+      : `sh -c ${shellQuote(remoteScript)}`,
   );
 
   return {
     command: "ssh",
     args: sshArgs,
     cleanup: async () => {
-      await runSshCommand(input.spec, `rm -f -- ${shellQuote(remoteLauncher)}`, {
-        timeoutMs: 15_000,
-        maxBuffer: 16 * 1024,
-      }).catch(() => undefined);
+      if (remoteLauncher) {
+        await runSshCommand(input.spec, `rm -f -- ${shellQuote(remoteLauncher)}`, {
+          timeoutMs: 15_000,
+          maxBuffer: 16 * 1024,
+        }).catch((error) => {
+          console.warn(`[paperclip] Failed to remove remote SSH launcher ${remoteLauncher}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
       await auth.cleanup();
     },
   };

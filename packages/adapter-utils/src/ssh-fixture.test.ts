@@ -193,6 +193,31 @@ describe("ssh env-lab fixture", () => {
     ).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
   });
 
+  it("does not create a remote launcher for spawn targets without environment variables", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH env-lab fixture test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const target = await buildSshSpawnTarget({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      command: "printf",
+      args: ["launcher-free"],
+      env: {},
+    });
+
+    expect(target.args.join(" ")).not.toContain("paperclip-ssh-launch-");
+    const result = await new Promise<string>((resolve, reject) => {
+      execFile(target.command, target.args, (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      });
+    });
+    expect(result).toBe("launcher-free");
+    await target.cleanup();
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
   it("passes managed runtime environment through secure transport", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
     cleanupDirs.push(rootDir);
