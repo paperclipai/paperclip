@@ -1690,7 +1690,6 @@ export function builtInAgentService(db: Db) {
     if (!company.requireBoardApprovalForNewAgents) {
       return { state: await ensure(companyId, key, input), approval: null };
     }
-    await assertKnownBuiltInAgentModel(definition, input);
 
     const existing = await findSingleAgent(companyId, definition);
     if (existing) {
@@ -1710,6 +1709,9 @@ export function builtInAgentService(db: Db) {
       }
 
       const providesAdapterSetup = input.adapterType !== undefined || input.adapterConfig !== undefined;
+      if (providesAdapterSetup) {
+        await assertKnownBuiltInAgentModel(definition, input);
+      }
 
       // A built-in row that has never completed adapter setup (incomplete
       // config, i.e. `needs_setup`) is still first-time configuration, not a
@@ -1736,11 +1738,13 @@ export function builtInAgentService(db: Db) {
       return { state: await state(definition, existing), approval: null };
     }
 
+    const resolvedInput = await defaultProvisionInput(companyId, definition, input);
+    await assertKnownBuiltInAgentModel(definition, resolvedInput);
     const reportsTo = definition.defaultManager === "single_root_agent"
       ? await findSingleRootManager(companyId)
       : null;
     const pending = await agentSvc.create(companyId, {
-      ...definitionPatch(definition, input),
+      ...definitionPatch(definition, resolvedInput),
       status: "pending_approval",
       reportsTo,
       metadata: builtInMetadata(definition),
