@@ -43,6 +43,13 @@ COMPANIES = [
     {"slug": "pod",     "name": "Dastardly Print",       "company_id": "e7507bfa-ecfd-4dde-bd2a-7b19947ffdde", "filename": "fallback-registry-pod.json"},
     {"slug": "kiss",    "name": "ThinkStack KISS",       "company_id": "6d2c1656-dabd-4aa1-b45a-0f5aedea3092", "filename": "fallback-registry-kiss.json"},
     {"slug": "recruit", "name": "ThinkStack Recruitment","company_id": "cefbbf68-0ca7-4383-967e-03bc1b037ae7", "filename": "fallback-registry-recruit.json"},
+    # TSBC added 2026-07-25. It was omitted when this table was written on 06-23 and the
+    # omission was invisible: no watcher, no registry file, no sister rows, so the
+    # 07-25 codex outage took the whole company down (40 failed runs / 2 succeeded)
+    # while every enrolled OpCo failed over. Only the ORCHESTRATION lanes are enrolled —
+    # Bench-Manager and Bench-codex-gpt-5.4. The measured bench cells deliberately have
+    # no sisters: a cell must run on its own model or its result means nothing.
+    {"slug": "tsbc",    "name": "ThinkStack BootCamp",   "company_id": "e212ce50-b524-408c-b3d4-0c6108d8c2e2", "filename": "fallback-registry-tsbc.json"},
 ]
 
 # Where the watcher reads its flat registries (the agent instructions dir).

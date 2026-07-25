@@ -20,6 +20,12 @@ function normalizeText(value: string | null | undefined) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
+function stripCodeFences(text: string): string {
+  // Remove fenced code blocks (```...```) so that quoted tool output,
+  // agent names in tables, or example snippets do not trigger keyword routing.
+  return text.replace(/```[\s\S]*?```/g, " ");
+}
+
 function normalizeToolsetToken(token: string) {
   const normalized = token.trim().toLowerCase().replace(/\s+/g, "_");
   if (!normalized) return null;
@@ -85,7 +91,14 @@ export function inferIssueToolRequirements(input: IssueCapabilityRoutingInput): 
   const toolSignals = new Map<RequiredIssueToolset, Set<string>>();
   const title = normalizeText(input.title);
   const description = normalizeText(input.description);
-  const body = `${title}\n${description}`;
+  // Strip fenced code blocks before keyword matching. stripCodeFences was written for exactly
+  // this and was never actually called, so quoted tool output still drove routing: an issue
+  // whose body merely QUOTED an agent name — in a results table, a log excerpt, or the
+  // matcher's own regexes — force-required media toolsets and 422'd a deliberate non-media
+  // assignee. Proven 2026-07-25: an RCA naming the lane, and a guard card whose output table
+  // listed it, both rejected; filing the bug report itself took five attempts because quoting
+  // these rules trips these rules. Quoted output is DATA, not routing intent.
+  const body = stripCodeFences(`${title}\n${description}`);
   const explicitOnlyForRoutineDispatch = normalizeText(input.originKind) === "routine_execution";
   const labelNames = (input.labels ?? [])
     .map((label) => typeof label === "string" ? label : label?.name ?? "")
