@@ -16,6 +16,19 @@ data/
 tmp-*
 cli/tmp/
 
+# Python bytecode caches from scripts/*.py
+__pycache__/
+**/__pycache__/
+
+# Paperclip runtime state under instances/ — generated at runtime, never commit.
+# The overlay (companies/<id>/shared/ + companies/<id>/agents/<id>/instructions/)
+# is the only thing under instances/ that should be tracked.
+instances/**/telemetry/
+instances/**/data/workspace-operation-logs/
+# Per-agent PARA memory + life folders are runtime agent state (daily notes, projects)
+instances/**/agents/*/instructions/life/
+instances/**/agents/*/instructions/memory/
+
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs
 !.github/scripts/check-*.mjs
