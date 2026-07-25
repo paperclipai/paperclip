@@ -45,8 +45,18 @@
     "publishFromCi": false
   },
   {
+    "dir": "packages/adapters/ollama-local",
+    "name": "@paperclipai/adapter-ollama-local",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/ollama-local",
+    "name": "@paperclipai/adapter-ollama-local",
     "publishFromCi": true
   },
   {
