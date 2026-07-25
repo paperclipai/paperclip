@@ -4,6 +4,17 @@ This is the Paperclip overlay for the Genesis Motion Design company (`instances/
 
 ## TL;DR
 
+Just say **"update paperclip"** and the agent loads `paperclip-overlay-update` and walks through the workflow.
+
+| What you want to do | What to say |
+|---|---|
+| Update a Genesis safety rule / regenerate the overlay | "update paperclip" |
+| Pull upstream Paperclip + rebase the overlay | "update paperclip — rebase onto upstream" |
+| Verify the overlay is in sync | "update paperclip — check" |
+| Add a new Genesis-touching agent | "update paperclip — add agent" |
+
+For direct command-line work:
+
 | What you want to do | Command |
 |---|---|
 | Update a Genesis safety rule | Edit `instances/default/companies/4b7fd6fc-b920-430e-a3bd-defc09fc4326/shared/GENESIS-WEBSITE-GUARDRAILS.md`, then `python3 scripts/sync-genesis-overlay.py --apply` |
