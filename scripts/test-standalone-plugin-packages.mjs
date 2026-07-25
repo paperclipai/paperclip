@@ -277,7 +277,8 @@ function main() {
   console.log(`\nTotal: ${totalTests} test(s) across ${results.length} package(s)`);
 
   if (failures.length > 0) {
-    console.error(
+    // Same stream as the summary above so the two cannot interleave in CI logs.
+    console.log(
       `\n  x ${failures.length} standalone plugin suite(s) failed: ` +
       failures.map(({ pkg }) => pkg.name).join(", "),
     );
