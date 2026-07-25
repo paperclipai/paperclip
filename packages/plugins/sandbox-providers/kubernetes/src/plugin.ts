@@ -607,18 +607,10 @@ const plugin = definePlugin({
         ? params.leaseMetadata.namespace
         : deriveTenantNamespace(config, params.companyId);
 
-    const kc = createKubeConfig({
-      inCluster: config.inCluster,
-      kubeconfig: config.kubeconfig,
-    });
-    const clients = makeKubeClients(kc);
-
     const leaseBackend =
       typeof params.leaseMetadata?.backend === "string"
         ? (params.leaseMetadata.backend as "sandbox-cr" | "job")
         : config.backend;
-    const releaseOrchestrator =
-      leaseBackend === "sandbox-cr" ? sandboxCrOrchestrator : jobOrchestrator;
 
     // Drop the FastUploadInterceptor associated with THIS lease (only).
     // Each lease has its own interceptor instance via uploadInterceptorsByLease,
@@ -636,6 +628,9 @@ const plugin = definePlugin({
     //
     // Only `sandbox-cr` qualifies: a Job's pod is terminal once the Job
     // finishes, so keeping it would leave a lease nothing can exec into.
+    //
+    // Decided before the API client is built: a kept lease issues no request,
+    // so there is nothing to authenticate against.
     if (
       config.reuseLease &&
       leaseBackend === "sandbox-cr" &&
@@ -643,6 +638,14 @@ const plugin = definePlugin({
     ) {
       return;
     }
+
+    const kc = createKubeConfig({
+      inCluster: config.inCluster,
+      kubeconfig: config.kubeconfig,
+    });
+    const clients = makeKubeClients(kc);
+    const releaseOrchestrator =
+      leaseBackend === "sandbox-cr" ? sandboxCrOrchestrator : jobOrchestrator;
 
     try {
       await releaseOrchestrator.release(clients, namespace, params.providerLeaseId);

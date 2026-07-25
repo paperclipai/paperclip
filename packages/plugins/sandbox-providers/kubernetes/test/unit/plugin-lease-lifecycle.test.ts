@@ -10,6 +10,7 @@ vi.mock("../../src/kube-client.js", () => ({
 }));
 
 import plugin from "../../src/plugin.js";
+import { createKubeConfig } from "../../src/kube-client.js";
 
 const CONFIG = { inCluster: true, backend: "sandbox-cr" };
 
@@ -41,6 +42,7 @@ function readySandboxCr(podName: string): Record<string, unknown> {
 
 beforeEach(() => {
   h.clients = {};
+  vi.mocked(createKubeConfig).mockClear();
 });
 
 describe("onEnvironmentResumeLease", () => {
@@ -319,6 +321,8 @@ describe("onEnvironmentReleaseLease", () => {
     expect(clients.custom.deleteNamespacedCustomObject).not.toHaveBeenCalled();
     expect(clients.core.deleteNamespacedPod).not.toHaveBeenCalled();
     expect(clients.core.deleteNamespacedSecret).not.toHaveBeenCalled();
+    // A kept lease issues no request at all, so it never even builds a client.
+    expect(createKubeConfig).not.toHaveBeenCalled();
   });
 
   it("destroys a lease that carried a task-scoped egress policy, even with reuseLease on", async () => {
