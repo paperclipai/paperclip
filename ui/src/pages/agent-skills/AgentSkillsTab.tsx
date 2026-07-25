@@ -34,11 +34,14 @@ const MATERIALIZATION_NOTE =
 const PAPERCLIP_CORE_SKILL_KEY = "paperclipai/paperclip/paperclip";
 
 /** Build the desired-skill sync payload, carrying any active version pins. */
-function toDesiredSkillPayload(
+export function toDesiredSkillPayload(
   keys: string[],
   pins: Record<string, string>,
+  versionPinsEnabled = true,
 ): Array<string | AgentDesiredSkillEntry> {
-  return keys.map((key) => (pins[key] ? { key, versionId: pins[key]! } : key));
+  return keys.map((key) => (
+    versionPinsEnabled && pins[key] ? { key, versionId: pins[key]! } : key
+  ));
 }
 
 /** Extract the skill key from either payload shape (string or entry). */
@@ -191,12 +194,23 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
           failedDraft: failedSkillDraftRef.current,
         })
       ) {
-        syncSkills.mutate(toDesiredSkillPayload(skillDraft, versionPinsRef.current));
+        syncSkills.mutate(toDesiredSkillPayload(
+          skillDraft,
+          versionPinsRef.current,
+          betaSkillsEnabled,
+        ));
       }
     }, 250);
 
     return () => window.clearTimeout(timeout);
-  }, [skillDraft, skillSnapshot, syncSkills.isPending, syncSkills.isError, syncSkills.mutate]);
+  }, [
+    betaSkillsEnabled,
+    skillDraft,
+    skillSnapshot,
+    syncSkills.isPending,
+    syncSkills.isError,
+    syncSkills.mutate,
+  ]);
 
   const companySkillByKey = useMemo(
     () => new Map((companySkills ?? []).map((skill) => [skill.key, skill])),
