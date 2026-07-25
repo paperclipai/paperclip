@@ -4633,6 +4633,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
 
       if (include.agents) {
+        const pendingHireApprovalAgentIds: string[] = [];
         for (const planAgent of plan.preview.plan.agentPlans) {
           const manifestAgent = plan.selectedAgents.find((agent) => agent.slug === planAgent.slug);
           if (!manifestAgent) continue;
@@ -4769,7 +4770,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               clearLegacyPromptTemplate: true,
               replaceExisting: true,
             });
-            created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
+            created = await agents.update(
+              created.id,
+              { adapterConfig: materialized.adapterConfig },
+              { allowPendingApprovalConfigUpdate: requiresApproval },
+            ) ?? created;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -4780,31 +4785,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             actorUserId ?? null,
           );
           if (requiresApproval) {
-            await approvals.create(targetCompany.id, {
-              type: "hire_agent",
-              requestedByAgentId: null,
-              requestedByUserId: actorUserId ?? null,
-              status: "pending",
-              payload: {
-                name: created.name,
-                role: created.role,
-                title: created.title,
-                icon: created.icon,
-                reportsTo: created.reportsTo,
-                capabilities: created.capabilities,
-                adapterType: created.adapterType,
-                adapterConfig: created.adapterConfig,
-                runtimeConfig: created.runtimeConfig,
-                permissions: created.permissions,
-                budgetMonthlyCents: created.budgetMonthlyCents,
-                metadata: created.metadata,
-                agentId: created.id,
-              },
-              decisionNote: null,
-              decidedByUserId: null,
-              decidedAt: null,
-              updatedAt: new Date(),
-            });
+            pendingHireApprovalAgentIds.push(created.id);
           }
           agentStatusById.set(created.id, created.status ?? createdStatus);
           await secrets.syncEnvBindingsForTarget?.(
@@ -4846,7 +4827,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               : null);
           if (!managerId || managerId === agentId) continue;
           try {
-            await agents.update(agentId, { reportsTo: managerId });
+            const currentStatus = agentStatusById.get(agentId);
+            await agents.update(
+              agentId,
+              { reportsTo: managerId },
+              { allowPendingApprovalConfigUpdate: currentStatus === "pending_approval" },
+            );
           } catch {
             const managerRef =
               managerSlug
@@ -4854,6 +4840,38 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               ?? manifestAgent.reportsToExistingAgentId;
             warnings.push(`Could not assign manager ${managerRef} for imported agent ${manifestAgent.slug}.`);
           }
+        }
+
+        // Approval payloads must describe the fully materialized agent,
+        // including managed instructions and reporting links.
+        for (const agentId of pendingHireApprovalAgentIds) {
+          const created = await agents.getById(agentId);
+          if (!created) throw notFound(`Imported agent ${agentId} disappeared before approval creation.`);
+          await approvals.create(targetCompany.id, {
+            type: "hire_agent",
+            requestedByAgentId: null,
+            requestedByUserId: actorUserId ?? null,
+            status: "pending",
+            payload: {
+              name: created.name,
+              role: created.role,
+              title: created.title,
+              icon: created.icon,
+              reportsTo: created.reportsTo,
+              capabilities: created.capabilities,
+              adapterType: created.adapterType,
+              adapterConfig: created.adapterConfig,
+              runtimeConfig: created.runtimeConfig,
+              permissions: created.permissions,
+              budgetMonthlyCents: created.budgetMonthlyCents,
+              metadata: created.metadata,
+              agentId: created.id,
+            },
+            decisionNote: null,
+            decidedByUserId: null,
+            decidedAt: null,
+            updatedAt: new Date(),
+          });
         }
       }
 
