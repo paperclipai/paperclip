@@ -97,6 +97,11 @@ function createCompactCompactor(now: Clock): PiStdoutCompactor {
     if (event.type === "tool_execution_update") {
       return progressTick(allowToolTick, event.toolCallId);
     }
+    // Non-`message_update` events pass through untouched — including
+    // `tool_execution_end`, whose `.result` can be tens of MiB (large
+    // tool/bash output). Capping that is an intentional separate follow-up:
+    // truncation here would run before the server's secret redaction and
+    // could split a secret across the cut boundary. See #5699.
     if (event.type !== "message_update") return line;
 
     const { message: _cumulativeMessage, ...rest } = event;
