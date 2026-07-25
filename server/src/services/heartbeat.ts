@@ -409,7 +409,12 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import {
+  extractSkillMentionIds,
+  HEARTBEAT_RUN_TERMINAL_STATUSES,
+  isHeartbeatRunTerminalStatus,
+  isUuidLike,
+} from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -585,13 +590,6 @@ const CANCELLABLE_HEARTBEAT_RUN_STATUSES = [
   "scheduled_retry",
 ] as const;
 const NATIVE_QUESTION_CANCELLATION_CONTEXT_KEY = "nativeQuestionCancellation";
-const HEARTBEAT_RUN_TERMINAL_STATUSES = [
-  "succeeded",
-  "interrupted",
-  "failed",
-  "cancelled",
-  "timed_out",
-] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
   "failed",
   "cancelled",
@@ -7304,14 +7302,6 @@ function isSameTaskScope(left: string | null, right: string | null) {
 
 function isTrackedLocalChildProcessAdapter(adapterType: string) {
   return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
-}
-
-function isHeartbeatRunTerminalStatus(
-  status: string | null | undefined,
-): status is (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number] {
-  return HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
-    status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
-  );
 }
 
 export function buildHeartbeatRunStatusLiveEventPayload(

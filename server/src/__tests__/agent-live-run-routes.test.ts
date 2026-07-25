@@ -527,13 +527,14 @@ describe("agent live run routes", () => {
     },
   );
 
-  it.each(["queued", "running"] as const)(
+  it.each(["queued", "running", "scheduled_retry"] as const)(
     "returns an empty log (not 404) for a %s run that has not opened its log yet",
     async (status) => {
-      // The runner writes the log handle when it opens the file, so an active
-      // run legitimately has none for its first seconds. The transcript poller
-      // only stops re-requesting on a 404 for TERMINAL runs, so 404ing this
-      // case made every active run 404 on every poll for its whole life.
+      // The runner writes the log handle when it opens the file, so a
+      // non-terminal run legitimately has none — including a run waiting on a
+      // scheduled retry, which has no handle at all yet. The transcript poller
+      // only stops re-requesting on a 404 for TERMINAL runs, so 404ing these
+      // made every such run 404 on every poll for its whole life.
       mockHeartbeatService.getRunLogAccess.mockResolvedValue({
         id: "run-1",
         companyId: "company-1",
