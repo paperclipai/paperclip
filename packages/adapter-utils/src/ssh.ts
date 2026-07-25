@@ -1288,7 +1288,7 @@ export async function buildSshSpawnTarget(input: {
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
     remoteLauncher
-      ? `exec ${shellQuote(remoteLauncher)}`
+      ? `exec sh ${shellQuote(remoteLauncher)}`
       : `sh -c ${shellQuote(remoteScript)}`,
   );
 
