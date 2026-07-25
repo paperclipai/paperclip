@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildSandboxCrManifest } from "../../src/sandbox-cr-builder.js";
 
 const baseInput = {
+  apiVersion: "v1beta1" as const,
   namespace: "paperclip-acme",
   sandboxName: "pc-01h00000000000000000000000",
   adapterType: "claude_local",
@@ -17,10 +18,27 @@ const baseInput = {
 };
 
 describe("buildSandboxCrManifest", () => {
-  it("returns a Sandbox CR with the correct apiVersion and kind", () => {
+  it("stamps the resolved served version into apiVersion, with kind Sandbox", () => {
     const cr = buildSandboxCrManifest(baseInput);
-    expect(cr.apiVersion).toBe("agents.x-k8s.io/v1alpha1");
+    expect(cr.apiVersion).toBe("agents.x-k8s.io/v1beta1");
     expect(cr.kind).toBe("Sandbox");
+  });
+
+  // The same manifest has to be valid on a controller that predates the
+  // v1beta1 graduation: `spec.podTemplate` is required and identically shaped
+  // in both versions, and the builder sets neither the v1alpha1 `spec.replicas`
+  // nor the v1beta1 `spec.operatingMode` that replaced it.
+  it("addresses an older controller through v1alpha1 with a byte-identical spec", () => {
+    const beta = buildSandboxCrManifest(baseInput);
+    const alpha = buildSandboxCrManifest({ ...baseInput, apiVersion: "v1alpha1" });
+    expect(alpha.apiVersion).toBe("agents.x-k8s.io/v1alpha1");
+    expect(alpha.spec).toEqual(beta.spec);
+  });
+
+  it("sets neither replicas (v1alpha1) nor operatingMode (v1beta1), the one field the graduation changed", () => {
+    const spec = buildSandboxCrManifest(baseInput).spec as Record<string, unknown>;
+    expect(spec.replicas).toBeUndefined();
+    expect(spec.operatingMode).toBeUndefined();
   });
 
   it("sets metadata name and namespace correctly", () => {
