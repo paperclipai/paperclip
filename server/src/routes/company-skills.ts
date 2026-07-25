@@ -47,6 +47,7 @@ import {
   type SkillPolicyPrincipal,
 } from "../services/company-skill-policy.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   normalizeSkillPolicySourceLocator,
   type SkillPolicyAction,
@@ -81,12 +82,17 @@ type SkillPolicyResourceInput =
   | Promise<SkillPolicyEvaluationResource>
   | (() => SkillPolicyEvaluationResource | Promise<SkillPolicyEvaluationResource>);
 
-export function companySkillRoutes(db: Db) {
+export function companySkillRoutes(
+  db: Db,
+  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+) {
   const router = Router();
   const access = accessService(db);
   const svc = companySkillService(db);
   const issues = issueService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
   const skillPolicies = companySkillPolicyService(db);
 
   function asString(value: unknown): string | null {

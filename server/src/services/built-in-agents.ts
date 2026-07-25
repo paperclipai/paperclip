@@ -21,6 +21,7 @@ import {
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { listAdapterModels } from "../adapters/registry.js";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
@@ -800,13 +801,21 @@ function rowIsBuiltInAgent(row: typeof agents.$inferSelect, key: string) {
   return marker?.key === key;
 }
 
-export function builtInAgentService(db: Db) {
+export function builtInAgentService(
+  db: Db,
+  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+) {
   const agentSvc = agentService(db);
   const accessSvc = accessService(db);
   const approvalSvc = approvalService(db);
   const instructionsSvc = agentInstructionsService();
   const skillSvc = companySkillService(db);
-  const routineSvc = routineService(db);
+  // Routine runs dispatch heartbeat runs, which acquire sandbox leases. Without
+  // the worker manager the runtime cannot resolve a plugin-backed sandbox
+  // provider and every run fails setup.
+  const routineSvc = routineService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
 
   async function findSingleRootManager(companyId: string) {
     const roots = await db
