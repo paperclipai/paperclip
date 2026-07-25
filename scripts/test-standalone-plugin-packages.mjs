@@ -37,10 +37,6 @@ const repoRoot = path.resolve(scriptDir, "..");
 // under `--ignore-workspace`, so they are not standalone-installable.
 const PROVIDERS_DIR = "packages/plugins/sandbox-providers";
 
-function toRepoRelative(absoluteDir) {
-  return path.relative(repoRoot, absoluteDir).split(path.sep).join("/");
-}
-
 // The runner drives vitest directly instead of `pnpm run test` so it can add
 // the JSON reporter it needs to prove a suite really executed (pnpm defines its
 // own --reporter flag, so forwarding one through `pnpm run` is ambiguous).
