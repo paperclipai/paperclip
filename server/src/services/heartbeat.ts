@@ -1918,6 +1918,10 @@ const heartbeatRunSqlAsciiSafeColumns = {
 const heartbeatRunLogAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
+  // The log route needs the status to tell "no log YET" (an active run whose
+  // runner has not opened the file) from "no log EVER" (a terminal run that
+  // never wrote one). Same row, so this costs nothing on the poll path.
+  status: heartbeatRuns.status,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
 } as const;
@@ -16983,6 +16987,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       runOrLookup: string | {
         id: string;
         companyId: string;
+        status?: string | null;
         logStore: string | null;
         logRef: string | null;
       },
