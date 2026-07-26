@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agentApiKeys,
+  agentRuntimeState,
   agents,
   authUsers,
   companies,
@@ -53,6 +54,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     await db.delete(activityLog);
     await db.delete(issueCreateIdempotencyKeys);
     await db.delete(issues);
+    await db.delete(agentRuntimeState);
     await db.delete(heartbeatRuns);
     await db.delete(agentApiKeys);
     await db.delete(companyMemberships);
