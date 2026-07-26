@@ -74,6 +74,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { buildProviderQuotaRetryIdempotencyKey } from "../provider-quota-retry.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -2899,23 +2900,75 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     actionId: string;
     agentId: string;
   }) {
-    const existing = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.companyId, input.issue.companyId),
-        eq(heartbeatRuns.agentId, input.agentId),
-        eq(heartbeatRuns.status, "scheduled_retry"),
-        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
-      ))
-      .orderBy(desc(heartbeatRuns.scheduledRetryAt))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (existing) return existing;
-
     const now = new Date();
     const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
+    const idempotencyKey = buildProviderQuotaRetryIdempotencyKey({
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+      retryNotBefore: retryAt,
+    });
     return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${idempotencyKey}))`);
+      const existingWakeup = await tx
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, input.issue.companyId),
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+        ))
+        .orderBy(asc(agentWakeupRequests.createdAt), asc(agentWakeupRequests.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const idempotentRetry = existingWakeup?.runId
+        ? await tx
+            .select()
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, input.issue.companyId),
+              eq(heartbeatRuns.id, existingWakeup.runId),
+              eq(heartbeatRuns.status, "scheduled_retry"),
+            ))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const existing = idempotentRetry ?? await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, input.issue.companyId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          eq(heartbeatRuns.scheduledRetryAt, retryAt),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
+        ))
+        .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existing) {
+        const wakeupRequestId = existing.wakeupRequestId ?? existingWakeup?.id ?? null;
+        if (wakeupRequestId) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              coalescedCount: sql`${agentWakeupRequests.coalescedCount} + 1`,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, wakeupRequestId));
+        }
+        await tx
+          .update(issueRecoveryActions)
+          .set({
+            monitorPolicy: {
+              type: "wait_recovery",
+              retryAgentId: input.agentId,
+              scheduledRunId: existing.id,
+              retryAt: retryAt.toISOString(),
+            },
+            timeoutAt: retryAt,
+            updatedAt: now,
+          })
+          .where(eq(issueRecoveryActions.id, input.actionId));
+        return existing;
+      }
+
       const wakeup = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -2933,7 +2986,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
-          idempotencyKey: `provider_quota_recovery:${input.issue.id}:${retryAt.toISOString()}`,
+          idempotencyKey,
           updatedAt: now,
         })
         .returning()

@@ -54,7 +54,9 @@ type FakeRuntimeHandle = {
   backendSessionId: string;
   agentSessionId: string;
 };
-type FakeRuntimeTurnResult = { status: "completed" | "failed" | "cancelled"; stopReason?: string };
+type FakeRuntimeTurnResult =
+  | { status: "completed" | "cancelled"; stopReason?: string }
+  | { status: "failed"; error: { message: string }; stopReason?: string };
 type FakeRuntimeTurn = {
   requestId: string;
   events: AsyncIterable<FakeRuntimeEvent>;
@@ -493,6 +495,36 @@ describe("claude_local ACP lane", () => {
     const settings = JSON.parse(await fs.readFile(path.join(root, ".claude", "settings.local.json"), "utf8"));
     expect(settings.permissions.defaultMode).toBe("default");
     expect(settings.permissions.allow).toEqual(expect.arrayContaining(["Bash(curl:*)", "Bash(env)"]));
+  });
+
+  it("classifies ACP session limits and converts an America/New_York reset boundary", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-session-limit-");
+    const sessionLimit =
+      "Internal error: You've hit your session limit · resets 7:30am (America/New_York)";
+    const execute = createClaudeAcpExecutor({
+      now: () => new Date("2026-07-26T09:00:00.000Z").getTime(),
+      createRuntime: (options: FakeRuntimeOptions) =>
+        new FakeRuntime(options, [], {
+          status: "failed",
+          error: { message: sessionLimit },
+        }) as never,
+    });
+
+    const result = await execute(buildContext(root));
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorMessage: sessionLimit,
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+      retryNotBefore: "2026-07-26T11:30:00.000Z",
+      resultJson: {
+        errorFamily: "provider_quota",
+        retryNotBefore: "2026-07-26T11:30:00.000Z",
+        transientRetryNotBefore: "2026-07-26T11:30:00.000Z",
+        providerQuotaRetryNotBefore: "2026-07-26T11:30:00.000Z",
+      },
+    });
   });
 
   it("creates the ACP session on the in-sandbox workspace cwd for runner-backed remote runs", async () => {

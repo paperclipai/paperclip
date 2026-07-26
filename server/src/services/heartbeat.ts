@@ -71,6 +71,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
+import { buildProviderQuotaRetryIdempotencyKey } from "./provider-quota-retry.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -9781,11 +9782,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
-    const continuationRetryIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
-      ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
-      : retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
-        ? `interaction-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
+    const providerQuotaRetryBoundary =
+      transientRecovery?.errorFamily === "provider_quota" && issueId && transientRetryNotBefore
+        ? {
+            issueId,
+            retryNotBefore: transientRetryNotBefore,
+            idempotencyKey: buildProviderQuotaRetryIdempotencyKey({
+              companyId: run.companyId,
+              issueId,
+              retryNotBefore: transientRetryNotBefore,
+            }),
+          }
         : null;
+    const providerQuotaRetryIdempotencyKey = providerQuotaRetryBoundary?.idempotencyKey ?? null;
+    const continuationRetryIdempotencyKey = providerQuotaRetryIdempotencyKey ??
+      (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+        ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
+        : retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
+          ? `interaction-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
+          : null);
 
     type ScheduledRetryTransactionResult =
       | {
@@ -9808,6 +9823,63 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
 
     const scheduleResult = await db.transaction(async (tx): Promise<ScheduledRetryTransactionResult> => {
+      if (providerQuotaRetryBoundary) {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${providerQuotaRetryBoundary.idempotencyKey}))`,
+        );
+        const existingWakeup = await tx
+          .select()
+          .from(agentWakeupRequests)
+          .where(and(
+            eq(agentWakeupRequests.companyId, run.companyId),
+            eq(agentWakeupRequests.idempotencyKey, providerQuotaRetryBoundary.idempotencyKey),
+          ))
+          .orderBy(asc(agentWakeupRequests.createdAt), asc(agentWakeupRequests.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        const idempotentRetry = existingWakeup?.runId
+          ? await tx
+              .select()
+              .from(heartbeatRuns)
+              .where(and(
+                eq(heartbeatRuns.companyId, run.companyId),
+                eq(heartbeatRuns.id, existingWakeup.runId),
+                eq(heartbeatRuns.status, "scheduled_retry"),
+              ))
+              .then((rows) => rows[0] ?? null)
+          : null;
+        const existingRetry = idempotentRetry ?? await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.status, "scheduled_retry"),
+            eq(heartbeatRuns.scheduledRetryAt, providerQuotaRetryBoundary.retryNotBefore),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${providerQuotaRetryBoundary.issueId}`,
+          ))
+          .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (existingRetry) {
+          const wakeupRequestId = existingRetry.wakeupRequestId ?? existingWakeup?.id ?? null;
+          if (wakeupRequestId) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                coalescedCount: sql`${agentWakeupRequests.coalescedCount} + 1`,
+                updatedAt: now,
+              })
+              .where(eq(agentWakeupRequests.id, wakeupRequestId));
+          }
+          return {
+            outcome: "scheduled",
+            run: existingRetry,
+            reusedExisting: true,
+          };
+        }
+      }
+
       if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
         if (issueId) {
           await tx.execute(
