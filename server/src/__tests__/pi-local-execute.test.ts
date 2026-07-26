@@ -134,8 +134,10 @@ describe("pi_local execute", () => {
 
     const previousHome = process.env.HOME;
     const previousSigningSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const previousBetterAuthSecret = process.env.BETTER_AUTH_SECRET;
     process.env.HOME = root;
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "canary-host-signing-secret";
+    process.env.BETTER_AUTH_SECRET = "canary-better-auth-signing-secret";
 
     try {
       const result = await execute({
@@ -174,6 +176,7 @@ describe("pi_local execute", () => {
         argv: string[];
       };
       expect(capture.env.PAPERCLIP_AGENT_JWT_SECRET).toBeUndefined();
+      expect(capture.env.BETTER_AUTH_SECRET).toBeUndefined();
       expect(capture.env.PAPERCLIP_API_KEY).toBe("canary-run-api-token");
       const persistedResult = JSON.stringify({
         resultJson: result.resultJson,
@@ -195,6 +198,8 @@ describe("pi_local execute", () => {
       else process.env.HOME = previousHome;
       if (previousSigningSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
       else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousSigningSecret;
+      if (previousBetterAuthSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = previousBetterAuthSecret;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

@@ -11947,6 +11947,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const value of [
       process.env.PAPERCLIP_API_KEY,
       process.env.PAPERCLIP_AGENT_JWT_SECRET,
+      process.env.BETTER_AUTH_SECRET,
     ]) {
       if (typeof value === "string") literalRunSecretValues.add(value);
     }
