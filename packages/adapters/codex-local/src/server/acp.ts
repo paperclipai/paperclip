@@ -344,7 +344,7 @@ export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): C
     }
     const result = await currentExecutor({
       ...ctx,
-      config: buildCodexAcpConfig(ctx.config),
+      config: await withCodexAppServerCodexPathDefault(buildCodexAcpConfig(ctx.config), ctx),
     });
     return withCodexAuthRefreshFailureClassification(result);
   };
@@ -395,6 +395,73 @@ async function findAncestorBin(startDir: string, binName: string): Promise<strin
     if (parent === current) return null;
     current = parent;
   }
+}
+
+/**
+ * True when a PATH candidate looks like a real Codex CLI entrypoint (a node/
+ * bun script, a compiled binary, or a symlink to one) rather than a shell
+ * wrapper. Terminal-multiplexer and launcher shims (e.g. cmux-cli-shims)
+ * intercept interactive `codex` CLI calls and hang or swallow the
+ * `codex app-server` stdio protocol, so they must not be picked as CODEX_PATH.
+ */
+async function isCodexAppServerCapableBinary(candidate: string): Promise<boolean> {
+  try {
+    const stat = await fs.lstat(candidate);
+    if (stat.isSymbolicLink()) return true;
+    const handle = await fs.open(candidate, "r");
+    try {
+      const buffer = Buffer.alloc(256);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const head = buffer.subarray(0, bytesRead).toString("utf8");
+      if (!head.startsWith("#!")) return true; // compiled binary
+      const shebang = head.split("\n", 1)[0] ?? "";
+      return /\b(node|bun|deno)\b/.test(shebang);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+async function findCodexAppServerBinaryOnPath(): Promise<string | null> {
+  const pathValue = process.env.PATH ?? "";
+  for (const segment of pathValue.split(path.delimiter)) {
+    if (!segment) continue;
+    const candidate = path.join(segment, "codex");
+    if (!(await pathExists(candidate))) continue;
+    if (await isCodexAppServerCapableBinary(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Default CODEX_PATH to the system Codex CLI for local ACP runs.
+ *
+ * codex-acp spawns its bundled Codex app-server unless CODEX_PATH points at a
+ * Codex CLI. The bundled version can lag behind the CODEX_HOME cache format
+ * written by a newer system Codex (e.g. model-catalog JSON schema changes),
+ * which makes ACP session init fail with an opaque "Internal error"
+ * (acpx_session_init_failed). Preferring the on-PATH Codex keeps the
+ * app-server version aligned with the tooling that maintains CODEX_HOME.
+ * An explicit CODEX_PATH (adapter config env or host env) always wins, and
+ * remote targets are left alone because a host path is meaningless there.
+ */
+async function withCodexAppServerCodexPathDefault(
+  config: Record<string, unknown>,
+  ctx: Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
+): Promise<Record<string, unknown>> {
+  const env = parseObject(config.env);
+  if (asString(env.CODEX_PATH, "").trim()) return config;
+  if (asString(process.env.CODEX_PATH, "").trim()) return config;
+  const target = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  if (target?.kind === "remote") return config;
+  const codexPath = await findCodexAppServerBinaryOnPath();
+  if (!codexPath) return config;
+  return { ...config, env: { ...env, CODEX_PATH: codexPath } };
 }
 
 async function commandIsResolvable(
