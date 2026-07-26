@@ -400,6 +400,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       issueId: sourceIssueId,
       status: "failed",
     });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: latestRun.id,
+        executionAgentNameKey: "coder",
+      })
+      .where(eq(issues.id, sourceIssueId));
 
     await recovery.escalateStrandedAssignedIssue({
       issue: sourceIssue,
@@ -424,6 +431,12 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       ));
     expect(retryRuns).toHaveLength(1);
     expect(retryRuns[0]).toMatchObject({ agentId: coderId });
+    const [lockedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(lockedIssue).toMatchObject({
+      status: "in_progress",
+      executionRunId: retryRuns[0]!.id,
+      executionAgentNameKey: "coder",
+    });
 
     const wakeups = await db
       .select()
@@ -451,6 +464,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       issueId: sourceIssueId,
       status: "failed",
     });
+    await db
+      .update(issues)
+      .set({ executionRunId: coderRunId, executionAgentNameKey: "coder" })
+      .where(eq(issues.id, sourceIssueId));
 
     await recovery.escalateStrandedAssignedIssue({
       issue: sourceIssue,
@@ -468,11 +485,6 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       recoveryCause: "provider_quota",
     });
 
-    await db
-      .update(issues)
-      .set({ assigneeAgentId: managerId, status: "in_progress" })
-      .where(eq(issues.id, sourceIssueId));
-    const [reassignedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     const managerRunId = randomUUID();
     await seedHeartbeatRun({
       companyId,
@@ -481,6 +493,16 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       issueId: sourceIssueId,
       status: "failed",
     });
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: managerId,
+        status: "in_progress",
+        executionRunId: managerRunId,
+        executionAgentNameKey: "cto",
+      })
+      .where(eq(issues.id, sourceIssueId));
+    const [reassignedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
 
     await recovery.escalateStrandedAssignedIssue({
       issue: reassignedIssue!,
@@ -508,6 +530,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(retryRuns.filter((run) => run.status === "cancelled")).toEqual([
       expect.objectContaining({ agentId: coderId, errorCode: "issue_reassigned" }),
     ]);
+    const [lockedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const [managerRetry] = retryRuns.filter((run) => run.status === "scheduled_retry");
+    expect(lockedIssue).toMatchObject({
+      status: "in_progress",
+      executionRunId: managerRetry!.id,
+      executionAgentNameKey: "cto",
+    });
 
     const wakeups = await db
       .select()
