@@ -1362,4 +1362,90 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     versions = await svc.listVersions(companyId, skill.id);
     expect(versions).toHaveLength(2);
   });
+
+  it("picks up maintainer skills from .agents/skills/ during inventory refresh", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-maintainer-skills-"));
+    cleanupDirs.add(tempRoot);
+    const skillDir = path.join(tempRoot, ".agents", "skills", "my-maintainer-skill");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      [
+        "---",
+        "name: My Maintainer Skill",
+        "description: >",
+        "  Does something useful",
+        "  for maintainers.",
+        "---",
+        "",
+        "# My Maintainer Skill",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tempRoot);
+    try {
+      const listed = await svc.list(companyId);
+      const skill = listed.find((s) => s.slug === "my-maintainer-skill");
+      expect(skill).toBeDefined();
+      expect(skill?.description).toBe("Does something useful for maintainers.");
+      expect(skill?.editable).toBe(false);
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it("repairs stale YAML block scalar descriptions stored as bare indicator characters", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: `paperclip/${companyId}/stale-desc-skill`,
+      slug: "stale-desc-skill",
+      name: "Stale Desc Skill",
+      description: ">",
+      markdown: [
+        "---",
+        "name: Stale Desc Skill",
+        "description: >",
+        "  Expanded description line one",
+        "  line two.",
+        "---",
+        "",
+        "# Stale Desc Skill",
+      ].join("\n"),
+      sourceType: "github",
+      sourceLocator: "https://github.com/paperclipai/paperclip",
+      sourceRef: "main",
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [],
+      metadata: { sourceKind: "github", owner: "paperclipai", repo: "paperclip" },
+    });
+
+    await svc.list(companyId);
+
+    const row = await db
+      .select({ description: companySkills.description })
+      .from(companySkills)
+      .where(eq(companySkills.id, skillId))
+      .then((rows) => rows[0]);
+
+    expect(row?.description).toBe("Expanded description line one line two.");
+  });
 });

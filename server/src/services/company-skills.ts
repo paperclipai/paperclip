@@ -757,6 +757,15 @@ function resolveBundledSkillsRoot() {
   ];
 }
 
+function resolveMaintainerSkillsRoots() {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    path.resolve(moduleDir, "../../.agents/skills"),
+    path.resolve(process.cwd(), ".agents/skills"),
+    path.resolve(moduleDir, "../../../.agents/skills"),
+  ];
+}
+
 function matchesRequestedSkill(relativeSkillPath: string, requestedSkillSlug: string | null) {
   if (!requestedSkillSlug) return true;
   const skillDir = path.posix.dirname(relativeSkillPath);
@@ -2205,29 +2214,49 @@ export function companySkillService(db: Db) {
   const projects = projectService(db);
 
   async function ensureBundledSkills(companyId: string) {
+    const allSkills: ImportedSkill[] = [];
+    const seenKeys = new Set<string>();
+
+    const wrapAsBundled = (skills: ImportedSkill[]): ImportedSkill[] =>
+      skills.map((skill) => ({
+        ...skill,
+        key: deriveCanonicalSkillKey(companyId, {
+          ...skill,
+          metadata: { ...(skill.metadata ?? {}), sourceKind: "paperclip_bundled" },
+        }),
+        metadata: { ...(skill.metadata ?? {}), sourceKind: "paperclip_bundled" },
+      }));
+
     for (const skillsRoot of resolveBundledSkillsRoot()) {
       const stats = await fs.stat(skillsRoot).catch(() => null);
       if (!stats?.isDirectory()) continue;
       const bundledSkills = await readLocalSkillImports(companyId, skillsRoot)
-        .then((skills) => skills.map((skill) => ({
-          ...skill,
-          key: deriveCanonicalSkillKey(companyId, {
-            ...skill,
-            metadata: {
-              ...(skill.metadata ?? {}),
-              sourceKind: "paperclip_bundled",
-            },
-          }),
-          metadata: {
-            ...(skill.metadata ?? {}),
-            sourceKind: "paperclip_bundled",
-          },
-        })))
+        .then(wrapAsBundled)
         .catch(() => [] as ImportedSkill[]);
-      if (bundledSkills.length === 0) continue;
-      return upsertImportedSkills(companyId, bundledSkills);
+      for (const skill of bundledSkills) {
+        if (seenKeys.has(skill.key)) continue;
+        seenKeys.add(skill.key);
+        allSkills.push(skill);
+      }
+      break;
     }
-    return [];
+
+    for (const skillsRoot of resolveMaintainerSkillsRoots()) {
+      const stats = await fs.stat(skillsRoot).catch(() => null);
+      if (!stats?.isDirectory()) continue;
+      const maintainerSkills = await readLocalSkillImports(companyId, skillsRoot)
+        .then(wrapAsBundled)
+        .catch(() => [] as ImportedSkill[]);
+      for (const skill of maintainerSkills) {
+        if (seenKeys.has(skill.key)) continue;
+        seenKeys.add(skill.key);
+        allSkills.push(skill);
+      }
+      break;
+    }
+
+    if (allSkills.length === 0) return [];
+    return upsertImportedSkills(companyId, allSkills);
   }
 
   async function reconcileLocalPathSkillSources(companyId: string) {
@@ -2303,6 +2332,23 @@ export function companySkillService(db: Db) {
     }
   }
 
+  async function repairStaleDescriptions(companyId: string) {
+    const rows = await db
+      .select({ id: companySkills.id, description: companySkills.description, markdown: companySkills.markdown })
+      .from(companySkills)
+      .where(eq(companySkills.companyId, companyId));
+    for (const row of rows) {
+      if (!row.description || !/^[>|][+-]?$/.test(row.description.trim())) continue;
+      const parsed = parseFrontmatterMarkdown(row.markdown);
+      const description = asString(parsed.frontmatter.description);
+      if (!description || description === row.description) continue;
+      await db
+        .update(companySkills)
+        .set({ description, updatedAt: new Date() })
+        .where(eq(companySkills.id, row.id));
+    }
+  }
+
   async function ensureSkillInventoryCurrent(companyId: string) {
     const existingRefresh = skillInventoryRefreshPromises.get(companyId);
     if (existingRefresh) {
@@ -2321,6 +2367,7 @@ export function companySkillService(db: Db) {
       }
       await ensureBundledSkills(companyId);
       await reconcileLocalPathSkillSources(companyId);
+      await repairStaleDescriptions(companyId);
     })();
 
     skillInventoryRefreshPromises.set(companyId, refreshPromise);
