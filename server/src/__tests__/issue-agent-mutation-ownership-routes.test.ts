@@ -8,6 +8,7 @@ const companyId = "22222222-2222-4222-8222-222222222222";
 const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
+const stuckAgentId = "66666666-6666-4666-8666-666666666666";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -247,6 +248,38 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     executionPolicy: null,
     executionState: null,
     hiddenAt: null,
+    ...overrides,
+  };
+}
+
+function makeActiveRecoveryAction(overrides: Record<string, unknown> = {}) {
+  return {
+    id: recoveryActionId,
+    companyId,
+    sourceIssueId: issueId,
+    recoveryIssueId: null,
+    kind: "stranded_assigned_issue",
+    status: "active",
+    ownerType: "agent",
+    ownerAgentId,
+    ownerUserId: null,
+    previousOwnerAgentId: stuckAgentId,
+    returnOwnerAgentId: stuckAgentId,
+    cause: "stranded_assigned_issue",
+    fingerprint: "source-scoped:test",
+    evidence: {},
+    nextAction: "Restore a live execution path.",
+    wakePolicy: null,
+    monitorPolicy: null,
+    attemptCount: 1,
+    maxAttempts: null,
+    timeoutAt: null,
+    lastAttemptAt: new Date("2026-05-13T18:00:00.000Z"),
+    outcome: null,
+    resolutionNote: null,
+    resolvedAt: null,
+    createdAt: new Date("2026-05-13T17:55:00.000Z"),
+    updatedAt: new Date("2026-05-13T18:00:00.000Z"),
     ...overrides,
   };
 }
@@ -814,6 +847,124 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor()))
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "I was not mentioned." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("allows the active recovery owner to comment when the source boundary denies", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: stuckAgentId }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecoveryAction());
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Recovered and closing this out." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Recovered and closing this out.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  it("denies a stale recovery owner after terminal source revalidation", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "done", assigneeAgentId: stuckAgentId }),
+    );
+    mockIssueRecoveryActionService.getActiveForIssue
+      .mockResolvedValueOnce(makeActiveRecoveryAction())
+      .mockResolvedValue(null);
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Late recovery update." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId,
+        sourceIssueId: issueId,
+        actionId: recoveryActionId,
+        status: "cancelled",
+      }),
+    );
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("denies when terminal recovery cancellation loses an ownership race", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "done", assigneeAgentId: stuckAgentId }),
+    );
+    mockIssueRecoveryActionService.getActiveForIssue
+      .mockResolvedValueOnce(makeActiveRecoveryAction())
+      .mockResolvedValue(null);
+    mockIssueRecoveryActionService.resolveActiveForIssue.mockResolvedValue(null);
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Racing recovery update." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unrelated agent outside the recovery owner's comment boundary", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: stuckAgentId }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecoveryAction());
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Unrelated update." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the recovery owner lookup cannot be revalidated", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: stuckAgentId }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockRejectedValue(
+      new Error("recovery lookup unavailable"),
+    );
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Recovery update." });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
@@ -1487,6 +1638,71 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("allows the active recovery owner to update a source issue assigned to the stuck agent", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: stuckAgentId }),
+    );
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "blocked", assigneeAgentId: stuckAgentId }),
+      ...patch,
+    }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecoveryAction());
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Recovered source issue" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ title: "Recovered source issue" }),
+    );
+  });
+
+  it("keeps an unrelated agent outside the recovery owner's mutation boundary", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: stuckAgentId }),
+    );
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecoveryAction());
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Unrelated mutation" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not extend the recovery owner override to issue deletion", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: stuckAgentId }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeActiveRecoveryAction());
+
+    const res = await request(await createApp(ownerActor())).delete(`/api/issues/${issueId}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.remove).not.toHaveBeenCalled();
   });
 
   it.each([
