@@ -12,11 +12,19 @@
  */
 
 /** Regex patterns for matching executable invocations in .cmd wrappers. */
-export const DP0_PATTERN_NPM = /"%dp0%\\(.+?\.exe)"/i;
-export const DP0_PATTERN_DIRECT = /%dp0%\\(.+?\.exe)/i;
-export const TILDE_PATTERN_NPM = /"%~dp0\\(.+?\.exe)"/i;
-export const TILDE_PATTERN_DIRECT = /%~dp0\\(.+?\.exe)/i;
-export const SET_PATTERN = /^\s*@?\s*SET\s+"?([A-Za-z_][A-Za-z0-9_]*)=(.+?)"?\s*$/gim;
+// Anchored to line start with ^ (multiline) so they only match command
+// invocation lines, not variable assignments or mid-line occurrences.
+export const DP0_PATTERN_NPM = /^\s*"%dp0%\\(.+?\.exe)"/im;
+export const DP0_PATTERN_DIRECT = /^\s*%dp0%\\(.+?\.exe)/im;
+export const TILDE_PATTERN_NPM = /^\s*"%~dp0\\(.+?\.exe)"/im;
+export const TILDE_PATTERN_DIRECT = /^\s*%~dp0\\(.+?\.exe)/im;
+/**
+ * Matches SET / @SET assignment lines in .cmd wrappers.
+ * Handles: SET KEY=val, SET "KEY=val", @SET KEY=val, @SET "KEY=val"
+ * Group 1 = key (no quotes), Group 2 = value (quoted branch),
+ * Group 3 = value (unquoted branch).
+ */
+export const SET_PATTERN = /^\s*@?\s*SET\s+"?([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"]*)"|(.+))\s*$/gim;
 
 /**
  * Parse a .cmd wrapper file's content to extract the real executable
@@ -49,8 +57,10 @@ export function parseCmdWrapperContent(content: string): {
   const setRegex = new RegExp(SET_PATTERN.source, SET_PATTERN.flags);
   while ((setMatch = setRegex.exec(content)) !== null) {
     const key = setMatch[1];
+    // Group 2 = value inside quotes; Group 3 = unquoted value.
+    const value = (setMatch[2] ?? setMatch[3] ?? "").trim();
     if (key.toLowerCase() !== "dp0") {
-      envOverrides[key] = setMatch[2].trim();
+      envOverrides[key] = value;
     }
   }
 

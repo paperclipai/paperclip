@@ -17,6 +17,11 @@ import {
  * On Windows, spawning .cmd files via cmd.exe creates visible console windows.
  * This test verifies the regex patterns and SET-command parsing that allow
  * Paperclip to resolve the real executable from npm .cmd wrappers.
+ *
+ * NOTE: Test fixtures and helper regex patterns (DP0_PATTERN_*, TILDE_PATTERN_*,
+ * SET_PATTERN) mirror production code in cmd-wrapper-resolution.ts.
+ * If production patterns change, update these tests accordingly to avoid
+ * silent divergence where tests pass but production logic has bugs.
  */
 
 // Real-world npm .cmd wrapper patterns
