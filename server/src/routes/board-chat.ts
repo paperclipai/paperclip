@@ -70,18 +70,25 @@ export function boardChatRoutes(
   let liveBoardChats = 0;
 
   // The board skill is read from disk once and cached. Resolves to the
-  // repo-root `skills/paperclip-board/SKILL.md` whether running from
+  // repo-root `skills/paperclip-board/` whether running from
   // `server/src/routes` (tsx) or `server/dist/routes` (compiled).
+  // SKILL.md is the thin guide; the chat model has no file tools, so the
+  // `references/` docs (endpoint inventory, workflow recipes) are inlined too.
   let _boardSkillCache: string | null = null;
 
   function loadBoardSkill(): string {
     if (_boardSkillCache) return _boardSkillCache;
     const here = path.dirname(fileURLToPath(import.meta.url));
-    const skillPath = path.resolve(here, "../../../skills/paperclip-board/SKILL.md");
+    const skillDir = path.resolve(here, "../../../skills/paperclip-board");
     try {
-      let content = fs.readFileSync(skillPath, "utf-8");
+      let content = fs.readFileSync(path.join(skillDir, "SKILL.md"), "utf-8");
       // Strip YAML frontmatter — the model only needs the body.
       content = content.replace(/^---[\s\S]*?---\s*\n/, "");
+      const refsDir = path.join(skillDir, "references");
+      for (const ref of fs.readdirSync(refsDir).sort()) {
+        if (!ref.endsWith(".md")) continue;
+        content += "\n\n" + fs.readFileSync(path.join(refsDir, ref), "utf-8");
+      }
       _boardSkillCache = content;
       return content;
     } catch {
