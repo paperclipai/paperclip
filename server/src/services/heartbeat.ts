@@ -377,6 +377,11 @@ export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   2 * 60 * 60 * 1000,
 ] as const;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
+// Short backoff before a process-lost retry becomes claimable, so a burst of orphaned
+// runs (e.g. concurrency pressure from a large routine dispatch batch) doesn't immediately
+// re-collide with the same resource/concurrency pressure that caused the original loss.
+export const PROCESS_LOSS_RETRY_DELAYS_MS = [15 * 1000, 60 * 1000, 3 * 60 * 1000] as const;
+const PROCESS_LOSS_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
@@ -1166,6 +1171,20 @@ export function applyRunScopedMentionedSkillKeys(
     ...existingPreference.desiredSkillEntries,
     ...normalizedSkillKeys,
   ]);
+}
+
+export function computeProcessLossRetryDelayMs(
+  attempt: number,
+  random: () => number = Math.random,
+) {
+  const index = Math.min(
+    Math.max(Math.floor(attempt) || 1, 1),
+    PROCESS_LOSS_RETRY_DELAYS_MS.length,
+  ) - 1;
+  const baseDelayMs = PROCESS_LOSS_RETRY_DELAYS_MS[index];
+  const sample = Math.min(1, Math.max(0, random()));
+  const jitterMultiplier = 1 + (((sample * 2) - 1) * PROCESS_LOSS_RETRY_JITTER_RATIO);
+  return Math.max(1_000, Math.round(baseDelayMs * jitterMultiplier));
 }
 
 export function computeBoundedTransientHeartbeatRetrySchedule(
@@ -9946,7 +9965,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
     now: Date,
+    options: { applyBackoff?: boolean } = {},
   ) {
+    // Backoff only applies to genuine process-loss reaping (orphaned/dead process detection),
+    // which is the resource-pressure scenario a burst of losses can re-collide on (RENA-51447).
+    // Graceful shutdown restarts are a deliberate, non-concurrent event, so they keep the prior
+    // immediate "queued" behavior instead of waiting out a backoff window.
+    const applyBackoff = options.applyBackoff ?? false;
     const existingRetry = await db
       .select()
       .from(heartbeatRuns)
@@ -9992,11 +10017,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : "process_lost";
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const processLossRetryAttempt = (run.processLossRetryCount ?? 0) + 1;
+    const processLossRetryDelayMs = applyBackoff
+      ? computeProcessLossRetryDelayMs(processLossRetryAttempt)
+      : 0;
+    const processLossRetryDueAt = new Date(now.getTime() + processLossRetryDelayMs);
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason,
+      ...(applyBackoff
+        ? {
+          scheduledRetryAttempt: processLossRetryAttempt,
+          scheduledRetryAt: processLossRetryDueAt.toISOString(),
+        }
+        : {}),
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
@@ -10012,6 +10048,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
+            ...(applyBackoff
+              ? {
+                scheduledRetryAttempt: processLossRetryAttempt,
+                scheduledRetryAt: processLossRetryDueAt.toISOString(),
+              }
+              : {}),
           }, "normal_model"),
           status: "queued",
           requestedByActorType: "system",
@@ -10021,6 +10063,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .returning()
         .then((rows) => rows[0]);
 
+      // When backoff applies, land the retry in scheduled_retry (not queued) so it only
+      // becomes claimable once processLossRetryDueAt passes. promoteDueScheduledRetries()
+      // promotes it to "queued" when due, reusing the same backoff machinery as other bounded
+      // retries. This spreads out retries after a burst of process losses instead of
+      // re-claiming immediately, which reduces the chance of re-colliding with the same
+      // concurrency/resource pressure that caused the original loss (RENA-51447). Graceful
+      // shutdown restarts skip this and stay immediately "queued", as before.
       const retryRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -10028,13 +10077,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agentId: run.agentId,
           invocationSource: "automation",
           triggerDetail: "system",
-          status: "queued",
+          status: applyBackoff ? "scheduled_retry" : "queued",
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: retryContextSnapshot,
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
-          processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
+          processLossRetryCount: processLossRetryAttempt,
+          ...(applyBackoff
+            ? {
+              scheduledRetryAt: processLossRetryDueAt,
+              scheduledRetryAttempt: processLossRetryAttempt,
+              scheduledRetryReason: "process_lost_retry",
+            }
+            : {}),
           updatedAt: now,
         })
         .returning()
@@ -10064,27 +10120,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return retryRun;
     });
 
-    publishLiveEvent({
-      companyId: queued.companyId,
-      type: "heartbeat.run.queued",
-      payload: {
-        runId: queued.id,
-        agentId: queued.agentId,
-        invocationSource: queued.invocationSource,
-        triggerDetail: queued.triggerDetail,
-        wakeupRequestId: queued.wakeupRequestId,
-      },
-    });
+    if (applyBackoff) {
+      // Promotion to "queued" (and the corresponding heartbeat.run.queued live event) happens
+      // once promoteDueScheduledRetries() finds this row past scheduledRetryAt.
+      await appendRunEvent(queued, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `Scheduled automatic retry ${processLossRetryAttempt} in ${processLossRetryDelayMs}ms `
+          + `(due ${processLossRetryDueAt.toISOString()}) after orphaned child process was confirmed dead`,
+        payload: {
+          retryOfRunId: run.id,
+          scheduledRetryAttempt: processLossRetryAttempt,
+          scheduledRetryAt: processLossRetryDueAt.toISOString(),
+          delayMs: processLossRetryDelayMs,
+        },
+      });
+    } else {
+      publishLiveEvent({
+        companyId: queued.companyId,
+        type: "heartbeat.run.queued",
+        payload: {
+          runId: queued.id,
+          agentId: queued.agentId,
+          invocationSource: queued.invocationSource,
+          triggerDetail: queued.triggerDetail,
+          wakeupRequestId: queued.wakeupRequestId,
+        },
+      });
 
-    await appendRunEvent(queued, 1, {
-      eventType: "lifecycle",
-      stream: "system",
-      level: "warn",
-      message: "Queued automatic retry after orphaned child process was confirmed dead",
-      payload: {
-        retryOfRunId: run.id,
-      },
-    });
+      await appendRunEvent(queued, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Queued automatic retry after orphaned child process was confirmed dead",
+        payload: {
+          retryOfRunId: run.id,
+        },
+      });
+    }
 
     return queued;
   }
@@ -13160,7 +13234,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const retryAgent = await getAgent(run.agentId);
       if (shouldRetry) {
         if (retryAgent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now);
+          retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now, { applyBackoff: true });
         }
       } else if (retryAgent) {
         const scheduled = await scheduleInteractionContinuationInfrastructureRetryIfEligible(finalizedRun, retryAgent);
