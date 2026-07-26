@@ -34,6 +34,7 @@ import {
   labels,
   projectWorkspaces,
   projects,
+  principalPermissionGrants,
   workspaceOperations,
 } from "@paperclipai/db";
 import type {
@@ -6568,6 +6569,16 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        managerReportActivation?: {
+          expectedCompanyId: string;
+          expectedProjectId: string | null;
+          expectedParentIssueId: string | null;
+          expectedAssigneeAgentId: string;
+          managerAgentId: string;
+          grantId: string;
+          grantScope: Record<string, unknown> | null;
+          grantSubtreeRootAgentIds: string[];
+        };
       },
       dbOrTx: any = db,
     ) => {
@@ -6583,8 +6594,128 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        managerReportActivation,
         ...issueData
       } = data;
+
+      if (managerReportActivation) {
+        const requestedKeys = Object.keys(issueData).filter(
+          (key) => issueData[key as keyof typeof issueData] !== undefined,
+        );
+        if (
+          issueData.status !== "todo" ||
+          requestedKeys.length !== 1 ||
+          requestedKeys[0] !== "status" ||
+          nextLabelIds !== undefined ||
+          blockedByIssueIds !== undefined
+        ) {
+          throw conflict("Manager report activation only permits a backlog-to-todo status update");
+        }
+
+        const runManagerReportActivation = async (tx: any) => {
+          const expectedGrantScopeJson = managerReportActivation.grantScope === null
+            ? null
+            : JSON.stringify(managerReportActivation.grantScope);
+          const grantScopeStillMatches = expectedGrantScopeJson === null
+            ? isNull(principalPermissionGrants.scope)
+            : sql`${principalPermissionGrants.scope} = ${expectedGrantScopeJson}::jsonb`;
+          const scopedSubtreeStillMatches = managerReportActivation.grantSubtreeRootAgentIds.length === 0
+            ? undefined
+            : sql`exists (
+                with recursive scoped_report_chain(id, reports_to, depth) as (
+                  select child.id, child.reports_to, 0
+                  from agents child
+                  where child.company_id = ${managerReportActivation.expectedCompanyId}
+                    and child.id = ${managerReportActivation.expectedAssigneeAgentId}
+                  union all
+                  select parent.id, parent.reports_to, scoped_report_chain.depth + 1
+                  from agents parent
+                  join scoped_report_chain on scoped_report_chain.reports_to = parent.id
+                  where parent.company_id = ${managerReportActivation.expectedCompanyId}
+                    and scoped_report_chain.depth < 50
+                )
+                select 1
+                from scoped_report_chain
+                where ${sql.join(
+                  managerReportActivation.grantSubtreeRootAgentIds.map(
+                    (rootAgentId) => sql`scoped_report_chain.id = ${rootAgentId}`,
+                  ),
+                  sql` or `,
+                )}
+              )`;
+          const updated = await tx
+            .update(issues)
+            .set({
+              status: "todo",
+              updatedAt: new Date(),
+            })
+            .where(and(
+              eq(issues.id, id),
+              eq(issues.companyId, managerReportActivation.expectedCompanyId),
+              managerReportActivation.expectedProjectId === null
+                ? isNull(issues.projectId)
+                : eq(issues.projectId, managerReportActivation.expectedProjectId),
+              managerReportActivation.expectedParentIssueId === null
+                ? isNull(issues.parentId)
+                : eq(issues.parentId, managerReportActivation.expectedParentIssueId),
+              eq(issues.status, "backlog"),
+              eq(issues.assigneeAgentId, managerReportActivation.expectedAssigneeAgentId),
+              isNull(issues.assigneeUserId),
+              isNull(issues.checkoutRunId),
+              isNull(issues.executionRunId),
+              isNull(issues.executionAgentNameKey),
+              isNull(issues.executionLockedAt),
+              isNull(issues.executionPolicy),
+              isNull(issues.executionState),
+              sql`exists (
+                select 1
+                from ${companyMemberships}
+                where ${companyMemberships.companyId} = ${managerReportActivation.expectedCompanyId}
+                  and ${companyMemberships.principalType} = 'agent'
+                  and ${companyMemberships.principalId} = ${managerReportActivation.managerAgentId}
+                  and ${companyMemberships.status} = 'active'
+              )`,
+              sql`exists (
+                select 1
+                from ${principalPermissionGrants}
+                where ${principalPermissionGrants.id} = ${managerReportActivation.grantId}
+                  and ${principalPermissionGrants.companyId} = ${managerReportActivation.expectedCompanyId}
+                  and ${principalPermissionGrants.principalType} = 'agent'
+                  and ${principalPermissionGrants.principalId} = ${managerReportActivation.managerAgentId}
+                  and ${principalPermissionGrants.permissionKey} = 'issues:manage_reports'
+                  and ${grantScopeStillMatches}
+              )`,
+              sql`exists (
+                with recursive report_chain(id, reports_to, depth) as (
+                  select child.id, child.reports_to, 0
+                  from agents child
+                  where child.company_id = ${managerReportActivation.expectedCompanyId}
+                    and child.id = ${managerReportActivation.expectedAssigneeAgentId}
+                  union all
+                  select parent.id, parent.reports_to, report_chain.depth + 1
+                  from agents parent
+                  join report_chain on report_chain.reports_to = parent.id
+                  where parent.company_id = ${managerReportActivation.expectedCompanyId}
+                    and report_chain.depth < 50
+                )
+                select 1
+                from report_chain
+                where report_chain.id = ${managerReportActivation.managerAgentId}
+              )`,
+              scopedSubtreeStillMatches,
+            ))
+            .returning()
+            .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+          if (!updated) return null;
+          const [enriched] = await withIssueLabels(tx, [updated]);
+          return enriched;
+        };
+
+        return dbOrTx === db
+          ? db.transaction(runManagerReportActivation)
+          : runManagerReportActivation(dbOrTx);
+      }
+
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   agentJoinGrantsFromDefaults,
+  boardOnlyAgentInviteGrantKeysFromDefaults,
   humanJoinGrantsFromDefaults,
 } from "../services/invite-grants.js";
 import {
@@ -59,6 +60,37 @@ describe("agentJoinGrantsFromDefaults", () => {
       {
         permissionKey: "tasks:assign",
         scope: { projectId: "project-1" },
+      },
+    ]);
+  });
+
+  it("does not issue board-only agent permissions from invite defaults", () => {
+    const defaultsPayload = {
+      agent: {
+        grants: [
+          {
+            permissionKey: "issues:manage_reports",
+            scope: null,
+          },
+          {
+            permissionKey: "agents:create",
+            scope: null,
+          },
+        ],
+      },
+    };
+
+    expect(boardOnlyAgentInviteGrantKeysFromDefaults(defaultsPayload)).toEqual([
+      "issues:manage_reports",
+    ]);
+    expect(agentJoinGrantsFromDefaults(defaultsPayload)).toEqual([
+      {
+        permissionKey: "agents:create",
+        scope: null,
+      },
+      {
+        permissionKey: "tasks:assign",
+        scope: null,
       },
     ]);
   });
@@ -130,6 +162,29 @@ describe("human invite roles", () => {
       {
         permissionKey: "users:invite",
         scope: { companyId: "company-1" },
+      },
+    ]);
+  });
+
+  it("does not apply the agent-only issuance restriction to human grants", () => {
+    expect(
+      humanJoinGrantsFromDefaults(
+        {
+          human: {
+            grants: [
+              {
+                permissionKey: "issues:manage_reports",
+                scope: { projectId: "project-1" },
+              },
+            ],
+          },
+        },
+        "operator",
+      ),
+    ).toEqual([
+      {
+        permissionKey: "issues:manage_reports",
+        scope: { projectId: "project-1" },
       },
     ]);
   });

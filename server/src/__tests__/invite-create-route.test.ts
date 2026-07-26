@@ -3,13 +3,14 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const logActivityMock = vi.fn();
+const hasPermissionMock = vi.fn();
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => ({
       isInstanceAdmin: vi.fn(),
       canUser: vi.fn(),
-      hasPermission: vi.fn(),
+      hasPermission: hasPermissionMock,
     }),
     agentService: () => ({
       getById: vi.fn(),
@@ -42,18 +43,12 @@ function createDbStub() {
     updatedAt: new Date("2026-03-07T00:00:00.000Z"),
   };
 
+  const returning = vi.fn().mockResolvedValue([createdInvite]);
+  const values = vi.fn().mockReturnValue({ returning });
+  const insert = vi.fn().mockReturnValue({ values });
+
   return {
-    insert() {
-      return {
-        values() {
-          return {
-            returning() {
-              return Promise.resolve([createdInvite]);
-            },
-          };
-        },
-      };
-    },
+    insert,
     select(_shape?: unknown) {
       return {
         from() {
@@ -73,10 +68,16 @@ function createDbStub() {
         },
       };
     },
+    __insertValues: values,
   };
 }
 
-async function createApp() {
+async function createApp(actor: Record<string, unknown> = {
+  type: "board",
+  source: "local_implicit",
+  userId: null,
+  companyIds: ["company-1"],
+}, db = createDbStub()) {
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/access.js"),
     import("../middleware/index.js"),
@@ -84,17 +85,12 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      source: "local_implicit",
-      userId: null,
-      companyIds: ["company-1"],
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use(
     "/api",
-    accessRoutes(createDbStub() as any, {
+    accessRoutes(db as any, {
       deploymentMode: "local_trusted",
       deploymentExposure: "private",
       bindHost: "127.0.0.1",
@@ -115,6 +111,7 @@ describe("POST /companies/:companyId/invites", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     logActivityMock.mockReset();
+    hasPermissionMock.mockReset();
   });
 
   it("returns an absolute invite URL using the request base URL", async () => {
@@ -133,5 +130,68 @@ describe("POST /companies/:companyId/invites", () => {
     expect(res.body.companyName).toBe("Acme Robotics");
     expect(res.body.invitePath).toMatch(/^\/invite\/pcp_invite_/);
     expect(res.body.inviteUrl).toMatch(/^https:\/\/paperclip\.example\/invite\/pcp_invite_/);
+  });
+
+  it.each([
+    ["agent-created agent invite", {
+      type: "agent",
+      source: "agent_key",
+      agentId: "ceo-agent",
+      companyId: "company-1",
+    }, "agent", true],
+    ["board-created agent invite", {
+      type: "board",
+      source: "local_implicit",
+      userId: null,
+      companyIds: ["company-1"],
+    }, "agent", false],
+    ["board-created mixed invite", {
+      type: "board",
+      source: "local_implicit",
+      userId: null,
+      companyIds: ["company-1"],
+    }, "both", false],
+  ] as const)("rejects board-only agent grants from a %s before persistence", async (
+    _label,
+    actor,
+    allowedJoinTypes,
+    expectsAgentPermissionCheck,
+  ) => {
+    const db = createDbStub();
+    hasPermissionMock.mockResolvedValue(true);
+    const app = await createApp(actor, db);
+
+    const res = await request(app)
+      .post("/api/companies/company-1/invites")
+      .send({
+        allowedJoinTypes,
+        defaultsPayload: {
+          agent: {
+            grants: [
+              {
+                permissionKey: "issues:manage_reports",
+                scope: null,
+              },
+            ],
+          },
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(
+      "Agent invite defaults cannot grant board-only permissions: issues:manage_reports",
+    );
+    if (expectsAgentPermissionCheck) {
+      expect(hasPermissionMock).toHaveBeenCalledWith(
+        "company-1",
+        "agent",
+        "ceo-agent",
+        "users:invite",
+      );
+    } else {
+      expect(hasPermissionMock).not.toHaveBeenCalled();
+    }
+    expect((db as any).__insertValues).not.toHaveBeenCalled();
+    expect(logActivityMock).not.toHaveBeenCalled();
   });
 });

@@ -543,6 +543,7 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 | Report cost | yes | yes |
 | Set company budget | yes | no |
 | Set subordinate budget | yes | yes (manager subtree only) |
+| Activate a report's backlog task | yes | explicit `issues:manage_reports` grant (reporting subtree only) |
 | Manage responsible user's inbox state | yes | yes (default-open policy) |
 | Manage another user's inbox state | yes | scoped `inbox:manage` grant |
 | Set work-object visibility (issue/project) | no | no (pro gate) |
@@ -806,6 +807,21 @@ Ownership split:
 
 - **Core / Free:** permission key and scoped-grant enforcement; responsible-user resolution; default-open, disabled, and allowlist policy modes; archive/unarchive APIs; per-user archive persistence; resurfacing behavior; activity audit records; and stable denial codes.
 - **Paperclip EE / Enterprise:** centralized policy administration beyond the per-user controls, organization-wide presets, policy simulation, bulk inbox operations, advanced compliance reporting, and richer administrative audit UX. EE may extend policy management surfaces but must not weaken core company boundaries, user policy restrictions, scoped grants, or audit requirements.
+
+## 9.12 Manager Report Issue Activation Contract
+
+`issues:manage_reports` is an explicit, board-administered permission for a manager agent to activate work already assigned to another agent in its reporting subtree. It is not granted by the CEO or manager role, is not backfilled for existing agents, cannot be self-granted by an agent, and cannot be introduced through agent-safe company imports or agent invite defaults.
+
+The first V1 slice is deliberately narrow:
+
+- The only additional mutation is an exact `PATCH /issues/:issueId` transition from `backlog` to `todo`.
+- The request body must contain only `status: "todo"`; combining activation with any other field is denied under the ordinary issue ownership rules.
+- The issue must already be assigned to a different agent in the caller's current, same-company transitive reporting subtree. The grant never authorizes work outside that subtree.
+- Activation applies only to a plain backlog issue with no active checkout, execution lock, execution state, or execution policy. The write is conditional on the authorized status, assignee, company, and reporting chain still matching; concurrent changes fail with `409` instead of being overwritten.
+- The permission does not authorize comments, title or description edits, priority or blocker changes, parent or goal changes, reassignment, checkout or release, execution-state changes, reopening or resuming work, document or work-product changes, deletion, or any other issue transition.
+- Existing company boundaries, low-trust restrictions, recovery and watchdog rules, transition policy, activity logging, and assignee wake behavior remain in force.
+
+Successful manager activation uses the normal `issue.updated` activity event with actor and run attribution, plus `authorizationScope: "manager_report_activation"` and `permissionKey: "issues:manage_reports"` details so the authority path is inspectable.
 
 ## 10. API Contract (REST)
 

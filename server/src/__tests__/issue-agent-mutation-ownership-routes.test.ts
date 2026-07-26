@@ -9,6 +9,7 @@ const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const managerReportGrantId = "88888888-8888-4888-8888-888888888888";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -1489,6 +1490,332 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
+  it("allows explicitly granted managers to activate a report's backlog issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      assigneeAgentId: ownerAgentId,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string; scope?: Record<string, unknown> }) => {
+      const isManagerReportActivation =
+        input.action === "issue:mutate" && input.scope?.managerReportActivation === true;
+      return {
+        allowed: isManagerReportActivation,
+        action: input.action,
+        reason: isManagerReportActivation ? "allow_explicit_grant" : "deny_missing_grant",
+        explanation: isManagerReportActivation
+          ? "Allowed by manager report activation grant."
+          : "Missing permission.",
+        grant: isManagerReportActivation
+          ? {
+              id: managerReportGrantId,
+              principalType: "agent",
+              principalId: peerAgentId,
+              permissionKey: "issues:manage_reports",
+              scope: null,
+            }
+          : undefined,
+      };
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: ownerAgentId,
+    });
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      resource: expect.objectContaining({
+        type: "issue",
+        companyId,
+        issueId,
+        assigneeAgentId: ownerAgentId,
+        status: "backlog",
+      }),
+      scope: expect.objectContaining({
+        managerReportActivation: true,
+        issueId,
+        assigneeAgentId: ownerAgentId,
+      }),
+    }));
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "todo",
+        managerReportActivation: expect.objectContaining({
+          expectedCompanyId: companyId,
+          expectedProjectId: null,
+          expectedParentIssueId: null,
+          expectedAssigneeAgentId: ownerAgentId,
+          managerAgentId: peerAgentId,
+          grantId: managerReportGrantId,
+          grantScope: null,
+          grantSubtreeRootAgentIds: [],
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        actorType: "agent",
+        actorId: peerAgentId,
+        agentId: peerAgentId,
+        runId: "66666666-6666-4666-8666-666666666666",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: expect.objectContaining({
+          status: "todo",
+          authorizationScope: "manager_report_activation",
+          permissionKey: "issues:manage_reports",
+          _previous: expect.objectContaining({ status: "backlog" }),
+        }),
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        ownerAgentId,
+        expect.objectContaining({
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_status_changed",
+          payload: expect.objectContaining({
+            issueId,
+            mutation: "update",
+          }),
+          requestedByActorType: "agent",
+          requestedByActorId: peerAgentId,
+          contextSnapshot: expect.objectContaining({
+            issueId,
+            source: "issue.status_change",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("rejects manager report activation without the explicit grant", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      assigneeAgentId: ownerAgentId,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission: issues:manage_reports.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing permission: issues:manage_reports.");
+    expect(res.body.details).toMatchObject({ reason: "deny_missing_grant" });
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      scope: expect.objectContaining({ managerReportActivation: true }),
+    }));
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects activation when execution policy transition derives extra fields", async () => {
+    const reviewStageId = "99999999-9999-4999-8999-999999999999";
+    const reviewerAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      assigneeAgentId: ownerAgentId,
+      executionPolicy: {
+        stages: [{
+          id: reviewStageId,
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: ownerAgentId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by manager report activation grant.",
+      grant: {
+        id: managerReportGrantId,
+        principalType: "agent",
+        principalId: peerAgentId,
+        permissionKey: "issues:manage_reports",
+        scope: null,
+      },
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details).toMatchObject({
+      issueId,
+      reason: "manager_report_activation_precondition_failed",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.updated" }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("returns a conflict without side effects when manager report activation loses its atomic precondition", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      assigneeAgentId: ownerAgentId,
+    }));
+    mockIssueService.update.mockResolvedValue(null);
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by manager report activation grant.",
+      grant: {
+        id: managerReportGrantId,
+        principalType: "agent",
+        principalId: peerAgentId,
+        permissionKey: "issues:manage_reports",
+        scope: null,
+      },
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "Issue changed before manager report activation could be applied",
+      details: {
+        issueId,
+        reason: "manager_report_activation_precondition_failed",
+      },
+    });
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "todo",
+        managerReportActivation: expect.objectContaining({
+          expectedCompanyId: companyId,
+          expectedProjectId: null,
+          expectedParentIssueId: null,
+          expectedAssigneeAgentId: ownerAgentId,
+          managerAgentId: peerAgentId,
+          grantId: managerReportGrantId,
+          grantScope: null,
+          grantSubtreeRootAgentIds: [],
+        }),
+      }),
+    );
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.updated" }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps mixed manager report activation patches outside the bounded grant", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      assigneeAgentId: ownerAgentId,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string; scope?: Record<string, unknown> }) => {
+      const isManagerReportActivation =
+        input.action === "issue:mutate" && input.scope?.managerReportActivation === true;
+      return {
+        allowed: isManagerReportActivation,
+        action: input.action,
+        reason: isManagerReportActivation ? "allow_explicit_grant" : "deny_missing_grant",
+        explanation: isManagerReportActivation
+          ? "Allowed by manager report activation grant."
+          : "Issue is outside this actor's authorization boundary.",
+        grant: isManagerReportActivation
+          ? {
+              principalType: "agent",
+              principalId: peerAgentId,
+              permissionKey: "issues:manage_reports",
+              scope: null,
+            }
+          : undefined,
+      };
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo", title: "Unauthorized mixed update" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+    }));
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({
+      scope: expect.objectContaining({ managerReportActivation: true }),
+    }));
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when activation is allowed without the exact manager report grant", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      assigneeAgentId: ownerAgentId,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by a different grant.",
+      grant: {
+        principalType: "agent",
+        principalId: peerAgentId,
+        permissionKey: "issue:mutate",
+        scope: null,
+      },
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing permission: issues:manage_reports.");
+    expect(res.body.details).toMatchObject({ reason: "deny_missing_grant" });
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      scope: expect.objectContaining({ managerReportActivation: true }),
+    }));
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
@@ -1839,6 +2166,30 @@ describe("agent issue mutation checkout ownership", () => {
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status }));
+    });
+
+    it("keeps watchdog backlog activation on the existing watchdog authority path", async () => {
+      denyBaseBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({
+        status: "backlog",
+        assigneeAgentId: ownerAgentId,
+      }));
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue({ status: "backlog", assigneeAgentId: ownerAgentId }),
+        ...patch,
+      }));
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "todo" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.not.objectContaining({ managerReportActivation: expect.anything() }),
+      );
+      expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({
+        scope: expect.objectContaining({ managerReportActivation: true }),
+      }));
     });
 
     it("lets a watchdog run transition a watched issue to in_review with a live review path", async () => {

@@ -35,6 +35,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  BOARD_ONLY_AGENT_PERMISSION_KEYS,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_ICON_NAMES,
@@ -138,6 +139,9 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
 const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
+const AGENT_SAFE_FORBIDDEN_PERMISSION_KEYS = new Set<PermissionKey>(
+  BOARD_ONLY_AGENT_PERMISSION_KEYS,
+);
 const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
 
@@ -155,6 +159,17 @@ function collectAgentSafeImportPolicyErrors(
   include: CompanyPortabilityInclude,
 ) {
   const errors: string[] = [];
+  if (include.agents) {
+    for (const agent of manifest.agents) {
+      for (const grant of agent.permissionGrants) {
+        if (AGENT_SAFE_FORBIDDEN_PERMISSION_KEYS.has(grant.permissionKey)) {
+          errors.push(
+            `Safe import does not allow agent ${agent.slug} board-only permission grant ${grant.permissionKey}.`,
+          );
+        }
+      }
+    }
+  }
   if (include.projects) {
     for (const project of manifest.projects) {
       if (project.executionWorkspacePolicy !== null) {

@@ -1628,6 +1628,184 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.permissions.canCreateSkills).toBe(false);
   });
 
+  const scopedReportGrant = {
+    id: "grant-manage-reports",
+    companyId,
+    principalType: "agent",
+    principalId: agentId,
+    permissionKey: "issues:manage_reports",
+    scope: { projectId: "project-1" },
+    grantedByUserId: "original-grantor",
+    createdAt: new Date("2026-03-19T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+  };
+
+  it("creates an unscoped report-management grant when a board user enables an absent grant", async () => {
+    const createdReportGrant = {
+      ...scopedReportGrant,
+      scope: null,
+      grantedByUserId: "board-user",
+    };
+    mockAccessService.listPrincipalGrants
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([createdReportGrant]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: true, canManageReports: true }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, {
+      canCreateAgents: false,
+      canAssignTasks: true,
+    });
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "issues:manage_reports",
+      true,
+      "board-user",
+    );
+    expect(res.body.permissions).not.toHaveProperty("canManageReports");
+    expect(res.body.access).not.toHaveProperty("canManageReports");
+    expect(res.body.access.grants).toEqual([
+      expect.objectContaining({
+        permissionKey: "issues:manage_reports",
+        scope: null,
+        grantedByUserId: "board-user",
+      }),
+    ]);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "agent.permissions_updated",
+      details: expect.objectContaining({ canManageReports: true }),
+    }));
+  }, 15_000);
+
+  it("does not rewrite an existing scoped report-management grant when board enables it again", async () => {
+    mockAccessService.listPrincipalGrants.mockResolvedValue([scopedReportGrant]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: true, canManageReports: true }));
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.setPrincipalPermission.mock.calls.some(
+      (call) => call[3] === "issues:manage_reports",
+    )).toBe(false);
+    expect(res.body.access.grants).toEqual([
+      expect.objectContaining({
+        permissionKey: "issues:manage_reports",
+        scope: { projectId: "project-1" },
+        grantedByUserId: "original-grantor",
+      }),
+    ]);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ canManageReports: true }),
+    }));
+  }, 15_000);
+
+  it("preserves an existing scoped report-management grant when a board update omits it", async () => {
+    mockAccessService.listPrincipalGrants.mockResolvedValue([scopedReportGrant]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: true }));
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.setPrincipalPermission.mock.calls.some(
+      (call) => call[3] === "issues:manage_reports",
+    )).toBe(false);
+    expect(res.body.access.grants).toEqual([
+      expect.objectContaining({
+        permissionKey: "issues:manage_reports",
+        scope: { projectId: "project-1" },
+        grantedByUserId: "original-grantor",
+      }),
+    ]);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ canManageReports: true }),
+    }));
+  }, 15_000);
+
+  it("deletes the report-management grant only when a board user explicitly disables it", async () => {
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: true, canManageReports: false }));
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "issues:manage_reports",
+      false,
+      "board-user",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ canManageReports: false }),
+    }));
+  }, 15_000);
+
+  it.each(["ceo", "engineer"])("rejects %s agent attempts to set report-management access", async (role) => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      role,
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: true, canAssignTasks: true, canManageReports: true }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only board users");
+    expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
+    expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  }, 15_000);
+
   it("rejects CEO permission updates outside the caller company scope", async () => {
     const app = await createApp({
       type: "agent",
