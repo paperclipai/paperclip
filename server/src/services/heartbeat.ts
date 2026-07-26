@@ -2031,8 +2031,25 @@ function redactInlineBase64ImageData(chunk: string) {
   );
 }
 
-export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_CHUNK_CHARS) {
-  const normalized = redactSensitiveText(redactInlineBase64ImageData(chunk));
+function redactLiteralSecretValues(chunk: string, secretValues: Iterable<string>): string {
+  const sortedValues = [...secretValues]
+    .filter((value) => value.length >= 4)
+    .sort((left, right) => right.length - left.length);
+  let redacted = chunk;
+  for (const value of sortedValues) {
+    redacted = redacted.split(value).join("***REDACTED***");
+  }
+  return redacted;
+}
+
+export function compactRunLogChunk(
+  chunk: string,
+  maxChars = MAX_PERSISTED_LOG_CHUNK_CHARS,
+  literalSecretValues: Iterable<string> = [],
+) {
+  const normalized = redactSensitiveText(
+    redactLiteralSecretValues(redactInlineBase64ImageData(chunk), literalSecretValues),
+  );
   if (normalized.length <= maxChars) return normalized;
 
   const headChars = Math.max(0, Math.floor(maxChars * 0.6));
@@ -13281,9 +13298,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(eq(heartbeatRuns.id, runId));
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+      const literalRunSecretValues = new Set<string>();
+      const resolvedRuntimeEnv = parseObject(runtimeConfig.env);
+      for (const key of secretKeys) {
+        const value = resolvedRuntimeEnv[key];
+        if (typeof value === "string") literalRunSecretValues.add(value);
+      }
+      let authToken: string | null = null;
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const sanitizedChunk = compactRunLogChunk(
           redactCurrentUserText(chunk, currentUserRedactionOptions),
+          MAX_PERSISTED_LOG_CHUNK_CHARS,
+          literalRunSecretValues,
         );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
@@ -13475,7 +13501,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueRef?.workMode === "skill_test"
           ? { kind: "skill_test" as const, issueId: issueRef.id }
           : { kind: "standard" as const };
-      const authToken = adapter.supportsLocalAgentJwt
+      authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(
           agent.id,
           agent.companyId,
@@ -13485,6 +13511,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           localAgentJwtScope,
         )
         : null;
+      if (authToken) literalRunSecretValues.add(authToken);
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(
           {
