@@ -1,8 +1,10 @@
 ---
 name: paperclip-converting-plans-to-tasks
 description: >
-  The Paperclip way of converting a plan into executable tasks. Use whenever
-  you are asked to plan, scope, or break down work inside a Paperclip company.
+  The Paperclip way of converting a plan into executable tasks. "Use when
+  asked to plan, scope, or break down work inside a Paperclip company" —
+  e.g. "turn this plan into tasks", "break down the launch plan", "scope
+  this project for the team".
   Industry-agnostic guidance on how to translate a plan into assigned issues
   with the right specialty, dependencies, and parallelization so Paperclip's
   executor can pick up the work — it does not prescribe a plan format. Pair
@@ -32,17 +34,18 @@ Before or while creating tasks, write a compact task matrix with each planned ta
 
 After creating the tasks, re-fetch the created issues or otherwise verify the issue graph before marking the source planning issue done. Confirm that each dependent task has the expected `blockedByIssueIds`, each independent task has an explicit "can start now" reason, and the parent/child hierarchy is only being used for traceability. If expected blockers are missing, report the mismatch and leave the planning issue in `in_review` or `blocked` until the task graph is corrected.
 
-## Quick checklist before you publish a plan
+## Task-graph schema
 
-- [ ] Enough detail that assignees can act without re-asking.
-- [ ] Every concrete deliverable is an issue (or named as a known follow-up).
-- [ ] Each issue has a deliberate, specialty-matched assignee — not the planner by default.
-- [ ] Each issue's real blockers are declared via `blockedByIssueIds`.
-- [ ] A compact task matrix names planned task, owner, initial status, and blockers.
-- [ ] Tasks without blockers have an explicit reason they can start immediately.
-- [ ] Created issues were re-fetched or otherwise verified before closing the source planning issue.
-- [ ] Independent branches can start in parallel.
-- [ ] Gaps (missing skills, hires, decisions, external inputs) are surfaced, not hidden.
+Every published plan must reduce to this shape (one row per deliverable):
+
+```
+task:            <issue title — concrete deliverable>
+owner:           <specialty-matched assignee, planner only when best suited>
+status:          todo | blocked
+blockedByIssueIds: [<issue ids>]        # hard deps only; empty ⇒ state why it can start now
+parentId:        <traceability only — never used for execution blocking>
+gaps:            <missing skills / hires / decisions / external inputs, surfaced not hidden>
+```
 
 ## What this skill is not
 
