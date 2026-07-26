@@ -992,8 +992,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : createClaudeOutputInactivityMonitor({
             timeoutMs: inactivityResolution.timeoutMs,
             onFire: (state) => {
+              const elapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
+              const target = killTarget;
+              // Never report an inactivity failure we did not actually act on.
+              // The monitor is only armed from onSpawn, which the runtime calls
+              // with a real pid (and, off Windows, a process group), so this is
+              // a guard rather than an expected path — but latching `fired`
+              // without terminating anything would fail a run whose child may
+              // still be alive and may still succeed. Stay silent instead.
+              if (!target || (target.pid == null && target.processGroupId == null)) {
+                monitorLogPromise = Promise.resolve(
+                  onLog(
+                    "stderr",
+                    `[paperclip] adapter.invoke output-inactivity monitor reached ${inactivityResolution.timeoutMs}ms ` +
+                      "but no terminable child was recorded; leaving the run untouched rather than failing it. " +
+                      "The platform-level silent-run safety net still applies.\n",
+                  ),
+                ).catch(() => {});
+                return;
+              }
               monitorFired = true;
-              monitorElapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
+              monitorElapsedMs = elapsedMs;
               monitorTimeoutMs = inactivityResolution.timeoutMs;
               const message = formatOutputInactivityMonitorErrorMessage(monitorElapsedMs);
               const elapsedSec = Math.round(monitorElapsedMs / 1000);
@@ -1008,10 +1027,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               // the run resolves. Without this the diagnostic that explains the
               // kill could be dropped if the child exits faster than onLog flushes.
               monitorLogPromise = Promise.resolve(onLog("stderr", logLine)).catch(() => {});
-              const target = killTarget;
-              if (!target || (target.pid == null && target.processGroupId == null)) {
-                return;
-              }
               if (signalClaudeChild(target, "SIGTERM")) monitorTerminationSignal = "SIGTERM";
               sigkillTimer = setTimeout(() => {
                 sigkillTimer = null;
