@@ -7119,10 +7119,29 @@ export function issueRoutes(
       executionPolicy,
     }, actor);
     let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+    const intakeReceiverOrigin = intakeReceiverOriginForActor(req);
+    const intakeReceiverIdempotencyKey = intakeReceiverOrigin && createBody.idempotencyKey
+      ? [
+          "intake-receiver",
+          intakeReceiverOrigin.originId,
+          createHash("sha256").update(createBody.idempotencyKey).digest("hex"),
+        ].join(":")
+      : null;
     const issue = await svc.create(companyId, {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
-      ...(intakeReceiverOriginForActor(req) ?? {}),
+      ...(intakeReceiverOrigin
+        ? {
+            ...intakeReceiverOrigin,
+            idempotencyKey: intakeReceiverIdempotencyKey,
+            allowDuplicate: true,
+            deduplicationScope: {
+              ...intakeReceiverOrigin,
+              projectId: createBody.projectId!,
+              assigneeAgentId: createBody.assigneeAgentId!,
+            },
+          }
+        : {}),
       id: issueId,
       originRunId: createBody.originRunId ?? actor.runId,
       executionPolicy,

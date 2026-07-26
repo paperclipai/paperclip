@@ -606,6 +606,12 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
+  deduplicationScope?: {
+    originKind: string;
+    originId: string;
+    projectId: string;
+    assigneeAgentId: string;
+  };
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
 };
 type IssueChildCreateInput = IssueCreateInput & {
@@ -6246,6 +6252,7 @@ export function issueService(db: Db) {
         trustExplicitResponsibleUserId,
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
+        deduplicationScope,
         onDeduplicated,
         ...issueData
       } = data;
@@ -6307,6 +6314,18 @@ export function issueService(db: Db) {
             .limit(1)
             .then((rows) => rows.map((row) => row.issues));
           if (existingIssue) deduplicationReason = "idempotency_key";
+        }
+        if (
+          existingIssue &&
+          deduplicationScope &&
+          (
+            existingIssue.originKind !== deduplicationScope.originKind ||
+            existingIssue.originId !== deduplicationScope.originId ||
+            existingIssue.projectId !== deduplicationScope.projectId ||
+            existingIssue.assigneeAgentId !== deduplicationScope.assigneeAgentId
+          )
+        ) {
+          throw conflict("Idempotency key cannot be reused outside its authorization scope");
         }
         if (!existingIssue && allowDuplicate === false) {
           [existingIssue] = await tx
