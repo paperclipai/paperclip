@@ -609,8 +609,6 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   deduplicationScope?: {
     originKind: string;
     originId: string;
-    projectId: string;
-    assigneeAgentId: string;
   };
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
 };
@@ -6320,9 +6318,7 @@ export function issueService(db: Db) {
           deduplicationScope &&
           (
             existingIssue.originKind !== deduplicationScope.originKind ||
-            existingIssue.originId !== deduplicationScope.originId ||
-            existingIssue.projectId !== deduplicationScope.projectId ||
-            existingIssue.assigneeAgentId !== deduplicationScope.assigneeAgentId
+            existingIssue.originId !== deduplicationScope.originId
           )
         ) {
           throw conflict("Idempotency key cannot be reused outside its authorization scope");

@@ -261,6 +261,57 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     });
   });
 
+  it("replays a receiver issue after board-owned assignment fields change", async () => {
+    const { assigneeAgentId, companyId, project } = await seedReceiverFixture();
+    const receiver = await seedReceiverKey({ companyId, projectId: project.id, assigneeAgentId });
+    const app = createAuthenticatedApp();
+    const body = receiverIssue(project.id, assigneeAgentId, {
+      title: "[Uptime] staging API unavailable",
+      idempotencyKey: "uptime-failure-intake:moved-issue-replay",
+    });
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${receiver.token}`)
+      .send(body)
+      .expect(201);
+    const [otherProject] = await db.insert(projects).values({
+      companyId,
+      name: "Board triage",
+      status: "planned",
+    }).returning();
+    const otherAssigneeAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAssigneeAgentId,
+      companyId,
+      name: "Board-selected owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues)
+      .set({ projectId: otherProject.id, assigneeAgentId: otherAssigneeAgentId })
+      .where(eq(issues.id, first.body.id));
+
+    const replay = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${receiver.token}`)
+      .send(body)
+      .expect(200);
+
+    expect(replay.body).toMatchObject({
+      id: first.body.id,
+      projectId: otherProject.id,
+      assigneeAgentId: otherAssigneeAgentId,
+      deduplicated: true,
+      deduplicationReason: "idempotency_key",
+      originKind: "intake_receiver",
+      originId: receiver.keyId,
+    });
+  });
+
   it("does not disclose or bind another receiver issue on a cross-key idempotency collision", async () => {
     const { assigneeAgentId, companyId, project } = await seedReceiverFixture();
     const firstReceiver = await seedReceiverKey({ companyId, projectId: project.id, assigneeAgentId });

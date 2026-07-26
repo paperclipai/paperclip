@@ -7135,11 +7135,7 @@ export function issueRoutes(
             ...intakeReceiverOrigin,
             idempotencyKey: intakeReceiverIdempotencyKey,
             allowDuplicate: true,
-            deduplicationScope: {
-              ...intakeReceiverOrigin,
-              projectId: createBody.projectId!,
-              assigneeAgentId: createBody.assigneeAgentId!,
-            },
+            deduplicationScope: intakeReceiverOrigin,
           }
         : {}),
       id: issueId,
