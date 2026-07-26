@@ -2922,11 +2922,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
     actionId: string;
-    agentId: string;
   }) {
     const now = new Date();
-    const retryAgent = await getAgent(input.agentId);
-    const retryAgentNameKey = retryAgent?.name.trim().toLowerCase() || null;
     const retryBoundary = readProviderQuotaRetryBoundary({
       latestRun: input.latestRun,
       now,
@@ -2937,6 +2934,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const { retryAt, idempotencyKey } = retryBoundary;
     return db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${idempotencyKey}))`);
+      const lockedIssue = await tx
+        .select({ assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.issue.id),
+          eq(issues.companyId, input.issue.companyId),
+        ))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      const retryAgentId = lockedIssue?.assigneeAgentId ?? null;
+      if (!retryAgentId) return null;
+      const retryAgent = await tx
+        .select({ name: agents.name })
+        .from(agents)
+        .where(and(
+          eq(agents.id, retryAgentId),
+          eq(agents.companyId, input.issue.companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      const retryAgentNameKey = retryAgent?.name.trim().toLowerCase() || null;
       const keyedWakeups = await tx
         .select()
         .from(agentWakeupRequests)
@@ -2967,8 +2984,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ))
         .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
         .then((rows) => rows);
-      const existing = matchingRetries.find((retry) => retry.agentId === input.agentId) ?? null;
-      const staleRetries = matchingRetries.filter((retry) => retry.agentId !== input.agentId);
+      const existing = matchingRetries.find((retry) => retry.agentId === retryAgentId) ?? null;
+      const staleRetries = matchingRetries.filter((retry) => retry.agentId !== retryAgentId);
       if (staleRetries.length > 0) {
         const staleRunIds = staleRetries.map((retry) => retry.id);
         const staleWakeupIds = staleRetries.flatMap((retry) => retry.wakeupRequestId ? [retry.wakeupRequestId] : []);
@@ -2997,7 +3014,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       if (existing) {
         const wakeupRequestId = existing.wakeupRequestId ??
-          keyedWakeups.find((wakeup) => wakeup.agentId === input.agentId && wakeup.runId === existing.id)?.id ??
+          keyedWakeups.find((wakeup) => wakeup.agentId === retryAgentId && wakeup.runId === existing.id)?.id ??
           null;
         if (wakeupRequestId) {
           await tx
@@ -3014,9 +3031,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         await tx
           .update(issueRecoveryActions)
           .set({
+            returnOwnerAgentId: retryAgentId,
             monitorPolicy: {
               type: "wait_recovery",
-              retryAgentId: input.agentId,
+              retryAgentId,
               scheduledRunId: existing.id,
               retryAt: existingRetryAt.toISOString(),
             },
@@ -3046,7 +3064,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .insert(agentWakeupRequests)
         .values({
           companyId: input.issue.companyId,
-          agentId: input.agentId,
+          agentId: retryAgentId,
           source: "automation",
           triggerDetail: "system",
           reason: "provider_quota_recovery",
@@ -3068,7 +3086,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .insert(heartbeatRuns)
         .values({
           companyId: input.issue.companyId,
-          agentId: input.agentId,
+          agentId: retryAgentId,
           invocationSource: "automation",
           triggerDetail: "system",
           status: "scheduled_retry",
@@ -3095,9 +3113,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       await tx
         .update(issueRecoveryActions)
         .set({
+          returnOwnerAgentId: retryAgentId,
           monitorPolicy: {
             type: "wait_recovery",
-            retryAgentId: input.agentId,
+            retryAgentId,
             scheduledRunId: scheduledRun.id,
             retryAt: retryAt.toISOString(),
           },
@@ -3318,22 +3337,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issue: input.issue,
         latestRun: input.latestRun,
         actionId: recoveryAction.id,
-        agentId: recoveryAction.returnOwnerAgentId,
       });
     }
+    if (isProviderQuotaWait) {
+      return db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.issue.id),
+          eq(issues.companyId, input.issue.companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+    }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    const updated = await issuesSvc.update(input.issue.id, isProviderQuotaWait
-      ? {
-          status: input.issue.status,
-          assigneeAgentId: input.issue.assigneeAgentId,
-        }
-      : {
-          status: "blocked",
-          blockedByIssueIds: blockerIds,
-          assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
-        });
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      blockedByIssueIds: blockerIds,
+      assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+    });
     if (!updated) return null;
-    if (isProviderQuotaWait) return updated;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const recoveryOwner = recoveryAction.ownerAgentId ? await getAgent(recoveryAction.ownerAgentId) : null;

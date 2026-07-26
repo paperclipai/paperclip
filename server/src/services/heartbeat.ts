@@ -9710,12 +9710,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
     if (requiresIssueGate) {
+      // Max-turn scheduling revalidates the mutable execution lock after
+      // serializing on the issue row and coalescing an existing retry below.
+      // Checking it here lets a concurrent caller observe the first retry's
+      // adopted lock and reject instead of converging on that retry.
       const gate = await evaluateScheduledRetryGate({
         run,
         agent,
         contextSnapshot,
         retryReason,
-        enforceIssueExecutionLock: retryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
       });
       if (!gate.allowed) {
         await appendRunEvent(run, await nextRunEventSeq(run.id), {

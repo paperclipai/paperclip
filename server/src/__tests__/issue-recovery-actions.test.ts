@@ -550,6 +550,125 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     ]);
   });
 
+  it("preserves the current assignee's quota retry when recovery receives a stale issue snapshot", async () => {
+    const { companyId, managerId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+    const retryNotBefore = "2099-07-26T11:30:00.000Z";
+    const coderRunId = randomUUID();
+    const managerRunId = randomUUID();
+    const managerWakeupId = randomUUID();
+    const managerRetryId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: coderRunId,
+      issueId: sourceIssueId,
+      status: "failed",
+    });
+    await seedHeartbeatRun({
+      companyId,
+      agentId: managerId,
+      runId: managerRunId,
+      issueId: sourceIssueId,
+      status: "failed",
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: managerWakeupId,
+      companyId,
+      agentId: managerId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "provider_quota_recovery",
+      status: "queued",
+      requestedByActorType: "system",
+      idempotencyKey: `provider-quota-retry:${companyId}:${sourceIssueId}:${retryNotBefore}`,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: managerRetryId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "scheduled_retry",
+      wakeupRequestId: managerWakeupId,
+      retryOfRunId: managerRunId,
+      scheduledRetryAt: new Date(retryNotBefore),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "provider_quota_recovery",
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId: managerRetryId })
+      .where(eq(agentWakeupRequests.id, managerWakeupId));
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: managerId,
+        status: "in_progress",
+        executionRunId: managerRetryId,
+        executionAgentNameKey: "cto",
+      })
+      .where(eq(issues.id, sourceIssueId));
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: coderRunId,
+        agentId: coderId,
+        status: "failed",
+        error: "Provider quota exceeded.",
+        errorCode: "provider_quota",
+        contextSnapshot: { issueId: sourceIssueId },
+        livenessState: "needs_followup",
+        resultJson: { errorFamily: "provider_quota", retryNotBefore },
+      },
+      recoveryCause: "provider_quota",
+    });
+
+    const retryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "scheduled_retry"),
+      ));
+    expect(retryRuns).toEqual([
+      expect.objectContaining({ id: managerRetryId, agentId: managerId }),
+    ]);
+    const [currentWakeup] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, managerWakeupId));
+    expect(currentWakeup).toMatchObject({
+      status: "queued",
+      agentId: managerId,
+      runId: managerRetryId,
+      coalescedCount: 1,
+    });
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(action).toMatchObject({
+      returnOwnerAgentId: managerId,
+      monitorPolicy: {
+        type: "wait_recovery",
+        retryAgentId: managerId,
+        scheduledRunId: managerRetryId,
+        retryAt: retryNotBefore,
+      },
+    });
+    const [currentIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(currentIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: managerId,
+      executionRunId: managerRetryId,
+      executionAgentNameKey: "cto",
+    });
+  });
+
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const runId = randomUUID();
