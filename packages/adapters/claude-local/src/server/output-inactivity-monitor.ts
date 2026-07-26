@@ -142,6 +142,15 @@ export interface ClaudeOutputInactivityMonitorOptions {
 }
 
 export interface ClaudeOutputInactivityMonitorHandle {
+  /**
+   * Starts the deadline. Call this once the child process exists and can
+   * actually be terminated — the monitor stays dormant until then, so a slow
+   * execution-target startup can never fire it before there is anything to
+   * kill. Measuring from spawn is also the intended semantics: the window is
+   * "no output from a running claude", not "no output since we started
+   * preparing to run one". Subsequent calls are ignored.
+   */
+  noteSpawned(): void;
   noteStdoutChunk(chunk: string): void;
   /** Returns the current state without stopping the timer. */
   state(): ClaudeOutputInactivityMonitorState;
@@ -180,6 +189,9 @@ export function createClaudeOutputInactivityMonitor(
   const pendingTools = new Set<string>();
   let timerHandle: unknown = null;
   let stopped = false;
+  // Dormant until noteSpawned(): nothing arms the deadline before the child
+  // exists, so the monitor can never fire with no process to terminate.
+  let started = false;
 
   const suspend = () => {
     if (timerHandle != null) {
@@ -197,14 +209,20 @@ export function createClaudeOutputInactivityMonitor(
   };
 
   const arm = () => {
-    if (stopped || state.fired) return;
+    if (stopped || state.fired || !started) return;
     if (timerHandle != null) clearTimer(timerHandle);
     timerHandle = setTimer(fire, timeoutMs);
   };
 
-  arm();
-
   return {
+    noteSpawned() {
+      if (stopped || started) return;
+      started = true;
+      const spawnObservedAt = now();
+      state.spawnedAt = spawnObservedAt;
+      state.lastEventAt = spawnObservedAt;
+      arm();
+    },
     noteStdoutChunk(chunk: string) {
       if (stopped || state.fired) return;
       let sawHeartbeat = false;

@@ -180,6 +180,7 @@ describe("createClaudeOutputInactivityMonitor (fires)", () => {
         });
       },
     });
+    monitor.noteSpawned();
 
     // One stream-json event right after spawn.
     clock.advance(50);
@@ -211,6 +212,7 @@ describe("createClaudeOutputInactivityMonitor (fires)", () => {
         fireCount += 1;
       },
     });
+    monitor.noteSpawned();
     clock.advance(2_000);
     expect(fireCount).toBe(1);
     clock.advance(10_000);
@@ -230,6 +232,7 @@ describe("createClaudeOutputInactivityMonitor (fires)", () => {
         fireCount += 1;
       },
     });
+    monitor.noteSpawned();
     // Plain stderr-ish text should NOT reset the monitor.
     clock.advance(500);
     monitor.noteStdoutChunk("loading...\n");
@@ -254,6 +257,7 @@ describe("createClaudeOutputInactivityMonitor (does not fire)", () => {
         fireCount += 1;
       },
     });
+    monitor.noteSpawned();
 
     for (let i = 0; i < 12; i += 1) {
       clock.advance(timeoutMs - 1_000);
@@ -280,6 +284,7 @@ describe("createClaudeOutputInactivityMonitor (does not fire)", () => {
         fireCount += 1;
       },
     });
+    monitor.noteSpawned();
     clock.advance(500);
     monitor.noteStdoutChunk(
       '{"type":"system","subtype":"init"}\n{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n',
@@ -288,6 +293,84 @@ describe("createClaudeOutputInactivityMonitor (does not fire)", () => {
     clock.advance(999);
     expect(fireCount).toBe(0);
     clock.advance(1);
+    expect(fireCount).toBe(1);
+    monitor.stop();
+  });
+});
+
+describe("createClaudeOutputInactivityMonitor (spawn gating)", () => {
+  it("stays dormant until noteSpawned, so a slow startup cannot fire it with no child to kill", () => {
+    const clock = new FakeClock();
+    let fireCount = 0;
+    const timeoutMs = 25;
+    const monitor = createClaudeOutputInactivityMonitor({
+      timeoutMs,
+      now: () => clock.now(),
+      setTimer: (cb, ms) => clock.setTimer(cb, ms),
+      clearTimer: (handle) => clock.clearTimer(handle),
+      onFire: () => {
+        fireCount += 1;
+      },
+    });
+
+    // Execution-target startup takes far longer than the whole window.
+    clock.advance(timeoutMs * 100);
+    expect(fireCount).toBe(0);
+    expect(monitor.state().fired).toBe(false);
+
+    // Child finally exists; the deadline starts here, not at construction.
+    monitor.noteSpawned();
+    clock.advance(timeoutMs - 1);
+    expect(fireCount).toBe(0);
+
+    clock.advance(1);
+    expect(fireCount).toBe(1);
+    monitor.stop();
+  });
+
+  it("measures the window from spawn, not from construction", () => {
+    const clock = new FakeClock();
+    let fireCount = 0;
+    const timeoutMs = 1000;
+    const monitor = createClaudeOutputInactivityMonitor({
+      timeoutMs,
+      now: () => clock.now(),
+      setTimer: (cb, ms) => clock.setTimer(cb, ms),
+      clearTimer: (handle) => clock.clearTimer(handle),
+      onFire: () => {
+        fireCount += 1;
+      },
+    });
+
+    clock.advance(5000);
+    monitor.noteSpawned();
+    const state = monitor.state();
+    expect(state.spawnedAt).toBe(clock.now());
+    expect(state.lastEventAt).toBe(clock.now());
+
+    clock.advance(timeoutMs);
+    expect(fireCount).toBe(1);
+    monitor.stop();
+  });
+
+  it("ignores repeated noteSpawned calls so the deadline is not extended", () => {
+    const clock = new FakeClock();
+    let fireCount = 0;
+    const timeoutMs = 100;
+    const monitor = createClaudeOutputInactivityMonitor({
+      timeoutMs,
+      now: () => clock.now(),
+      setTimer: (cb, ms) => clock.setTimer(cb, ms),
+      clearTimer: (handle) => clock.clearTimer(handle),
+      onFire: () => {
+        fireCount += 1;
+      },
+    });
+
+    monitor.noteSpawned();
+    clock.advance(90);
+    monitor.noteSpawned();
+    clock.advance(10);
     expect(fireCount).toBe(1);
     monitor.stop();
   });
@@ -335,14 +418,18 @@ describe("readClaudeStreamToolActivity", () => {
 });
 
 describe("createClaudeOutputInactivityMonitor (tool-wait suspension)", () => {
-  const makeMonitor = (clock: FakeClock, timeoutMs: number, onFire: () => void) =>
-    createClaudeOutputInactivityMonitor({
+  const makeMonitor = (clock: FakeClock, timeoutMs: number, onFire: () => void) => {
+    const monitor = createClaudeOutputInactivityMonitor({
       timeoutMs,
       now: () => clock.now(),
       setTimer: (cb, ms) => clock.setTimer(cb, ms),
       clearTimer: (handle) => clock.clearTimer(handle),
       onFire,
     });
+    monitor.noteSpawned();
+    monitor.noteSpawned();
+    return monitor;
+  };
 
   it("does not fire while a dispatched tool has not yet returned, even far past the timeout", () => {
     const clock = new FakeClock();

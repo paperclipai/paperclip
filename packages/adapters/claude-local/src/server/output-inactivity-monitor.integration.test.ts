@@ -61,6 +61,8 @@ describe("claude inactivity monitor (integration: real subprocess)", () => {
           }, CLAUDE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
         },
       });
+      // The child is already spawned above; execute.ts does this from onSpawn.
+      monitor.noteSpawned();
 
       try {
         const proc = await runChildProcess(runId, process.execPath, ["-e", FAKE_CLAUDE_SCRIPT], {

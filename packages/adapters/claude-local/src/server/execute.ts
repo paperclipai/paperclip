@@ -1025,6 +1025,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const wrappedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
       killTarget = { pid: meta.pid ?? null, processGroupId: meta.processGroupId };
+      // Start the inactivity deadline only now: the target exists and can be
+      // terminated. Arming earlier would let a slow execution-target startup
+      // (remote SSH, image pull) burn the whole window before there is any
+      // child, failing a run that then goes on to succeed.
+      monitor?.noteSpawned();
       if (onSpawn) {
         await onSpawn(meta);
       }
