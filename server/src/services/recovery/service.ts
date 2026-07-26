@@ -3055,7 +3055,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             .where(and(
               eq(issues.id, input.issue.id),
               eq(issues.companyId, input.issue.companyId),
-              eq(issues.executionRunId, input.latestRun.id),
+              or(
+                isNull(issues.executionRunId),
+                eq(issues.executionRunId, input.latestRun.id),
+              ),
             ));
         }
         return existing;
@@ -3144,7 +3147,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           .where(and(
             eq(issues.id, input.issue.id),
             eq(issues.companyId, input.issue.companyId),
-            eq(issues.executionRunId, input.latestRun.id),
+            or(
+              isNull(issues.executionRunId),
+              eq(issues.executionRunId, input.latestRun.id),
+            ),
           ));
       }
       return scheduledRun;
@@ -3751,12 +3757,35 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : null;
       if (latestRun && adapterFailureClassification) {
         const targetAgentId = getAdapterFailureRecoveryTargetAgentId(issue);
-        if (!targetAgentId || latestRun.agentId !== targetAgentId) {
+        if (!targetAgentId) {
           result.skipped += 1;
           continue;
         }
 
         if (adapterFailureClassification.kind === "provider_quota") {
+          if (latestRun.agentId !== targetAgentId) {
+            const classifiedRun = withAdapterFailureRecoveryClassification(
+              latestRun,
+              adapterFailureClassification,
+            );
+            const recovered = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: issue.status as StrandedPreviousStatus,
+              latestRun: classifiedRun,
+              recoveryCause: "provider_quota",
+            });
+            if (recovered) {
+              latestRun = await persistAdapterFailureRecoveryClassification(
+                latestRun,
+                adapterFailureClassification,
+              );
+              result.providerQuotaMonitored += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
           const monitored = await scheduleProviderQuotaRecoveryMonitor({
             issue,
             latestRun,
@@ -3771,6 +3800,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
           continue;
         } else {
+          if (latestRun.agentId !== targetAgentId) {
+            result.skipped += 1;
+            continue;
+          }
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,

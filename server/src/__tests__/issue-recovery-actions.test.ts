@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -721,6 +721,107 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const secondResult = await recovery.reconcileStrandedAssignedIssues();
     expect(secondResult).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+  });
+
+  it("schedules one reset-boundary retry for the current assignee after provider-quota reassignment", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    const retryNotBefore = "2099-07-26T11:30:00.000Z";
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "failed",
+      error: "You've hit your session limit · resets 7:30am (America/New_York)",
+      errorCode: "provider_quota",
+      startedAt: new Date("2026-07-26T09:00:00.000Z"),
+      finishedAt: new Date("2026-07-26T09:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+      resultJson: { errorFamily: "provider_quota", retryNotBefore },
+    });
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: managerId,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      })
+      .where(eq(issues.id, sourceIssueId));
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const firstResult = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(firstResult).toMatchObject({ providerQuotaMonitored: 1, skipped: 0 });
+    const retryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "scheduled_retry"),
+      ));
+    expect(retryRuns).toEqual([
+      expect.objectContaining({
+        agentId: managerId,
+        retryOfRunId: runId,
+        scheduledRetryAt: new Date(retryNotBefore),
+        scheduledRetryReason: "provider_quota_recovery",
+      }),
+    ]);
+    const scheduledRetry = retryRuns[0]!;
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups).toEqual([
+      expect.objectContaining({
+        agentId: managerId,
+        runId: scheduledRetry.id,
+        status: "queued",
+        idempotencyKey: `provider-quota-retry:${companyId}:${sourceIssueId}:${retryNotBefore}`,
+      }),
+    ]);
+    const [currentIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(currentIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: managerId,
+      executionRunId: scheduledRetry.id,
+      executionAgentNameKey: "cto",
+    });
+    const [action] = await db.select().from(issueRecoveryActions);
+    expect(action).toMatchObject({
+      ownerType: "system",
+      ownerAgentId: null,
+      returnOwnerAgentId: managerId,
+      monitorPolicy: {
+        type: "wait_recovery",
+        retryAgentId: managerId,
+        scheduledRunId: scheduledRetry.id,
+        retryAt: retryNotBefore,
+      },
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    const secondResult = await recovery.reconcileStrandedAssignedIssues();
+    expect(secondResult).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+    expect(
+      await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.status, "scheduled_retry")),
+    ).toHaveLength(1);
+    expect(
+      await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+        )),
+    ).toHaveLength(0);
   });
 
   it("schedules another provider-quota monitor after a prior quota monitor fired", async () => {
