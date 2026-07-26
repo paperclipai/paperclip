@@ -609,6 +609,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         executionAgentNameKey: "cto",
       })
       .where(eq(issues.id, sourceIssueId));
+    await db
+      .update(agents)
+      .set({ status: "paused" })
+      .where(eq(agents.id, coderId));
 
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
     await recovery.escalateStrandedAssignedIssue({
@@ -652,6 +656,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
     expect(action).toMatchObject({
+      ownerType: "system",
+      ownerAgentId: null,
       returnOwnerAgentId: managerId,
       monitorPolicy: {
         type: "wait_recovery",

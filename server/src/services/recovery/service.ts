@@ -2478,21 +2478,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const routeToOriginal = input.recoveryCause === "process_lost" ||
       input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
       input.recoveryCause === "codex_output_inactivity_monitor";
-    if (input.recoveryCause === "provider_quota") {
-      const retryAgentId = await resolveInvokableRecoveryAgentId(input.issue, originalAgentId);
-      if (!retryAgentId) {
-        return {
-          ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(input.issue),
-          returnOwnerAgentId: originalAgentId,
-          routingFallbackReason: "The original assignee is not invokable; quota recovery fell through to the manager ladder.",
-        };
-      }
-      return {
-        ownerAgentId: null,
-        returnOwnerAgentId: retryAgentId,
-        routingFallbackReason: null,
-      };
-    }
     if (routeToOriginal) {
       const ownerAgentId = await resolveInvokableRecoveryAgentId(input.issue, originalAgentId);
       if (ownerAgentId) {
@@ -2761,12 +2746,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
-    const routing = await resolveStrandedRecoveryRouting({
-      issue: input.issue,
-      latestRun: input.latestRun,
-      recoveryCause,
-      preferredOwnerAgentId: input.recoveryOwnerAgentId,
-    });
+    // Quota routing is reconciled from the locked live issue row below. A caller
+    // snapshot may name a former, now non-invokable assignee and must not select
+    // a takeover owner before the canonical retry has a chance to coalesce.
+    const routing = recoveryCause === "provider_quota"
+      ? {
+        ownerAgentId: null,
+        returnOwnerAgentId: input.issue.assigneeAgentId ?? input.latestRun?.agentId ?? null,
+        routingFallbackReason: null,
+      }
+      : await resolveStrandedRecoveryRouting({
+        issue: input.issue,
+        latestRun: input.latestRun,
+        recoveryCause,
+        preferredOwnerAgentId: input.recoveryOwnerAgentId,
+      });
     const ownerAgentId = routing.ownerAgentId;
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
@@ -3031,7 +3025,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         await tx
           .update(issueRecoveryActions)
           .set({
+            ownerType: "system",
+            ownerAgentId: null,
+            ownerUserId: null,
             returnOwnerAgentId: retryAgentId,
+            wakePolicy: {
+              type: "monitor_only",
+              reason: "provider_quota",
+            },
             monitorPolicy: {
               type: "wait_recovery",
               retryAgentId,
@@ -3113,7 +3114,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       await tx
         .update(issueRecoveryActions)
         .set({
+          ownerType: "system",
+          ownerAgentId: null,
+          ownerUserId: null,
           returnOwnerAgentId: retryAgentId,
+          wakePolicy: {
+            type: "monitor_only",
+            reason: "provider_quota",
+          },
           monitorPolicy: {
             type: "wait_recovery",
             retryAgentId,
@@ -3329,16 +3337,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryOwnerAgentId: input.recoveryOwnerAgentId,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
-    const isProviderQuotaWait = recoveryCause === "provider_quota" &&
-      !recoveryAction.ownerAgentId &&
-      Boolean(recoveryAction.returnOwnerAgentId);
-    if (isProviderQuotaWait && recoveryAction.returnOwnerAgentId) {
-      await ensureProviderQuotaWaitRecoveryMonitor({
+    const providerQuotaRetry = recoveryCause === "provider_quota"
+      ? await ensureProviderQuotaWaitRecoveryMonitor({
         issue: input.issue,
         latestRun: input.latestRun,
         actionId: recoveryAction.id,
-      });
-    }
+      })
+      : null;
+    const isProviderQuotaWait = providerQuotaRetry !== null;
     if (isProviderQuotaWait) {
       return db
         .select()
