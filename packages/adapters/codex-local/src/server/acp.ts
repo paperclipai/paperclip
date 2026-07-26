@@ -447,7 +447,7 @@ async function findCodexAppServerBinaryOnPath(): Promise<string | null> {
  * An explicit CODEX_PATH (adapter config env or host env) always wins, and
  * remote targets are left alone because a host path is meaningless there.
  */
-async function withCodexAppServerCodexPathDefault(
+export async function withCodexAppServerCodexPathDefault(
   config: Record<string, unknown>,
   ctx: Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
 ): Promise<Record<string, unknown>> {
