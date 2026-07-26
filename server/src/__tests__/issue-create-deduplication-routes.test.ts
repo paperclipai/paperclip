@@ -7,6 +7,7 @@ import {
   activityLog,
   agentApiKeys,
   agentRuntimeState,
+  agentWakeupRequests,
   agents,
   authUsers,
   companies,
@@ -56,6 +57,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     await db.delete(issues);
     await db.delete(agentRuntimeState);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agentApiKeys);
     await db.delete(companyMemberships);
     await db.delete(projects);
