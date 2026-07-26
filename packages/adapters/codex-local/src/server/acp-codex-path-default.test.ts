@@ -105,6 +105,18 @@ describe("withCodexAppServerCodexPathDefault", () => {
     expect(result).toBe(config);
   });
 
+  it("skips symlinks that target a shell wrapper", async () => {
+    delete process.env.CODEX_PATH;
+    const dir = await makeTempDir();
+    const wrapper = path.join(dir, "codex-wrapper.sh");
+    await writeExecutable(wrapper, "#!/usr/bin/env bash\nexec codex \"$@\"\n");
+    await fs.symlink(wrapper, path.join(dir, "codex"));
+    process.env.PATH = dir;
+    const config = { agent: "codex" };
+    const result = await withCodexAppServerCodexPathDefault(config, {});
+    expect(result).toBe(config);
+  });
+
   it("skips broken symlinks named codex", async () => {
     delete process.env.CODEX_PATH;
     const dir = await makeTempDir();

@@ -426,10 +426,12 @@ async function isExecutableFile(candidate: string): Promise<boolean> {
 async function isCodexAppServerCapableBinary(candidate: string): Promise<boolean> {
   if (!(await isExecutableFile(candidate))) return false;
   if (process.platform === "win32") return true;
+  // Resolve symlinks so a symlinked shell wrapper is classified by its
+  // target, not accepted sight-unseen.
+  const resolved = await fs.realpath(candidate).catch(() => null);
+  if (!resolved) return false;
   try {
-    const stat = await fs.lstat(candidate);
-    if (stat.isSymbolicLink()) return true;
-    const handle = await fs.open(candidate, "r");
+    const handle = await fs.open(resolved, "r");
     try {
       const buffer = Buffer.alloc(256);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
