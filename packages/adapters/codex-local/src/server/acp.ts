@@ -397,14 +397,35 @@ async function findAncestorBin(startDir: string, binName: string): Promise<strin
   }
 }
 
+const CODEX_PATH_CANDIDATE_NAMES =
+  process.platform === "win32"
+    ? ["codex.cmd", "codex.exe", "codex.bat", "codex"]
+    : ["codex"];
+
+/** Regular, executable file (follows symlinks; mode bits ignored on win32). */
+async function isExecutableFile(candidate: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(candidate);
+    if (!stat.isFile()) return false;
+    if (process.platform === "win32") return true;
+    return (stat.mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * True when a PATH candidate looks like a real Codex CLI entrypoint (a node/
  * bun script, a compiled binary, or a symlink to one) rather than a shell
  * wrapper. Terminal-multiplexer and launcher shims (e.g. cmux-cli-shims)
  * intercept interactive `codex` CLI calls and hang or swallow the
  * `codex app-server` stdio protocol, so they must not be picked as CODEX_PATH.
+ * On Windows the npm-installed entrypoint IS a .cmd/.bat shell shim, so the
+ * wrapper filter only applies to POSIX platforms.
  */
 async function isCodexAppServerCapableBinary(candidate: string): Promise<boolean> {
+  if (!(await isExecutableFile(candidate))) return false;
+  if (process.platform === "win32") return true;
   try {
     const stat = await fs.lstat(candidate);
     if (stat.isSymbolicLink()) return true;
@@ -428,9 +449,11 @@ async function findCodexAppServerBinaryOnPath(): Promise<string | null> {
   const pathValue = process.env.PATH ?? "";
   for (const segment of pathValue.split(path.delimiter)) {
     if (!segment) continue;
-    const candidate = path.join(segment, "codex");
-    if (!(await pathExists(candidate))) continue;
-    if (await isCodexAppServerCapableBinary(candidate)) return candidate;
+    for (const name of CODEX_PATH_CANDIDATE_NAMES) {
+      const candidate = path.join(segment, name);
+      if (!(await pathExists(candidate))) continue;
+      if (await isCodexAppServerCapableBinary(candidate)) return candidate;
+    }
   }
   return null;
 }

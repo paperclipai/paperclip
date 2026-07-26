@@ -94,4 +94,24 @@ describe("withCodexAppServerCodexPathDefault", () => {
     const result = await withCodexAppServerCodexPathDefault(config, {});
     expect(result).toBe(config);
   });
+
+  it("skips non-executable files named codex", async () => {
+    delete process.env.CODEX_PATH;
+    const dir = await makeTempDir();
+    await fs.writeFile(path.join(dir, "codex"), "#!/usr/bin/env node\n", { mode: 0o644 });
+    process.env.PATH = dir;
+    const config = { agent: "codex" };
+    const result = await withCodexAppServerCodexPathDefault(config, {});
+    expect(result).toBe(config);
+  });
+
+  it("skips broken symlinks named codex", async () => {
+    delete process.env.CODEX_PATH;
+    const dir = await makeTempDir();
+    await fs.symlink(path.join(dir, "does-not-exist.js"), path.join(dir, "codex"));
+    process.env.PATH = dir;
+    const config = { agent: "codex" };
+    const result = await withCodexAppServerCodexPathDefault(config, {});
+    expect(result).toBe(config);
+  });
 });
