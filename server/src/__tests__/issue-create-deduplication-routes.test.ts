@@ -7,7 +7,9 @@ import {
   activityLog,
   agentApiKeys,
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   issueCreateIdempotencyKeys,
@@ -53,9 +55,11 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agentApiKeys);
+    await db.delete(companyMemberships);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -110,6 +114,23 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     const agentId = randomUUID();
     const keyId = randomUUID();
     const token = `receiver-${randomUUID()}`;
+    const responsibleUserId = `receiver-owner-${randomUUID()}`;
+    await db.insert(authUsers).values({
+      id: responsibleUserId,
+      name: "Receiver owner",
+      email: `${responsibleUserId}@example.com`,
+      emailVerified: true,
+      image: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({
+      companyId: input.companyId,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
     await db.insert(agents).values({
       id: agentId,
       companyId: input.companyId,
@@ -127,7 +148,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       agentId,
       name: "uptime intake receiver",
       keyHash: createHash("sha256").update(token).digest("hex"),
-      responsibleUserId: "local-board",
+      responsibleUserId,
       scopeConfig: {
         kind: "intake_receiver",
         projectId: input.projectId,
