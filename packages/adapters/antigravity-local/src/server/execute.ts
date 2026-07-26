@@ -134,6 +134,7 @@ export function buildAntigravityArgs(input: {
   sandbox: boolean;
   extraDirs: string[];
   extraArgs: string[];
+  model?: string | null;
 }): string[] {
   const args = ["--print", input.prompt];
   if (input.printTimeout) args.push("--print-timeout", input.printTimeout);
@@ -141,6 +142,23 @@ export function buildAntigravityArgs(input: {
   if (input.autoApprove) args.push("--dangerously-skip-permissions");
   if (input.sandbox) args.push("--sandbox");
   for (const dir of input.extraDirs) args.push("--add-dir", dir);
+  // Pass the configured model through to `agy --model`.
+  //
+  // Until 2026-07-26 this adapter never emitted --model at all, so EVERY agy lane ran on
+  // whatever agy's session default was, and `config.model` was silently ignored — no effect,
+  // no warning. That is why the lane-health guard carried 25 standing "antigravity_local agents
+  // naming a Gemini model the adapter never selects" findings, and why the Google plan's
+  // Claude Opus 4.6 / Claude Sonnet 4.6 / GPT-OSS 120B bands — which sit on usage allowances
+  // SEPARATE from Gemini's and which we pay for — had never been consumed at all.
+  //
+  // ⚠ agy model ids are the DISPLAY NAMES verbatim, effort included:
+  //     "Claude Opus 4.6 (Thinking)"   "GPT-OSS 120B (Medium)"   "Gemini 3.1 Pro (High)"
+  // The dashed internal form (`claude-opus-4-6`) that appears under ~/.gemini is REJECTED with
+  // "not recognized as a known model". Pass config.model straight through, unmangled.
+  //
+  // Emitted before extraArgs so an explicit extraArgs --model still wins — that was the
+  // pre-existing workaround and some agents/bench entries may still rely on it.
+  if (input.model && input.model.trim().length > 0) args.push("--model", input.model.trim());
   if (input.extraArgs.length > 0) args.push(...input.extraArgs);
   return args;
 }
@@ -328,6 +346,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return asStringArray(config.args);
     })();
 
+    // Read the configured model so it can be passed to `agy --model`. Previously nothing read
+    // config.model for this adapter, so setting it on an agent did nothing and said nothing.
+    const model = asString(config.model, "").trim();
+
     const runAttempt = async (resumeSessionId: string | null) => {
       const args = buildAntigravityArgs({
         prompt,
@@ -337,6 +359,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sandbox,
         extraDirs,
         extraArgs,
+        model,
       });
       if (onMeta) {
         await onMeta({
