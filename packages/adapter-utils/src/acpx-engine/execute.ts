@@ -2089,13 +2089,51 @@ function usdCostAmount(cost: AcpRuntimeUsageCost | null | undefined): number | n
   return cost.amount;
 }
 
+// Pre-turn ACPX RPCs (session handshake, session config, status snapshot) run
+// BEFORE the per-turn abort/timeout guard (see `timeout`/`controller` below,
+// armed only once `runtime.startTurn` is about to be called). None of them
+// carry their own timeout, so a warm-handle reused against a child process
+// that died or wedged (no error, no response) hangs the `await` forever —
+// the run then sits at status="running" with no processPid recorded for
+// this run (a reused handle never re-fires `onSpawn`), until the platform's
+// periodic stale-run reaper reaps it with a generic "Process lost" message
+// after its multi-minute threshold. Bound every pre-turn RPC with this
+// wrapper so a dead/unresponsive child fails the run promptly and
+// diagnosably instead of relying on that external reaper.
+const ACPX_SESSION_SETUP_TIMEOUT_MS = 60_000;
+
+async function withAcpxSetupTimeout<T>(
+  label: string,
+  operation: Promise<T>,
+  timeoutMs = ACPX_SESSION_SETUP_TIMEOUT_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new Error(
+              `ACPX ${label} timed out after ${timeoutMs}ms with no response from the agent process ` +
+                `(it may be dead or unresponsive).`,
+            ),
+          );
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function readRuntimeStatus(
   runtime: AcpRuntime,
   handle: AcpRuntimeHandle,
 ): Promise<AcpRuntimeStatus | null> {
   if (!runtime.getStatus) return null;
   try {
-    return (await runtime.getStatus({ handle })) ?? null;
+    return (await withAcpxSetupTimeout("status snapshot", runtime.getStatus({ handle }))) ?? null;
   } catch {
     return null;
   }
@@ -2614,14 +2652,17 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // resume). A throwing handshake still reports its duration before the
           // resume-retry path below runs.
           handle = await measureStartupStep(ctx, now, "acp.handshake", () =>
-            runtime.ensureSession({
-              sessionKey: prepared.sessionKey,
-              agent: prepared.acpxAgent,
-              mode: prepared.mode,
-              cwd: prepared.cwd,
-              resumeSessionId,
-              sessionOptions: { env: prepared.env },
-            }),
+            withAcpxSetupTimeout(
+              "session handshake",
+              runtime.ensureSession({
+                sessionKey: prepared.sessionKey,
+                agent: prepared.acpxAgent,
+                mode: prepared.mode,
+                cwd: prepared.cwd,
+                resumeSessionId,
+                sessionOptions: { env: prepared.env },
+              }),
+            ),
           );
         } catch (err) {
           if (!resumeSessionId || !isResumeFailure(err)) throw err;
@@ -2632,13 +2673,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
           );
           handle = await measureStartupStep(ctx, now, "acp.handshake", () =>
-            runtime.ensureSession({
-              sessionKey: prepared.sessionKey,
-              agent: prepared.acpxAgent,
-              mode: prepared.mode,
-              cwd: prepared.cwd,
-              sessionOptions: { env: prepared.env },
-            }),
+            withAcpxSetupTimeout(
+              "session handshake",
+              runtime.ensureSession({
+                sessionKey: prepared.sessionKey,
+                agent: prepared.acpxAgent,
+                mode: prepared.mode,
+                cwd: prepared.cwd,
+                sessionOptions: { env: prepared.env },
+              }),
+            ),
           );
         }
       }
@@ -2682,12 +2726,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     }
     const sessionHandle = handle;
     try {
-      await applySessionConfigOptions({
-        runtime,
-        handle: sessionHandle,
-        prepared,
-        onLog: ctx.onLog,
-      });
+      await withAcpxSetupTimeout(
+        "session configure",
+        applySessionConfigOptions({
+          runtime,
+          handle: sessionHandle,
+          prepared,
+          onLog: ctx.onLog,
+        }),
+      );
     } catch (err) {
       const { classified, message } = await emitAcpxFailure({
         ctx,
