@@ -2879,9 +2879,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
   }
 
-  function readProviderQuotaRetryAt(latestRun: LatestIssueRun, now: Date) {
-    const result = parseObject(latestRun?.resultJson);
-    const context = parseObject(latestRun?.contextSnapshot);
+  function readProviderQuotaRetryBoundary(input: {
+    latestRun: LatestIssueRun;
+    now: Date;
+    actionId: string;
+    companyId: string;
+    issueId: string;
+  }) {
+    const result = parseObject(input.latestRun?.resultJson);
+    const context = parseObject(input.latestRun?.contextSnapshot);
     const raw = result.providerQuotaRetryNotBefore ??
       result.retryNotBefore ??
       result.transientRetryNotBefore ??
@@ -2889,9 +2895,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       context.transientRetryNotBefore;
     if (typeof raw === "string" || typeof raw === "number" || raw instanceof Date) {
       const parsed = new Date(raw);
-      if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > now.getTime()) return parsed;
+      if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > input.now.getTime()) {
+        return {
+          retryAt: parsed,
+          resetBoundary: parsed,
+          idempotencyKey: buildProviderQuotaRetryIdempotencyKey({
+            companyId: input.companyId,
+            issueId: input.issueId,
+            retryNotBefore: parsed,
+          }),
+        };
+      }
     }
-    return new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
+    return {
+      retryAt: new Date(input.now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      resetBoundary: null,
+      idempotencyKey: buildProviderQuotaRetryIdempotencyKey({
+        companyId: input.companyId,
+        issueId: input.issueId,
+        fallbackBoundary: `recovery-action:${input.actionId}`,
+      }),
+    };
   }
 
   async function ensureProviderQuotaWaitRecoveryMonitor(input: {
@@ -2901,49 +2925,78 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     agentId: string;
   }) {
     const now = new Date();
-    const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
-    const idempotencyKey = buildProviderQuotaRetryIdempotencyKey({
+    const retryBoundary = readProviderQuotaRetryBoundary({
+      latestRun: input.latestRun,
+      now,
+      actionId: input.actionId,
       companyId: input.issue.companyId,
       issueId: input.issue.id,
-      retryNotBefore: retryAt,
     });
+    const { retryAt, idempotencyKey } = retryBoundary;
     return db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${idempotencyKey}))`);
-      const existingWakeup = await tx
+      const keyedWakeups = await tx
         .select()
         .from(agentWakeupRequests)
         .where(and(
           eq(agentWakeupRequests.companyId, input.issue.companyId),
           eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
         ))
-        .orderBy(asc(agentWakeupRequests.createdAt), asc(agentWakeupRequests.id))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      const idempotentRetry = existingWakeup?.runId
-        ? await tx
-            .select()
-            .from(heartbeatRuns)
-            .where(and(
-              eq(heartbeatRuns.companyId, input.issue.companyId),
-              eq(heartbeatRuns.id, existingWakeup.runId),
-              eq(heartbeatRuns.status, "scheduled_retry"),
-            ))
-            .then((rows) => rows[0] ?? null)
-        : null;
-      const existing = idempotentRetry ?? await tx
+        .orderBy(asc(agentWakeupRequests.createdAt), asc(agentWakeupRequests.id));
+      const keyedRunIds = keyedWakeups.flatMap((wakeup) => wakeup.runId ? [wakeup.runId] : []);
+      const boundaryCondition = retryBoundary.resetBoundary
+        ? keyedRunIds.length > 0
+          ? or(
+              inArray(heartbeatRuns.id, keyedRunIds),
+              eq(heartbeatRuns.scheduledRetryAt, retryBoundary.resetBoundary),
+            )
+          : eq(heartbeatRuns.scheduledRetryAt, retryBoundary.resetBoundary)
+        : keyedRunIds.length > 0
+          ? inArray(heartbeatRuns.id, keyedRunIds)
+          : sql`false`;
+      const matchingRetries = await tx
         .select()
         .from(heartbeatRuns)
         .where(and(
           eq(heartbeatRuns.companyId, input.issue.companyId),
           eq(heartbeatRuns.status, "scheduled_retry"),
-          eq(heartbeatRuns.scheduledRetryAt, retryAt),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
+          boundaryCondition,
         ))
         .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows);
+      const existing = matchingRetries.find((retry) => retry.agentId === input.agentId) ?? null;
+      const staleRetries = matchingRetries.filter((retry) => retry.agentId !== input.agentId);
+      if (staleRetries.length > 0) {
+        const staleRunIds = staleRetries.map((retry) => retry.id);
+        const staleWakeupIds = staleRetries.flatMap((retry) => retry.wakeupRequestId ? [retry.wakeupRequestId] : []);
+        const supersededReason = "Scheduled provider-quota retry superseded because issue ownership changed";
+        await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: supersededReason,
+            errorCode: "issue_reassigned",
+            updatedAt: now,
+          })
+          .where(inArray(heartbeatRuns.id, staleRunIds));
+        if (staleWakeupIds.length > 0) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: supersededReason,
+              updatedAt: now,
+            })
+            .where(inArray(agentWakeupRequests.id, staleWakeupIds));
+        }
+      }
       if (existing) {
-        const wakeupRequestId = existing.wakeupRequestId ?? existingWakeup?.id ?? null;
+        const wakeupRequestId = existing.wakeupRequestId ??
+          keyedWakeups.find((wakeup) => wakeup.agentId === input.agentId && wakeup.runId === existing.id)?.id ??
+          null;
         if (wakeupRequestId) {
           await tx
             .update(agentWakeupRequests)
@@ -2953,6 +3006,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             })
             .where(eq(agentWakeupRequests.id, wakeupRequestId));
         }
+        const existingRetryAt = existing.scheduledRetryAt
+          ? new Date(existing.scheduledRetryAt)
+          : retryAt;
         await tx
           .update(issueRecoveryActions)
           .set({
@@ -2960,9 +3016,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               type: "wait_recovery",
               retryAgentId: input.agentId,
               scheduledRunId: existing.id,
-              retryAt: retryAt.toISOString(),
+              retryAt: existingRetryAt.toISOString(),
             },
-            timeoutAt: retryAt,
+            timeoutAt: existingRetryAt,
             updatedAt: now,
           })
           .where(eq(issueRecoveryActions.id, input.actionId));

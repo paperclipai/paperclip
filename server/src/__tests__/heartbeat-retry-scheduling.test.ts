@@ -342,6 +342,17 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       retryNotBefore,
       adapterType: "claude_local",
     });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Retry after the shared quota reset",
+      status: "in_progress",
+      priority: "high",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-1`,
+    });
     await db.insert(heartbeatRuns).values({
       id: secondRunId,
       companyId,

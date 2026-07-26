@@ -9827,42 +9827,122 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await tx.execute(
           sql`select pg_advisory_xact_lock(hashtext(${providerQuotaRetryBoundary.idempotencyKey}))`,
         );
-        const existingWakeup = await tx
+        const lockedIssue = await tx
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+          })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, run.companyId),
+            eq(issues.id, providerQuotaRetryBoundary.issueId),
+          ))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedIssue) {
+          return {
+            outcome: "not_scheduled",
+            reason: "Scheduled provider-quota retry suppressed because the target issue no longer exists",
+            errorCode: "issue_not_found",
+            issueId: providerQuotaRetryBoundary.issueId,
+            details: { issueId: providerQuotaRetryBoundary.issueId },
+          };
+        }
+        if (lockedIssue.assigneeAgentId !== run.agentId) {
+          return {
+            outcome: "not_scheduled",
+            reason: "Scheduled provider-quota retry suppressed because issue ownership changed",
+            errorCode: "issue_reassigned",
+            issueId: providerQuotaRetryBoundary.issueId,
+            details: {
+              issueId: providerQuotaRetryBoundary.issueId,
+              previousAssigneeAgentId: run.agentId,
+              currentAssigneeAgentId: lockedIssue.assigneeAgentId,
+            },
+          };
+        }
+        if (lockedIssue.status === "cancelled" || lockedIssue.status === "done") {
+          return {
+            outcome: "not_scheduled",
+            reason: `Scheduled provider-quota retry suppressed because issue reached terminal status (${lockedIssue.status})`,
+            errorCode: lockedIssue.status === "cancelled" ? "issue_cancelled" : "issue_terminal_status",
+            issueId: providerQuotaRetryBoundary.issueId,
+            details: { issueId: providerQuotaRetryBoundary.issueId, currentStatus: lockedIssue.status },
+          };
+        }
+        if (lockedIssue.status !== "in_progress") {
+          return {
+            outcome: "not_scheduled",
+            reason: `Scheduled provider-quota retry suppressed because issue is no longer in_progress (current status: ${lockedIssue.status})`,
+            errorCode: "issue_not_in_progress",
+            issueId: providerQuotaRetryBoundary.issueId,
+            details: {
+              issueId: providerQuotaRetryBoundary.issueId,
+              currentStatus: lockedIssue.status,
+              requiredStatus: "in_progress",
+            },
+          };
+        }
+
+        const keyedWakeups = await tx
           .select()
           .from(agentWakeupRequests)
           .where(and(
             eq(agentWakeupRequests.companyId, run.companyId),
             eq(agentWakeupRequests.idempotencyKey, providerQuotaRetryBoundary.idempotencyKey),
           ))
-          .orderBy(asc(agentWakeupRequests.createdAt), asc(agentWakeupRequests.id))
-          .limit(1)
-          .then((rows) => rows[0] ?? null);
-        const idempotentRetry = existingWakeup?.runId
-          ? await tx
-              .select()
-              .from(heartbeatRuns)
-              .where(and(
-                eq(heartbeatRuns.companyId, run.companyId),
-                eq(heartbeatRuns.id, existingWakeup.runId),
-                eq(heartbeatRuns.status, "scheduled_retry"),
-              ))
-              .then((rows) => rows[0] ?? null)
-          : null;
-        const existingRetry = idempotentRetry ?? await tx
+          .orderBy(asc(agentWakeupRequests.createdAt), asc(agentWakeupRequests.id));
+        const keyedRunIds = keyedWakeups.flatMap((wakeup) => wakeup.runId ? [wakeup.runId] : []);
+        const matchingRetries = await tx
           .select()
           .from(heartbeatRuns)
           .where(and(
             eq(heartbeatRuns.companyId, run.companyId),
             eq(heartbeatRuns.status, "scheduled_retry"),
-            eq(heartbeatRuns.scheduledRetryAt, providerQuotaRetryBoundary.retryNotBefore),
             sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${providerQuotaRetryBoundary.issueId}`,
+            keyedRunIds.length > 0
+              ? or(
+                  inArray(heartbeatRuns.id, keyedRunIds),
+                  eq(heartbeatRuns.scheduledRetryAt, providerQuotaRetryBoundary.retryNotBefore),
+                )
+              : eq(heartbeatRuns.scheduledRetryAt, providerQuotaRetryBoundary.retryNotBefore),
           ))
           .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
-          .limit(1)
-          .then((rows) => rows[0] ?? null);
+          .then((rows) => rows);
+        const existingRetry = matchingRetries.find((retry) => retry.agentId === run.agentId) ?? null;
+        const staleRetries = matchingRetries.filter((retry) => retry.agentId !== run.agentId);
+        if (staleRetries.length > 0) {
+          const staleRunIds = staleRetries.map((retry) => retry.id);
+          const staleWakeupIds = staleRetries.flatMap((retry) => retry.wakeupRequestId ? [retry.wakeupRequestId] : []);
+          const supersededReason = "Scheduled provider-quota retry superseded because issue ownership changed";
+          await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: supersededReason,
+              errorCode: "issue_reassigned",
+              updatedAt: now,
+            })
+            .where(inArray(heartbeatRuns.id, staleRunIds));
+          if (staleWakeupIds.length > 0) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: now,
+                error: supersededReason,
+                updatedAt: now,
+              })
+              .where(inArray(agentWakeupRequests.id, staleWakeupIds));
+          }
+        }
 
         if (existingRetry) {
-          const wakeupRequestId = existingRetry.wakeupRequestId ?? existingWakeup?.id ?? null;
+          const wakeupRequestId = existingRetry.wakeupRequestId ??
+            keyedWakeups.find((wakeup) => wakeup.agentId === run.agentId && wakeup.runId === existingRetry.id)?.id ??
+            null;
           if (wakeupRequestId) {
             await tx
               .update(agentWakeupRequests)

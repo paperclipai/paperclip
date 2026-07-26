@@ -380,6 +380,147 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
+  it("coalesces reset-less provider-quota recovery passes on one stable fallback retry", async () => {
+    const { companyId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "Provider quota exceeded without a reset timestamp.",
+      errorCode: "provider_quota",
+      contextSnapshot: { issueId: sourceIssueId },
+      livenessState: "needs_followup",
+      resultJson: { errorFamily: "provider_quota" },
+    } as const;
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: latestRun.id,
+      issueId: sourceIssueId,
+      status: "failed",
+    });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun,
+      recoveryCause: "provider_quota",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun,
+      recoveryCause: "provider_quota",
+    });
+
+    const retryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "scheduled_retry"),
+      ));
+    expect(retryRuns).toHaveLength(1);
+    expect(retryRuns[0]).toMatchObject({ agentId: coderId });
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      agentId: coderId,
+      coalescedCount: 1,
+      idempotencyKey: expect.stringContaining(
+        `provider-quota-retry:${companyId}:${sourceIssueId}:fallback:recovery-action:`,
+      ),
+    });
+  });
+
+  it("replaces a former assignee's provider-quota retry at the same reset boundary", async () => {
+    const { companyId, managerId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+    const retryNotBefore = "2099-07-26T11:30:00.000Z";
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const coderRunId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: coderRunId,
+      issueId: sourceIssueId,
+      status: "failed",
+    });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: coderRunId,
+        agentId: coderId,
+        status: "failed",
+        error: "Provider quota exceeded.",
+        errorCode: "provider_quota",
+        contextSnapshot: { issueId: sourceIssueId },
+        livenessState: "needs_followup",
+        resultJson: { errorFamily: "provider_quota", retryNotBefore },
+      },
+      recoveryCause: "provider_quota",
+    });
+
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: managerId, status: "in_progress" })
+      .where(eq(issues.id, sourceIssueId));
+    const [reassignedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const managerRunId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: managerId,
+      runId: managerRunId,
+      issueId: sourceIssueId,
+      status: "failed",
+    });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: reassignedIssue!,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: managerRunId,
+        agentId: managerId,
+        status: "failed",
+        error: "Provider quota exceeded.",
+        errorCode: "provider_quota",
+        contextSnapshot: { issueId: sourceIssueId },
+        livenessState: "needs_followup",
+        resultJson: { errorFamily: "provider_quota", retryNotBefore },
+      },
+      recoveryCause: "provider_quota",
+    });
+
+    const retryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+    expect(retryRuns.filter((run) => run.status === "scheduled_retry")).toEqual([
+      expect.objectContaining({ agentId: managerId }),
+    ]);
+    expect(retryRuns.filter((run) => run.status === "cancelled")).toEqual([
+      expect.objectContaining({ agentId: coderId, errorCode: "issue_reassigned" }),
+    ]);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups.filter((wakeup) => wakeup.status === "queued")).toEqual([
+      expect.objectContaining({ agentId: managerId }),
+    ]);
+    expect(wakeups.filter((wakeup) => wakeup.status === "cancelled")).toEqual([
+      expect.objectContaining({ agentId: coderId }),
+    ]);
+  });
+
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const runId = randomUUID();
