@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { compactRunLogChunk } from "../services/heartbeat.js";
+import {
+  compactRunLogChunk,
+  redactAdapterExecutionResultSecrets,
+} from "../services/heartbeat.js";
 
 describe("compactRunLogChunk", () => {
   it("redacts inline base64 image data from structured log chunks", () => {
@@ -32,6 +35,35 @@ describe("compactRunLogChunk", () => {
 
     expect(compacted).toBe("GRANTED_VALUE=***REDACTED***");
     expect(compacted).not.toContain(canary);
+  });
+
+  it("redacts partial tool output from every persisted adapter result field", () => {
+    const runJwtCanary = "canary-run-jwt-value";
+    const grantedCanary = "canary-granted-secret-value";
+    const partialUpdate = JSON.stringify({
+      type: "tool_execution_update",
+      partialResult: {
+        content: `PAPERCLIP_API_KEY=${runJwtCanary}\nGRANTED_VALUE=${grantedCanary}`,
+      },
+    });
+
+    const redacted = redactAdapterExecutionResultSecrets(
+      {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: `adapter failed: ${runJwtCanary}`,
+        errorMeta: { partialUpdate },
+        resultJson: { stdout: partialUpdate, nested: { grantedCanary } },
+        summary: `summary: ${grantedCanary}`,
+      },
+      [runJwtCanary, grantedCanary],
+    );
+    const persisted = JSON.stringify(redacted);
+
+    expect(persisted).toContain("***REDACTED***");
+    expect(persisted).not.toContain(runJwtCanary);
+    expect(persisted).not.toContain(grantedCanary);
   });
 
   it("redacts Paperclip credential shapes before persisting run-log chunks", () => {

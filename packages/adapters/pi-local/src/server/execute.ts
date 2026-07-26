@@ -49,6 +49,10 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
+import {
+  collectTranscriptSecretValues,
+  redactTranscriptValue,
+} from "./transcript-redaction-extension.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 import { preparePiRuntimeConfig } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -798,6 +802,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
+      const secretValues = collectTranscriptSecretValues(
+        executionTargetIsRemote ? env : runtimeEnv,
+      );
+      const redactResultValue = <T>(value: T): T => redactTranscriptValue(value, secretValues);
+
       if (attempt.proc.timedOut) {
         return {
           exitCode: attempt.proc.exitCode,
@@ -834,7 +843,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: effectiveExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        errorMessage: (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+        errorMessage:
+          (effectiveExitCode ?? 0) === 0 ? null : redactResultValue(fallbackErrorMessage),
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
@@ -848,11 +858,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         model: model,
         billingType: "unknown",
         costUsd: attempt.parsed.usage.costUsd,
-        resultJson: {
+        resultJson: redactResultValue({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
-        },
-        summary: attempt.parsed.finalMessage ?? attempt.parsed.messages.join("\n\n").trim(),
+        }),
+        summary: redactResultValue(
+          attempt.parsed.finalMessage ?? attempt.parsed.messages.join("\n\n").trim(),
+        ),
         clearSession: Boolean(clearSessionOnMissingSession),
       };
     };

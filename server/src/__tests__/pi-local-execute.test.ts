@@ -57,7 +57,19 @@ if (process.argv.includes("--list-models")) {
 fs.writeFileSync(${JSON.stringify(dumpPath)}, JSON.stringify({ env: process.env, argv: process.argv.slice(2) }));
 console.log(JSON.stringify({ type: "agent_start" }));
 console.log(JSON.stringify({ type: "turn_start" }));
-console.log(JSON.stringify({ type: "turn_end", message: { role: "assistant", content: "done", usage: {} }, toolResults: [] }));
+console.log(JSON.stringify({
+  type: "tool_execution_update",
+  toolCallId: "tool-env",
+  toolName: "bash",
+  partialResult: {
+    content: "GRANTED_VALUE=" + process.env.GRANTED_VALUE + "\\nPAPERCLIP_API_KEY=" + process.env.PAPERCLIP_API_KEY,
+  },
+}));
+console.log(JSON.stringify({
+  type: "turn_end",
+  message: { role: "assistant", content: "done " + process.env.GRANTED_VALUE, usage: {} },
+  toolResults: [],
+}));
 console.log(JSON.stringify({ type: "agent_end", messages: [] }));
 process.exit(0);
 `;
@@ -126,7 +138,7 @@ describe("pi_local execute", () => {
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "canary-host-signing-secret";
 
     try {
-      await execute({
+      const result = await execute({
         runId: "run-pi-redaction",
         agent: {
           id: "agent-redaction",
@@ -163,6 +175,14 @@ describe("pi_local execute", () => {
       };
       expect(capture.env.PAPERCLIP_AGENT_JWT_SECRET).toBeUndefined();
       expect(capture.env.PAPERCLIP_API_KEY).toBe("canary-run-api-token");
+      const persistedResult = JSON.stringify({
+        resultJson: result.resultJson,
+        errorMessage: result.errorMessage,
+        summary: result.summary,
+      });
+      expect(persistedResult).toContain("***REDACTED***");
+      expect(persistedResult).not.toContain("canary-run-api-token");
+      expect(persistedResult).not.toContain("canary-granted-value");
       expect(JSON.parse(capture.env.PAPERCLIP_TRANSCRIPT_SECRET_ENV_KEYS)).toEqual([
         "PAPERCLIP_API_KEY",
         "GRANTED_VALUE",
