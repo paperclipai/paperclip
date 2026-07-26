@@ -1883,6 +1883,79 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("scopes intake receiver keys to fixed assignment and their own issue comments", async () => {
+    const company = await createCompany(db, "IntakeReceiver");
+    const receiverAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    const project = await createProject(db, company.id, "Uptime intake");
+    const keyId = randomUUID();
+    const ownIssue = await createIssue(db, company.id, {
+      projectId: project.id,
+      assigneeAgentId: targetAgent.id,
+      originKind: "intake_receiver",
+      originId: keyId,
+    });
+    const unrelatedIssue = await createIssue(db, company.id, { projectId: project.id });
+    const actor = {
+      type: "agent" as const,
+      agentId: receiverAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+      keyId,
+      keyScope: {
+        kind: "intake_receiver" as const,
+        projectId: project.id,
+        assigneeAgentId: targetAgent.id,
+        priority: "medium" as const,
+      },
+    };
+    const authz = authorizationService(db);
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        projectId: project.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    })).resolves.toMatchObject({ allowed: true });
+
+    for (const action of ["issue:read", "issue:comment"] as const) {
+      await expect(authz.decide({
+        actor,
+        action,
+        resource: { type: "issue", companyId: company.id, issueId: ownIssue.id },
+      })).resolves.toMatchObject({ allowed: true });
+    }
+
+    for (const action of ["issue:read", "issue:comment", "issue:mutate"] as const) {
+      await expect(authz.decide({
+        actor,
+        action,
+        resource: { type: "issue", companyId: company.id, issueId: unrelatedIssue.id },
+      })).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+    }
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        projectId: randomUUID(),
+        assigneeAgentId: targetAgent.id,
+      },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+
+    await expect(authz.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+  });
+
   it("allows responsible-user inbox management by default", async () => {
     const company = await createCompany(db, "InboxDefaultOpen");
     const actorAgent = await createAgent(db, company.id);

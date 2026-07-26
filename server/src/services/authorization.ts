@@ -15,6 +15,7 @@ import {
 import type {
   AgentApiKeyScope,
   InboxAgentPolicyMode,
+  IntakeReceiverAgentKeyScope,
   PermissionKey,
   PrincipalType,
   SkillTestAgentKeyScope,
@@ -1186,6 +1187,41 @@ export function authorizationService(db: Db) {
     return denyBridge("Task bridge key cannot use this API action.");
   }
 
+  async function decideIntakeReceiverAccess(input: {
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope: IntakeReceiverAgentKeyScope;
+    keyId: string;
+  }): Promise<AuthorizationDecision> {
+    const denyReceiver = (explanation: string) => deny({
+      action: input.action,
+      reason: "deny_scope",
+      explanation,
+    });
+    const allowReceiver = (explanation: string) => allow({
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation,
+    });
+
+    if (input.action === "tasks:assign" && input.resource.type === "issue") {
+      return input.resource.projectId === input.scope.projectId &&
+        input.resource.assigneeAgentId === input.scope.assigneeAgentId &&
+        !input.resource.assigneeUserId
+        ? allowReceiver("Allowed for the receiver's fixed project and assignee.")
+        : denyReceiver("Intake receiver key cannot change its fixed project or assignee.");
+    }
+
+    if ((input.action === "issue:read" || input.action === "issue:comment") && input.resource.type === "issue") {
+      const issue = input.resource.issueId ? await loadIssue(input.resource.issueId) : null;
+      return issue?.originKind === "intake_receiver" && issue.originId === input.keyId
+        ? allowReceiver("Allowed for an issue created by this intake receiver key.")
+        : denyReceiver("Intake receiver key can only access comments on its own issues.");
+    }
+
+    return denyReceiver("Intake receiver keys can only create fixed-shape issues and access comments on their own issues.");
+  }
+
   function decideSkillTestAccess(input: {
     action: AuthorizationAction;
     resource: AuthorizationResource;
@@ -1739,6 +1775,23 @@ export function authorizationService(db: Db) {
         keyId,
       });
       if (taskBridgeDecision) return taskBridgeDecision;
+    }
+
+    if (input.actor.source === "agent_key" && input.actor.keyScope?.kind === "intake_receiver") {
+      const keyId = input.actor.keyId ?? null;
+      if (!keyId) {
+        return deny({
+          action: input.action,
+          reason: "deny_scope",
+          explanation: "Intake receiver key context is missing.",
+        });
+      }
+      return decideIntakeReceiverAccess({
+        action: input.action,
+        resource: input.resource,
+        scope: input.actor.keyScope,
+        keyId,
+      });
     }
 
     const trustResolution = await resolveActorTrust({

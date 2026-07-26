@@ -4,6 +4,7 @@ import {
   AGENT_ROLES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
+  ISSUE_PRIORITIES,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
@@ -160,15 +161,24 @@ export const skillTestAgentKeyScopeSchema = z.object({
   issueId: z.string().uuid(),
 }).strict();
 
+export const intakeReceiverAgentKeyScopeSchema = z.object({
+  kind: z.literal("intake_receiver"),
+  projectId: z.string().uuid(),
+  assigneeAgentId: z.string().uuid(),
+  priority: z.enum(ISSUE_PRIORITIES),
+}).strict();
+
 export const agentApiKeyScopeSchema = z.union([
   standardAgentKeyScopeSchema,
   taskBridgeAgentKeyScopeSchema,
   skillTestAgentKeyScopeSchema,
+  intakeReceiverAgentKeyScopeSchema,
 ]);
 
 export type AgentApiKeyScope = z.infer<typeof agentApiKeyScopeSchema>;
 export type TaskBridgeAgentKeyScope = z.infer<typeof taskBridgeAgentKeyScopeSchema>;
 export type SkillTestAgentKeyScope = z.infer<typeof skillTestAgentKeyScopeSchema>;
+export type IntakeReceiverAgentKeyScope = z.infer<typeof intakeReceiverAgentKeyScopeSchema>;
 
 export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
   const parsed = agentApiKeyScopeSchema.safeParse(value);
