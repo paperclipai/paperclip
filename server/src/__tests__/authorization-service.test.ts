@@ -1317,6 +1317,74 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("fails closed for malformed or unsupported report activation grant scopes", async () => {
+    const scopeFactories: Array<{
+      label: string;
+      build: (projectId: string, reportAgentId: string) => Record<string, unknown>;
+    }> = [
+      { label: "empty", build: () => ({}) },
+      { label: "unknown-only", build: (projectId) => ({ project: projectId }) },
+      { label: "malformed recognized value", build: () => ({ projectId: 42 }) },
+      { label: "partially malformed recognized list", build: (projectId) => ({ projectIds: [projectId, 42] }) },
+      { label: "empty allow target", build: () => ({ allow: ["project:"] }) },
+      {
+        label: "recognized constraint plus unknown constraint",
+        build: (projectId, reportAgentId) => ({
+          projectId,
+          intendedSubtreeRootAgentId: reportAgentId,
+        }),
+      },
+    ];
+
+    for (const scopeFactory of scopeFactories) {
+      const company = await createCompany(db, `ManagerReportMalformedScope-${scopeFactory.label}`);
+      const managerAgent = await createAgent(db, company.id, { role: "manager" });
+      const reportAgent = await createAgent(db, company.id, {
+        role: "engineer",
+        reportsTo: managerAgent.id,
+      });
+      const project = await createProject(db, company.id, scopeFactory.label);
+      const issue = await createIssue(db, company.id, {
+        projectId: project.id,
+        assigneeAgentId: reportAgent.id,
+      });
+      await grantAgentPermission(
+        db,
+        company.id,
+        managerAgent.id,
+        "issues:manage_reports",
+        scopeFactory.build(project.id, reportAgent.id),
+      );
+
+      await expect(authorizationService(db).decide({
+        actor: {
+          type: "agent",
+          agentId: managerAgent.id,
+          companyId: company.id,
+          source: "agent_key",
+        },
+        action: "issue:mutate",
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: issue.id,
+          projectId: project.id,
+          assigneeAgentId: reportAgent.id,
+        },
+        scope: {
+          managerReportActivation: true,
+          issueId: issue.id,
+          projectId: project.id,
+          assigneeAgentId: reportAgent.id,
+        },
+      })).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_scope",
+        explanation: "Permission issues:manage_reports has an unsupported or malformed scope.",
+      });
+    }
+  });
+
   it("keeps manager report activation outside the reporting subtree denied", async () => {
     const company = await createCompany(db, "ManagerReportActivationOutsideSubtree");
     const rootAgent = await createAgent(db, company.id, { role: "ceo" });

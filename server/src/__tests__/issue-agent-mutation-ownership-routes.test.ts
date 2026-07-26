@@ -1627,6 +1627,47 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("fails closed without side effects when the report-management grant scope is malformed", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "backlog",
+      assigneeAgentId: ownerAgentId,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_scope",
+      explanation: "Permission issues:manage_reports has an unsupported or malformed scope.",
+      grant: {
+        id: managerReportGrantId,
+        principalType: "agent",
+        principalId: peerAgentId,
+        permissionKey: "issues:manage_reports",
+        scope: { intendedSubtreeRootAgentId: ownerAgentId },
+      },
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe(
+      "Permission issues:manage_reports has an unsupported or malformed scope.",
+    );
+    expect(res.body.details).toMatchObject({ reason: "deny_scope" });
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      scope: expect.objectContaining({ managerReportActivation: true }),
+    }));
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.updated" }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("rejects activation when execution policy transition derives extra fields", async () => {
     const reviewStageId = "99999999-9999-4999-8999-999999999999";
     const reviewerAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

@@ -27,6 +27,7 @@ import {
   resolveCoreTrustPreset,
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
+import { managerReportGrantScopeIsWellFormed } from "./manager-report-scope.js";
 import { logger } from "../middleware/logger.js";
 
 export type AuthorizationActor =
@@ -683,6 +684,24 @@ export function authorizationService(db: Db) {
         action: input.action,
         reason: "deny_missing_grant",
         explanation: `Missing permission: ${input.permissionKey}.`,
+      });
+    }
+
+    if (
+      input.permissionKey === "issues:manage_reports" &&
+      !managerReportGrantScopeIsWellFormed(grant.scope)
+    ) {
+      return deny({
+        action: input.action,
+        reason: "deny_scope",
+        explanation: "Permission issues:manage_reports has an unsupported or malformed scope.",
+        grant: {
+          id: grant.id,
+          principalType: input.principalType,
+          principalId: input.principalId,
+          permissionKey: input.permissionKey,
+          scope: grant.scope ?? null,
+        },
       });
     }
 

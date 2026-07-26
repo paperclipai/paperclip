@@ -6686,21 +6686,39 @@ export function issueService(db: Db) {
                   and ${grantScopeStillMatches}
               )`,
               sql`exists (
-                with recursive report_chain(id, reports_to, depth) as (
-                  select child.id, child.reports_to, 0
+                with recursive report_chain(id, reports_to, status, depth) as (
+                  select child.id, child.reports_to, child.status, 0
                   from agents child
                   where child.company_id = ${managerReportActivation.expectedCompanyId}
                     and child.id = ${managerReportActivation.expectedAssigneeAgentId}
                   union all
-                  select parent.id, parent.reports_to, report_chain.depth + 1
+                  select parent.id, parent.reports_to, parent.status, report_chain.depth + 1
                   from agents parent
                   join report_chain on report_chain.reports_to = parent.id
                   where parent.company_id = ${managerReportActivation.expectedCompanyId}
                     and report_chain.depth < 50
                 )
                 select 1
-                from report_chain
-                where report_chain.id = ${managerReportActivation.managerAgentId}
+                from report_chain target
+                where target.depth = 0
+                  and target.status in ('active', 'idle', 'running', 'error')
+                  and exists (
+                    select 1
+                    from report_chain
+                    where report_chain.id = ${managerReportActivation.managerAgentId}
+                      and report_chain.depth > 0
+                  )
+                  and exists (
+                    select 1
+                    from report_chain
+                    where report_chain.reports_to is null
+                  )
+                  and not exists (
+                    select 1
+                    from report_chain
+                    where report_chain.depth > 0
+                      and report_chain.status = 'terminated'
+                  )
               )`,
               scopedSubtreeStillMatches,
             ))

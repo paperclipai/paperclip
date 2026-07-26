@@ -500,6 +500,11 @@ describe("company portability", () => {
                 permissionKey: "skills:create",
                 scope: { targetAgentIds: ["agent-1"] },
               },
+              {
+                principalId: "agent-1",
+                permissionKey: "issues:manage_reports",
+                scope: { intendedSubtreeRootAgentId: "agent-1" },
+              },
             ];
           }),
         })),
@@ -520,6 +525,10 @@ describe("company portability", () => {
     expect(extension).toContain("permissionGrants:");
     expect(extension).toContain('permissionKey: "agents:suggest-changes"');
     expect(extension).toContain('permissionKey: "skills:create"');
+    expect(extension).not.toContain('permissionKey: "issues:manage_reports"');
+    expect(exported.warnings).toContain(
+      "Agent claudecoder permission issues:manage_reports was omitted from export because its scope is unsupported or malformed.",
+    );
     expect(exported.manifest.agents.find((agent) => agent.slug === "claudecoder")?.permissionGrants).toEqual([
       {
         permissionKey: "agents:suggest-changes",
@@ -1771,6 +1780,69 @@ describe("company portability", () => {
     ).rejects.toThrow(
       "Safe import does not allow agent coder board-only permission grant issues:manage_reports.",
     );
+    expect(agentSvc.create).not.toHaveBeenCalled();
+    expect(accessSvc.setPrincipalPermission).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed report-management grant scopes before board import writes", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    const input: CompanyPortabilityPreview = {
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": [
+            "---",
+            "name: Import",
+            "includes:",
+            "  - agents/coder/AGENTS.md",
+            "---",
+            "",
+          ].join("\n"),
+          "agents/coder/AGENTS.md": [
+            "---",
+            "name: Coder",
+            "slug: coder",
+            "kind: agent",
+            "---",
+            "",
+            "# Coder",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            "schema: paperclip/v1",
+            "agents:",
+            "  coder:",
+            "    adapter:",
+            "      type: process",
+            "      config: {}",
+            "    permissionGrants:",
+            "      - permissionKey: issues:manage_reports",
+            "        scope:",
+            "          intendedSubtreeRootAgentId: agent-imported",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: {
+        company: false,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      collisionStrategy: "rename",
+    };
+    const expectedError =
+      "Agent coder permission issues:manage_reports has an unsupported or malformed scope.";
+
+    const preview = await portability.previewImport(input);
+
+    expect(preview.errors).toContain(expectedError);
+    await expect(portability.importBundle(input, "user-1")).rejects.toThrow(expectedError);
     expect(agentSvc.create).not.toHaveBeenCalled();
     expect(accessSvc.setPrincipalPermission).not.toHaveBeenCalled();
   });

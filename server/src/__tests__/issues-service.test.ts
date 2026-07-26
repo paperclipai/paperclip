@@ -638,6 +638,98 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it.each(["paused", "pending_approval", "terminated"] as const)(
+    "returns null without touching an issue assigned to a %s report",
+    async (status) => {
+      const fixture = await seedManagerReportActivation();
+      await db.update(agents)
+        .set({ status })
+        .where(eq(agents.id, fixture.reportAgentId));
+      const before = await readManagerActivationSnapshot(fixture.issueId);
+
+      await expect(activateManagerReport(fixture)).resolves.toBeNull();
+      await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+    },
+  );
+
+  it.each(["idle", "running", "error"] as const)(
+    "still activates an issue assigned to an invokable %s report",
+    async (status) => {
+      const fixture = await seedManagerReportActivation();
+      await db.update(agents)
+        .set({ status })
+        .where(eq(agents.id, fixture.reportAgentId));
+
+      await expect(activateManagerReport(fixture)).resolves.toMatchObject({
+        id: fixture.issueId,
+        status: "todo",
+        assigneeAgentId: fixture.reportAgentId,
+      });
+    },
+  );
+
+  it("returns null when manager report activation targets the manager's own backlog issue", async () => {
+    const fixture = await seedManagerReportActivation();
+    await db.update(issues)
+      .set({ assigneeAgentId: fixture.managerAgentId })
+      .where(eq(issues.id, fixture.issueId));
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(svc.update(fixture.issueId, {
+      status: "todo",
+      managerReportActivation: {
+        expectedCompanyId: fixture.companyId,
+        expectedProjectId: fixture.projectId,
+        expectedParentIssueId: null,
+        expectedAssigneeAgentId: fixture.managerAgentId,
+        managerAgentId: fixture.managerAgentId,
+        grantId: fixture.grant.id,
+        grantScope: fixture.grant.scope ?? null,
+        grantSubtreeRootAgentIds: agentSubtreeRootIdsFromGrantScope(fixture.grant.scope),
+      },
+    })).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it("returns null when the report's organization chain gains a terminated ancestor", async () => {
+    const fixture = await seedManagerReportActivation("deep");
+    await db.update(agents)
+      .set({ status: "terminated" })
+      .where(eq(agents.id, fixture.middleAgentId));
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(activateManagerReport(fixture)).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it("returns null when the report's organization chain becomes cyclic", async () => {
+    const fixture = await seedManagerReportActivation();
+    await db.update(agents)
+      .set({ reportsTo: fixture.reportAgentId })
+      .where(eq(agents.id, fixture.managerAgentId));
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(activateManagerReport(fixture)).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it("returns null when the report's organization chain crosses the company boundary", async () => {
+    const fixture = await seedManagerReportActivation();
+    const foreignCompanyId = await seedAssignableAgentCompany();
+    const foreignRootAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(foreignCompanyId, {
+      id: foreignRootAgentId,
+      name: "Foreign root",
+    }));
+    await db.update(agents)
+      .set({ reportsTo: foreignRootAgentId })
+      .where(eq(agents.id, fixture.managerAgentId));
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(activateManagerReport(fixture)).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
   it.each([
     "status",
     "assignee",

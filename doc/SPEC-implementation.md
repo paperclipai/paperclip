@@ -810,14 +810,14 @@ Ownership split:
 
 ## 9.12 Manager Report Issue Activation Contract
 
-`issues:manage_reports` is an explicit, board-administered permission for a manager agent to activate work already assigned to another agent in its reporting subtree. It is not granted by the CEO or manager role, is not backfilled for existing agents, cannot be self-granted by an agent, and cannot be introduced through agent-safe company imports or agent invite defaults.
+`issues:manage_reports` is an explicit, board-administered permission for a manager agent to activate work already assigned to another agent in its reporting subtree. It is not granted by the CEO or manager role, is not backfilled for existing agents, cannot be self-granted by an agent, and cannot be introduced through agent-safe company imports or agent invite defaults. A `null` grant scope (including an omitted portable scope that canonically normalizes to `null`) is the explicit unrestricted form; non-null scopes must contain only recognized, well-formed project, target-agent, or reporting-subtree constraints and fail closed otherwise. Malformed portable scopes block import, and malformed stored scopes are omitted from export rather than widened.
 
 The first V1 slice is deliberately narrow:
 
 - The only additional mutation is an exact `PATCH /issues/:issueId` transition from `backlog` to `todo`.
 - The request body must contain only `status: "todo"`; combining activation with any other field is denied under the ordinary issue ownership rules.
-- The issue must already be assigned to a different agent in the caller's current, same-company transitive reporting subtree. The grant never authorizes work outside that subtree.
-- Activation applies only to a plain backlog issue with no active checkout, execution lock, execution state, or execution policy. The write is conditional on the authorized status, assignee, company, and reporting chain still matching; concurrent changes fail with `409` instead of being overwritten.
+- The issue must already be assigned to a different, invokable agent in the caller's current, same-company transitive reporting subtree. The assignee's complete organization chain must remain valid, and the grant never authorizes work outside that subtree.
+- Activation applies only to a plain backlog issue with no active checkout, execution lock, execution state, or execution policy. The write is conditional on the authorized status, assignee eligibility, company, grant, and reporting chain still matching; concurrent changes fail with `409` instead of being overwritten.
 - The permission does not authorize comments, title or description edits, priority or blocker changes, parent or goal changes, reassignment, checkout or release, execution-state changes, reopening or resuming work, document or work-product changes, deletion, or any other issue transition.
 - Existing company boundaries, low-trust restrictions, recovery and watchdog rules, transition policy, activity logging, and assignee wake behavior remain in force.
 
