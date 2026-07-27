@@ -1,5 +1,8 @@
+import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
+  createTarballFromDirectory,
   prepareSandboxManagedRuntime,
   type PreparedSandboxManagedRuntime,
   type SandboxManagedRuntimeAsset,
@@ -120,6 +123,62 @@ function requireSuccessfulResult(result: RunProcessResult, action: string): void
   if (result.exitCode === 0 && !result.timedOut) return;
   const detail = formatFailedCommandOutput(result);
   throw new Error(`${action} failed with exit code ${result.exitCode ?? "null"}${detail}`);
+}
+
+function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
+  // Copy out of the (possibly pooled) Node Buffer so the ArrayBuffer we hand to
+  // the client transport owns exactly these bytes.
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+}
+
+// Named builder (Security Condition C3): extract an uploaded tarball into its
+// target directory as a clean destroy-then-replace, then remove the tarball.
+// Every path is shell-quoted; the fallback NEVER concatenates untrusted asset
+// keys / file names into the shell.
+function buildSyncInExtractDirectoryCommand(input: { remoteTarPath: string; targetDir: string }): string {
+  return (
+    `rm -rf ${shellQuote(input.targetDir)} && ` +
+    `mkdir -p ${shellQuote(input.targetDir)} && ` +
+    `tar -xf ${shellQuote(input.remoteTarPath)} -C ${shellQuote(input.targetDir)} && ` +
+    `rm -f ${shellQuote(input.remoteTarPath)}`
+  );
+}
+
+// Named builder (C3): apply a POSIX mode to a placed file. Octal literal, quoted
+// path; no interpolation of untrusted values.
+function buildSyncInChmodCommand(input: { mode: number; targetPath: string }): string {
+  return `chmod ${(input.mode & 0o7777).toString(8)} ${shellQuote(input.targetPath)}`;
+}
+
+/**
+ * Host-side confinement guard for a sync operation's post-upload command `cwd`
+ * (Security Condition C2). Runs BEFORE any handoff — native delegation OR the
+ * generic fallback — so an out-of-root `cwd` is rejected fail-closed before a
+ * provider ever sees it. `cwd` (when present) MUST be an absolute POSIX path with
+ * no `..` segment, confined to (equal to or under) one of the operation's own
+ * file-mapping target paths. Commands with no `cwd` are unconstrained here and
+ * default to the runtime's stable command cwd at exec time.
+ */
+export function assertPostUploadCommandsConfined(operations: readonly SandboxSyncOperation[]): void {
+  for (const operation of operations) {
+    const commands = operation.postUploadCommands ?? [];
+    if (commands.length === 0) continue;
+    const targetRoots = operation.files.map((mapping) => path.posix.normalize(mapping.targetPath));
+    for (const command of commands) {
+      if (command.cwd == null) continue;
+      const raw = command.cwd;
+      if (!path.posix.isAbsolute(raw) || raw.split("/").includes("..")) {
+        throw new Error(`post-upload command cwd is not a confined absolute POSIX path: ${raw}`);
+      }
+      const normalized = path.posix.normalize(raw);
+      const within = targetRoots.some(
+        (root) => normalized === root || normalized.startsWith(`${root}/`),
+      );
+      if (!within) {
+        throw new Error(`post-upload command cwd escapes the operation's target root: ${raw}`);
+      }
+    }
+  }
 }
 
 export function createCommandManagedRuntimeClient(input: {
@@ -272,13 +331,91 @@ export function createCommandManagedRuntimeClient(input: {
     },
   };
 
-  // Expose the native sync capability to the orchestrator only when the runner
-  // supports BOTH directions; a provider that advertises just one verb (or
-  // neither) keeps the byte-identical base64 fallback for both.
-  const { syncIn, syncOut } = input.runner;
-  if (syncIn && syncOut) {
-    client.syncIn = (operations) => syncIn(operations);
-    client.syncOut = (operations) => syncOut(operations);
+  // Generic base64-tar fallback for `syncIn` on runners without native sync:
+  // place each operation's files (host-side tarball → `writeFile` → destroy-then-
+  // replace untar for directories, direct `writeFile` for single files), then run
+  // the operation's ordered `postUploadCommands` fail-fast. Byte-for-byte
+  // behavior-equivalent to the caller-inlined tar path it will replace. All exec
+  // rides the shared `execute` seam so `execCount`/`providerExecMs` still
+  // attribute (Open Q1).
+  const fallbackSyncIn = async (operations: SandboxSyncOperation[]): Promise<SandboxSyncResult> => {
+    const resultOperations: SandboxSyncResult["operations"] = [];
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-fallback-"));
+    try {
+      for (const operation of operations) {
+        let filesTransferred = 0;
+        let bytesTransferred = 0;
+        for (const [index, mapping] of operation.files.entries()) {
+          if (mapping.kind === "directory") {
+            const archivePath = path.join(tempDir, `syncin-${index}.tar`);
+            await createTarballFromDirectory({
+              localDir: mapping.sourcePath,
+              archivePath,
+              exclude: mapping.exclude,
+              followSymlinks: mapping.followSymlinks,
+            });
+            const tarBytes = await fs.readFile(archivePath);
+            const remoteTarPath = `${mapping.targetPath}.paperclip-syncin.tar`;
+            await client.writeFile(remoteTarPath, bufferToArrayBuffer(tarBytes));
+            await client.run(
+              buildSyncInExtractDirectoryCommand({ remoteTarPath, targetDir: mapping.targetPath }),
+              { timeoutMs: input.timeoutMs },
+            );
+            bytesTransferred += tarBytes.byteLength;
+          } else {
+            const fileBytes = await fs.readFile(mapping.sourcePath);
+            await client.writeFile(mapping.targetPath, bufferToArrayBuffer(fileBytes));
+            if (mapping.mode != null) {
+              await client.run(
+                buildSyncInChmodCommand({ mode: mapping.mode, targetPath: mapping.targetPath }),
+                { timeoutMs: input.timeoutMs },
+              );
+            }
+            bytesTransferred += fileBytes.byteLength;
+          }
+          filesTransferred += 1;
+        }
+        // Ordered, fail-fast post-upload commands (C1 opaque / C4 fail-loud). Each
+        // command string is executed VERBATIM — never rewritten, concatenated, or
+        // appended to. First non-zero exit or timeout throws and stops the rest.
+        for (const command of operation.postUploadCommands ?? []) {
+          const result = await input.runner.execute({
+            command: shellCommand,
+            args: shellCommandArgs(command.command),
+            cwd: command.cwd ?? input.commandCwd,
+            timeoutMs: command.timeoutMs ?? input.timeoutMs,
+          });
+          requireSuccessfulResult(result, command.command);
+        }
+        resultOperations.push({
+          operationId: operation.operationId,
+          filesTransferred,
+          bytesTransferred,
+        });
+      }
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return { operations: resultOperations };
+  };
+
+  // `client.syncIn` is ALWAYS present: it delegates to the runner's native
+  // transport when the provider advertises BOTH sync verbs, otherwise it runs the
+  // generic fallback above. Either way, post-upload command `cwd` confinement (C2)
+  // is validated on the host BEFORE any handoff. `syncOut` stays native-only —
+  // there is no generic outbound fallback in this seam.
+  const nativeSyncIn = input.runner.syncIn;
+  const nativeSyncOut = input.runner.syncOut;
+  const hasNativeBoth = Boolean(nativeSyncIn && nativeSyncOut);
+  client.syncIn = async (operations) => {
+    assertPostUploadCommandsConfined(operations);
+    if (hasNativeBoth) {
+      return await nativeSyncIn!(operations);
+    }
+    return await fallbackSyncIn(operations);
+  };
+  if (hasNativeBoth) {
+    client.syncOut = (operations) => nativeSyncOut!(operations);
   }
 
   return client;

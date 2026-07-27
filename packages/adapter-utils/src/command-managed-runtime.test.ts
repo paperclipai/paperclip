@@ -10,6 +10,7 @@ import {
   prepareCommandManagedRuntime,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
+import type { SandboxSyncOperation } from "./sandbox-managed-runtime.js";
 import type { RunProcessResult } from "./server-utils.js";
 
 const execFile = promisify(execFileCallback);
@@ -91,6 +92,10 @@ function makeSpawnRunner(options: {
 
 function toArrayBuffer(buffer: Buffer): ArrayBuffer {
   return Uint8Array.from(buffer).buffer;
+}
+
+function shellQuoteForTest(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 async function withBase64StringByteLimit<T>(limitBytes: number, fn: () => Promise<T>): Promise<T> {
@@ -393,15 +398,23 @@ describe("command managed runtime", () => {
     expect((await readFile(remotePath)).equals(payload)).toBe(true);
   });
 
-  it("leaves the client without syncIn/syncOut unless the runner supports both (fallback preserved)", () => {
+  it("test_client_syncIn_present_even_without_native_runner_syncIn", () => {
+    // Phase 2 (PAP-3222): `client.syncIn` is ALWAYS present so the caller can
+    // delegate unconditionally. `syncOut` stays native-only (no generic outbound
+    // fallback in this seam).
     const base = makeSpawnRunner().runner;
-    expect(createCommandManagedRuntimeClient({ runner: base, commandCwd: "/", timeoutMs: 1 }).syncIn).toBeUndefined();
+    const client = createCommandManagedRuntimeClient({ runner: base, commandCwd: "/", timeoutMs: 1 });
+    expect(client.syncIn).toBeTypeOf("function");
+    expect(client.syncOut).toBeUndefined();
 
+    // A runner advertising only one verb still gets the fallback syncIn; syncOut
+    // stays undefined (native delegation needs BOTH verbs).
     const onlyIn: CommandManagedRuntimeRunner = { ...base, syncIn: async () => ({ operations: [] }) };
     const partial = createCommandManagedRuntimeClient({ runner: onlyIn, commandCwd: "/", timeoutMs: 1 });
-    expect(partial.syncIn).toBeUndefined();
+    expect(partial.syncIn).toBeTypeOf("function");
     expect(partial.syncOut).toBeUndefined();
 
+    // With both verbs, syncIn delegates natively and syncOut is exposed.
     const both: CommandManagedRuntimeRunner = {
       ...base,
       syncIn: async () => ({ operations: [] }),
@@ -410,6 +423,233 @@ describe("command managed runtime", () => {
     const native = createCommandManagedRuntimeClient({ runner: both, commandCwd: "/", timeoutMs: 1 });
     expect(native.syncIn).toBeTypeOf("function");
     expect(native.syncOut).toBeTypeOf("function");
+  });
+
+  it("test_client_syncIn_delegates_to_native_runner_with_zero_execute_calls", async () => {
+    // With a native runner, `client.syncIn` forwards `files` + `postUploadCommands`
+    // to the runner and issues ZERO `execute` round-trips (the provider owns the
+    // transport + command execution).
+    let executeCalls = 0;
+    const forwarded: SandboxSyncOperation[][] = [];
+    const runner: CommandManagedRuntimeRunner = {
+      execute: async () => {
+        executeCalls += 1;
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: "" };
+      },
+      syncIn: async (operations) => {
+        forwarded.push(operations);
+        return {
+          operations: operations.map((op) => ({
+            operationId: op.operationId,
+            filesTransferred: op.files.length,
+            bytesTransferred: 0,
+          })),
+        };
+      },
+      syncOut: async () => ({ operations: [] }),
+    };
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 1 });
+
+    const operations: SandboxSyncOperation[] = [
+      {
+        operationId: "op-1",
+        files: [{ sourcePath: "/host/a", targetPath: "/remote/a", kind: "directory" }],
+        postUploadCommands: [{ command: "echo done", cwd: "/remote/a" }],
+      },
+    ];
+    const result = await client.syncIn!(operations);
+
+    expect(executeCalls).toBe(0);
+    expect(forwarded).toEqual([operations]);
+    expect(result.operations[0]).toMatchObject({ operationId: "op-1", filesTransferred: 1 });
+  });
+
+  it("fallback syncIn tarballs+uploads a directory then runs post-upload commands in order", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-fallback-"));
+    cleanupDirs.push(rootDir);
+    const sourceDir = path.join(rootDir, "source");
+    const targetDir = path.join(rootDir, "target");
+    const markerDir = path.join(rootDir, "markers");
+    await mkdir(path.join(sourceDir, "nested"), { recursive: true });
+    await mkdir(markerDir, { recursive: true });
+    await writeFile(path.join(sourceDir, "file.txt"), "payload\n", "utf8");
+    await writeFile(path.join(sourceDir, "nested", "deep.txt"), "deep\n", "utf8");
+
+    const { runner, calls } = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
+
+    await client.syncIn!([
+      {
+        operationId: "op-dir",
+        files: [{ sourcePath: sourceDir, targetPath: targetDir, kind: "directory" }],
+        postUploadCommands: [
+          { command: `touch ${shellQuoteForTest(path.join(markerDir, "1-first"))}` },
+          { command: `touch ${shellQuoteForTest(path.join(markerDir, "2-second"))}` },
+        ],
+      },
+    ]);
+
+    // Files landed via tar → untar (destroy-then-replace).
+    expect(await readFile(path.join(targetDir, "file.txt"), "utf8")).toBe("payload\n");
+    expect(await readFile(path.join(targetDir, "nested", "deep.txt"), "utf8")).toBe("deep\n");
+    // Both post-upload commands ran (markers exist).
+    await expect(readFile(path.join(markerDir, "1-first"))).resolves.toBeDefined();
+    await expect(readFile(path.join(markerDir, "2-second"))).resolves.toBeDefined();
+
+    // Ordering: upload → untar → command 1 → command 2. The tarball upload is the
+    // single stdin-backed call; the untar and the two commands follow it in order.
+    const scripts = calls.map((call) => (call.args ?? []).join("\n"));
+    const uploadIdx = scripts.findIndex((s) => s.includes(".paperclip-syncin.tar") && s.includes("base64 -d"));
+    const untarIdx = scripts.findIndex((s) => s.includes("tar -xf") && s.includes(targetDir));
+    const cmd1Idx = scripts.findIndex((s) => s.includes("1-first"));
+    const cmd2Idx = scripts.findIndex((s) => s.includes("2-second"));
+    expect(uploadIdx).toBeGreaterThanOrEqual(0);
+    expect(untarIdx).toBeGreaterThan(uploadIdx);
+    expect(cmd1Idx).toBeGreaterThan(untarIdx);
+    expect(cmd2Idx).toBeGreaterThan(cmd1Idx);
+  });
+
+  it("test_post_upload_commands_execute_verbatim_not_rewritten (C1 opaque)", async () => {
+    // The provider/client treats each command as opaque: it is executed VERBATIM,
+    // never concatenated with asset keys / paths or otherwise rewritten.
+    const executed: string[] = [];
+    const runner: CommandManagedRuntimeRunner = {
+      execute: async (input) => {
+        // Only capture the post-upload command executions (single `sh -c <cmd>`).
+        if ((input.args?.[0] === "-c") && typeof input.args?.[1] === "string") {
+          executed.push(input.args[1]);
+        }
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: "" };
+      },
+    };
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 1 });
+
+    const verbatim = "my-tool --flag 'quoted value' && echo $HOME";
+    await client.syncIn!([
+      { operationId: "op-verbatim", files: [], postUploadCommands: [{ command: verbatim }] },
+    ]);
+
+    // The exact string appears among executed scripts, unmodified.
+    expect(executed).toContain(verbatim);
+  });
+
+  it("test_post_upload_command_cwd_escaping_target_root_is_rejected (C2)", async () => {
+    // A `cwd` that escapes the operation's target root — via `..` or an absolute
+    // path outside the target — is rejected BEFORE any handoff (no execute).
+    let executeCalls = 0;
+    const runner: CommandManagedRuntimeRunner = {
+      execute: async () => {
+        executeCalls += 1;
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: "" };
+      },
+    };
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 1 });
+
+    const traversal: SandboxSyncOperation[] = [
+      {
+        operationId: "op-traversal",
+        files: [{ sourcePath: "/host/a", targetPath: "/remote/a", kind: "directory" }],
+        postUploadCommands: [{ command: "echo x", cwd: "/remote/a/../etc" }],
+      },
+    ];
+    await expect(client.syncIn!(traversal)).rejects.toThrow(/confined absolute POSIX path|escapes/);
+
+    const absoluteEscape: SandboxSyncOperation[] = [
+      {
+        operationId: "op-escape",
+        files: [{ sourcePath: "/host/a", targetPath: "/remote/a", kind: "directory" }],
+        postUploadCommands: [{ command: "echo x", cwd: "/etc/passwd" }],
+      },
+    ];
+    await expect(client.syncIn!(absoluteEscape)).rejects.toThrow(/escapes the operation's target root/);
+
+    // A confined cwd (equal to the target root) passes confinement — it fails
+    // later at tar time (the source dir does not exist), which is a DIFFERENT
+    // error than a confinement rejection.
+    const confined: SandboxSyncOperation[] = [
+      {
+        operationId: "op-confined",
+        files: [{ sourcePath: "/host/a", targetPath: "/remote/a", kind: "directory" }],
+        postUploadCommands: [{ command: "echo x", cwd: "/remote/a" }],
+      },
+    ];
+    let confinementRejected = false;
+    try {
+      await client.syncIn!(confined);
+    } catch (error) {
+      confinementRejected = /escapes the operation's target root|confined absolute POSIX path/.test(
+        (error as Error).message,
+      );
+    }
+    expect(confinementRejected).toBe(false);
+
+    // Confinement rejected before any exec for the escape cases.
+    expect(executeCalls).toBe(0);
+  });
+
+  it("test_fallback_syncIn_aborts_and_rejects_on_first_nonzero_exit (C4 fail-fast)", async () => {
+    // The first non-zero post-upload command aborts the operation: syncIn rejects,
+    // the remaining commands do NOT run, and there is no silent partial fallback.
+    const executed: string[] = [];
+    const runner: CommandManagedRuntimeRunner = {
+      execute: async (input) => {
+        const script = input.args?.[1] ?? "";
+        executed.push(script);
+        const isFailing = script.includes("FAIL-COMMAND");
+        return {
+          exitCode: isFailing ? 3 : 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: isFailing ? "boom" : "",
+          pid: null,
+          startedAt: "",
+        };
+      },
+    };
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 1 });
+
+    await expect(
+      client.syncIn!([
+        {
+          operationId: "op-failfast",
+          files: [],
+          postUploadCommands: [
+            { command: "echo before" },
+            { command: "FAIL-COMMAND" },
+            { command: "echo SHOULD-NOT-RUN" },
+          ],
+        },
+      ]),
+    ).rejects.toThrow(/exit code 3|boom/);
+
+    expect(executed.some((s) => s.includes("echo before"))).toBe(true);
+    expect(executed.some((s) => s.includes("FAIL-COMMAND"))).toBe(true);
+    expect(executed.some((s) => s.includes("SHOULD-NOT-RUN"))).toBe(false);
+  });
+
+  it("test_single_stream_writeFile_collapses_roundtrips_under_96MiB", async () => {
+    // Research A1: with single-stream enabled a ≤96 MiB write is ONE round-trip;
+    // without it, the chunked path is `2 + ceil(bytes / 3 MiB)`. Same payload,
+    // same client API — only the runner capability flag differs.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-single-stream-collapse-"));
+    cleanupDirs.push(rootDir);
+    const payload = Buffer.alloc(9 * 1024 * 1024, 7); // 9 MiB → chunked = 2 + 3 = 5 execs
+
+    const single = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
+    const singleClient = createCommandManagedRuntimeClient({ runner: single.runner, commandCwd: "/", timeoutMs: 30_000 });
+    await singleClient.writeFile(path.join(rootDir, "single.bin"), toArrayBuffer(payload));
+    expect(single.calls.length).toBe(1);
+
+    const chunked = makeSpawnRunner({ supportsSingleStreamStdinProgress: false });
+    const chunkedClient = createCommandManagedRuntimeClient({ runner: chunked.runner, commandCwd: "/", timeoutMs: 30_000 });
+    await chunkedClient.writeFile(path.join(rootDir, "chunked.bin"), toArrayBuffer(payload));
+    // 2 (init temp + final mv) + ceil(9MiB / 3MiB) = 5 round-trips.
+    expect(chunked.calls.length).toBe(2 + Math.ceil(payload.byteLength / (3 * 1024 * 1024)));
+    expect(chunked.calls.length).toBeGreaterThan(single.calls.length);
+
+    expect((await readFile(path.join(rootDir, "single.bin"))).equals(payload)).toBe(true);
+    expect((await readFile(path.join(rootDir, "chunked.bin"))).equals(payload)).toBe(true);
   });
 
   it("falls back to chunked upload progress when the runner cannot report mid-stream stdin progress", async () => {

@@ -92,7 +92,12 @@ export async function resolveEnvironmentExecutionTarget(input: {
       streamRunLogs: parsed.config.streamRunLogs !== false,
       runner: input.environmentRuntime && input.lease
         ? {
-            supportsSingleStreamStdinProgress: false,
+            // A single stdin-backed `base64 -d` upload collapses a ≤96 MiB
+            // `writeFile` from `2 + ceil(bytes / 3 MiB)` serial execs to one
+            // round-trip (research A1 / PAP-3159 #2). This is the one revertable
+            // flag for that collapse — flip back to `false` to restore the bounded
+            // chunked-append path with no other change.
+            supportsSingleStreamStdinProgress: true,
             // Round-trip counter + provider-duration accumulators on the single
             // host→sandbox exec seam (Open Q1). `measureStartupStep` reads the
             // per-step delta of each via the `() => number` closures below. The

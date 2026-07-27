@@ -138,6 +138,35 @@ export interface SandboxSyncFileMapping {
 }
 
 /**
+ * A control command run against the sandbox after a sync operation's files have
+ * landed. Mirrors the plugin SDK `PluginPostUploadCommand`; kept as a local
+ * structural type so `adapter-utils` does not depend on the plugin SDK. Ordered
+ * within {@link SandboxSyncOperation.postUploadCommands} and executed in array
+ * order, fail-fast (first non-zero exit or timeout aborts the operation).
+ *
+ * SECURITY — command origin (Stage-1 design review, condition C1). `command` is
+ * a **Paperclip/adapter-authored control operation**: it may be supplied ONLY by
+ * core/adapter code. No server route, issue/comment content, project/workspace
+ * file content, provider-plugin callback, or arbitrary adapter config may supply
+ * a raw `command` string; any path embedded in it MUST be built by adapter/core
+ * helpers from already-confined paths and shell-quoted (C3). Providers treat the
+ * command as **opaque** — execute or reject, never rewrite/concatenate/append.
+ */
+export interface SandboxPostUploadCommand {
+  /** The opaque, adapter-authored shell command to run after upload. */
+  command: string;
+  /**
+   * Working directory for the command. When present, MUST be an absolute POSIX
+   * path confined under the operation's allowed sandbox target root (C2). When
+   * absent, defaults to the runtime's stable command cwd — never a process
+   * default cwd.
+   */
+  cwd?: string;
+  /** Optional per-command timeout in milliseconds. */
+  timeoutMs?: number;
+}
+
+/**
  * An ordered, opaque unit of work handed to the native sync transport. The
  * `operationId` is an opaque, non-sensitive token authored by the orchestrator
  * (never a caller/asset identifier that could leak intent); a provider MUST NOT
@@ -146,6 +175,13 @@ export interface SandboxSyncFileMapping {
 export interface SandboxSyncOperation {
   operationId: string;
   files: SandboxSyncFileMapping[];
+  /**
+   * Optional ordered control commands run after this operation's files land, in
+   * array order, fail-fast. Absent means "no commands" — byte-identical to a
+   * pre-contract operation. See {@link SandboxPostUploadCommand} for the command
+   * origin/confinement security contract (C1–C4).
+   */
+  postUploadCommands?: SandboxPostUploadCommand[];
 }
 
 export interface SandboxSyncResult {
@@ -314,7 +350,7 @@ async function execTar(args: string[]): Promise<void> {
   });
 }
 
-async function createTarballFromDirectory(input: {
+export async function createTarballFromDirectory(input: {
   localDir: string;
   archivePath: string;
   exclude?: string[];

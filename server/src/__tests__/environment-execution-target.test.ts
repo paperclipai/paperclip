@@ -258,12 +258,16 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
 
     const runner = (target as { runner?: {
+      supportsSingleStreamStdinProgress?: boolean;
       execCount(): number;
       providerExecMs(): number;
       providerGetMs(): number;
       execute(input: { command: string; args?: string[] }): Promise<unknown>;
     } }).runner;
     expect(runner).toBeTruthy();
+    // Single-stream stdin upload is enabled (research A1 / PAP-3159 #2): a
+    // ≤96 MiB writeFile collapses to one round-trip.
+    expect(runner!.supportsSingleStreamStdinProgress).toBe(true);
     expect(runner!.execCount()).toBe(0);
     expect(runner!.providerExecMs()).toBe(0);
     expect(runner!.providerGetMs()).toBe(0);
