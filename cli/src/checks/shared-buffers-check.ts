@@ -118,19 +118,30 @@ function recommendedSharedBuffers(hostMemoryBytes: number): number {
   return Math.min(MAX_SHARED_BUFFERS_BYTES, Math.max(MIN_SHARED_BUFFERS_BYTES, target));
 }
 
+const UNIT_MULTIPLIERS: Record<string, number> = {
+  b: 1,
+  kb: 1024,
+  kib: 1024,
+  mb: MIB,
+  mib: MIB,
+  gb: GIB,
+  gib: GIB,
+  tb: 1024 ** 4,
+  tib: 1024 ** 4,
+  // PostgreSQL reports shared_buffers as setting*N with unit="8kB"
+  // (one native page). When the user types a bare number in
+  // postgresql.auto.conf, pg_file_settings echoes the bare number back
+  // without a unit, and the parser falls back to this row.unit.
+  "8kb": 8 * 1024,
+};
+
 function parseSettingBytes(setting: string, unit: string | null): number | null {
   const match = setting.trim().match(/^(\d+(?:\.\d+)?)\s*([a-zA-Z]+)?$/);
   if (!match) return null;
 
   const value = Number(match[1]);
   const normalizedUnit = (match[2] ?? unit ?? "B").toLowerCase();
-  const multiplier = {
-    b: 1,
-    kb: 1024,
-    "8kb": 8 * 1024,
-    mb: MIB,
-    gb: GIB,
-  }[normalizedUnit];
+  const multiplier = UNIT_MULTIPLIERS[normalizedUnit];
   return multiplier ? value * multiplier : null;
 }
 
