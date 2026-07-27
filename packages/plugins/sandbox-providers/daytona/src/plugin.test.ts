@@ -30,6 +30,7 @@ vi.mock("@daytonaio/sdk", () => ({
 
 import plugin, {
   setDaytonaTimingClockForTest,
+  setDaytonaHandleFreshnessClockForTest,
   __resetDaytonaSandboxHandleCacheForTest,
 } from "./plugin.js";
 import manifest from "./manifest.js";
@@ -53,6 +54,10 @@ function createMockSandbox(overrides: {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     recover: vi.fn().mockResolvedValue(undefined),
+    // Real `refreshData` re-reads live provider state and mutates `state` in
+    // place; the default mock leaves state untouched, and tests that exercise a
+    // provider-initiated auto-stop override it to flip `state` to "stopped".
+    refreshData: vi.fn().mockResolvedValue(undefined),
     resize: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
     archive: vi.fn().mockResolvedValue(undefined),
@@ -1302,11 +1307,13 @@ describe("Daytona sandbox provider plugin", () => {
     expect(result?.stderr).toMatch(/unreachable|credentials/i);
   });
 
-  // ─── Per-lease started-sandbox handle cache (PAP-3159 lever 1 / A1) ─────────
-  // These prove the Stage-1 security conditions: single-fetch-per-lease, strict
+  // ─── Per-lease started-sandbox handle cache ────────────────────────────────
+  // These prove the security conditions: single-fetch-per-lease, strict
   // composite-key isolation (no cross-lease / cross-company / cross-env reuse),
   // eviction at every teardown, no caching of failed populates, single-flight
-  // concurrency, and sentinel re-verification on a cached resume.
+  // concurrency, and sentinel re-verification on a cached resume — plus that a
+  // handle left idle past the provider auto-stop window is refreshed before
+  // reuse so a provider-initiated stop is not hidden behind a stale snapshot.
   describe("started-sandbox handle cache", () => {
     function execParams(
       providerLeaseId: string,
@@ -1530,6 +1537,115 @@ describe("Daytona sandbox provider plugin", () => {
       // The mismatched entry was evicted, so the next exec re-fetches.
       await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
       expect(mockGet).toHaveBeenCalledTimes(2);
+    });
+
+    it("refreshes a handle left idle past the auto-stop window and restarts a provider-stopped sandbox", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a", state: "started" });
+      // Daytona auto-stopped the sandbox while our cached handle sat idle: a live
+      // refresh reveals the true "stopped" state that the cached snapshot hid.
+      sandbox.refreshData.mockImplementation(async () => {
+        sandbox.state = "stopped";
+      });
+      mockGet.mockResolvedValue(sandbox);
+
+      let nowMs = 1_000_000;
+      const restoreFreshness = setDaytonaHandleFreshnessClockForTest(() => nowMs);
+      try {
+        // Prime the cache (single fetch, snapshot "started").
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+        expect(sandbox.refreshData).not.toHaveBeenCalled();
+        expect(sandbox.start).not.toHaveBeenCalled();
+
+        // Idle past half of the default 15-min auto-stop interval (> 7.5 min).
+        nowMs += 8 * 60_000;
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      } finally {
+        restoreFreshness();
+      }
+
+      // The stale handle was refreshed in place (no second REST fetch — the same
+      // authenticated handle), the refresh exposed the stopped state, and the
+      // sandbox was restarted before the exec instead of running against a
+      // stopped sandbox.
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(sandbox.refreshData).toHaveBeenCalledTimes(1);
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not refresh a handle reused within the auto-stop window", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      let nowMs = 5_000_000;
+      const restoreFreshness = setDaytonaHandleFreshnessClockForTest(() => nowMs);
+      try {
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+        // Two more execs, each 6 min after the previous — always inside the
+        // 7.5-min window measured from the last reuse.
+        nowMs += 6 * 60_000;
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+        nowMs += 6 * 60_000;
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      } finally {
+        restoreFreshness();
+      }
+
+      // Each reuse resets the freshness marker (an operation follows, resetting
+      // the provider idle clock), so an actively-used lease never pays a refresh.
+      expect(sandbox.refreshData).not.toHaveBeenCalled();
+      expect(mockGet).toHaveBeenCalledTimes(1);
+    });
+
+    it("never refreshes when auto-stop is disabled, even after a long idle gap", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+      const disabledAutoStop = { timeoutMs: 300000, reuseLease: false, autoStopInterval: 0 };
+
+      let nowMs = 2_000_000;
+      const restoreFreshness = setDaytonaHandleFreshnessClockForTest(() => nowMs);
+      try {
+        await plugin.definition.onEnvironmentExecute?.({ ...execParams("lease-a"), config: disabledAutoStop });
+        nowMs += 60 * 60_000; // an hour idle
+        await plugin.definition.onEnvironmentExecute?.({ ...execParams("lease-a"), config: disabledAutoStop });
+      } finally {
+        restoreFreshness();
+      }
+
+      // Auto-stop off → the provider never stops the sandbox out from under the
+      // handle, so the cached started snapshot is trusted without a refresh.
+      expect(sandbox.refreshData).not.toHaveBeenCalled();
+      expect(mockGet).toHaveBeenCalledTimes(1);
+    });
+
+    it("evicts the handle when a freshness refresh fails so the next lookup re-fetches", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const first = createMockSandbox({ id: "lease-a" });
+      first.refreshData.mockRejectedValue(new MockDaytonaNotFoundError("sandbox vanished"));
+      const second = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValueOnce(first).mockResolvedValue(second);
+
+      let nowMs = 3_000_000;
+      const restoreFreshness = setDaytonaHandleFreshnessClockForTest(() => nowMs);
+      try {
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a")); // fetch #1 → first
+        nowMs += 8 * 60_000; // idle past the refresh window
+        // The refresh rejects; execute surfaces it (fail closed) and the bad
+        // entry is evicted.
+        await expect(
+          plugin.definition.onEnvironmentExecute?.(execParams("lease-a")),
+        ).rejects.toThrow("sandbox vanished");
+        // Evicted → the following exec re-fetches a fresh handle.
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      } finally {
+        restoreFreshness();
+      }
+
+      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(second.process.executeCommand).toHaveBeenCalledTimes(1);
     });
   });
 });

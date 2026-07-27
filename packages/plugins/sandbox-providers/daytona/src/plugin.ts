@@ -57,6 +57,24 @@ export function setDaytonaTimingClockForTest(now: () => number): () => void {
   };
 }
 
+// Injectable clock for the handle cache's freshness bookkeeping, deliberately
+// kept separate from the provider-timing clock so tests can advance virtual time
+// past a lease's auto-stop interval without perturbing the `getDurationMs` /
+// `durationMs` measurements that ride on `timingNow`.
+let handleFreshnessNow: () => number = () => Date.now();
+
+/**
+ * Test seam: override the handle-cache freshness clock and return a restore
+ * function. Not used in production, where the default wall clock always applies.
+ */
+export function setDaytonaHandleFreshnessClockForTest(now: () => number): () => void {
+  const previous = handleFreshnessNow;
+  handleFreshnessNow = now;
+  return () => {
+    handleFreshnessNow = previous;
+  };
+}
+
 interface DaytonaDriverConfig {
   apiKey: string | null;
   apiUrl: string | null;
@@ -723,7 +741,7 @@ async function createSandbox(
   return sandbox;
 }
 
-// ─── Per-lease started-sandbox handle cache (PAP-3159 lever 1 / A1) ──────────
+// ─── Per-lease started-sandbox handle cache ──────────────────────────────────
 // Memoize the started Daytona `Sandbox` handle so repeated exec/sync/resume/
 // teardown calls on one lease skip the per-call `client.get(sandboxId)` REST
 // re-fetch (measured ~4,938 ms on `stage.sync`) and the client construction it
@@ -791,14 +809,42 @@ function assertHandleMatchesLease(sandbox: Sandbox, providerLeaseId: string): vo
   }
 }
 
+// A cached `Sandbox` carries the provider state captured when it was last
+// fetched/refreshed. Daytona auto-stops an idle sandbox after `autoStopInterval`
+// minutes, at which point that snapshot ("started") no longer matches reality
+// and `ensureSandboxStarted` would wrongly skip the restart, sending every
+// subsequent exec/sync at a stopped sandbox. Before reusing a handle that has
+// gone untouched for this fraction of the auto-stop interval we re-read the live
+// state so the restart decision is made against the truth. Reusing a handle for
+// an operation resets Daytona's idle clock, so an actively-used lease stays well
+// inside the window and never pays the refresh — only a lease resumed after an
+// idle gap does.
+const STALE_HANDLE_REFRESH_SAFETY_FRACTION = 0.5;
+
+function staleHandleRefreshThresholdMs(autoStopIntervalMinutes: number | null): number | null {
+  // Auto-stop disabled (0 / null): the provider never stops the sandbox out from
+  // under a live handle, so the started snapshot stays valid until we evict it
+  // and no refresh is warranted.
+  if (autoStopIntervalMinutes == null || autoStopIntervalMinutes <= 0) return null;
+  return Math.floor(autoStopIntervalMinutes * 60_000 * STALE_HANDLE_REFRESH_SAFETY_FRACTION);
+}
+
+type SandboxHandleCacheEntry = {
+  sandbox: Promise<Sandbox>;
+  // Last time we know the live state was accurate: set when the handle is
+  // fetched/refreshed and on every reuse (an operation follows, resetting the
+  // provider idle clock).
+  verifiedAtMs: number;
+};
+
 const sandboxHandleCache = (() => {
-  const entries = new Map<string, Promise<Sandbox>>();
+  const entries = new Map<string, SandboxHandleCacheEntry>();
 
   async function get(scope: SandboxScope): Promise<Sandbox> {
     const key = sandboxHandleCacheKey(scope);
-    const cached = entries.get(key);
-    if (cached) {
-      const sandbox = await cached;
+    const entry = entries.get(key);
+    if (entry) {
+      const sandbox = await entry.sandbox;
       // Re-assert on every hit; evict + fail closed on any mismatch (C2).
       try {
         assertHandleMatchesLease(sandbox, scope.providerLeaseId);
@@ -806,6 +852,20 @@ const sandboxHandleCache = (() => {
         entries.delete(key);
         throw error;
       }
+      // Refresh the live provider state if the handle may have been auto-stopped
+      // since we last confirmed it, so the cached `state` snapshot can't hide a
+      // provider-initiated stop from `ensureSandboxStarted`. A failed refresh
+      // means the handle is no longer trustworthy — evict and fail closed.
+      const thresholdMs = staleHandleRefreshThresholdMs(scope.config.autoStopInterval);
+      if (thresholdMs != null && handleFreshnessNow() - entry.verifiedAtMs >= thresholdMs) {
+        try {
+          await sandbox.refreshData();
+        } catch (error) {
+          entries.delete(key);
+          throw error;
+        }
+      }
+      entry.verifiedAtMs = handleFreshnessNow();
       return sandbox;
     }
     // Single-flight: the first miss stores the in-flight promise under the
@@ -817,13 +877,14 @@ const sandboxHandleCache = (() => {
       assertHandleMatchesLease(sandbox, scope.providerLeaseId);
       return sandbox;
     })();
-    entries.set(key, populate);
+    const populated: SandboxHandleCacheEntry = { sandbox: populate, verifiedAtMs: handleFreshnessNow() };
+    entries.set(key, populated);
     try {
       return await populate;
     } catch (error) {
       // A rejected populate (NotFound, network, id mismatch) must never remain
       // cached (C4/C5). Guard against clobbering a newer entry under the key.
-      if (entries.get(key) === populate) {
+      if (entries.get(key) === populated) {
         entries.delete(key);
       }
       throw error;
@@ -1498,8 +1559,10 @@ const plugin = definePlugin({
     // `executeCommand` round-trip so telemetry can split the per-call get cost
     // from the exec cost. With the per-lease handle cache this collapses to ~0
     // on a hit (no `client.get` REST round-trip), but the field stays present so
-    // `providerGetMs` remains observable. `ensureSandboxStarted` is a no-op for an
-    // already-started sandbox, so it is excluded from the get measurement.
+    // `providerGetMs` remains observable — and still captures the occasional
+    // freshness refresh the cache issues after an idle gap. `ensureSandboxStarted`
+    // is a no-op for an already-started sandbox, so it is excluded from the get
+    // measurement.
     const getStart = timingNow();
     const sandbox = await getSandbox({
       driverKey: params.driverKey,
