@@ -62,6 +62,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
+  enableOwnerInstanceAdmin: z.boolean().default(false),
   enableWorktreeRunExecution: z.boolean().default(false),
   worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),

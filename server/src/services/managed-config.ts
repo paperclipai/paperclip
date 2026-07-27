@@ -76,9 +76,11 @@ export interface ManagedEnvironmentSpec {
  * reach a managed instance as process environment variables (every bundled
  * sandbox provider falls back to its env var when `config` omits the key,
  * e.g. `DAYTONA_API_KEY`), so any secret-looking config key in the document
- * is a misrouted credential and fails startup.
+ * is a misrouted credential and fails startup. The environments API reuses
+ * this pattern to floor credential-shaped config keys out of
+ * platform-provisioned environment responses on managed instances.
  */
-const SECRET_LIKE_CONFIG_KEY_PATTERN = /(api[-_]?key|token|secret|password|credential)/i;
+export const SECRET_LIKE_CONFIG_KEY_PATTERN = /(api[-_]?key|token|secret|password|credential)/i;
 
 function findSecretLikeConfigKey(value: Record<string, unknown>, path: string): string | null {
   for (const [key, child] of Object.entries(value)) {

@@ -1,7 +1,7 @@
 import type { Server } from "node:http";
 import express from "express";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { environmentRoutes } from "../routes/environments.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -380,6 +380,133 @@ describe("environment routes", () => {
       config: {},
       envVars: {},
       metadata: null,
+    });
+  });
+
+  describe("platform-provisioned environment floor on cloud-managed instances", () => {
+    function createPlatformSandboxEnvironment() {
+      const now = new Date("2026-04-16T05:00:00.000Z");
+      return {
+        id: "env-managed-1",
+        companyId: "company-1",
+        name: "Daytona",
+        description: "Managed sandbox environment",
+        driver: "sandbox",
+        status: "active" as const,
+        config: {
+          provider: "daytona",
+          image: "custom-image:latest",
+          target: "us",
+          apiKey: "must-never-echo",
+        },
+        envVars: { DAYTONA_API_KEY: "must-never-echo" },
+        metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona" },
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
+
+    const ownerAdminActor = {
+      type: "board",
+      userId: "owner-1",
+      source: "cloud_tenant",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "owner" }],
+      isInstanceAdmin: true,
+    };
+
+    beforeEach(() => {
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+    });
+    afterEach(() => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    });
+
+    it("never echoes env vars or credential-shaped config keys to instance admins", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app).get("/api/environments/env-managed-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body.envVars).toEqual({});
+      expect(res.body.config).toEqual({
+        provider: "daytona",
+        image: "custom-image:latest",
+        target: "us",
+      });
+      expect(res.body.metadata).toMatchObject({ managedByPaperclip: true });
+      expect(JSON.stringify(res.body)).not.toContain("must-never-echo");
+    });
+
+    it("exposes structural config to restricted company readers instead of blanking it", async () => {
+      mockEnvironmentService.list.mockResolvedValue([createPlatformSandboxEnvironment()]);
+      const app = createApp({
+        type: "board",
+        userId: "user-2",
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", status: "active", membershipRole: "member" }],
+        isInstanceAdmin: false,
+      });
+
+      const res = await request(app).get("/api/companies/company-1/environments");
+
+      expect(res.status).toBe(200);
+      expect(res.body[0].config).toEqual({
+        provider: "daytona",
+        image: "custom-image:latest",
+        target: "us",
+      });
+      expect(res.body[0].envVars).toEqual({});
+      expect(res.body[0].metadata).toMatchObject({ managedByPaperclip: true });
+    });
+
+    it("floors the update response so writes cannot read secrets back", async () => {
+      const existing = createPlatformSandboxEnvironment();
+      mockEnvironmentService.getById.mockResolvedValue(existing);
+      mockEnvironmentService.update.mockResolvedValue({ ...existing, name: "Renamed" });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app).patch("/api/environments/env-managed-1").send({ name: "Renamed" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.name).toBe("Renamed");
+      expect(res.body.envVars).toEqual({});
+      expect(JSON.stringify(res.body)).not.toContain("must-never-echo");
+    });
+
+    it("leaves tenant-created environments unfloored for instance admins", async () => {
+      const tenantEnvironment = {
+        ...createPlatformSandboxEnvironment(),
+        id: "env-tenant-1",
+        metadata: { source: "manual" },
+      };
+      mockEnvironmentService.getById.mockResolvedValue(tenantEnvironment);
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app).get("/api/environments/env-tenant-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body.envVars).toEqual({ DAYTONA_API_KEY: "must-never-echo" });
+      expect(res.body.config.apiKey).toBe("must-never-echo");
+    });
+
+    it("does not floor platform-marked rows on self-hosted instances", async () => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+      const app = createApp({
+        type: "board",
+        userId: "admin-1",
+        source: "session",
+        isInstanceAdmin: true,
+      });
+
+      const res = await request(app).get("/api/environments/env-managed-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body.envVars).toEqual({ DAYTONA_API_KEY: "must-never-echo" });
+      expect(res.body.config.apiKey).toBe("must-never-echo");
     });
   });
 

@@ -91,6 +91,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
+    enableOwnerInstanceAdmin: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,

@@ -48,6 +48,7 @@ describe("instance settings service", () => {
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,
+      enableOwnerInstanceAdmin: false,
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,

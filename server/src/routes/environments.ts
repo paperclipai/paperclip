@@ -15,6 +15,8 @@ import {
   updateEnvironmentSchema,
 } from "@paperclipai/shared";
 import { conflict, forbidden, unprocessable } from "../errors.js";
+import { isCloudManagedInstance } from "../middleware/auth.js";
+import { SECRET_LIKE_CONFIG_KEY_PATTERN } from "../services/managed-config.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -49,6 +51,62 @@ import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Whether this environment row was provisioned by the platform: the
+ * managed-config environment provisioner marker, or the legacy managed
+ * Kubernetes wrapper marker (rows created by builds that predate the
+ * generalized provisioner and have not been adopted yet).
+ */
+export function isPlatformProvisionedEnvironment(environment: {
+  metadata: Record<string, unknown> | null;
+}): boolean {
+  return (
+    environment.metadata?.managedByPaperclip === true ||
+    environment.metadata?.managedKubernetesSandbox === true
+  );
+}
+
+function redactSecretLikeConfigKeys(value: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (SECRET_LIKE_CONFIG_KEY_PATTERN.test(key)) continue;
+    if (isPlainRecord(child)) {
+      result[key] = redactSecretLikeConfigKeys(child);
+    } else if (Array.isArray(child)) {
+      result[key] = child.map((element) =>
+        isPlainRecord(element) ? redactSecretLikeConfigKeys(element) : element,
+      );
+    } else {
+      result[key] = child;
+    }
+  }
+  return result;
+}
+
+/**
+ * Floor view of a platform-provisioned environment on a cloud-managed
+ * instance: env vars and credential-shaped config keys are never echoed — to
+ * ANY actor, including instance admins — while structural config (provider,
+ * image, template, region, ...) and the managed markers in `metadata` stay
+ * visible so admin surfaces can render the environment and show its
+ * platform-managed state.
+ */
+export function applyPlatformProvisionedEnvironmentFloor<T extends {
+  config: Record<string, unknown> | null;
+  envVars?: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+}>(environment: T): T {
+  return {
+    ...environment,
+    config: redactSecretLikeConfigKeys(isPlainRecord(environment.config) ? environment.config : {}),
+    ...(Object.prototype.hasOwnProperty.call(environment, "envVars") ? { envVars: {} } : {}),
+  };
+}
 
 export function environmentRoutes(
   db: Db,
@@ -118,6 +176,15 @@ export function environmentRoutes(
     envVars?: Record<string, unknown> | null;
     metadata: Record<string, unknown> | null;
   }>(req: Request, environment: T): T {
+    // Floor: on cloud-managed instances, platform-provisioned rows use one
+    // view for every reader — instance admins (including computed
+    // owner-admins) never see env vars or credential-shaped config keys, and
+    // restricted readers gain the structural fields the redacted view used to
+    // blank (the platform config carries no secrets by the managed-config
+    // contract).
+    if (isCloudManagedInstance() && isPlatformProvisionedEnvironment(environment)) {
+      return applyPlatformProvisionedEnvironmentFloor(environment);
+    }
     return canReadFullInstanceEnvironment(req)
       ? environment
       : redactEnvironmentForRestrictedView(environment);
@@ -682,7 +749,7 @@ export function environmentRoutes(
         status: environment.status,
       },
     });
-    res.status(201).json(environment);
+    res.status(201).json(presentEnvironmentForRead(req, environment));
   });
 
   router.get("/environments/:id", async (req, res) => {
@@ -809,9 +876,10 @@ export function environmentRoutes(
       entityId: environment.id,
       details: summarizeEnvironmentUpdate(patch as Record<string, unknown>, environment),
     });
+    const presented = presentEnvironmentForRead(req, environment);
     res.json(customImageReconciliation.action === "none"
-      ? environment
-      : { ...environment, customImageReconciliation });
+      ? presented
+      : { ...presented, customImageReconciliation });
   });
 
   router.delete("/environments/:id", async (req, res) => {
@@ -873,7 +941,7 @@ export function environmentRoutes(
         status: removed.status,
       },
     });
-    res.json(removed);
+    res.json(presentEnvironmentForRead(req, removed));
   });
 
   router.post("/environments/:id/probe", async (req, res) => {
