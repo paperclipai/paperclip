@@ -2874,7 +2874,7 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     }
   });
 
-  it("carries per-step roundTrips + provider durations sourced from the sandbox runner counter", async () => {
+  it("carries roundTrips + provider durations for sequential startup steps and keeps concurrent bridge steps duration-only", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const localCwd = path.join(root, "worktree");
@@ -2897,10 +2897,13 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     const steps = stepEvents(events);
     const seen = new Map(steps.map((event) => [String(event.payload?.step), event]));
 
-    // Every timed boundary carries a numeric roundTrips (the runner exposes
-    // execCount), even the ones that never exec.
+    // Every timed boundary still records duration.
     for (const event of steps) {
-      expect(typeof event.payload?.roundTrips).toBe("number");
+      expect(typeof event.payload?.durationMs).toBe("number");
+    }
+    // Sequential boundaries retain runner-counter attribution.
+    for (const step of ["workspace.resolve", "stage.sync", "acp.handshake"]) {
+      expect(typeof seen.get(step)?.payload?.roundTrips).toBe("number");
     }
     // workspace.resolve is host-only → zero host→sandbox execs.
     expect(seen.get("workspace.resolve")?.payload?.roundTrips).toBe(0);
@@ -2914,6 +2917,13 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     expect(stageSync?.payload?.providerGetMs).toBe(
       (stageSync?.payload?.roundTrips as number) * 15,
     );
+    // Concurrent bridge steps are duration-only so they do not double-count
+    // shared runner counters while their lifecycles overlap.
+    for (const step of ["bridge.paperclip", "bridge.process-session"]) {
+      expect(seen.get(step)?.payload?.roundTrips).toBeUndefined();
+      expect(seen.get(step)?.payload?.providerExecMs).toBeUndefined();
+      expect(seen.get(step)?.payload?.providerGetMs).toBeUndefined();
+    }
     // The external ACP client crosses no host exec seam.
     expect(seen.get("acp.handshake")?.payload?.roundTrips).toBe(0);
   });

@@ -1292,6 +1292,12 @@ async function buildRuntime(input: {
       ? executionTarget.runner
       : undefined,
   );
+  // The two bridge-start steps intentionally overlap, so their runner counters
+  // would double-count each other if we sampled them here. Keep the shared
+  // counter attribution on the sequential startup phases only; the concurrent
+  // bridge steps still emit duration telemetry, just not misleading per-step
+  // round-trip/provider deltas.
+  const concurrentBridgeStepMetrics: StartupStepMeasureOptions = {};
   const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
     workspaceWorktreePath,
@@ -1771,7 +1777,7 @@ async function buildRuntime(input: {
           hostApiToken: env.PAPERCLIP_API_KEY,
           onLog: input.ctx.onLog,
         }),
-        stepMetrics,
+        concurrentBridgeStepMetrics,
       );
       // The single sequencing point (paperclip `env` → process-session launch).
       // Memoized so the merge + log + `runtimeEnv` build run EXACTLY once whether
@@ -1801,7 +1807,7 @@ async function buildRuntime(input: {
           timeoutSec,
           onLog: input.ctx.onLog,
         }),
-        stepMetrics,
+        concurrentBridgeStepMetrics,
       );
       // Settle BOTH starts (mirrors `cleanupRemoteBridges`' `Promise.allSettled`):
       // collect whichever handles started plus the first failure. Both handles
