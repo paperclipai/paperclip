@@ -60,4 +60,10 @@ describe("detectVibeAuthRequired", () => {
   it("returns false for normal output", () => {
     expect(detectVibeAuthRequired("Task done.", "")).toBe(false);
   });
+
+  it("does not false-positive on 'unauthorized' in tool API response", () => {
+    // A downstream API the agent called may return a 401; that is not a Vibe auth failure.
+    const stdout = JSON.stringify({ type: "message", role: "assistant", content: "Got 401 unauthorized from the external API." });
+    expect(detectVibeAuthRequired(stdout, "")).toBe(false);
+  });
 });

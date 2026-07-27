@@ -229,7 +229,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const canResumeSession = persistSession && prevSessionId.length > 0;
 
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canResumeSession });
-  const renderedPrompt = canResumeSession && wakePrompt.length > 0
+  // When resuming a session, never re-send the full setup template — the session is already
+  // initialised. A wake prompt (if any) is sufficient; a no-wake heartbeat sends nothing.
+  const renderedPrompt = canResumeSession
     ? ""
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
@@ -362,7 +364,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const failed = (proc.exitCode ?? 0) !== 0;
+  const failed = proc.exitCode !== 0; // null (spawn error) is treated as failure
   const stderrSnippet = (proc.stderr ?? "").split("\n").find((l) => l.trim())?.trim() ?? "";
   const errorMessage = authFailed
     ? "Mistral authentication required. Run `vibe --setup` interactively."

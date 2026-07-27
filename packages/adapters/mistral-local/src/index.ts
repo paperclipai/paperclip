@@ -1,7 +1,7 @@
 export const type = "mistral_local";
 export const label = "Mistral Vibe CLI (local)";
 
-export const SANDBOX_INSTALL_COMMAND = "npm install -g mistral-vibe";
+export const SANDBOX_INSTALL_COMMAND = "pip install mistral-vibe";
 
 export const DEFAULT_MISTRAL_LOCAL_MODEL = "codestral-latest";
 
@@ -29,7 +29,7 @@ Don't use when:
 
 ## Prerequisites
 
-- Install Vibe: \`npm install -g mistral-vibe\` (requires Node.js 20+)
+- Install Vibe: \`pip install mistral-vibe\` (requires Python 3.9+)
 - Configure: \`vibe --setup\` to log in to Mistral La Plateforme
 - Or set \`MISTRAL_API_KEY\` in the agent env for API-key billing mode
 

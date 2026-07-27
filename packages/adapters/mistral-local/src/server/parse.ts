@@ -56,7 +56,6 @@ export function detectVibeAuthRequired(stdout: string, stderr: string): boolean 
     combined.includes("not authenticated") ||
     combined.includes("authentication failed") ||
     combined.includes("invalid api key") ||
-    combined.includes("unauthorized") ||
     combined.includes("vibe --setup")
   );
 }
