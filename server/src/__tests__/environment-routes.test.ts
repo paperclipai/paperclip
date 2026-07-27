@@ -38,6 +38,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getDeleteBlastRadius: vi.fn(),
   listLeases: vi.fn(),
   getLeaseById: vi.fn(),
+  releaseActiveLeasesForEnvironment: vi.fn(),
 }));
 
 const mockEnvironmentCustomImageService = vi.hoisted(() => ({
@@ -97,6 +98,7 @@ vi.mock("../services/secrets.js", () => ({
 
 vi.mock("../services/environments.js", () => ({
   environmentService: () => mockEnvironmentService,
+  ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES: ["starting", "waiting_for_user", "capturing"],
 }));
 
 vi.mock("../services/execution-workspaces.js", () => ({
@@ -162,6 +164,7 @@ function createDeleteBlastRadius(overrides: Partial<{
   const deleteBlockedReasons = [
     ...(staticReferences.isManagedLocal ? ["managed_local" as const] : []),
     ...(staticReferences.isInstanceDefault ? ["instance_default" as const] : []),
+    ...(activeRuntimeUse.hasActiveRuntimeUse ? ["active_runtime_use" as const] : []),
   ];
   return {
     environmentId: "env-1",
@@ -237,6 +240,7 @@ describe("environment routes", () => {
     mockEnvironmentService.getDeleteBlastRadius.mockReset();
     mockEnvironmentService.listLeases.mockReset();
     mockEnvironmentService.getLeaseById.mockReset();
+    mockEnvironmentService.releaseActiveLeasesForEnvironment.mockReset();
     mockExecutionWorkspaceService.clearEnvironmentSelection.mockReset();
     Object.values(mockEnvironmentCustomImageService).forEach((mock) => mock.mockReset());
     mockEnvironmentCustomImageService.getOverview.mockResolvedValue({
@@ -418,8 +422,8 @@ describe("environment routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       environmentId: "env-1",
-      canDelete: true,
-      deleteBlockedReasons: [],
+      canDelete: false,
+      deleteBlockedReasons: ["active_runtime_use"],
       staticReferences: {
         isManagedLocal: false,
         isInstanceDefault: false,
@@ -845,6 +849,76 @@ describe("environment routes", () => {
         entityId: "env-ssh",
       }),
     );
+  });
+
+  it("blocks forced environment delete when active custom image session cannot be cancelled", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      activeCustomImageSetupSessionCount: 1,
+    }));
+    mockEnvironmentCustomImageService.getOverview.mockResolvedValue({
+      activeTemplate: null,
+      activeSession: { id: "session-1" },
+      latestSession: null,
+    });
+    mockEnvironmentCustomImageService.cancelSetupSession.mockResolvedValue({
+      id: "session-1",
+      status: "starting",
+    });
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).delete("/api/environments/env-1?force=true");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(
+      "Active custom image setup session could not be cancelled. Retry or wait for setup to complete before deleting.",
+    );
+    expect(res.body.details).toEqual({ deleteBlockedReasons: ["active_runtime_use"] });
+    expect(mockEnvironmentCustomImageService.cancelSetupSession).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      reason: "environment_force_delete",
+    });
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("proceeds with forced environment delete when active custom image session is successfully cancelled", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      activeCustomImageSetupSessionCount: 1,
+    }));
+    mockEnvironmentCustomImageService.getOverview.mockResolvedValue({
+      activeTemplate: null,
+      activeSession: { id: "session-1" },
+      latestSession: null,
+    });
+    mockEnvironmentCustomImageService.cancelSetupSession.mockResolvedValue({
+      id: "session-1",
+      status: "cancelled",
+    });
+    mockEnvironmentService.releaseActiveLeasesForEnvironment.mockResolvedValue(0);
+    mockEnvironmentService.removeIfDeletable.mockResolvedValue(environment);
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue([]);
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).delete("/api/environments/env-1?force=true");
+
+    expect(res.status).toBe(200);
+    expect(mockEnvironmentCustomImageService.cancelSetupSession).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      reason: "environment_force_delete",
+    });
+    expect(mockEnvironmentService.releaseActiveLeasesForEnvironment).toHaveBeenCalledWith("env-1");
+    expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith("env-1");
   });
 
   it("rejects invalid SSH config on create", async () => {
