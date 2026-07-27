@@ -46,6 +46,7 @@ export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
 export { issueRecoveryActionService } from "./issue-recovery-actions.js";
 export { taskWatchdogService } from "./task-watchdogs.js";
+export { agentManagerService } from "./agent-manager/index.js";
 export {
   issueIsInTaskWatchdogSubtree,
   resolveTaskWatchdogMutationScope,

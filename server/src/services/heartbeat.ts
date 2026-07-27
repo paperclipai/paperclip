@@ -17,6 +17,7 @@ import {
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
+  type HeartbeatRunStatus,
   type HeartbeatRunStatusPhase,
   type IssueExecutionMonitorClearReason,
   type IssueExecutionMonitorPolicy,
@@ -209,6 +210,11 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
+import {
+  agentManagerService,
+  createDefaultJudgeInvoker,
+  resolveEvaluationTrigger,
+} from "./agent-manager/index.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
@@ -4713,6 +4719,8 @@ export async function buildPaperclipWakePayload(input: {
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
     taskWatchdog: (input.contextSnapshot.taskWatchdog ?? null) as unknown,
     skillTest: (input.contextSnapshot.paperclipSkillTest ?? null) as unknown,
+    agentManagerReflection: parseObject(input.contextSnapshot.agentManagerReflection),
+    agentManagerEscalation: parseObject(input.contextSnapshot.agentManagerEscalation),
     continuationSummary: safeContinuationSummary
       ? {
           key: safeContinuationSummary.key,
@@ -5561,6 +5569,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
+  const agentManager = agentManagerService(db, {
+    enqueueWakeup,
+    invokeJudge: createDefaultJudgeInvoker(),
+  });
+
+  async function invokeAgentManagerEvaluation(input: {
+    companyId: string;
+    issueId: string | null;
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+  }) {
+    if (!input.issueId) return;
+    const trigger = resolveEvaluationTrigger({
+      status: input.run.status,
+      livenessState: (input.run.livenessState as RunLivenessState | null) ?? null,
+    });
+    if (!trigger) return;
+    await agentManager.onRunTerminalForEvaluation({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      runId: input.run.id,
+      agentId: input.agent.id,
+      runStatus: input.run.status as HeartbeatRunStatus,
+      livenessState: (input.run.livenessState as RunLivenessState | null) ?? null,
+      trigger,
+    }).catch((err) => logger.warn({ err, runId: input.run.id }, "agent manager evaluation hook failed"));
+  }
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
     const target = parseObject(parseObject(payload).target);
@@ -14056,6 +14091,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : livenessRun,
           agent,
         );
+        await invokeAgentManagerEvaluation({
+          companyId: finalizedRun.companyId,
+          issueId,
+          run: livenessRun,
+          agent,
+        });
 
         // Dependency wake re-check: if this run's issue was marked done mid-run,
         // the route-time `issue_blockers_resolved` wake may have been gated by
@@ -14217,6 +14258,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
+        await invokeAgentManagerEvaluation({
+          companyId: livenessRun.companyId,
+          issueId,
+          run: livenessRun,
+          agent,
+        });
 
         await updateRuntimeState(agent, livenessRun, {
           exitCode: null,
