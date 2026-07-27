@@ -113,6 +113,29 @@ describe("plannerStatsCheck", () => {
     expect(result.canRepair).toBe(false);
     expect(result.message).toContain("skipped");
   });
+
+  it("does not inspect planner statistics for externally managed PostgreSQL", async () => {
+    const config = createConfig({
+      database: {
+        mode: "postgres",
+        connectionString: "postgres://example.test/paperclip",
+        embeddedPostgresDataDir: "/unused",
+        embeddedPostgresPort: 54329,
+        backup: {
+          enabled: true,
+          intervalMinutes: 60,
+          retentionDays: 7,
+          dir: "/unused",
+        },
+      },
+    });
+    const openDb = vi.fn();
+
+    const result = await plannerStatsCheck(config, undefined, { openDb });
+
+    expect(result.status).toBe("pass");
+    expect(openDb).not.toHaveBeenCalled();
+  });
 });
 
 describe("activityLogSizeCheck", () => {

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
-import { resolveRuntimeLikePath } from "./path-resolver.js";
+import { resolveRuntimeLikePath } from "../utils/path-resolver.js";
 
 export const SERVER_LOG_WARN_BYTES = 100 * 1024 ** 2;
 

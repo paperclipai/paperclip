@@ -38,6 +38,14 @@ export async function plannerStatsCheck(
   configPath?: string,
   opts: PlannerStatsCheckOptions = {},
 ): Promise<CheckResult> {
+  if (config.database.mode !== "embedded-postgres") {
+    return {
+      name: "Planner statistics",
+      status: "pass",
+      message: "External PostgreSQL manages planner statistics",
+    };
+  }
+
   let db;
   try {
     ({ db } = await (opts.openDb ?? openDoctorDb)(config, configPath));
