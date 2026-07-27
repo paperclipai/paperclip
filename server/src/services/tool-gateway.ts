@@ -3028,18 +3028,21 @@ export function createToolGatewayService(
         dispatched: true,
       },
     };
-    // MCP requires an `initialize` handshake before any other request. Stateful
-    // Streamable HTTP servers (e.g. 1MCP) return an `Mcp-Session-Id` we must echo
-    // back on every subsequent call, including `tools/call` — omitting it gets a
-    // `400 Server not initialized`. Mirrors the same handshake `remoteTools()`
-    // already does for `tools/list` catalog refreshes. Best-effort: returns null
-    // for stateless servers and failed handshakes, leaving the tools/call request
-    // below as the authoritative error path.
-    const sessionId = await initializeMcpSession(endpoint, headers);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
+    let sessionId: string | null = null;
     try {
+      // MCP requires an `initialize` handshake before any other request. Stateful
+      // Streamable HTTP servers (e.g. 1MCP) return an `Mcp-Session-Id` we must echo
+      // back on every subsequent call, including `tools/call` — omitting it gets a
+      // `400 Server not initialized`. Mirrors the same handshake `remoteTools()`
+      // already does for `tools/list` catalog refreshes. Best-effort: returns null
+      // for stateless servers and failed handshakes, leaving the tools/call request
+      // below as the authoritative error path. Shares this call's abort signal so a
+      // server that accepts the connection but never answers `initialize` still
+      // hits the `ms` timeout instead of hanging indefinitely.
+      sessionId = await initializeMcpSession(endpoint, headers, controller.signal);
       const requestHeaders = mcpHttpRequestHeaders(headers);
       if (sessionId) requestHeaders["mcp-session-id"] = sessionId;
       const response = await fetch(endpoint, {

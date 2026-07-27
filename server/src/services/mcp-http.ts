@@ -56,12 +56,14 @@ const MCP_SESSION_ID_HEADER = "mcp-session-id";
 export async function initializeMcpSession(
   endpoint: string | URL,
   headers?: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   let response: Response;
   try {
     response = await fetch(endpoint, {
       method: "POST",
       headers: mcpHttpRequestHeaders(headers),
+      signal,
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: "paperclip-mcp-initialize",
@@ -73,8 +75,11 @@ export async function initializeMcpSession(
         },
       }),
     });
-  } catch {
-    // Network failure — let the caller's follow-up request surface it.
+  } catch (error) {
+    // Propagate abort so callers enforcing a call timeout see it as a timeout,
+    // not a swallowed handshake failure. Other network failures stay best-effort
+    // — the caller's follow-up request surfaces them.
+    if (error instanceof Error && error.name === "AbortError") throw error;
     return null;
   }
   if (!response.ok) {

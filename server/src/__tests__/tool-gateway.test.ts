@@ -2723,6 +2723,55 @@ rl.on("line", (line) => {
     });
   }
 
+  it("times out a remote MCP call whose `initialize` handshake hangs, instead of dispatching tools/call", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    // Only the `initialize` handshake hangs; a server that actually reached
+    // `tools/call` would respond immediately, so a passing `tools/call` request
+    // in `fake.requests` would mean the timeout budget wasn't applied to the
+    // handshake (PAP-9750).
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      if (fakeRequest.body?.method === "initialize") {
+        return { delayMs: 5_000, body: { jsonrpc: "2.0", id: fakeRequest.body?.id ?? null, result: {} } };
+      }
+      return { body: { jsonrpc: "2.0", id: fakeRequest.body?.id, result: { content: [{ type: "text", text: "ok" }] } } };
+    });
+    try {
+      await createRemoteMcpTool(db, company.id, {
+        applicationKey: "hanging-handshake",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha", value: "one" },
+        timeoutMs: 50,
+      }).then(
+        () => {
+          throw new Error("Expected remote MCP call to time out during the initialize handshake");
+        },
+        (error) => expectGatewayError(error, 504, "tool_timeout"),
+      );
+
+      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests[0]!.body).toMatchObject({ method: "initialize" });
+
+      const [invocation] = await db.select().from(toolInvocations);
+      expect(invocation).toMatchObject({ status: "timed_out", errorCode: "tool_timeout" });
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("persists hashed sessions and accepts them across gateway service instances", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
