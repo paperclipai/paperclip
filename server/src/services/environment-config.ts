@@ -120,6 +120,19 @@ function getSandboxProvider(raw: Record<string, unknown>) {
   return typeof raw.provider === "string" && raw.provider.trim().length > 0 ? raw.provider.trim() : "fake";
 }
 
+function parseSandboxSecretRef(
+  value: unknown,
+): { secretId: string; versionSelector: SecretVersionSelector } | null {
+  if (typeof value === "string") {
+    const secretId = value.trim();
+    return isUuidSecretRef(secretId) ? { secretId, versionSelector: "latest" } : null;
+  }
+  const parsed = secretRefSchema.safeParse(value);
+  return parsed.success
+    ? { secretId: parsed.data.secretId, versionSelector: parsed.data.version }
+    : null;
+}
+
 function parseSandboxEnvironmentConfig(
   input: Record<string, unknown> | null | undefined,
 ) {
@@ -253,16 +266,15 @@ async function resolveConfigSecretRefsForRuntime(input: {
   let nextConfig = { ...input.config };
   for (const path of collectSecretRefPaths(input.schema)) {
     const current = readConfigValueAtPath(nextConfig, path);
-    if (typeof current !== "string") continue;
-    const trimmed = current.trim();
-    if (!isUuidSecretRef(trimmed)) continue;
+    const secretRef = parseSandboxSecretRef(current);
+    if (!secretRef) continue;
     if (!input.context.consumerId) {
       throw unprocessable("Runtime secret resolution requires an environment id");
     }
     nextConfig = writeConfigValueAtPath(
       nextConfig,
       path,
-      await secrets.resolveSecretValue(input.companyId, trimmed, "latest", {
+      await secrets.resolveSecretValue(input.companyId, secretRef.secretId, secretRef.versionSelector, {
         consumerType: "environment",
         consumerId: input.context.consumerId,
         actorType: "system",
@@ -292,24 +304,28 @@ async function resolveConfigSecretRefsForProbe(input: {
   let nextConfig = { ...input.config };
   for (const path of collectSecretRefPaths(input.schema)) {
     const current = readConfigValueAtPath(nextConfig, path);
-    if (typeof current !== "string") continue;
-    const trimmed = current.trim();
-    if (!isUuidSecretRef(trimmed)) continue;
+    const secretRef = parseSandboxSecretRef(current);
+    if (!secretRef) continue;
     // Unsaved draft probes do not have an environment record yet, so they
     // cannot rely on environment-bound secret resolution. Resolve directly for
     // this ephemeral board-only probe and never persist the plaintext value.
     nextConfig = writeConfigValueAtPath(
       nextConfig,
       path,
-      await secrets.resolveSecretValueForEphemeralAccess(input.companyId, trimmed, "latest", {
-        consumerType: "system",
-        consumerId: "environment-probe-config",
-        configPath: path,
-        actorType: input.accessContext?.actorType ?? "system",
-        actorId: input.accessContext?.actorId ?? null,
-        actorSource: input.accessContext?.actorSource,
-        heartbeatRunId: input.accessContext?.heartbeatRunId ?? null,
-      }),
+      await secrets.resolveSecretValueForEphemeralAccess(
+        input.companyId,
+        secretRef.secretId,
+        secretRef.versionSelector,
+        {
+          consumerType: "system",
+          consumerId: "environment-probe-config",
+          configPath: path,
+          actorType: input.accessContext?.actorType ?? "system",
+          actorId: input.accessContext?.actorId ?? null,
+          actorSource: input.accessContext?.actorSource,
+          heartbeatRunId: input.accessContext?.heartbeatRunId ?? null,
+        },
+      ),
     );
   }
   return nextConfig;
@@ -332,8 +348,13 @@ export async function collectEnvironmentSecretRefs(input: {
     const refs: Array<{ secretId: string; configPath: string; versionSelector?: SecretVersionSelector }> = [];
     for (const path of collectSecretRefPaths(schema)) {
       const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
-      if (typeof current === "string" && isUuidSecretRef(current.trim())) {
-        refs.push({ secretId: current.trim(), configPath: path, versionSelector: "latest" });
+      const secretRef = parseSandboxSecretRef(current);
+      if (secretRef) {
+        refs.push({
+          secretId: secretRef.secretId,
+          configPath: path,
+          versionSelector: secretRef.versionSelector,
+        });
       }
     }
     return refs;
@@ -623,7 +644,7 @@ export async function resolveEnvironmentDriverConfigForRuntime(
     } else {
       for (const path of collectSecretRefPaths(schema)) {
         const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
-        if (typeof current === "string" && isUuidSecretRef(current.trim())) {
+        if (parseSandboxSecretRef(current)) {
           throw unprocessable("Runtime secret resolution requires a companyId context");
         }
       }

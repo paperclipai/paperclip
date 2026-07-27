@@ -1167,6 +1167,83 @@ describe("environment routes", () => {
     );
   });
 
+  it("preserves and binds selected object-shaped sandbox secret refs", async () => {
+    const apiKeyRef = {
+      type: "secret_ref" as const,
+      secretId: "11111111-1111-1111-1111-111111111111",
+      version: 4,
+    };
+    const environment = {
+      ...createEnvironment(),
+      id: "env-sandbox-secure-plugin",
+      name: "Secure Sandbox",
+      driver: "sandbox" as const,
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: apiKeyRef,
+        reuseLease: false,
+      },
+    };
+    mockEnvironmentService.create.mockResolvedValue(environment);
+    mockValidatePluginSandboxProviderConfig.mockResolvedValue({
+      normalizedConfig: {
+        template: "base",
+        apiKey: apiKeyRef,
+        reuseLease: false,
+      },
+      pluginId: "plugin-secure",
+      pluginKey: "acme.secure-sandbox-provider",
+      driver: {
+        driverKey: "secure-plugin",
+        kind: "sandbox_provider",
+        displayName: "Secure Sandbox",
+        configSchema: {
+          type: "object",
+          properties: {
+            template: { type: "string" },
+            apiKey: { type: "string", format: "secret-ref" },
+            reuseLease: { type: "boolean" },
+          },
+        },
+      },
+    });
+    const pluginWorkerManager = {};
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    }, { pluginWorkerManager });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/environments")
+      .send({
+        name: "Secure Sandbox",
+        driver: "sandbox",
+        config: {
+          provider: "secure-plugin",
+          template: "base",
+          apiKey: apiKeyRef,
+          reuseLease: false,
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.create).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ apiKey: apiKeyRef }),
+    }));
+    expect(mockSecretService.syncSecretRefsForTarget).toHaveBeenCalledWith(
+      "company-1",
+      { targetType: "environment", targetId: environment.id },
+      [{
+        secretId: apiKeyRef.secretId,
+        configPath: "apiKey",
+        versionSelector: apiKeyRef.version,
+      }],
+    );
+  });
+
   it("uses the configured provider for schema-driven sandbox secret fields", async () => {
     process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
     const environment = {
@@ -1812,7 +1889,11 @@ describe("environment routes", () => {
     mockValidatePluginSandboxProviderConfig.mockResolvedValue({
       normalizedConfig: {
         template: "base",
-        apiKey: "11111111-1111-1111-1111-111111111111",
+        apiKey: {
+          type: "secret_ref",
+          secretId: "11111111-1111-1111-1111-111111111111",
+          version: 3,
+        },
         timeoutMs: 300000,
         reuseLease: true,
       },
@@ -1855,7 +1936,11 @@ describe("environment routes", () => {
         config: {
           provider: "secure-plugin",
           template: "base",
-          apiKey: "11111111-1111-1111-1111-111111111111",
+          apiKey: {
+            type: "secret_ref",
+            secretId: "11111111-1111-1111-1111-111111111111",
+            version: 3,
+          },
           timeoutMs: 300000,
           reuseLease: true,
         },
@@ -1867,7 +1952,7 @@ describe("environment routes", () => {
     expect(mockSecretService.resolveSecretValueForEphemeralAccess).toHaveBeenCalledWith(
       "company-1",
       "11111111-1111-1111-1111-111111111111",
-      "latest",
+      3,
       {
         consumerType: "system",
         consumerId: "environment-probe-config",

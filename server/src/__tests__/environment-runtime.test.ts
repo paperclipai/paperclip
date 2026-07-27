@@ -709,7 +709,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const providerConfig = {
       provider: "secure-plugin",
       template: "base",
-      apiKey: apiSecret.id,
+      apiKey: {
+        type: "secret_ref" as const,
+        secretId: apiSecret.id,
+        version: "latest" as const,
+      },
       timeoutMs: 1234,
       reuseLease: false,
     };
@@ -815,7 +819,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(acquired.lease.metadata).toMatchObject({
       provider: "secure-plugin",
       template: "base",
-      apiKey: apiSecret.id,
+      apiKey: {
+        type: "secret_ref",
+        secretId: apiSecret.id,
+        version: "latest",
+      },
       timeoutMs: 1234,
       sandboxId: "sandbox-1",
     });
