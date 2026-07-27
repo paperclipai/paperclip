@@ -82,7 +82,7 @@ export async function sharedBuffersCheck(
   }
 
   const configuredBytes = row.configured_setting
-    ? parseSettingBytes(row.configured_setting, null)
+    ? parseSettingBytes(row.configured_setting, row.unit)
     : null;
   if (
     row.pending_restart &&

@@ -207,4 +207,27 @@ describe("sharedBuffersCheck", () => {
     expect(result.status).toBe("pass");
     expect(openDb).not.toHaveBeenCalled();
   });
+
+  it("parses configured_setting with the same native unit when pending restart", async () => {
+    const execute = vi.fn().mockResolvedValueOnce([
+      {
+        setting: "128",
+        unit: "8kB",
+        pending_restart: true,
+        configured_setting: "16384",
+      },
+    ]);
+    const openDb = vi.fn(async () => ({ db: { execute } as never, connectionString: "postgres://test" }));
+
+    const result = await sharedBuffersCheck(createConfig(), undefined, {
+      hostMemoryBytes: 1024 ** 3,
+      openDb,
+    });
+
+    expect(result.status).toBe("warn");
+    expect(result.canRepair).toBe(false);
+    expect(result.message).toContain("restart Paperclip to apply it");
+    expect(result.repairHint).toContain("Restart the Paperclip server");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
 });
