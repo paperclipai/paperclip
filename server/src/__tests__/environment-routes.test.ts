@@ -1172,6 +1172,8 @@ describe("environment routes", () => {
       type: "secret_ref" as const,
       secretId: "11111111-1111-1111-1111-111111111111",
       version: 4,
+      projectionClass: "class_3_static_lease" as const,
+      projectionAllowlistKey: "kubernetes.kubeconfig",
     };
     const environment = {
       ...createEnvironment(),

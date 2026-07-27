@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
+import { envBindingSecretRefSchema } from "@paperclipai/shared";
 import type {
   Environment,
   EnvironmentDriver,
@@ -127,9 +128,9 @@ function parseSandboxSecretRef(
     const secretId = value.trim();
     return isUuidSecretRef(secretId) ? { secretId, versionSelector: "latest" } : null;
   }
-  const parsed = secretRefSchema.safeParse(value);
+  const parsed = envBindingSecretRefSchema.safeParse(value);
   return parsed.success
-    ? { secretId: parsed.data.secretId, versionSelector: parsed.data.version }
+    ? { secretId: parsed.data.secretId, versionSelector: parsed.data.version ?? "latest" }
     : null;
 }
 
