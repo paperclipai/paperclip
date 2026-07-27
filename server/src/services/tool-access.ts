@@ -110,7 +110,13 @@ import type {
 import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnectionMethod, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
-import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
+import {
+  closeMcpHttpSession,
+  mcpHttpRequestHeaders,
+  openMcpHttpSession,
+  parseMcpHttpResponseBody,
+  withMcpSessionHeader,
+} from "./mcp-http.js";
 import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
@@ -2774,56 +2780,74 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function remoteTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
     const headers = await resolveCredentialHeaders(connection);
     const endpoint = await assertRemoteEndpointAllowed(connection.config);
-    const response = await fetch(endpoint, {
-      method: "POST",
-      // MCP Streamable HTTP requires advertising that we accept both a JSON body
-      // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
-      headers: mcpHttpRequestHeaders(headers),
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "paperclip-catalog-refresh",
-        method: "tools/list",
-        params: {},
-      }),
-    });
-    if (!response.ok) {
-      const authenticate = response.headers.get("www-authenticate") ?? "";
-      if (response.status === 401 && /bearer|oauth|authorization/i.test(authenticate)) {
-        const endpoints = await discoverOAuthEndpoints(connection, authenticate);
-        if (endpoints) {
-          const nextConfig = {
-            ...connection.config,
-            oauth: {
-              ...oauthConfig(connection),
-              provider: endpoints.provider,
-              authorizationUrl: endpoints.authorizationUrl,
-              tokenUrl: endpoints.tokenUrl,
-              metadataUrl: endpoints.metadataUrl ?? null,
-              scopes: endpoints.scopes,
-              grantType: endpoints.grantType ?? "authorization_code",
-              discoveredAt: new Date().toISOString(),
-            },
-          };
-          await db
-            .update(toolConnections)
-            .set({ config: nextConfig, transportConfig: nextConfig, updatedAt: new Date() })
-            .where(eq(toolConnections.id, connection.id));
+    // Spec-compliant session-keeping servers reject tools/list without an
+    // initialize handshake + mcp-session-id. Fail-soft when the server is
+    // session-less (see openMcpHttpSession).
+    const mcpSession = await openMcpHttpSession({ endpoint, headers });
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        redirect: "manual",
+        // MCP Streamable HTTP requires advertising that we accept both a JSON body
+        // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
+        headers: mcpHttpRequestHeaders(
+          withMcpSessionHeader(headers, mcpSession.sessionId, mcpSession.protocolVersion),
+        ),
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          method: "tools/list",
+          params: {},
+        }),
+      });
+      if (!response.ok) {
+        const authenticate = response.headers.get("www-authenticate") ?? "";
+        if (response.status === 401 && /bearer|oauth|authorization/i.test(authenticate)) {
+          const endpoints = await discoverOAuthEndpoints(connection, authenticate);
+          if (endpoints) {
+            const nextConfig = {
+              ...connection.config,
+              oauth: {
+                ...oauthConfig(connection),
+                provider: endpoints.provider,
+                authorizationUrl: endpoints.authorizationUrl,
+                tokenUrl: endpoints.tokenUrl,
+                metadataUrl: endpoints.metadataUrl ?? null,
+                scopes: endpoints.scopes,
+                grantType: endpoints.grantType ?? "authorization_code",
+                discoveredAt: new Date().toISOString(),
+              },
+            };
+            await db
+              .update(toolConnections)
+              .set({ config: nextConfig, transportConfig: nextConfig, updatedAt: new Date() })
+              .where(eq(toolConnections.id, connection.id));
+          }
+          throw new HttpError(502, "This app needs you to sign in.", {
+            code: "oauth_challenge",
+            status: response.status,
+            setupUrl: connectionSetupUrl(connection),
+            reconnectUrl: connectionReconnectUrl(connection),
+            oauthSupported: Boolean(endpoints),
+          });
         }
-        throw new HttpError(502, "This app needs you to sign in.", {
-          code: "oauth_challenge",
-          status: response.status,
-          setupUrl: connectionSetupUrl(connection),
-          reconnectUrl: connectionReconnectUrl(connection),
-          oauthSupported: Boolean(endpoints),
+        throw new HttpError(502, "Remote app returned an error", { status: response.status });
+      }
+      const payload = parseMcpHttpResponseBody(await response.text(), response.headers.get("content-type"));
+      const result = asRecord(asRecord(payload).result);
+      const payloadTools = asRecord(payload).tools;
+      const tools: unknown[] = Array.isArray(result.tools) ? result.tools : Array.isArray(payloadTools) ? payloadTools : [];
+      return tools.map((tool) => normalizeToolDescriptor(tool)).filter((tool): tool is McpToolDescriptor => Boolean(tool));
+    } finally {
+      if (mcpSession.sessionId) {
+        await closeMcpHttpSession({
+          endpoint,
+          headers,
+          sessionId: mcpSession.sessionId,
+          protocolVersion: mcpSession.protocolVersion,
         });
       }
-      throw new HttpError(502, "Remote app returned an error", { status: response.status });
     }
-    const payload = parseMcpHttpResponseBody(await response.text(), response.headers.get("content-type"));
-    const result = asRecord(asRecord(payload).result);
-    const payloadTools = asRecord(payload).tools;
-    const tools: unknown[] = Array.isArray(result.tools) ? result.tools : Array.isArray(payloadTools) ? payloadTools : [];
-    return tools.map((tool) => normalizeToolDescriptor(tool)).filter((tool): tool is McpToolDescriptor => Boolean(tool));
   }
 
   async function localTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {

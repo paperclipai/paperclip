@@ -53,7 +53,13 @@ import type {
 import type { AgentToolDescriptor, PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
-import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
+import {
+  closeMcpHttpSession,
+  mcpHttpRequestHeaders,
+  openMcpHttpSession,
+  parseMcpHttpResponseBody,
+  withMcpSessionHeader,
+} from "./mcp-http.js";
 import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
@@ -242,7 +248,7 @@ type RemoteHttpExecutionAudit = {
     mcpMethod: "tools/call";
     requestId: string;
     upstreamToolName: string;
-    dispatched: true;
+    dispatched: boolean;
   };
   response?: {
     httpStatus: number;
@@ -2242,7 +2248,15 @@ export function createToolGatewayService(
       const normalized = headerName(name);
       if (normalized) credentialHeaders[normalized] = value;
     }
-    const reservedHeaders = new Set(["accept", "content-type", "content-length", "host", "connection"]);
+    const reservedHeaders = new Set([
+      "accept",
+      "content-type",
+      "content-length",
+      "host",
+      "connection",
+      "mcp-session-id",
+      "mcp-protocol-version",
+    ]);
     const managedCredentialHeaders = new Set(Object.keys(credentialHeaders));
     const headers: Record<string, string> = {};
     const summary: HeaderPolicySummary = {
@@ -3028,19 +3042,35 @@ export function createToolGatewayService(
         mcpMethod: "tools/call",
         requestId,
         upstreamToolName: entry.toolName,
-        dispatched: true,
+        // Set true only after the tools/call fetch returns — handshake may
+        // consume the whole timeout budget without ever dispatching the call.
+        dispatched: false,
       },
     };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
+    let mcpSessionId: string | null = null;
+    let mcpProtocolVersion: string | null = null;
     try {
+      // Spec-compliant session-keeping servers reject tools/call without an
+      // initialize handshake + mcp-session-id. Share the call timeout signal so
+      // the handshake is bounded by the same budget (see openMcpHttpSession).
+      const mcpSession = await openMcpHttpSession({
+        endpoint,
+        headers,
+        signal: controller.signal,
+      });
+      mcpSessionId = mcpSession.sessionId;
+      mcpProtocolVersion = mcpSession.protocolVersion;
       const response = await fetch(endpoint, {
         method: "POST",
         redirect: "manual",
         // MCP Streamable HTTP requires the Accept header advertising both a JSON
         // body and an SSE stream; spec-compliant servers 406 without it.
-        headers: mcpHttpRequestHeaders(headers),
+        headers: mcpHttpRequestHeaders(
+          withMcpSessionHeader(headers, mcpSession.sessionId, mcpSession.protocolVersion),
+        ),
         signal: controller.signal,
         body: JSON.stringify({
           jsonrpc: "2.0",
@@ -3052,6 +3082,7 @@ export function createToolGatewayService(
           },
         }),
       });
+      execution.request.dispatched = true;
       const body = await readBoundedRemoteResponse(response);
       execution.response = {
         httpStatus: response.status,
@@ -3131,6 +3162,15 @@ export function createToolGatewayService(
       });
     } finally {
       clearTimeout(timer);
+      if (mcpSessionId) {
+        // Do not share the (possibly aborted) call signal — teardown is best-effort.
+        await closeMcpHttpSession({
+          endpoint,
+          headers,
+          sessionId: mcpSessionId,
+          protocolVersion: mcpProtocolVersion,
+        });
+      }
     }
   }
 
