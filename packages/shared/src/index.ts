@@ -1,4 +1,6 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export * from "./home-paths.js";
+export * from "./state-manifest.js";
 export {
   getAgentOrgChainHealth,
   getAgentWorkEligibility,

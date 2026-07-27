@@ -5,6 +5,7 @@ import {
   CloudUpload,
   Cpu,
   FlaskConical,
+  History,
   KeyRound,
   MailPlus,
   MonitorCog,
@@ -133,6 +134,7 @@ export function CompanySettingsSidebar() {
             ))}
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+          <SidebarNavItem to="/company/settings/backups" label="Backups & version history" icon={History} end />
         </div>
         <div className="mt-5 px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
           Instance settings

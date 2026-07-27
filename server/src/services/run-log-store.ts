@@ -239,19 +239,36 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
 // NOT redirect the product's workspace/file storage (smaller blast radius).
 // Unset RUN_LOG_S3_BUCKET -> no mirror -> local-only (safe degrade). Creds come
 // from the standard AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY chain.
+type RunLogS3Defaults = {
+  enabled: boolean;
+  bucket: string;
+  region: string;
+  endpoint?: string;
+  prefix?: string;
+  forcePathStyle: boolean;
+};
+
+let runLogS3Defaults: RunLogS3Defaults | undefined;
+
+export function configureRunLogS3Defaults(defaults: RunLogS3Defaults | undefined): void {
+  runLogS3Defaults = defaults;
+  cachedStore = null;
+}
+
 function resolveRunLogS3(): { provider: StorageProvider; keyPrefix?: string } | undefined {
-  const bucket = process.env.RUN_LOG_S3_BUCKET?.trim();
+  const bucket = process.env.RUN_LOG_S3_BUCKET?.trim() || (runLogS3Defaults?.enabled ? runLogS3Defaults.bucket : undefined);
   if (!bucket) return undefined;
   const provider = createS3StorageProvider({
     bucket,
-    region: process.env.RUN_LOG_S3_REGION?.trim() || "us-east-1",
-    endpoint: process.env.RUN_LOG_S3_ENDPOINT?.trim() || undefined,
+    region: process.env.RUN_LOG_S3_REGION?.trim() || runLogS3Defaults?.region || "us-east-1",
+    endpoint: process.env.RUN_LOG_S3_ENDPOINT?.trim() || runLogS3Defaults?.endpoint,
     prefix: undefined, // prefixing is handled by keyPrefix below (kept off the provider)
     forcePathStyle: process.env.RUN_LOG_S3_FORCE_PATH_STYLE
       ? process.env.RUN_LOG_S3_FORCE_PATH_STYLE === "true"
-      : true, // Cubbit (and most S3-compatible endpoints) need path-style
+      : (runLogS3Defaults?.forcePathStyle ?? true),
   });
-  return { provider, keyPrefix: process.env.RUN_LOG_S3_PREFIX?.trim() || "run-logs" };
+  const defaultPrefix = [runLogS3Defaults?.prefix, "run-logs"].filter(Boolean).join("/");
+  return { provider, keyPrefix: process.env.RUN_LOG_S3_PREFIX?.trim() || defaultPrefix || "run-logs" };
 }
 
 let cachedStore: RunLogStore | null = null;

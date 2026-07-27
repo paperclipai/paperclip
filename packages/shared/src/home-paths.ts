@@ -34,6 +34,24 @@ export function resolvePaperclipInstanceRoot(input: {
   return path.resolve(resolvePaperclipHomeDir(input.homeDir), "instances", resolvePaperclipInstanceId(input.instanceId));
 }
 
+export function resolvePaperclipHomePath(
+  input: { homeDir?: string } = {},
+  ...segments: string[]
+): string {
+  return path.resolve(resolvePaperclipHomeDir(input.homeDir), ...segments);
+}
+
+export function resolvePaperclipInstancePath(
+  input: { homeDir?: string; instanceId?: string } = {},
+  ...segments: string[]
+): string {
+  return path.resolve(resolvePaperclipInstanceRoot(input), ...segments);
+}
+
+export function resolveUserHomePath(...segments: string[]): string {
+  return path.resolve(os.homedir(), ...segments);
+}
+
 export function resolvePaperclipInstanceConfigPath(input: {
   homeDir?: string;
   instanceId?: string;
@@ -85,6 +103,16 @@ export function resolveDefaultBackupDir(input: {
   instanceId?: string;
 } = {}): string {
   return path.resolve(resolvePaperclipInstanceRoot(input), "data", "backups");
+}
+
+export function resolveStateRepoPath(input: {
+  homeDir?: string;
+  instanceId?: string;
+  companyId?: string;
+} = {}): string {
+  return input.companyId
+    ? path.resolve(resolvePaperclipInstanceRoot(input), "state-repos", `${input.companyId}.git`)
+    : path.resolve(resolvePaperclipInstanceRoot(input), "state-repo.git");
 }
 
 export function resolveHomeAwarePath(value: string): string {

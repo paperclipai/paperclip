@@ -717,6 +717,10 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/invites",
   "GET /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
+  "PUT /api/companies/{companyId}/state-repo/remote",
+  "DELETE /api/companies/{companyId}/state-repo/remote",
+  "POST /api/companies/{companyId}/state-repo/mirror/test",
+  "POST /api/companies/{companyId}/state-repo/restore",
   "GET /api/companies/{companyId}/join-requests",
   "POST /api/companies/{companyId}/join-requests/{requestId}/approve",
   "POST /api/companies/{companyId}/join-requests/{requestId}/reject",
@@ -843,6 +847,8 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/companies",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
+  "POST /api/instance/state-snapshots",
+  "POST /api/instance/state-snapshots/restore",
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/admin/users/{userId}/demote-instance-admin",
   "PUT /api/admin/users/{userId}/company-access",
@@ -896,6 +902,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
+  "POST /api/instance/state-snapshots",
   "POST /api/companies/{companyId}/tools/applications",
   "POST /api/companies/{companyId}/tools/connections",
   "POST /api/companies/{companyId}/tools/action-requests/{actionRequestId}/trust-rule",
@@ -5059,6 +5066,47 @@ registry.registerPath({
   tags: ["instance"],
   summary: "Trigger a database backup",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/instance/state-snapshots",
+  tags: ["instance"],
+  summary: "Create an encrypted instance-state snapshot",
+  responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/instance/state-snapshots/restore",
+  tags: ["instance"],
+  summary: "Restore an encrypted instance-state snapshot",
+  body: z.object({ objectKey: z.string().min(1) }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({ method: "get", path: "/api/companies/{companyId}/state-repo/log", tags: ["state-repo"], summary: "List state repository commits", query: z.object({ limit: z.string().optional() }).strict() });
+registerCurrentRoute({ method: "get", path: "/api/companies/{companyId}/state-repo/remote", tags: ["state-repo"], summary: "Get state repository remote configuration" });
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/state-repo/remote",
+  tags: ["state-repo"],
+  summary: "Configure a state repository remote",
+  body: z.object({ remoteUrl: z.string().url(), secretId: z.string().optional(), secretVersion: z.union([z.string(), z.number()]).optional() }).strict(),
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+registerCurrentRoute({ method: "delete", path: "/api/companies/{companyId}/state-repo/remote", tags: ["state-repo"], summary: "Disconnect the state repository remote" });
+registerCurrentRoute({ method: "get", path: "/api/companies/{companyId}/state-repo/bundle", tags: ["state-repo"], summary: "Download a state repository bundle", responses: { 200: { description: "Git bundle download" }, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound } });
+registerCurrentRoute({ method: "post", path: "/api/companies/{companyId}/state-repo/mirror/test", tags: ["state-repo"], summary: "Test the configured state repository mirror" });
+registerCurrentRoute({ method: "get", path: "/api/companies/{companyId}/state-repo/health", tags: ["state-repo"], summary: "Get state repository mirror health" });
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/state-repo/restore",
+  tags: ["state-repo"],
+  summary: "Restore company state from a repository or bundle",
+  body: z.object({ source: z.string().min(1), ref: z.string().optional(), dryRun: z.boolean().optional() }).strict(),
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 
 // ─── LLM text endpoints ───────────────────────────────────────────────────────

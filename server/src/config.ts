@@ -89,6 +89,14 @@ export interface Config {
   telemetryEnabled: boolean;
 }
 
+export function resolveStorageProviderDefault(input: {
+  envProvider?: StorageProvider | null;
+  fileProvider?: StorageProvider;
+  inCloudRuntime?: boolean;
+}): StorageProvider {
+  return input.envProvider ?? input.fileProvider ?? (input.inCloudRuntime ? "s3" : "local_disk");
+}
+
 function detectTailnetBindHost(): string | undefined {
   const explicit = process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim();
   if (explicit) return explicit;
@@ -134,7 +142,11 @@ export function loadConfig(): Config {
     storageProviderFromEnvRaw && STORAGE_PROVIDERS.includes(storageProviderFromEnvRaw as StorageProvider)
       ? (storageProviderFromEnvRaw as StorageProvider)
       : null;
-  const storageProvider: StorageProvider = storageProviderFromEnv ?? fileStorage?.provider ?? "local_disk";
+  const storageProvider = resolveStorageProviderDefault({
+    envProvider: storageProviderFromEnv,
+    fileProvider: fileStorage?.provider,
+    inCloudRuntime: process.env.PAPERCLIP_K8S_IN_CLUSTER === "true",
+  });
   const storageLocalDiskBaseDir = resolveHomeAwarePath(
     process.env.PAPERCLIP_STORAGE_LOCAL_DIR ??
       fileStorage?.localDisk?.baseDir ??

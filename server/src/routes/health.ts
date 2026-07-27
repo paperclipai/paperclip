@@ -15,6 +15,7 @@ import {
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { inspectInstanceStateSnapshotHealth } from "../services/instance-state-snapshot-health.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -57,6 +58,23 @@ function redactedDatabaseBackupHealth(databaseBackup: DatabaseBackupHealthStatus
   };
 }
 
+function redactedStateSnapshotWarning(warning: { code: string; message: string }) {
+  const messages: Record<string, string> = {
+    instance_state_snapshot_last_failure: "Instance-state snapshot failure marker is present.",
+    instance_state_snapshot_missing: "No recent instance-state snapshot was found.",
+    instance_state_snapshot_stale: "Latest instance-state snapshot is stale.",
+  };
+  return { code: warning.code, message: messages[warning.code] ?? "Instance-state snapshot health warning." };
+}
+
+function redactedStateSnapshotHealth(stateSnapshot: ReturnType<typeof inspectInstanceStateSnapshotHealth>) {
+  return {
+    enabled: stateSnapshot.enabled,
+    status: stateSnapshot.status,
+    warnings: stateSnapshot.warnings.map(redactedStateSnapshotWarning),
+  };
+}
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -66,6 +84,7 @@ export function healthRoutes(
     companyDeletionEnabled: boolean;
     serverInfo?: ServerInfoSnapshot;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
+    stateSnapshotHealth?: { markerDir: string; enabled: boolean; maxAgeHours: number };
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -201,11 +220,17 @@ export function healthRoutes(
     const databaseBackup = opts.databaseBackupHealth
       ? inspectDatabaseBackupHealth(opts.databaseBackupHealth)
       : undefined;
-    const warnings = databaseBackup?.warnings.length ? databaseBackup.warnings : undefined;
+    const stateSnapshot = opts.stateSnapshotHealth
+      ? inspectInstanceStateSnapshotHealth(opts.stateSnapshotHealth)
+      : undefined;
+    const combinedWarnings = [...(databaseBackup?.warnings ?? []), ...(stateSnapshot?.warnings ?? [])];
+    const warnings = combinedWarnings.length ? combinedWarnings : undefined;
 
     if (!exposeFullDetails) {
       const redactedDatabaseBackup = databaseBackup ? redactedDatabaseBackupHealth(databaseBackup) : undefined;
-      const redactedWarnings = redactedDatabaseBackup?.warnings.length ? redactedDatabaseBackup.warnings : undefined;
+      const redactedStateSnapshot = stateSnapshot ? redactedStateSnapshotHealth(stateSnapshot) : undefined;
+      const combinedRedactedWarnings = [...(redactedDatabaseBackup?.warnings ?? []), ...(redactedStateSnapshot?.warnings ?? [])];
+      const redactedWarnings = combinedRedactedWarnings.length ? combinedRedactedWarnings : undefined;
       res.json({
         status: "ok",
         deploymentMode: opts.deploymentMode,
@@ -213,6 +238,7 @@ export function healthRoutes(
         bootstrapStatus,
         bootstrapInviteActive,
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
+        ...(redactedStateSnapshot ? { stateSnapshot: redactedStateSnapshot } : {}),
         ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
       });
@@ -233,6 +259,7 @@ export function healthRoutes(
       },
       serverInfo,
       ...(databaseBackup ? { databaseBackup } : {}),
+      ...(stateSnapshot ? { stateSnapshot } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),
     });
