@@ -37,6 +37,12 @@ function environmentRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function readyDriverResolver(status = "ready") {
+  return vi.fn(async () => ({
+    plugin: { pluginKey: "sandbox-providers/daytona", status },
+  }));
+}
+
 describe("applyManagedEnvironments", () => {
   it("no-ops for self-hosted instances and for documents without environments", async () => {
     expect(await applyManagedEnvironments(noDb, null)).toBeNull();
@@ -69,12 +75,15 @@ describe("applyManagedEnvironments", () => {
       ],
     });
 
+    const resolveSandboxProviderDriver = readyDriverResolver();
     const result = await applyManagedEnvironments(noDb, config, {
       env: {},
       environments: { ensureManagedSandboxEnvironment },
+      resolveSandboxProviderDriver,
     });
 
     expect(result).toEqual({ ensured: 1, failed: 0 });
+    expect(resolveSandboxProviderDriver).toHaveBeenCalledWith({ db: noDb, driverKey: "daytona" });
     expect(ensureManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
     expect(ensureManagedSandboxEnvironment).toHaveBeenCalledWith({
       name: "Daytona",
@@ -88,6 +97,71 @@ describe("applyManagedEnvironments", () => {
     expect(Object.isFrozen(passedConfig)).toBe(false);
   });
 
+  it("waits for the bundled-plugin startup pass before ensuring anything", async () => {
+    const ensureManagedSandboxEnvironment = vi
+      .fn()
+      .mockResolvedValue(environmentRow());
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    let releasePlugins!: () => void;
+    const pluginsReady = new Promise<void>((resolve) => {
+      releasePlugins = resolve;
+    });
+
+    const pending = applyManagedEnvironments(noDb, config, {
+      env: {},
+      pluginsReady,
+      environments: { ensureManagedSandboxEnvironment },
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    // Give the ensure every chance to (incorrectly) run early.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+
+    releasePlugins();
+    expect(await pending).toEqual({ ensured: 1, failed: 0 });
+    expect(ensureManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips (and counts failed) an entry whose provider plugin is missing", async () => {
+    const ensureManagedSandboxEnvironment = vi
+      .fn()
+      .mockResolvedValue(environmentRow());
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    const result = await applyManagedEnvironments(noDb, config, {
+      env: {},
+      environments: { ensureManagedSandboxEnvironment },
+      resolveSandboxProviderDriver: vi.fn(async () => null),
+    });
+
+    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("skips (and counts failed) an entry whose provider plugin is not ready", async () => {
+    const ensureManagedSandboxEnvironment = vi
+      .fn()
+      .mockResolvedValue(environmentRow());
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    const result = await applyManagedEnvironments(noDb, config, {
+      env: {},
+      environments: { ensureManagedSandboxEnvironment },
+      resolveSandboxProviderDriver: readyDriverResolver("disabled"),
+    });
+
+    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+  });
+
   it("is fail-safe per entry: an ensure failure is counted, not thrown", async () => {
     const ensureManagedSandboxEnvironment = vi
       .fn()
@@ -99,6 +173,7 @@ describe("applyManagedEnvironments", () => {
     const result = await applyManagedEnvironments(noDb, config, {
       env: {},
       environments: { ensureManagedSandboxEnvironment },
+      resolveSandboxProviderDriver: readyDriverResolver(),
     });
 
     expect(result).toEqual({ ensured: 0, failed: 1 });

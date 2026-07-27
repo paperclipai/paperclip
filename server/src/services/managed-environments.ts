@@ -17,6 +17,13 @@
  *    logged and boot continues degraded (environment unavailable) rather
  *    than crash-looping a fleet.
  *
+ * Ensuring is additionally synchronized with provider readiness: the caller's
+ * `pluginsReady` promise (the bundled-plugin install/load pass) is awaited
+ * first, and an entry whose provider plugin is not installed and `ready`
+ * afterwards is skipped (counted failed) instead of being written as an
+ * active row — otherwise the heartbeat would resume queued runs against an
+ * environment whose lease acquisition cannot succeed yet.
+ *
  * Removing an entry from the document stops future refreshes but never
  * deletes or archives the row — there is intentionally no unprovision path
  * here, matching `plugins.autoInstall` semantics (leases may still reference
@@ -33,14 +40,27 @@ import { logger } from "../middleware/logger.js";
 import { environmentService } from "./environments.js";
 import type { ManagedInstanceConfig } from "./managed-config.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
+import { resolvePluginSandboxProviderDriverByKey } from "./plugin-environment-driver.js";
 
 export interface ApplyManagedEnvironmentsOptions {
   env?: Record<string, string | undefined>;
+  /**
+   * Resolves when the bundled-plugin startup pass (install + load; the
+   * `ensureBundledPlugins` chain in `createApp`) has finished. Awaited before
+   * any environment is ensured so an active row never precedes its provider
+   * driver. The promise never rejects (the chain catches internally).
+   */
+  pluginsReady?: Promise<unknown>;
   /** Test seam: overrides the environment service built from `db`. */
   environments?: Pick<
     ReturnType<typeof environmentService>,
     "ensureManagedSandboxEnvironment"
   >;
+  /** Test seam: overrides the sandbox-provider plugin driver lookup. */
+  resolveSandboxProviderDriver?: (input: {
+    db: Db;
+    driverKey: string;
+  }) => Promise<{ plugin: { pluginKey: string; status: string } } | null>;
 }
 
 /**
@@ -67,11 +87,34 @@ export async function applyManagedEnvironments(
     );
   }
 
+  // The heartbeat resumes queued runs right after this bootstrap step, and
+  // lease acquisition fails hard on a provider whose plugin is missing or not
+  // ready. Wait for the bundled-plugin startup pass to finish, then refuse to
+  // ensure (and in particular to re-activate) a row whose provider driver did
+  // not come up — a degraded boot without the row beats an active environment
+  // that fails every lease until the plugin recovers.
+  await opts.pluginsReady;
+
+  const resolveDriver = opts.resolveSandboxProviderDriver ?? resolvePluginSandboxProviderDriverByKey;
   const environments = opts.environments ?? environmentService(db);
   let ensured = 0;
   let failed = 0;
   for (const spec of managedConfig.environments) {
     try {
+      const resolved = await resolveDriver({ db, driverKey: spec.provider });
+      if (!resolved || resolved.plugin.status !== "ready") {
+        failed += 1;
+        logger.error(
+          {
+            name: spec.name,
+            provider: spec.provider,
+            pluginKey: resolved?.plugin.pluginKey ?? null,
+            pluginStatus: resolved?.plugin.status ?? null,
+          },
+          "managed sandbox environment provider plugin is not installed and ready; skipping ensure (degraded: environment unavailable)",
+        );
+        continue;
+      }
       const environment = await environments.ensureManagedSandboxEnvironment({
         name: spec.name,
         description: spec.description,

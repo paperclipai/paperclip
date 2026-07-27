@@ -645,7 +645,8 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(created.metadata?.managedByPaperclip).toBe(true);
     expect(created.metadata?.managedSandboxProvider).toBe("daytona");
 
-    // Idempotent: a second call refreshes config and name in place.
+    // Idempotent: a second call refreshes config and name in place, and a
+    // description omitted from the spec is cleared, not pinned forever.
     const refreshed = await svc.ensureManagedSandboxEnvironment({
       name: "Daytona (EU)",
       provider: "daytona",
@@ -654,6 +655,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(refreshed.id).toBe(created.id);
     expect(refreshed.name).toBe("Daytona (EU)");
     expect(refreshed.config.target).toBe("eu");
+    expect(refreshed.description).toBeNull();
 
     const rows = await db
       .select()

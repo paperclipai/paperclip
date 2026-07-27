@@ -590,7 +590,13 @@ export async function createApp(
   // swallowed per plugin so the server ALWAYS finishes booting. A degraded
   // boot (a provider unavailable, some agents cannot run) is strictly
   // preferable to a crash loop.
-  void ensureBundledPlugins(
+  //
+  // The chain is not awaited here (createApp stays fast), but the settled
+  // promise is exposed via `app.locals.bundledPluginsStartup` so boot steps
+  // that must not outrun plugin availability — managed sandbox environments
+  // (`applyManagedEnvironments`) run before the heartbeat resumes queued
+  // runs — can sequence on it. It never rejects.
+  const bundledPluginsStartup = ensureBundledPlugins(
     bundledPluginInstalls,
     { registry: pluginRegistry, loader, lifecycle, logger },
     // Managed mode reinstalls soft-uninstalled bundles (the control plane
@@ -609,6 +615,7 @@ export async function createApp(
   }).catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
+  app.locals.bundledPluginsStartup = bundledPluginsStartup;
   let appServicesShutdown = false;
   const shutdownAppServices = () => {
     if (appServicesShutdown) return;

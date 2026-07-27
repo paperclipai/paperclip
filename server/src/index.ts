@@ -866,9 +866,15 @@ export async function startServer(): Promise<StartedServer> {
   // document already parsed fail-closed above; the ensure step itself is
   // fail-safe per entry (a degraded boot beats a fleet-wide crash loop), but
   // a contradictory deployment that also forces PAPERCLIP_EXECUTION_MODE
-  // throws here and fails startup.
+  // throws here and fails startup. `pluginsReady` sequences the ensure after
+  // the bundled-plugin install/load pass so a declared environment never
+  // activates before its provider driver is registered.
   try {
-    const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig);
+    const bundledPluginsStartup = (app as { locals?: { bundledPluginsStartup?: Promise<unknown> } })
+      .locals?.bundledPluginsStartup;
+    const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
+      pluginsReady: bundledPluginsStartup,
+    });
     if (managedEnvironmentsResult) {
       logger.warn(managedEnvironmentsResult, "managed sandbox environments ensured from managed config");
     }

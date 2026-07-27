@@ -257,7 +257,9 @@ export function environmentService(db: Db) {
           .update(environments)
           .set({
             ...values,
-            description: input.description ?? row.description,
+            // The row mirrors the managed spec: omitting `description` clears
+            // a previously configured one rather than pinning it forever.
+            description: input.description ?? null,
             config: desiredConfig,
             metadata,
             status: "active",
