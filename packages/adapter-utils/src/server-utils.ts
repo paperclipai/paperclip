@@ -2865,6 +2865,27 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+export function readAdapterConfigUserLocks(config: Record<string, unknown>): string[] {
+  const raw = config._userLocked;
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(raw.flatMap((value) => {
+    if (typeof value !== "string") return [];
+    const path = value.trim();
+    return path ? [path] : [];
+  })));
+}
+
+export function adapterConfigPathIsUserLocked(
+  config: Record<string, unknown>,
+  path: string,
+): boolean {
+  return readAdapterConfigUserLocks(config).some((lockedPath) =>
+    path === lockedPath
+    || path.startsWith(`${lockedPath}.`)
+    || lockedPath.startsWith(`${path}.`),
+  );
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,

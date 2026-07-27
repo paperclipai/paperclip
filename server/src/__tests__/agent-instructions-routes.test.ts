@@ -38,6 +38,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockIssueService = vi.hoisted(() => ({ addComment: vi.fn() }));
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
 const mockFindServerAdapter = vi.hoisted(() => vi.fn());
 
@@ -52,7 +53,7 @@ vi.mock("../services/index.js", () => ({
   environmentService: () => mockEnvironmentService,
   heartbeatService: () => ({}),
   issueApprovalService: () => ({}),
-  issueService: () => ({}),
+  issueService: () => mockIssueService,
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
@@ -83,7 +84,7 @@ function registerModuleMocks() {
     budgetService: () => ({}),
     heartbeatService: () => ({}),
     issueApprovalService: () => ({}),
-    issueService: () => ({}),
+    issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
@@ -114,7 +115,10 @@ function boardActor() {
   };
 }
 
-async function createApp(actor: Record<string, unknown> = boardActor()) {
+async function createApp(
+  actor: Record<string, unknown> = boardActor(),
+  db: Record<string, unknown> = {},
+) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -125,7 +129,7 @@ async function createApp(actor: Record<string, unknown> = boardActor()) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", agentRoutes({} as any));
+  app.use("/api", agentRoutes(db as any));
   app.use(errorHandler);
   return app;
 }
@@ -176,6 +180,25 @@ function makeAgent() {
   };
 }
 
+function linkedIssueDb() {
+  let selectCount = 0;
+  return {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(async () => {
+          selectCount += 1;
+          return selectCount === 1
+            ? [{ contextSnapshot: { issueId: "33333333-3333-4333-8333-333333333333" } }]
+            : [{
+                id: "33333333-3333-4333-8333-333333333333",
+                parentId: "44444444-4444-4444-8444-444444444444",
+              }];
+        }),
+      })),
+    })),
+  };
+}
+
 function makeReflectionCoachAgent(overrides: Record<string, unknown> = {}) {
   return {
     ...makeAgent(),
@@ -199,6 +222,7 @@ describe("agent instructions bundle routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1" });
     mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockResolvedValue(0);
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockFindServerAdapter.mockImplementation((_type: string) => ({ type: _type }));
@@ -470,6 +494,7 @@ describe("agent instructions bundle routes", () => {
       adapterConfig: {
         model: "claude-sonnet-4",
         paperclipSkillSync: { desiredSkills: ["research", "code-review"] },
+        _userLocked: ["paperclipSkillSync.desiredSkills"],
       },
     });
 
@@ -491,6 +516,7 @@ describe("agent instructions bundle routes", () => {
         adapterConfig: expect.objectContaining({
           model: "gpt-5.4",
           paperclipSkillSync: { desiredSkills: ["research", "code-review"] },
+          _userLocked: ["model", "paperclipSkillSync.desiredSkills"],
         }),
       }),
       expect.any(Object),
@@ -529,6 +555,188 @@ describe("agent instructions bundle routes", () => {
           instructionsRootPath: "/tmp/agent-1",
           instructionsEntryFile: "AGENTS.md",
           instructionsFilePath: "/tmp/agent-1/AGENTS.md",
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("records changed adapter config fields as user locks", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "codex_local",
+      adapterConfig: {
+        model: "gpt-5.4",
+        env: { SAFE_FLAG: "before" },
+        paperclipSkillSync: {
+          desiredSkills: ["research"],
+          lastSyncedAt: "2026-07-24T00:00:00.000Z",
+        },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterConfig: {
+          model: "gpt-5.6",
+          paperclipSkillSync: { desiredSkills: ["research", "code-review"] },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          model: "gpt-5.6",
+          env: { SAFE_FLAG: "before" },
+          paperclipSkillSync: {
+            desiredSkills: ["research", "code-review"],
+            lastSyncedAt: "2026-07-24T00:00:00.000Z",
+          },
+          _userLocked: ["model", "paperclipSkillSync.desiredSkills"],
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("allows an explicit unlock while locking fields changed in the same user patch", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterConfig: {
+        model: "gpt-5.4",
+        command: "codex",
+        _userLocked: ["model"],
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterConfig: {
+          command: "codex --profile engineer",
+          _userLocked: [],
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          model: "gpt-5.4",
+          command: "codex --profile engineer",
+          _userLocked: ["command"],
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("skips agent changes to locked fields and surfaces only redacted shapes", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterConfig: {
+        model: "gpt-5.4",
+        command: "codex",
+        env: { SECRET_TOKEN: "old-secret-value" },
+        _userLocked: ["model", "env"],
+      },
+    });
+
+    const res = await requestApp(await createApp({
+      type: "agent",
+      agentId: "agent-editor",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+      source: "agent_key",
+    }, linkedIssueDb()), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({
+        adapterConfig: {
+          model: "gpt-5.6",
+          command: "codex --profile engineer",
+          env: { SECRET_TOKEN: "new-secret-value" },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          model: "gpt-5.4",
+          command: "codex --profile engineer",
+          env: { SECRET_TOKEN: "old-secret-value" },
+          _userLocked: ["model", "env"],
+        }),
+      }),
+      expect.any(Object),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.adapter_config_change_skipped",
+        details: {
+          fields: expect.arrayContaining([
+            { path: "command", type: "string", count: 1 },
+            { path: "env", type: "object", count: 1 },
+            { path: "model", type: "string", count: 1 },
+          ]),
+          changedCount: 1,
+          skippedCount: 2,
+        },
+      }),
+    );
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("old-secret-value");
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("new-secret-value");
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "44444444-4444-4444-8444-444444444444",
+      expect.stringContaining("Skipped user-locked fields: 2"),
+      {
+        agentId: "agent-editor",
+        runId: "55555555-5555-4555-8555-555555555555",
+      },
+    );
+    expect(JSON.stringify(mockIssueService.addComment.mock.calls)).not.toContain("old-secret-value");
+    expect(JSON.stringify(mockIssueService.addComment.mock.calls)).not.toContain("new-secret-value");
+  });
+
+  it("preserves a nested locked field when an agent requests full replacement", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterConfig: {
+        model: "gpt-5.4",
+        paperclipSkillSync: {
+          desiredSkills: ["research"],
+          lastSyncedAt: "2026-07-24T00:00:00.000Z",
+        },
+        _userLocked: ["paperclipSkillSync.desiredSkills"],
+      },
+    });
+
+    const res = await requestApp(await createApp({
+      type: "agent",
+      agentId: "agent-editor",
+      companyId: "company-1",
+      source: "agent_key",
+    }), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({
+        replaceAdapterConfig: true,
+        adapterConfig: { model: "gpt-5.6" },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          model: "gpt-5.6",
+          paperclipSkillSync: { desiredSkills: ["research"] },
+          _userLocked: ["paperclipSkillSync.desiredSkills"],
         }),
       }),
       expect.any(Object),

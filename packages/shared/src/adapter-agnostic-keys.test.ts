@@ -12,6 +12,7 @@ const EXPECTED_ADAPTER_AGNOSTIC_KEYS = [
   "graceSec",
   "bootstrapPromptTemplate",
   "paperclipSkillSync",
+  "_userLocked",
 ] as const;
 
 function readRepoFile(pathFromRoot: string) {
