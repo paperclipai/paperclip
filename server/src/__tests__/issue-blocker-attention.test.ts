@@ -90,7 +90,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   async function insertIssue(input: {
     companyId: string;
     id?: string;
-    identifier: string;
+    identifier: string | null;
     title: string;
     status: string;
     parentId?: string | null;
@@ -949,6 +949,39 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       attentionBlockerCount: readiness.unresolvedBlockerCount,
       sampleBlockerIdentifier: "BFD-2",
+    });
+    expect(parent?.blockerAttention?.sampleBlockerIdentifier).not.toBe(blockerId);
+  });
+
+  it("does not expose a raw UUID when a false-done blocker has a null identifier", async () => {
+    const { companyId } = await createCompany("BFN");
+    const parentId = await insertIssue({
+      companyId,
+      identifier: "BFN-1",
+      title: "False done with null-identifier blocker",
+      status: "done",
+    });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: null,
+      title: "Capture gate without identifier",
+      status: "blocked",
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "done" })).find((issue) => issue.id === parentId);
+    const readiness = await svc.getDependencyReadiness(parentId);
+
+    expect(readiness).toMatchObject({
+      unresolvedBlockerCount: 1,
+      isDependencyReady: false,
+    });
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+      attentionBlockerCount: readiness.unresolvedBlockerCount,
+      sampleBlockerIdentifier: null,
     });
     expect(parent?.blockerAttention?.sampleBlockerIdentifier).not.toBe(blockerId);
   });

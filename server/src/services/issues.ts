@@ -2212,8 +2212,9 @@ async function listIssueBlockerAttentionMap(
           reason: "attention_required",
           unresolvedBlockerCount,
           attentionBlockerCount: unresolvedBlockerCount,
+          // Human-readable sample only. Never fall back to a raw UUID when identifier is null.
           sampleBlockerIdentifier: sampleBlockerId
-            ? (sampleIdentifierById.get(sampleBlockerId) ?? sampleBlockerId)
+            ? (sampleIdentifierById.get(sampleBlockerId) ?? null)
             : null,
         }),
       );
