@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { instanceUserRoles } from "@paperclipai/db";
+import { companies, instanceUserRoles } from "@paperclipai/db";
 import { actorMiddleware } from "../middleware/auth.js";
 
 function createSelectChain(rows: unknown[]) {
@@ -94,7 +94,13 @@ describe("actorMiddleware authenticated session profile", () => {
         return chain;
       }),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
-      select: vi.fn(),
+      // The stack's company already exists (onboarding already ran), so the
+      // membership upsert and role-default grants below still fire.
+      select: vi.fn(() => ({
+        from: (table: unknown) => ({
+          where: () => Promise.resolve(table === companies ? [{ id: "stack-alpha-company" }] : []),
+        }),
+      })),
     } as any;
     const app = express();
     app.use(
@@ -128,9 +134,10 @@ describe("actorMiddleware authenticated session profile", () => {
       memberships: [expect.objectContaining({ membershipRole: "owner", status: "active" })],
     });
     expect(res.body.companyIds[0]).toMatch(/^[0-9a-f-]{36}$/);
-    // authUsers, companies, companyMemberships, and the role-default
+    // authUsers, companyMemberships, and the role-default
     // principalPermissionGrants seeded in place of instance-admin elevation.
-    expect(inserts).toHaveLength(4);
+    // The stack company itself is created lazily by onboarding, not here.
+    expect(inserts).toHaveLength(3);
     expect(inserts[0]?.values).toMatchObject({
       id: "global-user-1",
       email: "owner@example.com",

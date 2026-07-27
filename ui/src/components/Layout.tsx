@@ -202,12 +202,14 @@ export function Layout() {
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
-    if (health?.deploymentMode === "authenticated") return;
+    // In authenticated mode, CloudAccessGate has already routed users who
+    // cannot create a company (waiting page / no-access page), so anyone who
+    // reaches an empty companies list here is allowed to onboard.
     if (companies.length === 0) {
       onboardingTriggered.current = true;
       openOnboarding();
     }
-  }, [companies, companiesLoading, openOnboarding, health?.deploymentMode]);
+  }, [companies, companiesLoading, openOnboarding]);
 
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;

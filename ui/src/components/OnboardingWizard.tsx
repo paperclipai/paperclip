@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
+import { ApiError } from "@/api/client";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
@@ -569,7 +570,15 @@ export function OnboardingWizard() {
 
       setStep(3); // → Create your team lead
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create company");
+      if (err instanceof ApiError && err.status === 409) {
+        // Another owner/admin finished setting this workspace up first.
+        queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+        setError(
+          "This workspace was already set up by a teammate. Close this wizard to jump into the company.",
+        );
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to create company");
+      }
     } finally {
       setLoading(false);
     }
