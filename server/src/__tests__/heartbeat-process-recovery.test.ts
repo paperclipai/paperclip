@@ -4110,6 +4110,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.assigneeAgentId).toBe(agentId);
   });
 
+  it("skips execution-review participant recovery when an in-review issue already has a typed pending reviewer", async () => {
+    const { companyId, agentId, issueId, runId } = await seedInReviewParticipantRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
+
+    const reviewerRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(reviewerRuns).toHaveLength(1);
+    expect(reviewerRuns[0]?.id).toBe(runId);
+
+    const reviewerWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(reviewerWakeups).toHaveLength(1);
+    expect(
+      reviewerWakeups.some((wakeup) => wakeup.reason === "execution_review_participant_recovery"),
+    ).toBe(false);
+  });
+
   it("retries a pending execution-review participant once before blocking with a recovery action", async () => {
     const { companyId, agentId, issueId, runId, stageId } = await seedInReviewParticipantRunFixture();
     const heartbeat = heartbeatService(db);

@@ -193,6 +193,20 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function hasTypedPendingReviewParticipant(
+  pendingExecutionState: ReturnType<typeof parseIssueExecutionState>,
+): boolean {
+  if (pendingExecutionState?.status !== "pending") {
+    return false;
+  }
+
+  const participant = pendingExecutionState.currentParticipant;
+  return Boolean(
+    (participant?.type === "agent" && readNonEmptyString(participant.agentId)) ||
+    (participant?.type === "user" && readNonEmptyString(participant.userId))
+  );
+}
+
 function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   if (!run) return null;
 
@@ -3178,6 +3192,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         );
 
         if (!participantLatestRun || !isTerminalIssueRun(participantLatestRun)) {
+          if (participantLatestRun && hasTypedPendingReviewParticipant(pendingExecutionState)) {
+            result.skipped += 1;
+            continue;
+          }
+
           if (!agentInvokable) {
             const updated = await escalateStrandedAssignedIssue({
               issue,
