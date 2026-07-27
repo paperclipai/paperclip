@@ -592,6 +592,49 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
   });
 
+  it("keeps watchdog mutation scope valid after a sanctioned self-write moves the stop fingerprint", async () => {
+    // Regression for GBO-521: a watchdog run performs several sanctioned
+    // mutations to its stopped subtree (reassign / transition / create child).
+    // Any *material* self-write moves the derived stop fingerprint. Revalidation
+    // must still allow the next gated mutation while the subtree remains
+    // stopped, instead of treating the watchdog's own write as staleness and
+    // locking out every later mutation for the rest of the run.
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-SELF-WRITE", status: "blocked" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const wakeFingerprint = watchdog!.lastObservedFingerprint!;
+    expect(wakeFingerprint).toMatch(/^task_watchdog_stop:/);
+
+    // Sanctioned self-write: the watchdog transitions the stopped leaf's status
+    // (blocked -> todo). Both are non-terminal, so the leaf stays stopped, but
+    // `status` is part of the material fingerprint, so the fingerprint moves.
+    await db
+      .update(issues)
+      .set({ status: "todo", updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(issues.id, sourceId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint: wakeFingerprint,
+    });
+
+    expect(revalidated.allowed).toBe(true);
+    if (revalidated.classification?.state !== "stopped") {
+      throw new Error(`Expected stopped classification, got ${revalidated.classification?.state}`);
+    }
+    // The fingerprint genuinely moved because of the self-write, yet the gated
+    // mutation is still allowed — the poisoning behaviour is gone.
+    expect(revalidated.classification.stopFingerprint).not.toBe(wakeFingerprint);
+  });
+
   it("surfaces pending interaction kinds and approval ids in the wake and watchdog comment", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-WAITS", status: "in_review" });

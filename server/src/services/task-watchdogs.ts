@@ -1644,15 +1644,26 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
 
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
     const classification = classifyTaskWatchdogSubtree(input);
-    if (classification.state === "stopped" && classification.stopFingerprint === scope.stopFingerprint) {
+    // A task-watchdog run legitimately performs several sanctioned mutations to
+    // its stopped subtree (reassign, transition status, create child issues).
+    // Each such write moves the derived stop fingerprint, so requiring the
+    // re-derived fingerprint to still equal the wake-time `scope.stopFingerprint`
+    // locked the run out of every gated mutation after its first: the guard was
+    // treating the watchdog's OWN sanctioned writes as staleness, permanently,
+    // with no route to refresh the frozen wake fingerprint. Staleness must
+    // protect against *revival* — a live, waiting, already-reviewed, or
+    // not-applicable path appearing — not against the watchdog remediating the
+    // subtree it was woken for. So gate solely on the subtree still being
+    // stopped; the frozen wake fingerprint is preserved in the rejection details
+    // only as diagnostic context.
+    if (classification.state === "stopped") {
       return { allowed: true as const, classification };
     }
 
     return {
       allowed: false as const,
-      reason: classification.state === "stopped"
-        ? "Task-watchdog review is stale because the watched subtree stop fingerprint changed; refresh the source state before mutating it."
-        : "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
+      reason:
+        "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
       classification,
     };
   }
