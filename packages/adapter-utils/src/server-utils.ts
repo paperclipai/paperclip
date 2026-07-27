@@ -1955,6 +1955,16 @@ export function buildInvocationEnvForLogs(
 }
 
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+  const normalizeHostname = (rawHost: string): string => {
+    const hostname = rawHost.trim().toLowerCase();
+    return hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+  };
+  const isLoopbackHostname = (hostname: string): boolean =>
+    hostname === "localhost" || hostname.startsWith("127.") || hostname === "::1";
+  const isWildcardHostname = (hostname: string): boolean =>
+    hostname === "0.0.0.0" || hostname === "::";
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -1965,9 +1975,8 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     PAPERCLIP_AGENT_ID: agent.id,
     PAPERCLIP_COMPANY_ID: agent.companyId,
   };
-  const runtimeHost = resolveHostForUrl(
-    process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
-  );
+  const rawRuntimeHost = process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost";
+  const runtimeHost = resolveHostForUrl(rawRuntimeHost);
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
   const primaryApiUrl =
     process.env.PAPERCLIP_RUNTIME_API_URL ??
@@ -1987,14 +1996,17 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   // interface. The server discovers interface URLs at startup; use the first
   // non-loopback candidate for direct launches, while keeping loopback as the
   // fallback for ordinary local development.
-  const reachableCandidate = runtimeApiCandidates.find((candidate) => {
-    try {
-      const hostname = new URL(candidate).hostname.toLowerCase();
-      return hostname !== "localhost" && hostname !== "127.0.0.1" && hostname !== "::1";
-    } catch {
-      return false;
-    }
-  });
+  const runtimeListensBeyondLoopback = !isLoopbackHostname(normalizeHostname(rawRuntimeHost));
+  const reachableCandidate = runtimeListensBeyondLoopback
+    ? runtimeApiCandidates.find((candidate) => {
+        try {
+          const hostname = normalizeHostname(new URL(candidate).hostname);
+          return !isLoopbackHostname(hostname) && !isWildcardHostname(hostname);
+        } catch {
+          return false;
+        }
+      })
+    : undefined;
   const apiUrl = reachableCandidate ?? primaryApiUrl;
   vars.PAPERCLIP_API_URL = apiUrl;
   vars.PAPERCLIP_RUNTIME_API_URL = apiUrl;
