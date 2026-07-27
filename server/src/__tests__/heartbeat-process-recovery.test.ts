@@ -27,6 +27,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  heartbeatRunWatchdogDecisions,
   issueComments,
   issueDocuments,
   issuePlanDecompositions,
@@ -1194,6 +1195,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processPid: child.pid ?? null,
       includeIssue: false,
     });
+    // Fresh output keeps the detached run below the critical-silence reaper threshold.
+    await db
+      .update(heartbeatRuns)
+      .set({ lastOutputAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
@@ -1210,6 +1216,95 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("reaps a detached local run once output silence crosses the critical threshold", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    expect(mockTerminateLocalService).toHaveBeenCalledWith(
+      expect.objectContaining({ pid: child.pid, processGroupId: null }),
+      undefined,
+    );
+    expect(await waitForPidExit(child.pid!)).toBe(true);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+    expect(run?.error).toContain("critical output silence");
+    expect(run?.error).toContain(String(child.pid));
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    const reapEvent = events.find((event) =>
+      typeof event.message === "string" && event.message.includes("critical output silence"),
+    );
+    expect(reapEvent?.payload).toMatchObject({
+      detachedProcessReaped: true,
+      processPid: child.pid,
+    });
+  });
+
+  it("does not reap a detached local run before the critical silence threshold", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ lastOutputAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+    expect(isPidAlive(child.pid)).toBe(true);
+  });
+
+  it("does not reap a critically silent detached run while the watchdog is snoozed", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { companyId, runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+    });
+    await db.insert(heartbeatRunWatchdogDecisions).values({
+      companyId,
+      runId,
+      decision: "snooze",
+      snoozedUntil: new Date(Date.now() + 60 * 60 * 1000),
+      reason: "operator is investigating",
+      createdByUserId: "board-user",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+    expect(isPidAlive(child.pid)).toBe(true);
   });
 
   it("skips generic timer wakes without invoking an adapter when no assigned work is actionable", async () => {

@@ -48,6 +48,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  heartbeatRunWatchdogDecisions,
   issueApprovals,
   issueComments,
   issuePlanDecompositions,
@@ -337,6 +338,10 @@ export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+} from "./recovery/service.js";
+import {
+  ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+  silenceAgeMsForRun,
 } from "./recovery/service.js";
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
 export const ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS = 5 * 1000;
@@ -5187,6 +5192,16 @@ function buildProcessLossMessage(run: {
   return "Process lost -- server may have restarted";
 }
 
+function buildDetachedProcessReapMessage(run: {
+  processPid: number | null;
+  processGroupId: number | null;
+}) {
+  const target = run.processGroupId
+    ? `process group ${run.processGroupId}`
+    : `child pid ${run.processPid ?? "unknown"}`;
+  return `Detached child process reaped after critical output silence -- ${target} was terminated (SIGTERM, then SIGKILL)`;
+}
+
 function readHotRestartAdoptionMetadata(resultJson: Record<string, unknown> | null | undefined) {
   const result = parseObject(resultJson);
   const hotRestart = parseObject(result.hotRestart);
@@ -8385,6 +8400,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return updated;
   }
 
+  // Mirrors recovery/service.ts latestActiveOutputQuietUntilDecision: an active
+  // snooze/continue watchdog decision means an operator deliberately let this run
+  // keep going, so the detached-process reaper must leave it alone.
+  async function hasActiveOutputQuietDecision(companyId: string, runId: string, now = new Date()) {
+    const [row] = await db
+      .select({ id: heartbeatRunWatchdogDecisions.id })
+      .from(heartbeatRunWatchdogDecisions)
+      .where(
+        and(
+          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+          eq(heartbeatRunWatchdogDecisions.runId, runId),
+          inArray(heartbeatRunWatchdogDecisions.decision, ["snooze", "continue"]),
+          gt(heartbeatRunWatchdogDecisions.snoozedUntil, now),
+        ),
+      )
+      .limit(1);
+    return row != null;
+  }
+
   async function patchRunIssueCommentStatus(
     runId: string,
     patch: Partial<Pick<typeof heartbeatRuns.$inferInsert, "issueCommentStatus" | "issueCommentSatisfiedByCommentId" | "issueCommentRetryQueuedAt">>,
@@ -11487,6 +11521,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ) {
         continue;
       }
+      let detachedReapSilenceMs: number | null = null;
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
@@ -11506,11 +11541,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         }
-        continue;
+        // The in-memory handle is gone, so this process can no longer be cancelled
+        // through the harness. While the child still produces output it may recover
+        // (see clearDetachedRunWarning / hot-restart adoption), but once output
+        // silence crosses the critical threshold — with no operator snooze — the
+        // orphan is reaped (SIGTERM, then SIGKILL) and the run is failed through the
+        // normal process-loss path instead of waiting for a manual operator kill.
+        const detachedSilenceMs = silenceAgeMsForRun(run, now);
+        const criticallySilent =
+          detachedSilenceMs !== null && detachedSilenceMs >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS;
+        if (!criticallySilent || (await hasActiveOutputQuietDecision(run.companyId, run.id, now))) {
+          continue;
+        }
+        detachedReapSilenceMs = detachedSilenceMs;
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
       }
+      const detachedReap = detachedReapSilenceMs !== null;
 
       let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
+      if (!detachedReap && processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
@@ -11531,7 +11583,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
         monitorDispatchLostWithoutFutureWake
       );
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const baseMessage = detachedReap
+        ? buildDetachedProcessReapMessage(run)
+        : buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
           kind: "orphaned_process_group_cleanup",
@@ -11607,6 +11661,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+          ...(detachedReap
+            ? { detachedProcessReaped: true, detachedSilenceMs: detachedReapSilenceMs }
+            : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });

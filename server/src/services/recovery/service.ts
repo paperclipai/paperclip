@@ -82,6 +82,20 @@ export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
+
+type RunOutputSilenceRun = Pick<
+  typeof heartbeatRuns.$inferSelect,
+  "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt"
+>;
+
+export function silenceStartedAtForRun(run: RunOutputSilenceRun) {
+  return run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
+}
+
+export function silenceAgeMsForRun(run: RunOutputSilenceRun, now = new Date()) {
+  const startedAt = silenceStartedAtForRun(run);
+  return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
+}
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -1221,15 +1235,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Object.values(RECOVERY_ORIGIN_KINDS).includes(
       issue.originKind as typeof RECOVERY_ORIGIN_KINDS[keyof typeof RECOVERY_ORIGIN_KINDS],
     );
-  }
-
-  function silenceStartedAtForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">) {
-    return run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
-  }
-
-  function silenceAgeMsForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">, now = new Date()) {
-    const startedAt = silenceStartedAtForRun(run);
-    return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
   }
 
   async function latestActiveOutputQuietUntilDecision(companyId: string, runId: string, now = new Date()) {
