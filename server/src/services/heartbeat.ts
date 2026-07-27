@@ -174,6 +174,7 @@ import {
   resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
+  selectEnvironmentExecutionWorkspaceSettings,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
@@ -296,6 +297,14 @@ export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   return redacted.length <= 280 ? redacted : `${redacted.slice(0, 277)}...`;
 }
 
+export function redactSuccessfulRunHandoffEvidence(
+  value: string | null,
+  currentUserRedactionOptions?: CurrentUserRedactionOptions,
+) {
+  if (!value) return null;
+  return redactSensitiveText(redactCurrentUserText(value, currentUserRedactionOptions));
+}
+
 const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
 const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
@@ -308,6 +317,7 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
+const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -315,6 +325,8 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS = 12_000;
+const MAX_AGENT_SESSION_MESSAGE_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -424,7 +436,11 @@ function readHeartbeatRunErrorFamily(
   if (run.errorCode === "provider_quota") {
     return "provider_quota";
   }
-  if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream") {
+  if (
+    run.errorCode === "codex_transient_upstream" ||
+    run.errorCode === "claude_transient_upstream" ||
+    run.errorCode === "codex_harness_crash"
+  ) {
     return "transient_upstream";
   }
   return null;
@@ -554,6 +570,13 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
 const activeRunExecutions = new Set<string>();
+// Background heartbeat executions are dispatched fire-and-forget (see
+// startNextQueuedRunForAgent), so the promise that resolves once a run's DB
+// writes are fully flushed is otherwise unobservable. Track those promises here
+// — shared across service instances like activeRunExecutions above — so callers
+// that must guarantee no run write is still in flight (graceful shutdown, and
+// tests tearing down a shared database) can await drainActiveRunExecutions().
+const activeRunExecutionPromises = new Set<Promise<void>>();
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -612,28 +635,34 @@ export function requiresPushCapabilityPreflight(input: {
 const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
-function isPaperclipRuntimeEnvKey(key: string) {
-  return key.startsWith("PAPERCLIP_");
-}
+// PAPERCLIP_* env binding policy:
+// 1. PAPERCLIP_API_KEY is never accepted from user/adapter/project/routine
+//    config — the harness-minted run token is the only source.
+// 2. A PAPERCLIP_* runtime var the harness assigns for the run (RUN_ID,
+//    AGENT_ID, wake/workspace vars, ...) always wins over a same-named
+//    binding; adapters enforce this at env-merge time.
+// 3. Any other PAPERCLIP_*-named binding is user data and flows through to
+//    the run env like any non-prefixed binding.
+const FORBIDDEN_ENV_BINDING_KEYS = new Set(["PAPERCLIP_API_KEY"]);
 
-function stripPaperclipRuntimeEnvBindings(envValue: unknown): Record<string, unknown> | null {
+function stripForbiddenEnvBindings(envValue: unknown): Record<string, unknown> | null {
   const record = parseObject(envValue);
   const filtered = Object.fromEntries(
-    Object.entries(record).filter(([key]) => !isPaperclipRuntimeEnvKey(key)),
+    Object.entries(record).filter(([key]) => !FORBIDDEN_ENV_BINDING_KEYS.has(key)),
   );
   return Object.keys(filtered).length > 0 ? filtered : null;
 }
 
-function stripPaperclipRuntimeEnvFromAdapterConfig(config: Record<string, unknown>): Record<string, unknown> {
+function stripForbiddenEnvFromAdapterConfig(config: Record<string, unknown>): Record<string, unknown> {
   if (!Object.prototype.hasOwnProperty.call(config, "env")) return config;
   return {
     ...config,
-    env: stripPaperclipRuntimeEnvBindings(config.env) ?? {},
+    env: stripForbiddenEnvBindings(config.env) ?? {},
   };
 }
 
 function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
-  const record = stripPaperclipRuntimeEnvBindings(envValue);
+  const record = stripForbiddenEnvBindings(envValue);
   if (!record) return;
   for (const [key, rawBinding] of Object.entries(record)) {
     const parsed = envBindingSchema.safeParse(rawBinding);
@@ -673,10 +702,10 @@ export async function resolveExecutionRunAdapterConfig(input: {
     remediation: string;
   };
 }) {
-  const executionRunConfig = stripPaperclipRuntimeEnvFromAdapterConfig(input.executionRunConfig);
-  const environmentEnv = stripPaperclipRuntimeEnvBindings(input.environmentEnv);
-  const projectEnv = stripPaperclipRuntimeEnvBindings(input.projectEnv);
-  const routineEnv = stripPaperclipRuntimeEnvBindings(input.routineEnv);
+  const executionRunConfig = stripForbiddenEnvFromAdapterConfig(input.executionRunConfig);
+  const environmentEnv = stripForbiddenEnvBindings(input.environmentEnv);
+  const projectEnv = stripForbiddenEnvBindings(input.projectEnv);
+  const routineEnv = stripForbiddenEnvBindings(input.routineEnv);
   const agentEnv = parseObject(executionRunConfig.env);
   const lowTrustAllowedBindingIds = input.trustPreset?.kind === "low_trust_review"
     ? input.trustPreset.boundary.allowedSecretBindingIds ?? []
@@ -2095,6 +2124,13 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function sanitizeAgentSessionMessageText(value: unknown): string | null {
+  const text = readNonEmptyString(value);
+  if (!text) return null;
+  const redacted = redactSensitiveText(text).slice(0, MAX_AGENT_SESSION_MESSAGE_CHARS);
+  return redacted.trim().length > 0 ? redacted : null;
+}
+
 type ManagedMcpGatewayRunConfig = {
   version: 1;
   managedMcpOnly: boolean;
@@ -2162,14 +2198,14 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       ))
     : [];
   const permittedNotInstalledConnections = permittedConnections
-    .filter((connection) => connection.transport === "remote_http" && !installedConnectionIds.has(connection.id))
+    .filter((connection) => connection.transport === "mcp_remote" && !installedConnectionIds.has(connection.id))
     .map(({ id, name }) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const uniqueConnections = effective.installedConnections.filter((connection) =>
     permittedConnectionIds.has(connection.id)
     && connection.status === "active"
     && connection.enabled
-    && connection.transport === "remote_http"
+    && connection.transport === "mcp_remote"
   );
   const service = createToolGatewayService(input.db);
   if (uniqueConnections.length === 0) {
@@ -2661,7 +2697,7 @@ export function resolveLedgerCostStatus(input: {
   return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
 }
 
-async function resolveLedgerScopeForRun(
+export async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
   run: typeof heartbeatRuns.$inferSelect,
@@ -2674,6 +2710,7 @@ async function resolveLedgerScopeForRun(
     return {
       issueId: null,
       projectId: contextProjectId,
+      billingCode: null,
     };
   }
 
@@ -2681,6 +2718,7 @@ async function resolveLedgerScopeForRun(
     .select({
       id: issues.id,
       projectId: issues.projectId,
+      billingCode: issues.billingCode,
     })
     .from(issues)
     .where(and(eq(issues.id, contextIssueId), eq(issues.companyId, companyId)))
@@ -2689,6 +2727,7 @@ async function resolveLedgerScopeForRun(
   return {
     issueId: issue?.id ?? null,
     projectId: issue?.projectId ?? contextProjectId,
+    billingCode: issue?.billingCode ?? null,
   };
 }
 
@@ -4378,6 +4417,7 @@ export async function buildPaperclipWakePayload(input: {
         id: string;
         identifier: string | null;
         title: string;
+        description: string | null;
         status: string;
         priority: string;
         workMode: string;
@@ -4392,6 +4432,8 @@ export async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
+  const agentMessage = parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
+  const agentMessageText = sanitizeAgentSessionMessageText(agentMessage.text);
   const issueSummary =
     input.issueSummary ??
     (issueId
@@ -4400,6 +4442,7 @@ export async function buildPaperclipWakePayload(input: {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            description: issues.description,
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
@@ -4408,7 +4451,12 @@ export async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  if (
+    commentIds.length === 0
+    && Object.keys(executionStage).length === 0
+    && !issueSummary
+    && !agentMessageText
+  ) return null;
 
   const commentRows =
     commentIds.length === 0
@@ -4440,6 +4488,12 @@ export async function buildPaperclipWakePayload(input: {
           );
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
+  const issueDescription = issueSummary?.description ?? null;
+  const issueDescriptionTruncated =
+    issueDescription !== null && issueDescription.length > MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS;
+  const inlineIssueDescription = issueDescriptionTruncated
+    ? issueDescription.slice(0, MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS)
+    : issueDescription;
   const comments: Array<Record<string, unknown>> = [];
   let remainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
   let truncated = false;
@@ -4566,7 +4620,7 @@ export async function buildPaperclipWakePayload(input: {
       interactionId,
     })
     : null;
-  const payloadTruncated = truncated || planReviewContext?.truncated === true;
+  const payloadTruncated = truncated || issueDescriptionTruncated || planReviewContext?.truncated === true;
   const recoveryActionId = readNonEmptyString(input.contextSnapshot.recoveryActionId);
   const recoveryCause = readNonEmptyString(input.contextSnapshot.recoveryCause);
   const recoveryAction = recoveryActionId
@@ -4611,9 +4665,19 @@ export async function buildPaperclipWakePayload(input: {
           id: issueSummary.id,
           identifier: issueSummary.identifier,
           title: issueSummary.title,
+          description: inlineIssueDescription,
+          descriptionTruncated: issueDescriptionTruncated,
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
+        }
+      : null,
+    agentMessage: agentMessageText
+      ? {
+          text: agentMessageText,
+          source: readNonEmptyString(agentMessage.source),
+          pluginKey: readNonEmptyString(agentMessage.pluginKey),
+          sessionId: readNonEmptyString(agentMessage.sessionId),
         }
       : null,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
@@ -4695,6 +4759,37 @@ function isHeartbeatRunTerminalStatus(
   return HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
     status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
   );
+}
+
+export function buildHeartbeatRunStatusLiveEventPayload(
+  run: Pick<
+    typeof heartbeatRuns.$inferSelect,
+    | "id"
+    | "agentId"
+    | "status"
+    | "invocationSource"
+    | "triggerDetail"
+    | "error"
+    | "errorCode"
+    | "startedAt"
+    | "finishedAt"
+    | "resultJson"
+  >,
+) {
+  return {
+    runId: run.id,
+    agentId: run.agentId,
+    status: run.status,
+    invocationSource: run.invocationSource,
+    triggerDetail: run.triggerDetail,
+    error: run.error ?? null,
+    errorCode: run.errorCode ?? null,
+    startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
+    finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
+    finalText: isHeartbeatRunTerminalStatus(run.status)
+      ? buildHeartbeatRunIssueComment(parseObject(run.resultJson))
+      : null,
+  };
 }
 
 function isHeartbeatRunRuntimeStatusActive(status: string | null | undefined): boolean {
@@ -4942,6 +5037,9 @@ export function buildPaperclipTaskMarkdown(input: {
     status?: string | null;
   } | null;
   acceptedPlanContinuation?: boolean;
+  // false builds the compact variant used for resume deltas, where the session
+  // already received the description with the assignment.
+  includeDescription?: boolean;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
   const fenceTaskText = (value: string) => {
@@ -5008,7 +5106,7 @@ export function buildPaperclipTaskMarkdown(input: {
         "Create child issues from the approved plan only. Do not write code or perform implementation work on the source issue.",
       );
     }
-    const description = issue.description?.trim();
+    const description = input.includeDescription === false ? "" : issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
     }
@@ -7554,17 +7652,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
-        payload: {
-          runId: updated.id,
-          agentId: updated.agentId,
-          status: updated.status,
-          invocationSource: updated.invocationSource,
-          triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
+        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
       publishRunLifecyclePluginEvent(updated);
     }
@@ -7591,17 +7679,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
-        payload: {
-          runId: updated.id,
-          agentId: updated.agentId,
-          status: updated.status,
-          invocationSource: updated.invocationSource,
-          triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
+        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
       publishRunLifecyclePluginEvent(updated);
       return { run: updated, updated: true as const };
@@ -7839,7 +7917,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  async function buildDetectedSuccessfulRunProgressSummary(run: typeof heartbeatRuns.$inferSelect) {
+  function buildDetectedSuccessfulRunProgressSummary(
+    run: typeof heartbeatRuns.$inferSelect,
+    currentUserRedactionOptions: CurrentUserRedactionOptions,
+  ) {
     const resultJson = parseObject(run.resultJson);
     const candidates = [
       hasUnmanagedBackgroundTaskEvidence(resultJson) ? UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON : null,
@@ -7853,7 +7934,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!summary) return null;
     return redactDetectedSuccessfulRunProgressSummaryForBoard(
       summary,
-      await getCurrentUserRedactionOptions(),
+      currentUserRedactionOptions,
     );
   }
 
@@ -7902,6 +7983,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         companyId: issues.companyId,
         identifier: issues.identifier,
         title: issues.title,
+        description: issues.description,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
@@ -7919,7 +8001,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       : null;
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
-    const detectedProgressSummary = await buildDetectedSuccessfulRunProgressSummary(run);
+    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+    const detectedProgressSummary = buildDetectedSuccessfulRunProgressSummary(
+      run,
+      currentUserRedactionOptions,
+    );
+    const resultJson = parseObject(run.resultJson);
+    const finalReport = redactSuccessfulRunHandoffEvidence(
+      [
+        readNonEmptyString(resultJson.summary),
+        readNonEmptyString(resultJson.result),
+        readNonEmptyString(resultJson.message),
+      ].find((value): value is string => Boolean(value)) ?? null,
+      currentUserRedactionOptions,
+    );
+    const nextAction = redactSuccessfulRunHandoffEvidence(
+      readNonEmptyString(run.nextAction),
+      currentUserRedactionOptions,
+    );
 
     const [
       activeExecutionPath,
@@ -8079,6 +8178,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agent,
       livenessState: run.livenessState as RunLivenessState | null,
       detectedProgressSummary,
+      finalReport,
+      nextAction,
       taskKey,
       hasActiveExecutionPath: Boolean(activeExecutionPath),
       hasQueuedWake: Boolean(queuedWake),
@@ -11647,6 +11748,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         agentId: agent.id,
         issueId: ledgerScope.issueId,
         projectId: ledgerScope.projectId,
+        billingCode: ledgerScope.billingCode,
         provider,
         biller,
         billingType,
@@ -11738,12 +11840,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
-        void executeRun(claimedRun.id).catch((err) => {
+        const execution = executeRun(claimedRun.id).catch((err) => {
           logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+        });
+        // Register the in-flight execution so drainActiveRunExecutions() can await
+        // it. executeRun resolves only after its finally block finishes flushing
+        // run rows/events, so awaiting this promise guarantees the run's writes
+        // have landed before a caller (e.g. a test's afterEach) mutates the DB.
+        activeRunExecutionPromises.add(execution);
+        void execution.finally(() => {
+          activeRunExecutionPromises.delete(execution);
         });
       }
       return claimedRuns;
     });
+  }
+
+  // Await every background heartbeat execution that is currently in flight. A
+  // draining run can, in its finally block, promote and dispatch the next queued
+  // run for the same agent — that follow-up execution is registered in the set
+  // before the parent promise settles, so we loop until the set is empty rather
+  // than snapshotting once. Callers use this to guarantee no run is still
+  // writing rows/events (graceful shutdown, deterministic test teardown).
+  async function drainActiveRunExecutions() {
+    while (activeRunExecutionPromises.size > 0) {
+      await Promise.all([...activeRunExecutionPromises]);
+    }
   }
 
   async function executeRun(runId: string) {
@@ -11856,9 +11978,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           )
         : null;
     const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+    const parsedIssueExecutionWorkspaceSettings = parseIssueExecutionWorkspaceSettings(
+      issueContext?.executionWorkspaceSettings,
+    );
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
-      ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings)
+      ? parsedIssueExecutionWorkspaceSettings
       : null;
+    const environmentExecutionWorkspaceSettings = selectEnvironmentExecutionWorkspaceSettings(
+      parsedIssueExecutionWorkspaceSettings,
+      isolatedWorkspacesEnabled,
+    );
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueContext?.projectId ?? contextProjectId;
     const projectContext = executionProjectId
@@ -12038,6 +12167,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: issueRef.id,
             identifier: issueRef.identifier,
             title: issueRef.title,
+            description: issueContext?.description ?? null,
             status: issueRef.status,
             priority: issueRef.priority,
             workMode: issueRef.workMode,
@@ -12052,7 +12182,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
-    const taskMarkdown = buildPaperclipTaskMarkdown({
+    const taskMarkdownInput = {
       issue: issueRef
         ? {
             id: issueRef.id,
@@ -12071,7 +12201,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       acceptedPlanContinuation:
         readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
         && Object.keys(parseObject(context.acceptedPlanWakeRouting)).length === 0,
-    });
+    };
+    const taskMarkdown = buildPaperclipTaskMarkdown(taskMarkdownInput);
+    const taskMarkdownCompact = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, includeDescription: false });
     if (issueRef) {
       context.paperclipIssue = {
         id: issueRef.id,
@@ -12092,6 +12224,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context.paperclipTaskMarkdown = taskMarkdown;
     } else {
       delete context.paperclipTaskMarkdown;
+    }
+    if (taskMarkdownCompact && taskMarkdownCompact !== taskMarkdown) {
+      context.paperclipTaskMarkdownCompact = taskMarkdownCompact;
+    } else {
+      delete context.paperclipTaskMarkdownCompact;
     }
     const requestedExecutionWorkspaceId = readNonEmptyString(issueRef?.executionWorkspaceId);
     const existingExecutionWorkspace =
@@ -12738,6 +12875,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       heartbeatRunId: run.id,
       agentId: agent.id,
       persistedExecutionWorkspace,
+      executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
     });
     const selectedEnvironment = acquiredEnvironment.environment;
     // Defense-in-depth: re-check the actually-acquired environment against the
@@ -16902,6 +17040,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // gate on suppression should prefer this over the env-only resolver.
     resolveSchedulingSuppression: getSchedulingSuppression,
     drainRunningRunsForShutdown,
+    drainActiveRunExecutions,
 
     promoteDueScheduledRetries,
     retryScheduledRetryNow,

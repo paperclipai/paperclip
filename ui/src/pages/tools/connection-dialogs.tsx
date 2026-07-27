@@ -40,7 +40,7 @@ import {
 } from "./shared";
 
 export const TRANSPORT_LABEL: Record<string, string> = {
-  remote_http: "remote http",
+  mcp_remote: "remote http",
   local_stdio: "local stdio",
 };
 
@@ -158,7 +158,7 @@ export function AddConnectionDialog({
   const [applicationId, setApplicationId] = useState(defaultApplicationId ?? "");
   const [applicationName, setApplicationName] = useState("");
   const [name, setName] = useState("");
-  const [transport, setTransport] = useState<"remote_http" | "local_stdio">("remote_http");
+  const [transport, setTransport] = useState<"mcp_remote" | "local_stdio">("mcp_remote");
   const [endpointUrl, setEndpointUrl] = useState("");
   const [templateId, setTemplateId] = useState("");
   const [creds, setCreds] = useState<CredentialDraft[]>([]);
@@ -208,7 +208,7 @@ export function AddConnectionDialog({
   const create = useMutation({
     mutationFn: () => {
       const config: Record<string, unknown> =
-        transport === "remote_http" ? { url: endpointUrl.trim() } : { templateId };
+        transport === "mcp_remote" ? { url: endpointUrl.trim() } : { templateId };
       const input: CreateToolConnectionInput = {
         ...(applicationMode === "existing" ? { applicationId } : { applicationName: applicationName.trim() }),
         name: name.trim(),
@@ -269,11 +269,11 @@ export function AddConnectionDialog({
   };
 
   const transportConfigValid =
-    transport === "remote_http" ? endpointUrl.trim().length > 0 : templateId.length > 0;
+    transport === "mcp_remote" ? endpointUrl.trim().length > 0 : templateId.length > 0;
   const appChoiceValid = applicationMode === "existing" ? !!applicationId : applicationName.trim().length > 0;
   const canCreate = appChoiceValid && name.trim().length > 0 && transportConfigValid && !create.isPending;
   const locked = !!draft;
-  const inferredType = transport === "remote_http" ? "MCP HTTP" : "MCP stdio";
+  const inferredType = transport === "mcp_remote" ? "MCP HTTP" : "MCP stdio";
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -365,20 +365,20 @@ export function AddConnectionDialog({
                 <Label>Transport</Label>
                 <Select
                   value={transport}
-                  onValueChange={(v) => setTransport(v as "remote_http" | "local_stdio")}
+                  onValueChange={(v) => setTransport(v as "mcp_remote" | "local_stdio")}
                   disabled={locked}
                 >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="remote_http">Remote HTTP (no local process)</SelectItem>
+                    <SelectItem value="mcp_remote">Remote HTTP (no local process)</SelectItem>
                     <SelectItem value="local_stdio">Local stdio (approved template)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              {transport === "remote_http" ? (
+              {transport === "mcp_remote" ? (
                 <div className="space-y-1.5">
                   <Label htmlFor="conn-url">Endpoint URL</Label>
                   <Input

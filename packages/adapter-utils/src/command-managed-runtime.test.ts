@@ -239,6 +239,60 @@ describe("command managed runtime", () => {
     expect(calls.filter((call) => call.stdin != null).length).toBe(1);
   });
 
+  it("stages runtime assets without replacing or restoring an in-place workspace", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-assets-only-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localHomeDir = path.join(rootDir, "local-home");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await mkdir(localHomeDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "local workspace\n", "utf8");
+    await writeFile(path.join(remoteWorkspaceDir, "README.md"), "authoritative workspace\n", "utf8");
+    await writeFile(path.join(localHomeDir, "auth.json"), '{"token":"host"}\n', "utf8");
+
+    const { runner } = makeSpawnRunner();
+    let restoredAuth = "";
+    const prepared = await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "codex",
+      workspaceLocalDir: localWorkspaceDir,
+      syncWorkspace: false,
+      assets: [
+        {
+          key: "home",
+          localDir: localHomeDir,
+          restore: async ({ assetDir, readFile }) => {
+            restoredAuth = (await readFile(path.join(assetDir, "auth.json"))).toString("utf8");
+          },
+        },
+      ],
+    });
+
+    expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
+    expect(prepared.assetDirs.home).toBe(path.join(remoteWorkspaceDir, ".paperclip-runtime", "codex", "home"));
+    await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe(
+      "authoritative workspace\n",
+    );
+    await expect(readFile(path.join(prepared.assetDirs.home, "auth.json"), "utf8")).resolves.toBe(
+      '{"token":"host"}\n',
+    );
+
+    await writeFile(path.join(prepared.assetDirs.home, "auth.json"), '{"token":"remote"}\n', "utf8");
+    await prepared.restoreWorkspace();
+
+    expect(restoredAuth).toBe('{"token":"remote"}\n');
+    await expect(readFile(path.join(localWorkspaceDir, "README.md"), "utf8")).resolves.toBe(
+      "local workspace\n",
+    );
+  });
+
   it("runs setup commands from a stable root cwd when staging into a nested remote workspace dir", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-nested-"));
     cleanupDirs.push(rootDir);
@@ -302,6 +356,60 @@ describe("command managed runtime", () => {
       expect(progress[i].done).toBeGreaterThanOrEqual(progress[i - 1].done);
     }
     expect(progress.at(-1)).toEqual({ done: payload.length, total: payload.length });
+  });
+
+  it("stages a single-file write to <path>.paperclip-upload then atomically renames it (single-stream path)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-atomic-"));
+    cleanupDirs.push(rootDir);
+    const remotePath = path.join(rootDir, "nested", "payload.bin");
+
+    const { runner, calls } = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
+    await client.writeFile(remotePath, toArrayBuffer(Buffer.from("hello atomic\n")));
+
+    // Characterization guardrail: the legacy single-file transport must keep its
+    // stage-then-atomic-rename shape (temp .paperclip-upload + `mv -f`).
+    const script = (calls[0].args ?? []).join(" ");
+    expect(script).toContain(`${remotePath}.paperclip-upload`);
+    expect(script).toContain(`mv -f`);
+    expect(script.indexOf(".paperclip-upload")).toBeLessThan(script.indexOf("mv -f"));
+    expect(await readFile(remotePath, "utf8")).toBe("hello atomic\n");
+  });
+
+  it("stages a single-file write to a temp then renames it on the chunked fallback path too", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-atomic-fallback-"));
+    cleanupDirs.push(rootDir);
+    const remotePath = path.join(rootDir, "nested", "payload.bin");
+
+    const payload = Buffer.alloc(10 * 1024 * 1024);
+    for (let i = 0; i < payload.length; i++) payload[i] = i % 256;
+    const { runner, calls } = makeSpawnRunner({ supportsSingleStreamStdinProgress: false });
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
+    await client.writeFile(remotePath, toArrayBuffer(payload));
+
+    const scripts = calls.map((call) => (call.args ?? []).join(" "));
+    expect(scripts.some((script) => script.includes(`${remotePath}.paperclip-upload`))).toBe(true);
+    expect(scripts.some((script) => script.includes(`mv -f`))).toBe(true);
+    expect((await readFile(remotePath)).equals(payload)).toBe(true);
+  });
+
+  it("leaves the client without syncIn/syncOut unless the runner supports both (fallback preserved)", () => {
+    const base = makeSpawnRunner().runner;
+    expect(createCommandManagedRuntimeClient({ runner: base, commandCwd: "/", timeoutMs: 1 }).syncIn).toBeUndefined();
+
+    const onlyIn: CommandManagedRuntimeRunner = { ...base, syncIn: async () => ({ operations: [] }) };
+    const partial = createCommandManagedRuntimeClient({ runner: onlyIn, commandCwd: "/", timeoutMs: 1 });
+    expect(partial.syncIn).toBeUndefined();
+    expect(partial.syncOut).toBeUndefined();
+
+    const both: CommandManagedRuntimeRunner = {
+      ...base,
+      syncIn: async () => ({ operations: [] }),
+      syncOut: async () => ({ operations: [] }),
+    };
+    const native = createCommandManagedRuntimeClient({ runner: both, commandCwd: "/", timeoutMs: 1 });
+    expect(native.syncIn).toBeTypeOf("function");
+    expect(native.syncOut).toBeTypeOf("function");
   });
 
   it("falls back to chunked upload progress when the runner cannot report mid-stream stdin progress", async () => {

@@ -107,7 +107,7 @@ const SLOTS: ToolRuntimeSlot[] = [
 const CONNECTIONS: ToolConnection[] = [
   connection(),
   connection({ id: "conn-sheets", applicationId: "app-sheets", name: "Google Sheets" }),
-  connection({ id: "conn-slack", applicationId: "app-slack", name: "Slack", transport: "remote_http" }),
+  connection({ id: "conn-slack", applicationId: "app-slack", name: "Slack", transport: "mcp_remote" }),
   connection({ id: "conn-github", applicationId: "app-github", name: "GitHub" }),
 ];
 

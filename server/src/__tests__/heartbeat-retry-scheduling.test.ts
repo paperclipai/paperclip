@@ -100,13 +100,33 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   });
 
   async function cleanupRetryFixture() {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await cleanupRetryFixtureOnce();
+        return;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+  }
+
+  async function cleanupHeartbeatRunDependents() {
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+  }
+
+  async function cleanupRetryFixtureOnce() {
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projects);
-    await db.delete(heartbeatRunEvents);
+    await cleanupHeartbeatRunDependents();
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -2111,6 +2131,66 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
       await cleanupRetryFixture();
     }
+  });
+
+  it("schedules a recovery continuation for codex harness crashes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-07-24T12:00:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "codex_harness_crash",
+      errorFamily: "transient_upstream",
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    expect(scheduled.run.scheduledRetryAttempt).toBe(1);
+    expect(scheduled.run.scheduledRetryReason).toBe("transient_failure");
+    const contextSnapshot = scheduled.run.contextSnapshot as Record<string, unknown>;
+    expect(contextSnapshot.codexTransientFallbackMode).toBe("same_session");
+    expect(contextSnapshot.retryOfRunId).toBe(runId);
+
+    await cleanupRetryFixture();
+  });
+
+  it("schedules a harness-crash recovery from the error code alone when the result json lost the error family", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-07-24T13:00:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "codex_harness_crash",
+      errorFamily: null,
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.run.scheduledRetryReason).toBe("transient_failure");
+    expect((scheduled.run.contextSnapshot as Record<string, unknown>).codexTransientFallbackMode).toBe("same_session");
+
+    await cleanupRetryFixture();
   });
 
   it("honors codex retry-not-before timestamps when they exceed the default bounded backoff", async () => {

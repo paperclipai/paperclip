@@ -134,6 +134,8 @@ function compareNullableText(left: string | null | undefined, right: string | nu
   return (left ?? "").localeCompare(right ?? "", undefined, { sensitivity: "base" });
 }
 
+type RoutineFolderGroupMeta = { name: string; position?: number | null };
+
 function buildRoutineMutationPayload(input: {
   title: string;
   description: string;
@@ -159,9 +161,40 @@ export function buildRoutineGroups(
   groupByValue: RoutineGroupBy,
   projectById: Map<string, { name: string }>,
   agentById: Map<string, { name: string }>,
+  folderById: Map<string, RoutineFolderGroupMeta>,
 ): RoutineGroup[] {
-  if (groupByValue === "none" || groupByValue === "folder") {
+  if (groupByValue === "none") {
     return [{ key: "__all", label: null, items: routines }];
+  }
+
+  if (groupByValue === "folder") {
+    const groups = groupBy(routines, (routine) => routine.folderId ?? "__unfiled");
+    return Object.keys(groups)
+      .sort((left, right) => {
+        if (left === "__unfiled" || right === "__unfiled") {
+          if (left === right) return 0;
+          return left === "__unfiled" ? 1 : -1;
+        }
+
+        const leftFolder = folderById.get(left);
+        const rightFolder = folderById.get(right);
+        const leftPosition = Number.isFinite(leftFolder?.position) ? leftFolder!.position! : Number.POSITIVE_INFINITY;
+        const rightPosition = Number.isFinite(rightFolder?.position) ? rightFolder!.position! : Number.POSITIVE_INFINITY;
+        const positionCompare = leftPosition - rightPosition;
+        if (positionCompare !== 0) return positionCompare;
+
+        const labelCompare = (leftFolder?.name ?? "Unknown folder").localeCompare(
+          rightFolder?.name ?? "Unknown folder",
+          undefined,
+          { sensitivity: "base" },
+        );
+        return labelCompare || left.localeCompare(right);
+      })
+      .map((key) => ({
+        key,
+        label: key === "__unfiled" ? "Unfiled" : (folderById.get(key)?.name ?? "Unknown folder"),
+        items: groups[key]!,
+      }));
   }
 
   if (groupByValue === "project") {
@@ -202,10 +235,11 @@ export function buildRoutineSections(
   groupByValue: RoutineGroupBy,
   projectById: Map<string, { name: string }>,
   agentById: Map<string, { name: string }>,
+  folderById: Map<string, { name: string }>,
 ): RoutineGroup[] {
   const builtInRoutines = routines.filter(isBuiltInRoutine);
   const customRoutines = routines.filter((routine) => !isBuiltInRoutine(routine));
-  const customGroups = buildRoutineGroups(customRoutines, groupByValue, projectById, agentById)
+  const customGroups = buildRoutineGroups(customRoutines, groupByValue, projectById, agentById, folderById)
     .filter((group) => group.items.length > 0)
     .map((group) => (
       builtInRoutines.length > 0 && groupByValue === "none" && group.key === "__all"
@@ -357,8 +391,8 @@ export function Routines() {
     enabled: !!selectedCompanyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: companyMembers } = useQuery({
@@ -377,7 +411,7 @@ export function Routines() {
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!selectedCompanyId && activeTab === "runs",
-    // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
@@ -396,7 +430,7 @@ export function Routines() {
   const mentionOptions = useMemo<MentionOption[]>(() => {
     return buildMarkdownMentionOptions({
       agents,
-      projects,
+      projects: (projects ?? []).filter((project) => !project.archivedAt),
       members: companyMembers?.users,
     });
   }, [agents, companyMembers?.users, projects]);
@@ -602,7 +636,7 @@ export function Routines() {
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
-      (projects ?? []).map((project) => ({
+      (projects ?? []).filter((project) => !project.archivedAt).map((project) => ({
         id: project.id,
         label: project.name,
         searchText: project.description ?? "",
@@ -616,6 +650,10 @@ export function Routines() {
   const projectById = useMemo(
     () => new Map((projects ?? []).map((project) => [project.id, project])),
     [projects],
+  );
+  const folderById = useMemo(
+    () => new Map((routineFolders?.folders ?? []).map((folder) => [folder.id, folder])),
+    [routineFolders],
   );
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const visibleRoutines = useMemo(
@@ -653,8 +691,8 @@ export function Routines() {
     [folderFilteredRoutines, routineViewState.sortDir, routineViewState.sortField],
   );
   const routineSections = useMemo(
-    () => buildRoutineSections(sortedRoutines, routineViewState.groupBy, projectById, agentById),
-    [agentById, projectById, routineViewState.groupBy, sortedRoutines],
+    () => buildRoutineSections(sortedRoutines, routineViewState.groupBy, projectById, agentById, folderById),
+    [agentById, folderById, projectById, routineViewState.groupBy, sortedRoutines],
   );
   const recentRunsIssueLinkState = useMemo(
     () =>

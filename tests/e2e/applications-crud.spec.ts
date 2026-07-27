@@ -45,7 +45,7 @@ async function createConnection(
 ): Promise<{ id: string; applicationId: string; name: string }> {
   const res = await request.post(`/api/companies/${companyId}/tools/connections`, {
     data: {
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
       enabled: true,
       status: "active",
