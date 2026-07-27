@@ -166,6 +166,7 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
 });
 const refreshExternalObjectsSchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
+  force: z.boolean().optional(),
 }).strict();
 const externalObjectSummariesSchema = z.object({
   issueIds: z.array(z.string().uuid()).max(1000),
@@ -4042,6 +4043,7 @@ export function issueRoutes(
     const results = await externalObjectsSvc.refreshIssueObjects(issue.id, {
       companyId: issue.companyId,
       objectIds: req.body.objectIds,
+      force: req.body.force,
       actor,
     });
     await logActivity(db, {

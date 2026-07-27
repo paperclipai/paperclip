@@ -11,7 +11,7 @@ export const externalObjectsApi = {
       `/companies/${companyId}/issues/external-object-summaries`,
       { issueIds },
     ),
-  refreshIssueObjects: (issueId: string, data?: { objectIds?: string[] }) =>
+  refreshIssueObjects: (issueId: string, data?: { objectIds?: string[]; force?: boolean }) =>
     api.post<{ refreshed: unknown[] }>(`/issues/${issueId}/external-objects/refresh`, data ?? {}),
   getProjectSummary: (projectId: string) =>
     api.get<ExternalObjectSummary>(`/projects/${projectId}/external-object-summary`),

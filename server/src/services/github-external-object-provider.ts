@@ -165,29 +165,6 @@ function failureFromGitHubResponse(response: Response): ExternalObjectResolveRes
   return null;
 }
 
-function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): ExternalObjectResolverSnapshot {
-  return {
-    displayKey: displayKeyFor(identity),
-    iconKey: "github",
-    displayTitle: displayTitleFor(identity),
-    statusKey: "not_found",
-    statusLabel: "Not found",
-    statusIconKey: "archive",
-    statusCategory: "archived",
-    statusTone: "muted",
-    isTerminal: true,
-    etag,
-    ttlSeconds: GITHUB_OBJECT_TTL_SECONDS,
-    data: {
-      provider: "github",
-      owner: identity.owner,
-      repo: identity.repo,
-      number: identity.number,
-      notFound: true,
-    },
-  };
-}
-
 function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null): ExternalObjectResolverSnapshot {
   const title = asString(body.title);
   const state = asString(body.state) ?? "unknown";
@@ -402,7 +379,15 @@ export function createGitHubExternalObjectProvider(
 
         const etag = response.headers.get("etag");
         if (response.status === 404) {
-          return { ok: true, snapshot: notFoundSnapshot(identity, etag) };
+          return {
+            ok: false,
+            liveness: token ? "unreachable" : "auth_required",
+            errorCode: token ? "github_not_found_unverified" : "github_auth_required",
+            errorMessage: token
+              ? "GitHub could not verify whether this object exists or is accessible."
+              : "GitHub authentication is required to verify whether this object exists.",
+            retryAfterSeconds: retryAfterSeconds(response),
+          };
         }
 
         const failure = failureFromGitHubResponse(response);
