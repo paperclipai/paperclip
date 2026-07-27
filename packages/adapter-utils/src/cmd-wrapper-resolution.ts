@@ -19,8 +19,15 @@
  * resolved before passing to the spawned process.
  */
 export function resolvePercentVars(value: string, env: Record<string, string | undefined>): string {
+  // Build a case-insensitive lookup table from env (Windows env vars are
+  // case-insensitive, but process.env can expose them as Path or PATH).
+  const upperEnv: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(env)) {
+    upperEnv[k.toUpperCase()] = v;
+  }
   return value.replace(/%([A-Za-z_][A-Za-z0-9_]*)%/g, (_match, name) => {
-    return env[name] !== undefined ? env[name]! : _match;
+    const resolved = upperEnv[name.toUpperCase()];
+    return resolved !== undefined ? resolved : _match;
   });
 }
 
