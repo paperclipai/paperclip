@@ -157,7 +157,7 @@ import {
 import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
-import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
+import { isProcessGroupAlive, readProcessGroupId, terminateLocalService } from "./local-service-supervisor.js";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
@@ -5152,6 +5152,37 @@ function isProcessAlive(pid: number | null | undefined) {
   }
 }
 
+const DETACHED_REAP_PID_START_TOLERANCE_MS = 60_000;
+
+// The detached-run reaper acts on a >=4h output-silence window, which is also
+// ample time for the OS to recycle the recorded pid after the original child
+// exits. isProcessAlive (kill(pid, 0)) is only an existence check, so a
+// newer, unrelated process that inherited the pid looks "alive" and would be
+// signaled. Before escalating to SIGTERM/SIGKILL, compare the live process's
+// start time (`ps -o lstart=`) with the spawn time persisted via onSpawn: a
+// materially newer start means the pid was recycled and must never be
+// signaled. Returns true only when recycling is positively identified; when
+// the start time cannot be determined (no recorded spawn time, ps
+// unsupported/failed, unparsable output) the caller proceeds, matching every
+// other terminateHeartbeatRunProcess call site.
+async function isRecordedPidRecycledByNewerProcess(input: {
+  pid: number;
+  processStartedAt: Date | null | undefined;
+}) {
+  const recordedStartMs = input.processStartedAt?.getTime();
+  if (typeof recordedStartMs !== "number" || Number.isNaN(recordedStartMs)) return false;
+  if (process.platform === "win32") return false;
+  let liveStartMs: number;
+  try {
+    const { stdout } = await execFile("ps", ["-o", "lstart=", "-p", String(input.pid)]);
+    liveStartMs = Date.parse(stdout.trim());
+  } catch {
+    return false;
+  }
+  if (Number.isNaN(liveStartMs)) return false;
+  return liveStartMs > recordedStartMs + DETACHED_REAP_PID_START_TOLERANCE_MS;
+}
+
 async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
@@ -5179,9 +5210,12 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean }) {
+}, options?: { descendantOnly?: boolean; pidRecycled?: boolean }) {
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
+  }
+  if (options?.pidRecycled && run.processPid) {
+    return `Process lost -- recorded child pid ${run.processPid} was recycled by an unrelated process after the original child exited; the recycled process was left untouched`;
   }
   if (run.processPid) {
     return `Process lost -- child pid ${run.processPid} is no longer running`;
@@ -11522,6 +11556,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
       let detachedReapSilenceMs: number | null = null;
+      let detachedPidRecycled = false;
+      let detachedProcessGroupRecycled = false;
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
@@ -11553,16 +11589,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (!criticallySilent || (await hasActiveOutputQuietDecision(run.companyId, run.id, now))) {
           continue;
         }
-        detachedReapSilenceMs = detachedSilenceMs;
-        await terminateHeartbeatRunProcess({
-          pid: run.processPid,
-          processGroupId: run.processGroupId,
-        });
+        // The silence window also gives the OS ample time to recycle the
+        // recorded pid after the original child exits: never signal a pid
+        // whose live start time is materially newer than the recorded spawn
+        // time — that is a different process that inherited the pid. When the
+        // recorded process group is led by that same recycled pid, the whole
+        // group belongs to the stranger (a group id is its leader's pid and
+        // cannot be recycled while any member holds it), so the descendant
+        // cleanup below is suppressed too; a surviving group not led by the
+        // recycled pid is still held by our own descendants and is cleaned up.
+        const recordedPid = run.processPid;
+        if (typeof recordedPid === "number") {
+          detachedPidRecycled = await isRecordedPidRecycledByNewerProcess({
+            pid: recordedPid,
+            processStartedAt: run.processStartedAt,
+          });
+          if (detachedPidRecycled && processGroupAlive && run.processGroupId) {
+            const recycledOwnerGroupId = await readProcessGroupId(recordedPid);
+            detachedProcessGroupRecycled =
+              recycledOwnerGroupId !== null && recycledOwnerGroupId === run.processGroupId;
+          }
+        }
+        if (!detachedPidRecycled) {
+          detachedReapSilenceMs = detachedSilenceMs;
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          });
+        }
       }
       const detachedReap = detachedReapSilenceMs !== null;
 
       let descendantOnlyCleanup = false;
-      if (!detachedReap && processGroupAlive) {
+      if (!detachedReap && !detachedProcessGroupRecycled && processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
@@ -11585,7 +11644,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
       const baseMessage = detachedReap
         ? buildDetachedProcessReapMessage(run)
-        : buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+        : buildProcessLossMessage(run, {
+            ...(descendantOnlyCleanup ? { descendantOnly: true } : {}),
+            ...(detachedPidRecycled ? { pidRecycled: true } : {}),
+          });
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
           kind: "orphaned_process_group_cleanup",
@@ -11664,6 +11726,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(detachedReap
             ? { detachedProcessReaped: true, detachedSilenceMs: detachedReapSilenceMs }
             : {}),
+          ...(detachedPidRecycled ? { detachedPidRecycled: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });

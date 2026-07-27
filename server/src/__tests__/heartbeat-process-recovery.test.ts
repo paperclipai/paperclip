@@ -1307,6 +1307,116 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(isPidAlive(child.pid)).toBe(true);
   });
 
+  it("finalizes a critically silent detached run without signaling a recycled pid", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+    });
+    // The recorded spawn time predates the live process by hours: the pid was
+    // recycled by an unrelated process after the original child exited.
+    await db
+      .update(heartbeatRuns)
+      .set({ processStartedAt: new Date(Date.now() - 6 * 60 * 60 * 1000) })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    expect(mockTerminateLocalService).not.toHaveBeenCalled();
+    expect(isPidAlive(child.pid)).toBe(true);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+    expect(run?.error).toContain("recycled");
+    expect(run?.error).toContain(String(child.pid));
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    const recycleEvent = events.find((event) =>
+      typeof event.message === "string" && event.message.includes("recycled"),
+    );
+    expect(recycleEvent?.payload).toMatchObject({
+      detachedPidRecycled: true,
+      processPid: child.pid,
+    });
+  });
+
+  it("does not signal the recorded process group when it is led by the recycled pid's new owner", async () => {
+    // detached: true makes the child its own process-group leader, so the
+    // recorded processGroupId equals the recycled pid and the whole group
+    // belongs to the stranger process.
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+      detached: true,
+    });
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      processGroupId: child.pid ?? null,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ processStartedAt: new Date(Date.now() - 6 * 60 * 60 * 1000) })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    expect(mockTerminateLocalService).not.toHaveBeenCalled();
+    expect(isPidAlive(child.pid)).toBe(true);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+    expect(run?.error).toContain("recycled");
+  });
+
+  it("reaps a critically silent detached run when the live process start matches the recorded spawn time", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+    });
+    // Recorded spawn time matches the live process start (identity confirmed);
+    // lastOutputAt keeps the run critically silent (silence tracks lastOutputAt
+    // before processStartedAt).
+    await db
+      .update(heartbeatRuns)
+      .set({
+        processStartedAt: new Date(),
+        lastOutputAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    expect(mockTerminateLocalService).toHaveBeenCalledWith(
+      expect.objectContaining({ pid: child.pid, processGroupId: null }),
+      undefined,
+    );
+    expect(await waitForPidExit(child.pid!)).toBe(true);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+    expect(run?.error).toContain("critical output silence");
+  });
+
   it("skips generic timer wakes without invoking an adapter when no assigned work is actionable", async () => {
     const { companyId, agentId } = await seedIdleTimerAgentFixture();
     const heartbeat = heartbeatService(db);
