@@ -58,6 +58,7 @@ import {
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { classifyProviderQuotaFailure } from "@paperclipai/adapter-utils/provider-quota";
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -2230,6 +2231,16 @@ function classifyError(
     ...(stackPreview ? { stackPreview } : {}),
     ...(phase ? { phase } : {}),
   };
+  // Quota exhaustion arrives as an ordinary thrown turn error. Classify it
+  // before the phase codes so it keeps its dedicated wait-for-reset recovery
+  // instead of collapsing into `acpx_turn_failed`.
+  const quota = classifyProviderQuotaFailure(message);
+  if (quota) {
+    return {
+      errorCode: quota.errorCode,
+      errorMeta: { category: "provider_quota", ...baseMeta },
+    };
+  }
   const lower = message.toLowerCase();
   const authLike = lower.includes("auth") || lower.includes("login") || lower.includes("credential");
   if (authLike) {
@@ -2896,6 +2907,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
         : resultErrorMessage(terminal);
       const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+      // A quota refusal is not a generic turn failure: reporting it as one hides
+      // it from the server's provider-quota wait path, which then re-wakes the
+      // agent against an exhausted quota instead of waiting for the reset.
+      const quota = terminal.status === "failed" && !timedOut
+        ? classifyProviderQuotaFailure(errorMessage, new Date(now()))
+        : null;
       await emitAcpxLog(ctx, {
         type: terminal.status === "completed" ? "acpx.result" : "acpx.error",
         summary: terminal.status,
@@ -2909,7 +2926,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         signal: timedOut ? "SIGTERM" : null,
         timedOut,
         errorMessage,
-        errorCode: terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null,
+        errorCode: quota
+          ? quota.errorCode
+          : terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null,
+        ...(quota
+          ? { errorFamily: quota.errorFamily, retryNotBefore: quota.retryNotBefore }
+          : {}),
         sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -2925,6 +2947,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           requestedModel: prepared.requestedModel || null,
           requestedThinkingEffort: prepared.requestedThinkingEffort || null,
           fastMode: prepared.fastMode,
+          ...(quota ? { errorFamily: quota.errorFamily } : {}),
+          ...(quota?.retryNotBefore
+            ? {
+                retryNotBefore: quota.retryNotBefore,
+                transientRetryNotBefore: quota.retryNotBefore,
+                providerQuotaRetryNotBefore: quota.retryNotBefore,
+              }
+            : {}),
           ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
           ...(turnUsage.cumulativeCostUsd != null
             ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
@@ -2962,17 +2992,31 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       });
       await cleanupRemoteBridges(prepared);
       flushChildStderr(childStderrState);
+      const thrownQuota = timedOut ? null : classifyProviderQuotaFailure(message, new Date(now()));
       return {
         exitCode: 1,
         signal: timedOut ? "SIGTERM" : null,
         timedOut,
         errorMessage: message,
         errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
+        ...(thrownQuota
+          ? { errorFamily: thrownQuota.errorFamily, retryNotBefore: thrownQuota.retryNotBefore }
+          : {}),
         errorMeta: classified.errorMeta,
         ...billingFields,
         model: prepared.requestedModel || null,
         clearSession: clearSession || timedOut,
-        resultJson: { phase: "turn" },
+        resultJson: {
+          phase: "turn",
+          ...(thrownQuota ? { errorFamily: thrownQuota.errorFamily } : {}),
+          ...(thrownQuota?.retryNotBefore
+            ? {
+                retryNotBefore: thrownQuota.retryNotBefore,
+                transientRetryNotBefore: thrownQuota.retryNotBefore,
+                providerQuotaRetryNotBefore: thrownQuota.retryNotBefore,
+              }
+            : {}),
+        },
         summary: message,
       };
     }

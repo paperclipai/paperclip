@@ -1373,6 +1373,72 @@ describe("shared ACPX engine runtime behavior", () => {
   });
 });
 
+describe("ACPX engine provider quota classification", () => {
+  // Verbatim terminal message from a Claude session-limit refusal. Reported as a
+  // plain `acpx_turn_failed` it disarms the server's wait-for-reset recovery,
+  // which then re-wakes the agent straight into the same exhausted quota.
+  const SESSION_LIMIT_MESSAGE =
+    "Internal error: You've hit your session limit · resets 8am (Europe/Moscow)";
+
+  async function runFailingTurn(errorMessage: string) {
+    const execute = createAcpxEngineExecutor({
+      now: () => new Date("2026-07-27T00:30:00.000Z").getTime(),
+      createRuntime: () =>
+        ({
+          ensureSession: async () => ({
+            backendSessionId: "backend-session",
+            agentSessionId: "agent-session",
+            runtimeSessionName: "runtime-session",
+          }),
+          startTurn: () => ({
+            events: (async function* () {
+              yield { type: "done", stopReason: "error" };
+            })(),
+            result: Promise.resolve({
+              status: "failed",
+              stopReason: "error",
+              error: { message: errorMessage },
+            }),
+            cancel: async () => {},
+          }),
+          setConfigOption: async () => {},
+          close: async () => {},
+        }) as never,
+    });
+
+    return await execute({
+      runId: "run-quota",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "claude" },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onEvent: async () => {},
+    } as never);
+  }
+
+  it("reports a session-limit refusal as provider quota with the advertised reset", async () => {
+    const result = await runFailingTurn(SESSION_LIMIT_MESSAGE);
+
+    expect(result.errorCode).toBe("provider_quota");
+    expect(result.errorFamily).toBe("provider_quota");
+    // 8am Europe/Moscow on the day of the refusal.
+    expect(result.retryNotBefore).toBe("2026-07-27T05:00:00.000Z");
+    const resultJson = result.resultJson as Record<string, unknown>;
+    expect(resultJson.errorFamily).toBe("provider_quota");
+    expect(resultJson.providerQuotaRetryNotBefore).toBe("2026-07-27T05:00:00.000Z");
+  });
+
+  it("leaves unrelated turn failures on the generic turn-failed code", async () => {
+    const result = await runFailingTurn("connection reset by peer");
+
+    expect(result.errorCode).toBe("acpx_turn_failed");
+    expect(result.errorFamily ?? null).toBeNull();
+    expect(result.retryNotBefore ?? null).toBeNull();
+  });
+});
+
 describe("findAncestorBin", () => {
   async function writeFakeBin(dir: string, name: string) {
     const binDir = path.join(dir, "node_modules", ".bin");
