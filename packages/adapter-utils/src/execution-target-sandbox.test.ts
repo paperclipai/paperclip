@@ -921,6 +921,10 @@ describe("sandbox adapter execution targets", () => {
     try {
       expect(bridge).not.toBeNull();
       expect(bridge?.env.PAPERCLIP_API_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(bridge?.env.PAPERCLIP_RUNTIME_API_URL).toBe(bridge?.env.PAPERCLIP_API_URL);
+      expect(JSON.parse(bridge?.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual([
+        bridge?.env.PAPERCLIP_API_URL,
+      ]);
       expect(bridge?.env.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
       expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
 
