@@ -655,6 +655,7 @@ export type {
   IssueAttachment,
   IssueLabel,
   IssueWatchdog,
+  IssueWatchdogReviewAcceptanceKind,
   IssueWatchdogStatus,
   IssueWatchdogSummary,
 } from "./issue.js";

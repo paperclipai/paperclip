@@ -1134,6 +1134,7 @@ export function issueThreadInteractionService(db: Db) {
       issue: { id: string; companyId: string },
       input: CreateIssueThreadInteraction,
       actor: InteractionActor,
+      opts: { touchIssue?: boolean } = {},
     ) => {
       const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
 
@@ -1230,7 +1231,9 @@ export function issueThreadInteractionService(db: Db) {
         return hydrateInteraction(existing);
       }
 
-      await touchIssue(db, issue.id);
+      if (opts.touchIssue !== false) {
+        await touchIssue(db, issue.id);
+      }
       return hydrateInteraction(created);
     },
 

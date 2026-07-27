@@ -846,6 +846,7 @@ export type {
   IssueProductivityReviewTrigger,
   IssueRecoveryAction,
   IssueWatchdog,
+  IssueWatchdogReviewAcceptanceKind,
   IssueWatchdogStatus,
   IssueWatchdogSummary,
   SuccessfulRunHandoffState,

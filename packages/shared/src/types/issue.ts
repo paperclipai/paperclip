@@ -682,6 +682,7 @@ export interface IssueExecutionDecision {
 }
 
 export type IssueWatchdogStatus = "active" | "disabled";
+export type IssueWatchdogReviewAcceptanceKind = "terminal" | "conditional";
 
 export interface IssueWatchdogSummary {
   id: string;
@@ -693,6 +694,9 @@ export interface IssueWatchdogSummary {
   watchdogIssueId: string | null;
   lastObservedFingerprint: string | null;
   lastReviewedFingerprint: string | null;
+  reviewAcceptanceKind: IssueWatchdogReviewAcceptanceKind | null;
+  reviewExpiresAt: Date | null;
+  sameFingerprintReviewCount: number;
   lastTriggeredAt: Date | null;
   lastCompletedAt: Date | null;
   triggerCount: number;
