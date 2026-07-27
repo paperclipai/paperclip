@@ -53,7 +53,7 @@ import type {
 import type { AgentToolDescriptor, PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
-import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
+import { closeMcpSession, initializeMcpSession, mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
 import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
@@ -3028,16 +3028,26 @@ export function createToolGatewayService(
         dispatched: true,
       },
     };
+    // MCP requires an `initialize` handshake before any other request. Stateful
+    // Streamable HTTP servers (e.g. 1MCP) return an `Mcp-Session-Id` we must echo
+    // back on every subsequent call, including `tools/call` — omitting it gets a
+    // `400 Server not initialized`. Mirrors the same handshake `remoteTools()`
+    // already does for `tools/list` catalog refreshes. Best-effort: returns null
+    // for stateless servers and failed handshakes, leaving the tools/call request
+    // below as the authoritative error path.
+    const sessionId = await initializeMcpSession(endpoint, headers);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
     try {
+      const requestHeaders = mcpHttpRequestHeaders(headers);
+      if (sessionId) requestHeaders["mcp-session-id"] = sessionId;
       const response = await fetch(endpoint, {
         method: "POST",
         redirect: "manual",
         // MCP Streamable HTTP requires the Accept header advertising both a JSON
         // body and an SSE stream; spec-compliant servers 406 without it.
-        headers: mcpHttpRequestHeaders(headers),
+        headers: requestHeaders,
         signal: controller.signal,
         body: JSON.stringify({
           jsonrpc: "2.0",
@@ -3128,6 +3138,9 @@ export function createToolGatewayService(
       });
     } finally {
       clearTimeout(timer);
+      // Tear the session down so stateful servers don't accumulate dead sessions
+      // across tool calls (no-op when sessionId is null).
+      if (sessionId) await closeMcpSession(endpoint, headers, sessionId);
     }
   }
 

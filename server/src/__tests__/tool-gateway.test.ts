@@ -1447,6 +1447,12 @@ rl.on("line", (line) => {
     });
     const fake = await startFakeRemoteMcpServer((fakeRequest) => {
       expect(fakeRequest.headers.authorization).toBe(`Bearer ${credentialValue}`);
+      // executeRemoteHttpTool performs an `initialize` handshake before `tools/call`
+      // (mirrors the same handshake remoteTools() already does for tools/list); this
+      // fake server must answer it generically before the kv_set-specific assertions.
+      if (fakeRequest.body?.method !== "tools/call") {
+        return { body: { jsonrpc: "2.0", id: fakeRequest.body?.id ?? null, result: {} } };
+      }
       const params = fakeRequest.body?.params as Record<string, unknown>;
       const args = params.arguments as Record<string, unknown>;
       return {
@@ -1508,10 +1514,13 @@ rl.on("line", (line) => {
           },
         },
       });
-      expect(fake.requests).toHaveLength(1);
+      // 1 `initialize` handshake (this fake server is stateless, so no session
+      // teardown follows) + 1 `tools/call`.
+      expect(fake.requests).toHaveLength(2);
+      expect(fake.requests[0]!.body).toMatchObject({ method: "initialize" });
       // Streamable HTTP requires advertising both JSON and SSE on the call (PAP-11096).
-      expect(fake.requests[0]!.headers.accept).toBe("application/json, text/event-stream");
-      expect(fake.requests[0]!.body).toMatchObject({
+      expect(fake.requests[1]!.headers.accept).toBe("application/json, text/event-stream");
+      expect(fake.requests[1]!.body).toMatchObject({
         method: "tools/call",
         params: {
           name: "kv_set",

@@ -1211,7 +1211,9 @@ describeEmbeddedPostgres("tool access service", () => {
       decision: "allowed",
       result: { data: expect.objectContaining({ isError: false, transport: "mcp_http" }) },
     });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    // executeRemoteHttpTool performs an `initialize` handshake before `tools/call`
+    // (mirrors the same handshake remoteTools() already does for tools/list).
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
     expect(invocation).toMatchObject({
       actorType: "user",
