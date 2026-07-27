@@ -1110,11 +1110,21 @@ export function issueThreadInteractionService(db: Db) {
   }
 
   return {
-    listForIssue: async (issueId: string) => {
+    listForIssue: async (
+      issueId: string,
+      opts?: { status?: IssueThreadInteraction["status"] },
+    ) => {
       const rows = await db
         .select()
         .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.issueId, issueId))
+        .where(
+          opts?.status
+            ? and(
+                eq(issueThreadInteractions.issueId, issueId),
+                eq(issueThreadInteractions.status, opts.status),
+              )
+            : eq(issueThreadInteractions.issueId, issueId),
+        )
         .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
 
       return rows.map((row) => hydrateInteraction(row));
