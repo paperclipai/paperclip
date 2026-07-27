@@ -919,4 +919,35 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       svc.count(companyId, { attention: "blocked", assigneeAgentId: "not-a-uuid" }),
     ).rejects.toThrow(/assigneeAgentId/i);
   });
+
+  it("reports unresolved first-class blockers on false-done issues so attention matches diagnostics", async () => {
+    const { companyId } = await createCompany("BFD");
+    const parentId = await insertIssue({
+      companyId,
+      identifier: "BFD-1",
+      title: "False done packaging",
+      status: "done",
+    });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "BFD-2",
+      title: "Capture gate still open",
+      status: "blocked",
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "done" })).find((issue) => issue.id === parentId);
+    const readiness = await svc.getDependencyReadiness(parentId);
+
+    expect(readiness).toMatchObject({
+      unresolvedBlockerCount: 1,
+      isDependencyReady: false,
+    });
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+      attentionBlockerCount: readiness.unresolvedBlockerCount,
+    });
+  });
 });

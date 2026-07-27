@@ -3953,6 +3953,71 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
+  it("rejects explicit done while first-class blockers remain open", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const blockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Open blocker", status: "blocked", priority: "medium" },
+      { id: dependentId, companyId, title: "Dependent", status: "in_progress", priority: "medium" },
+    ]);
+    await svc.update(dependentId, { blockedByIssueIds: [blockerId], status: "blocked" });
+
+    await expect(svc.update(dependentId, { status: "done" })).rejects.toThrow(
+      /blocked by unresolved blockers/i,
+    );
+    await expect(svc.getById(dependentId)).resolves.toMatchObject({
+      id: dependentId,
+      status: "blocked",
+    });
+  });
+
+  it("heals remain-done with open first-class blockers back to blocked on next update", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const blockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Open blocker", status: "todo", priority: "medium" },
+      {
+        id: dependentId,
+        companyId,
+        title: "False done dependent",
+        status: "done",
+        priority: "medium",
+        completedAt: new Date("2026-07-27T09:00:00.000Z"),
+      },
+    ]);
+    // Simulate a pre-guard false-done with an open first-class edge.
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: dependentId,
+      type: "blocks",
+    });
+
+    const healed = await svc.update(dependentId, { title: "False done dependent (healed)" });
+    expect(healed).toMatchObject({
+      id: dependentId,
+      status: "blocked",
+      title: "False done dependent (healed)",
+    });
+    expect(healed?.completedAt).toBeNull();
+  });
+
   it("unblocks a source issue when a liveness escalation recovery issue is marked done", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

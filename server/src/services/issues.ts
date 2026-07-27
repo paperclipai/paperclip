@@ -2164,11 +2164,39 @@ async function listIssueBlockerAttentionMap(
   companyId: string,
   issueRows: IssueBlockerAttentionInputNode[],
 ): Promise<Map<string, IssueBlockerAttention>> {
+  // Full attention graph (explicit blockers + open children) is still scoped to
+  // blocked roots. Non-blocked issues still need unresolved first-class blocker
+  // counts so false-done / other inconsistent states agree with diagnostics.
   const roots = issueRows.filter((row) => row.companyId === companyId && row.status === "blocked");
   const attentionMap = new Map<string, IssueBlockerAttention>();
   for (const row of issueRows) {
     if (row.status !== "blocked") {
       attentionMap.set(row.id, createIssueBlockerAttention());
+    }
+  }
+  const nonBlockedRoots = issueRows.filter(
+    (row) => row.companyId === companyId && row.status !== "blocked" && row.status !== "cancelled",
+  );
+  if (nonBlockedRoots.length > 0) {
+    const readinessMap = await listIssueDependencyReadinessMap(
+      dbOrTx,
+      companyId,
+      nonBlockedRoots.map((row) => row.id),
+    );
+    for (const row of nonBlockedRoots) {
+      const readiness = readinessMap.get(row.id);
+      const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
+      if (unresolvedBlockerCount <= 0) continue;
+      attentionMap.set(
+        row.id,
+        createIssueBlockerAttention({
+          state: "needs_attention",
+          reason: "attention_required",
+          unresolvedBlockerCount,
+          attentionBlockerCount: unresolvedBlockerCount,
+          sampleBlockerIdentifier: readiness?.unresolvedBlockerIssueIds[0] ?? null,
+        }),
+      );
     }
   }
   if (roots.length === 0) return attentionMap;
@@ -6511,6 +6539,23 @@ export function issueService(db: Db) {
         if (values.status === "cancelled") {
           values.cancelledAt = new Date();
         }
+        // Reject create-as-done / create-as-in_progress when first-class blockers
+        // are already open. Escape hatch is omitting the blocker edges (or later
+        // removing them with an audit trail), not a force-done flag.
+        if (
+          (values.status === "in_progress" || values.status === "done") &&
+          blockedByIssueIds !== undefined &&
+          blockedByIssueIds.length > 0
+        ) {
+          const unresolvedBlockerIssueIds = await listUnresolvedBlockerIssueIds(
+            tx,
+            companyId,
+            blockedByIssueIds,
+          );
+          if (unresolvedBlockerIssueIds.length > 0) {
+            throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+          }
+        }
         Object.assign(
           values,
           buildInitialIssueMonitorFields({
@@ -6623,14 +6668,32 @@ export function issueService(db: Db) {
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      if (patch.status === "in_progress") {
-        const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
-          ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
-          : (
-              await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])
-            ).get(id)?.unresolvedBlockerIssueIds ?? [];
-        if (unresolvedBlockerIssueIds.length > 0) {
-          throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+      // Reject in_progress / explicit done when first-class blockers are still open.
+      // Also heal a false "remain done" state (status already done, blockers still open)
+      // back to blocked so done cannot settle while dependencies remain unresolved.
+      // Escape hatch is intentional blocker-edge removal (blockedByIssueIds / relation
+      // delete with audit), not a force-done flag.
+      {
+        const requestedStatus = patch.status;
+        const nextStatus = requestedStatus ?? existing.status;
+        if (nextStatus === "in_progress" || nextStatus === "done") {
+          const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
+            ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
+            : (
+                await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])
+              ).get(id)?.unresolvedBlockerIssueIds ?? [];
+          if (unresolvedBlockerIssueIds.length > 0) {
+            if (nextStatus === "in_progress" || requestedStatus === "done") {
+              throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+            }
+            // remaining done with open first-class blockers → coerce to blocked
+            patch.status = "blocked";
+            patch.completedAt = null;
+            if (existing.status !== "blocked") {
+              patch.blockedTransitionAt = patch.updatedAt ?? new Date();
+              patch.blockedOwnerNotifiedAt = null;
+            }
+          }
         }
       }
       const shouldValidateNextAssignee =
@@ -6694,14 +6757,17 @@ export function issueService(db: Db) {
         });
       }
 
-      applyStatusSideEffects(issueData.status, patch);
-      if (issueData.status && issueData.status !== "done") {
+      // Use effective status so heal-to-blocked side effects (completedAt clear)
+      // still apply when the caller did not send status explicitly.
+      const effectiveStatus = (patch.status ?? issueData.status) as string | undefined;
+      applyStatusSideEffects(effectiveStatus, patch);
+      if (effectiveStatus && effectiveStatus !== "done") {
         patch.completedAt = null;
       }
-      if (issueData.status && issueData.status !== "cancelled") {
+      if (effectiveStatus && effectiveStatus !== "cancelled") {
         patch.cancelledAt = null;
       }
-      if (issueData.status && issueData.status !== "in_progress") {
+      if (effectiveStatus && effectiveStatus !== "in_progress") {
         patch.checkoutRunId = null;
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;

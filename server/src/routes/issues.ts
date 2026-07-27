@@ -2941,6 +2941,15 @@ export function issueRoutes(
   }): Promise<string | null> {
     const { issue } = input;
     if (issue.status === "done" || issue.status === "cancelled") {
+      // False terminal: done while first-class blockers remain open is not a valid
+      // resolution. Keep recovery active so stranded work is not cancelled solely
+      // because status flipped to done under an open dependency (SFB-321 / SFB-305).
+      if (issue.status === "done") {
+        const readiness = await svc.getDependencyReadiness(issue.id);
+        if (readiness.unresolvedBlockerCount > 0) {
+          return null;
+        }
+      }
       return `Recovery action became stale because the source issue reached ${issue.status}.`;
     }
     if (input.blockedToTodoRecovery === true) {

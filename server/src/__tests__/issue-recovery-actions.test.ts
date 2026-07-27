@@ -1552,6 +1552,58 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("keeps recovery active when source reaches done while first-class blockers remain open", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Still-open blocker",
+      status: "blocked",
+      priority: "high",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: sourceIssueId,
+      type: "blocks",
+    });
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded:false-done-with-blockers",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "Keep packaging parked until capture gate clears.",
+      wakePolicy: { type: "manual" },
+    });
+    // Bypass service update to simulate the historical false-done bug path.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
+    const app = createApp();
+
+    const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+
+    expect(detail.body).toMatchObject({
+      id: sourceIssueId,
+      status: "done",
+      activeRecoveryAction: { id: action.id, status: "active" },
+    });
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      id: action.id,
+      status: "active",
+      outcome: null,
+      resolvedAt: null,
+    });
+  });
+
   it("keeps active recovery visible when a plain comment does not create a live path", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     await db
