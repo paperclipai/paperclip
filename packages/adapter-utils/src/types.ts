@@ -31,7 +31,15 @@ export interface AdapterRuntime {
 export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
+  /** Cache *reads*: tokens served from a warm prompt cache, billed at a discount. */
   cachedInputTokens?: number;
+  /**
+   * Cache *writes*: tokens written into the prompt cache, billed at a PREMIUM
+   * (Anthropic charges 1.25x input). A separate bucket from `inputTokens` --
+   * upstream reports `input + cacheRead + cacheWrite` as the prompt total, so
+   * folding writes into input would both under-bill and lose the distinction.
+   */
+  cacheCreationInputTokens?: number;
 }
 
 export type AdapterBillingType =
@@ -88,6 +96,12 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  /**
+   * Whether this adapter's `usage.inputTokens` already contains cached reads.
+   * Declared by the adapter because it depends on the upstream payload shape,
+   * not on the model: the same model can report either way depending on route.
+   */
+  cachedTokensIncludedInInput?: boolean;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;

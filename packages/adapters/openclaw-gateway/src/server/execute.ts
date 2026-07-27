@@ -902,18 +902,39 @@ async function autoApproveDevicePairing(params: {
   }
 }
 
-function parseUsage(value: unknown): AdapterExecutionResult["usage"] | undefined {
+export function parseUsage(value: unknown): AdapterExecutionResult["usage"] | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
 
   const inputTokens = asNumber(record.inputTokens ?? record.input, 0);
   const outputTokens = asNumber(record.outputTokens ?? record.output, 0);
+  // The gateway's run meta spells these `cacheReadTokens`/`cacheWriteTokens`;
+  // the session store spells them `cacheRead`/`cacheWrite`. Missing the meta
+  // spelling silently dropped EVERY cached token on this adapter -- 695k input
+  // tokens recorded with 0 cache while other adapters logged 226M.
   const cachedInputTokens = asNumber(
-    record.cachedInputTokens ?? record.cached_input_tokens ?? record.cacheRead ?? record.cache_read,
+    record.cachedInputTokens ??
+      record.cached_input_tokens ??
+      record.cacheReadTokens ??
+      record.cacheRead ??
+      record.cache_read,
+    0,
+  );
+  const cacheCreationInputTokens = asNumber(
+    record.cacheCreationInputTokens ??
+      record.cache_creation_input_tokens ??
+      record.cacheWriteTokens ??
+      record.cacheWrite ??
+      record.cache_write,
     0,
   );
 
-  if (inputTokens <= 0 && outputTokens <= 0 && cachedInputTokens <= 0) {
+  if (
+    inputTokens <= 0 &&
+    outputTokens <= 0 &&
+    cachedInputTokens <= 0 &&
+    cacheCreationInputTokens <= 0
+  ) {
     return undefined;
   }
 
@@ -921,6 +942,7 @@ function parseUsage(value: unknown): AdapterExecutionResult["usage"] | undefined
     inputTokens,
     outputTokens,
     ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
+    ...(cacheCreationInputTokens > 0 ? { cacheCreationInputTokens } : {}),
   };
 }
 
@@ -1636,6 +1658,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(effectiveModel ? { model: effectiveModel } : {}),
         ...(effectiveUsage ? { usage: effectiveUsage } : {}),
         ...(effectiveCostUsd > 0 ? { costUsd: effectiveCostUsd } : {}),
+        // Upstream reports the prompt total as `input + cacheRead + cacheWrite`,
+        // so input is already exclusive of cached reads -- netting them out again
+        // would bill the same tokens at a discount they never had.
+        cachedTokensIncludedInInput: false,
         // OpenClaw agents run on subscription OAuth, never a metered API key.
         billingType: "subscription_included",
         resultJson: asRecord(latestResultPayload),

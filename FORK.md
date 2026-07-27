@@ -75,7 +75,19 @@ left runnable so they can be triggered manually if ever needed.
   rows expose no cache buckets, so cached reads bill at the full input rate (~2% over on
   observed runs); that errs toward over-reporting spend rather than dropping the run.
 
-  Three traps worth keeping on OpenClaw upgrades. Under the `run` key strategy every run mints a
+  Cache buckets are spelled differently on each path, and getting that wrong is silent: the
+  run meta says `cacheReadTokens`/`cacheWriteTokens`, the session store says
+  `cacheRead`/`cacheWrite`. Matching only the store spelling recorded 695k input tokens
+  against ZERO cached tokens on this adapter while other adapters logged 226M. Upstream
+  reports the prompt total as `input + cacheRead + cacheWrite`, so input is already exclusive
+  of cached reads -- the adapter declares `cachedTokensIncludedInInput: false` rather than
+  letting the per-model table guess, because that property belongs to the route, not the model.
+  Cache WRITES bill at a premium (Anthropic 1.25x input, OpenAI lane free) and are a separate
+  bucket end to end. Prefer the cost the gateway reports: it takes ClawRouter's explicit
+  per-call price when present (`readExplicitCostUsd`), which is the actual biller and beat our
+  own table by 44% on a live run. Our rate table is a fallback, not the source of truth.
+
+  Four traps worth keeping on OpenClaw upgrades. Under the `run` key strategy every run mints a
   fresh session key, so a pre-dispatch baseline asks about a session that does not exist yet
   and the gateway rejects it -- expected, and only a timeout/method-not-found may mark a
   gateway as lacking the method (`indicatesSessionUsageUnsupported`). Treating that ordinary

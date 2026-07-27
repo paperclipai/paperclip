@@ -4,6 +4,7 @@ import {
   indicatesRejectedListParams,
   indicatesSessionUsageUnsupported,
   parseSessionUsageTotals,
+  parseUsage,
 } from "./execute.js";
 
 const KEY = "agent:kael:heartbeat";
@@ -183,5 +184,55 @@ describe("indicatesRejectedListParams", () => {
     expect(indicatesRejectedListParams("Invalid session reference: agent:main:paperclip")).toBe(
       false,
     );
+  });
+});
+
+describe("parseUsage cache buckets", () => {
+  // The gateway's run meta (runtime-llm.runtime.ts) spells the cache buckets
+  // `cacheReadTokens`/`cacheWriteTokens`. Matching only `cacheRead`/`cacheWrite`
+  // silently dropped every cached token on this adapter: 695k input tokens
+  // recorded against 0 cached, while other adapters logged 226M.
+  it("reads the run meta spelling of both cache buckets", () => {
+    expect(
+      parseUsage({
+        inputTokens: 3004,
+        outputTokens: 249,
+        cacheReadTokens: 76_453,
+        cacheWriteTokens: 10_304,
+      }),
+    ).toEqual({
+      inputTokens: 3004,
+      outputTokens: 249,
+      cachedInputTokens: 76_453,
+      cacheCreationInputTokens: 10_304,
+    });
+  });
+
+  it("reads the session-store spelling of both cache buckets", () => {
+    expect(
+      parseUsage({ input: 10, output: 20, cacheRead: 30, cacheWrite: 40 }),
+    ).toEqual({
+      inputTokens: 10,
+      outputTokens: 20,
+      cachedInputTokens: 30,
+      cacheCreationInputTokens: 40,
+    });
+  });
+
+  it("keeps usage that is nothing but a cache write", () => {
+    // A cache-priming call bills real money at 1.25x input; treating it as
+    // "no usage" would drop the most expensive tokens we buy.
+    expect(parseUsage({ cacheWriteTokens: 5000 })).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 5000,
+    });
+  });
+
+  it("omits cache buckets that are genuinely absent", () => {
+    expect(parseUsage({ inputTokens: 10, outputTokens: 20 })).toEqual({
+      inputTokens: 10,
+      outputTokens: 20,
+    });
   });
 });

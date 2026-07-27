@@ -215,3 +215,87 @@ describe("fleet model rate coverage (fork)", () => {
     ).toBe(0);
   });
 });
+
+describe("cache-write pricing", () => {
+  const claudeBase = {
+    costUsd: 0,
+    billingType: "subscription_included" as const,
+    provider: "clawrouter",
+    model: "clawrouter/claude-sonnet-4-6",
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+  };
+
+  it("bills Anthropic cache writes at the 1.25x input premium", () => {
+    // 1M cache-write tokens on sonnet: $3/1M input x 1.25 = $3.75 = 375 cents.
+    expect(
+      resolveModelCostCents({ ...claudeBase, cacheCreationInputTokens: 1_000_000 }),
+    ).toBe(375);
+  });
+
+  it("prices a cache write above the same volume of fresh input", () => {
+    const write = resolveModelCostCents({
+      ...claudeBase,
+      cacheCreationInputTokens: 1_000_000,
+    });
+    const fresh = resolveModelCostCents({ ...claudeBase, inputTokens: 1_000_000 });
+    const read = resolveModelCostCents({ ...claudeBase, cachedInputTokens: 1_000_000 });
+    expect(write).toBeGreaterThan(fresh);
+    expect(fresh).toBeGreaterThan(read);
+  });
+
+  it("charges nothing for cache writes on the OpenAI lane", () => {
+    expect(
+      resolveModelCostCents({
+        ...claudeBase,
+        model: "clawrouter/gpt-5.6-sol",
+        cacheCreationInputTokens: 1_000_000,
+      }),
+    ).toBe(0);
+  });
+});
+
+describe("cached-token input semantics", () => {
+  const base = {
+    costUsd: 0,
+    billingType: "subscription_included" as const,
+    provider: "clawrouter",
+    model: "clawrouter/gpt-5.5",
+    inputTokens: 1_000_000,
+    cachedInputTokens: 400_000,
+    outputTokens: 0,
+  };
+
+  it("lets a source declare that input excludes cached reads", () => {
+    // gpt-5.5's table entry assumes direct-OpenAI semantics (cached folded into
+    // input) and nets the cached count out. The OpenClaw gateway reports them
+    // separately, so netting out would discount 400k tokens that were never
+    // counted: $5/1M x 1M + $0.5/1M x 400k = $5.20, not $3.20.
+    expect(resolveModelCostCents({ ...base, cachedTokensIncludedInInput: false })).toBe(520);
+  });
+
+  it("still nets cached tokens out when the source bundles them", () => {
+    expect(resolveModelCostCents({ ...base, cachedTokensIncludedInInput: true })).toBe(320);
+  });
+
+  it("does not bill a bundled cache write twice on a cache-write-priced model", () => {
+    // Claude models carry the 1.25x cache-write multiplier. A caller declaring
+    // the bundled shape means input already contains both cache buckets, so a
+    // write must be priced once at 1.25x -- not also at the input rate.
+    //
+    // 1M input total = 600k true input + 200k cached read + 200k cache write.
+    // $3/1M x 600k + $0.30/1M x 200k + $3.75/1M x 200k = $1.80 + $0.06 + $0.75 = $2.61.
+    const cost = resolveModelCostCents({
+      ...base,
+      model: "clawrouter/claude-sonnet-5",
+      inputTokens: 1_000_000,
+      cachedInputTokens: 200_000,
+      cacheCreationInputTokens: 200_000,
+      cachedTokensIncludedInInput: true,
+    });
+    // Without subtracting the write bucket the 200k would also be billed at the
+    // input rate, inflating this to 321.
+    expect(cost).toBe(261);
+  });
+});

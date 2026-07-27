@@ -563,6 +563,58 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     });
   });
 
+  it("lets the caller declare that input excludes cached reads when pricing an event", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Gateway Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "completed",
+      startedAt: new Date(),
+      finishedAt: new Date(),
+    });
+
+    // gpt-5.5's table entry assumes cached reads are folded into input. The
+    // gateway reports them separately, so netting them out would discount 400k
+    // tokens that were never counted. With no precomputed costCents the flag is
+    // the only thing standing between $5.20 and a silent $3.20.
+    await costs.createEvent(companyId, {
+      heartbeatRunId: runId,
+      agentId,
+      provider: "clawrouter",
+      billingType: "subscription_included",
+      model: "clawrouter/gpt-5.5",
+      inputTokens: 1_000_000,
+      cachedInputTokens: 400_000,
+      outputTokens: 0,
+      cachedTokensIncludedInInput: false,
+      occurredAt: new Date(),
+    });
+
+    const summary = await costs.summary(companyId);
+    expect(summary.spendCents).toBe(520);
+  });
+
   it("rejects createEvent when neither issueId nor heartbeatRunId is set", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
