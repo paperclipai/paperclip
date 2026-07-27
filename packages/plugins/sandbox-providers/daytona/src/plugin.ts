@@ -1223,13 +1223,14 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
-    // C4: the lease's handle must not outlive its teardown. Evict unconditionally
-    // once release runs, regardless of whether provider teardown succeeds or the
-    // sandbox has already vanished, so the next acquire/exec never serves a
-    // stopped/archived/deleted handle.
+    // C4: the lease's handle must not outlive its teardown. Evict before the
+    // async cleanup starts so overlapping exec/sync calls cannot see a handle
+    // that is already being stopped, archived, or deleted.
     try {
       const sandbox = await getSandboxOrNull(scope);
       if (!sandbox) return;
+
+      evictSandboxHandle(scope);
 
       if (config.reuseLease) {
         if (sandbox.state !== "stopped") {
@@ -1282,10 +1283,13 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
-    // C4: evict on destroy no matter how teardown resolves.
+    // C4: evict before the async delete starts so overlapping exec/sync calls
+    // cannot observe a handle that is already being torn down.
     try {
       const sandbox = await getSandboxOrNull(scope);
       if (!sandbox) return;
+
+      evictSandboxHandle(scope);
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
     } finally {
       evictSandboxHandle(scope);
