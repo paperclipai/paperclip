@@ -18,6 +18,8 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
 }));
 
+const mockLogActivity = vi.hoisted(() => vi.fn());
+
 vi.mock("../services/plugin-registry.js", () => ({
   pluginRegistryService: () => mockRegistry,
 }));
@@ -31,7 +33,7 @@ vi.mock("../services/issues.js", () => ({
 }));
 
 vi.mock("../services/activity-log.js", () => ({
-  logActivity: vi.fn(),
+  logActivity: mockLogActivity,
 }));
 
 vi.mock("../services/live-events.js", () => ({
@@ -156,6 +158,25 @@ describe.sequential("plugin scoped API routes", () => {
       actor: expect.objectContaining({ actorType: "user", actorId: "user-1" }),
     }));
     expect(workerManager.call.mock.calls[0]?.[2].headers.authorization).toBeUndefined();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId,
+      actorType: "user",
+      actorId: "user-1",
+      agentId: null,
+      runId: null,
+      action: "plugin.api_route.proxied",
+      entityType: "plugin",
+      entityId: pluginId,
+      details: expect.objectContaining({
+        pluginId,
+        pluginKey: apiRoutes.id,
+        companyId,
+        routeKey: "summary.get",
+        method: "GET",
+        status: 201,
+        outcome: "success",
+      }),
+    }));
   });
 
   it("only forwards allowlisted response headers from plugin routes", async () => {
@@ -250,6 +271,25 @@ describe.sequential("plugin scoped API routes", () => {
       body: { step: "next" },
       actor: expect.objectContaining({ actorType: "agent", agentId, runId }),
       companyId,
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId,
+      action: "plugin.api_route.proxied",
+      entityType: "plugin",
+      entityId: pluginId,
+      details: expect.objectContaining({
+        pluginId,
+        pluginKey: apiRoutes.id,
+        companyId,
+        routeKey: "issue.advance",
+        method: "POST",
+        status: 200,
+        outcome: "success",
+      }),
     }));
   });
 

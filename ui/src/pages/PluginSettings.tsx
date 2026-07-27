@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { skipToken, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
 import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
@@ -86,9 +86,10 @@ export function PluginSettings() {
   });
 
   const { data: recentLogs } = useQuery({
-    queryKey: queryKeys.plugins.logs(pluginId!),
-    queryFn: () => pluginsApi.logs(pluginId!, { limit: 50 }),
-    enabled: !!pluginId && plugin?.status === "ready",
+    queryKey: queryKeys.plugins.logs(pluginId ?? null, selectedCompanyId ?? null),
+    queryFn: pluginId && selectedCompanyId && plugin?.status === "ready"
+      ? () => pluginsApi.logs(pluginId, { companyId: selectedCompanyId, limit: 50 })
+      : skipToken,
     refetchInterval: 30000,
   });
 
@@ -96,14 +97,13 @@ export function PluginSettings() {
   const configSchema = plugin?.manifestJson?.instanceConfigSchema as JsonSchemaNode | undefined;
   const hasConfigSchema = configSchema && configSchema.properties && Object.keys(configSchema.properties).length > 0;
 
-  const configQueryKey = pluginId && selectedCompanyId
-    ? queryKeys.plugins.config(pluginId, selectedCompanyId)
-    : ["plugins", pluginId ?? "__missing_plugin__", "companies", "__missing_company__", "config"] as const;
+  const configQueryKey = queryKeys.plugins.config(pluginId ?? null, selectedCompanyId ?? null);
 
   const { data: configData, isLoading: configLoading } = useQuery({
     queryKey: configQueryKey,
-    queryFn: () => pluginsApi.getConfig(pluginId!, selectedCompanyId!),
-    enabled: !!pluginId && !!hasConfigSchema && !!selectedCompanyId,
+    queryFn: pluginId && hasConfigSchema && selectedCompanyId
+      ? () => pluginsApi.getConfig(pluginId, selectedCompanyId)
+      : skipToken,
   });
 
   const { slots } = usePluginSlots({
