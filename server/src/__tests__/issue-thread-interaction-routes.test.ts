@@ -19,6 +19,7 @@ const mockInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   answerQuestions: vi.fn(),
   submitItemVerdicts: vi.fn(),
+  cancelInteraction: vi.fn(),
   cancelQuestions: vi.fn(),
 }));
 
@@ -327,7 +328,7 @@ describe.sequential("issue thread interaction routes", () => {
       },
       newlyResolvedItemIds: ["docs"],
     });
-    mockInteractionService.cancelQuestions.mockResolvedValue({
+    mockInteractionService.cancelInteraction.mockResolvedValue({
       id: "interaction-2",
       companyId: "company-1",
       issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -583,7 +584,7 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("cancelled");
-    expect(mockInteractionService.cancelQuestions).toHaveBeenCalledWith(
+    expect(mockInteractionService.cancelInteraction).toHaveBeenCalledWith(
       expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
       "interaction-2",
       {},
@@ -606,6 +607,72 @@ describe.sequential("issue thread interaction routes", () => {
       expect.anything(),
       expect.objectContaining({
         action: "issue.thread_interaction_cancelled",
+      }),
+    );
+  });
+
+  it("allows agent actors to cancel their own request confirmations", async () => {
+    mockInteractionService.cancelInteraction.mockResolvedValueOnce({
+      id: "interaction-confirmation",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "cancelled",
+      continuationPolicy: "none",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-confirmation",
+      payload: {
+        version: 1,
+        prompt: "Approve?",
+      },
+      result: {
+        version: 1,
+        outcome: "cancelled",
+        reason: "Superseded by policy routing",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      source: "agent_key",
+      keyId: "agent-key-1",
+      runId: null,
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-confirmation/cancel")
+      .send({ reason: "Superseded by policy routing" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "interaction-confirmation",
+      kind: "request_confirmation",
+      status: "cancelled",
+      result: {
+        outcome: "cancelled",
+        reason: "Superseded by policy routing",
+      },
+    });
+    expect(mockInteractionService.cancelInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-confirmation",
+      { reason: "Superseded by policy routing" },
+      expect.objectContaining({ agentId: CREATED_AGENT_ID, userId: null }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_cancelled",
+        actorType: "agent",
+        details: expect.objectContaining({
+          interactionKind: "request_confirmation",
+          cancellationReason: "Superseded by policy routing",
+        }),
       }),
     );
   });

@@ -9594,11 +9594,19 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
-      assertBoard(req);
+      if (req.actor.type === "agent") {
+        if (
+          req.actor.runId &&
+          !(await assertTaskWatchdogIssueMutationAllowed(req, res, issue, { allowWatchdogIssue: false }))
+        ) {
+          return;
+        }
+      } else {
+        assertBoard(req);
+      }
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
+      const interaction = await issueThreadInteractionService(db).cancelInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
@@ -9620,6 +9628,8 @@ export function issueRoutes(
           cancellationReason:
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.cancellationReason ?? null)
+              : interaction.kind === "request_confirmation"
+                ? (interaction.result?.reason ?? null)
               : null,
         },
       });

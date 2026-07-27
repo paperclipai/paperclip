@@ -575,6 +575,145 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("rejects agent cancellation of ask_user_questions interactions", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Agent question cancellation");
+    const creatorAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Choose the scope",
+          selectionMode: "single",
+          required: true,
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      agentId: creatorAgentId,
+    });
+
+    await expect(interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {}, {
+      agentId: otherAgentId,
+    })).rejects.toMatchObject({
+      status: 403,
+      message: "Agent actors cannot cancel ask_user_questions interactions",
+    });
+  });
+
+  it("allows a creator agent to cancel its own pending request_confirmation", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Creator agent cancellation");
+    const creatorAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "none",
+      payload: {
+        version: 1,
+        prompt: "Approve old plan?",
+      },
+    }, {
+      agentId: creatorAgentId,
+    });
+
+    await expect(interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Superseded by policy routing",
+    }, {
+      agentId: otherAgentId,
+    })).rejects.toMatchObject({
+      status: 403,
+      message: "Only the creating agent can cancel a request_confirmation interaction",
+    });
+
+    const cancelled = await interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Superseded by policy routing",
+    }, {
+      agentId: creatorAgentId,
+    });
+
+    expect(cancelled).toMatchObject({
+      kind: "request_confirmation",
+      status: "cancelled",
+      result: {
+        version: 1,
+        outcome: "cancelled",
+        reason: "Superseded by policy routing",
+      },
+      resolvedByAgentId: creatorAgentId,
+      resolvedByUserId: null,
+    });
+  });
+
   it("expires ask_user_questions interactions by default when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Question supersede");
     const commentId = randomUUID();
