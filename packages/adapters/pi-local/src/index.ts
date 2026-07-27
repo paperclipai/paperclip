@@ -3,7 +3,9 @@ import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 export const type = "pi_local";
 export const label = "Pi";
 
-export const SANDBOX_INSTALL_COMMAND = "npm install -g @earendil-works/pi-coding-agent@0.74.0";
+// Keep in lockstep with docker/agent-runtime/Dockerfile.pi — the sandbox and the
+// prebuilt image must run the same pi version.
+export const SANDBOX_INSTALL_COMMAND = "npm install -g @earendil-works/pi-coding-agent@0.82.1";
 
 export const models: Array<{ id: string; label: string }> = [];
 

@@ -3,10 +3,15 @@ ARG BASE_TAG=dev
 FROM paperclipai/agent-runtime-base:${BASE_TAG}
 
 USER root
-# pi is the multi-provider Pi coding-agent router. Verified npm package:
-# @mariozechner/pi-coding-agent (binary 'pi' → dist/cli.js). Same package
-# is used by SANDBOX_INSTALL_COMMAND in pi-local/src/index.ts.
-RUN npm install -g @mariozechner/pi-coding-agent@latest \
+# pi is the multi-provider Pi coding-agent router. npm package:
+# @earendil-works/pi-coding-agent (binary 'pi' → dist/cli.js).
+#
+# Keep this version in lockstep with SANDBOX_INSTALL_COMMAND in
+# packages/adapters/pi-local/src/index.ts — the image and the sandbox must run
+# the same pi. The old @mariozechner/pi-coding-agent package is deprecated
+# upstream ("please use @earendil-works/pi-coding-agent instead going forward")
+# and frozen at 0.73.1, so @latest there silently stopped moving.
+RUN npm install -g @earendil-works/pi-coding-agent@0.82.1 \
     && { chown -R 1000:1000 /usr/lib/node_modules || true; }
 
 USER 1000:1000
