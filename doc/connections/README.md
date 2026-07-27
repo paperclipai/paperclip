@@ -73,16 +73,15 @@ checks governance, invokes the provider, and writes audit.
 
 Signing a user *in* and connecting a *resource* are different planes with
 different owners, different token profiles, and different homes. Do not merge
-them. The source of truth for this boundary is
-[`paperclip-id/docs/identity-model.md`](https://github.com/paperclipai/paperclip-id/blob/master/docs/identity-model.md);
-this section is the connections-side pointer so connector implementers inherit
-the rule without re-deriving it.
+them. This section is the public, connections-side statement of the identity
+model so connector implementers inherit the rule without depending on private
+identity-service documentation or re-deriving it.
 
 | Plane | Question | Lives where | Token profile |
 | --- | --- | --- | --- |
 | **P1. Sign-in methods** | *Who are you?* | `paperclip-id` (id.paperclip.ing → Account) | Minimal-scope provider tokens (`openid email profile`), used once to authenticate, encrypted at rest, never exported |
 | **P2. Connections (Apps)** | *What may your agents touch?* | Paperclip App instances (`tool_connections`), acquired via the **connect broker** for hosted + self-hosted | Rich-scope, long-lived resource tokens in the **instance's** encrypted vault; per-agent grants; ask-first on writes |
-| **P3. Login with Paperclip** | *Who may authenticate against us?* | `paperclip-id` OIDC provider + DB-backed client registry ([`docs/oidc.md`](https://github.com/paperclipai/paperclip-id/blob/master/docs/oidc.md)) | Our ES256 ID/access tokens issued *by* us to registered RPs (instances, the broker, future third parties) |
+| **P3. Login with Paperclip** | *Who may authenticate against us?* | `paperclip-id` OIDC provider + DB-backed client registry | Our ES256 ID/access tokens issued *by* us to registered RPs (instances, the broker, future third parties) |
 
 Everything in `doc/connections/` — the [First-30 matrix](./FIRST-30-MATRIX.md),
 the [connector playbook](./CONNECTOR-PLAYBOOK.md), and the connect-broker work —
@@ -90,9 +89,9 @@ lives on **plane P2**. It never acquires, stores, or brokers a P1 sign-in token.
 
 ### The standing rule (D7)
 
-Adopted as a standing rule (decision D7) with the identity-model plan; the full
-rationale lives in the source-of-truth doc linked above. State it verbatim in any
-P2 design so the app-store work cannot drift into merging the planes:
+Adopted as a standing rule (decision D7) with the identity-model plan. State it
+verbatim in any P2 design so the app-store work cannot drift into merging the
+planes:
 
 > Sign-in tokens are never reused as resource tokens; id.paperclip.ing never
 > stores resource tokens; no connections hub on the ID service.
@@ -139,9 +138,8 @@ not own durable tokens.
 ## Canonical Docs
 
 - [Glossary](./GLOSSARY.md) defines product and internal terms.
-- [Identity vs. connections](#identity-vs-connections) fixes the P1/P2/P3
-  boundary and the D7 standing rule; the source of truth is
-  [`paperclip-id/docs/identity-model.md`](https://github.com/paperclipai/paperclip-id/blob/master/docs/identity-model.md).
+- [Identity vs. connections](#identity-vs-connections) is the public statement
+  of the P1/P2/P3 boundary and the D7 standing rule for connections work.
 - [Security threat model](./SECURITY-THREAT-MODEL.md) harvests the keeper from
   [PAP-2359](/PAP/issues/PAP-2359) and maps it onto Apps v2.
 - [First-30 matrix](./FIRST-30-MATRIX.md) harvests the keeper from
