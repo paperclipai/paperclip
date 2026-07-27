@@ -868,12 +868,15 @@ export async function startServer(): Promise<StartedServer> {
   // a contradictory deployment that also forces PAPERCLIP_EXECUTION_MODE
   // throws here and fails startup. `pluginsReady` sequences the ensure after
   // the bundled-plugin install/load pass so a declared environment never
-  // activates before its provider driver is registered.
+  // activates before its provider driver is registered; the worker manager
+  // additionally gates each entry on a live plugin worker (and archives the
+  // row of a provider that did not come up).
   try {
     const bundledPluginsStartup = (app as { locals?: { bundledPluginsStartup?: Promise<unknown> } })
       .locals?.bundledPluginsStartup;
     const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig, {
       pluginsReady: bundledPluginsStartup,
+      workerManager: pluginWorkerManager,
     });
     if (managedEnvironmentsResult) {
       logger.warn(managedEnvironmentsResult, "managed sandbox environments ensured from managed config");

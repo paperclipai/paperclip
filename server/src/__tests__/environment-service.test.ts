@@ -688,6 +688,37 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(restored.metadata?.managedKubernetesSandbox).toBe(true);
   });
 
+  it("archives the managed sandbox row only for its own provider and reactivates on ensure", async () => {
+    // Nothing provisioned yet: archiving is a no-op.
+    expect(await svc.archiveManagedSandboxEnvironment({ provider: "daytona" })).toBeNull();
+
+    const created = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    expect(created.status).toBe("active");
+
+    // Another provider's unavailability leaves this provider's row alone.
+    expect(await svc.archiveManagedSandboxEnvironment({ provider: "kubernetes" })).toBeNull();
+
+    const archived = await svc.archiveManagedSandboxEnvironment({ provider: "daytona" });
+    expect(archived?.id).toBe(created.id);
+    expect(archived?.status).toBe("archived");
+
+    // Already archived: a repeat call is a no-op.
+    expect(await svc.archiveManagedSandboxEnvironment({ provider: "daytona" })).toBeNull();
+
+    // The next healthy boot's ensure re-activates the same row.
+    const restored = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    expect(restored.id).toBe(created.id);
+    expect(restored.status).toBe("active");
+  });
+
   it("adopts an existing unmanaged sandbox row holding the desired name", async () => {
     const handMade = await svc.create({
       name: "Daytona",

@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { MANAGED_CONFIG_ENV_KEY, parseManagedConfigEnv } from "./managed-config.js";
-import { applyManagedEnvironments } from "./managed-environments.js";
+import {
+  applyManagedEnvironments,
+  type ApplyManagedEnvironmentsOptions,
+} from "./managed-environments.js";
 
 const noDb = null as unknown as Db;
 
@@ -39,8 +42,23 @@ function environmentRow(overrides: Record<string, unknown> = {}) {
 
 function readyDriverResolver(status = "ready") {
   return vi.fn(async () => ({
-    plugin: { pluginKey: "sandbox-providers/daytona", status },
+    plugin: { id: "plugin-1", pluginKey: "sandbox-providers/daytona", status },
   }));
+}
+
+function runningWorkerManager(running = true) {
+  return { isRunning: vi.fn(() => running) };
+}
+
+type EnvironmentsSeam = NonNullable<ApplyManagedEnvironmentsOptions["environments"]>;
+
+function environmentsSeam(overrides: Partial<EnvironmentsSeam> = {}): EnvironmentsSeam {
+  return {
+    ensureManagedSandboxEnvironment:
+      overrides.ensureManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(environmentRow()),
+    archiveManagedSandboxEnvironment:
+      overrides.archiveManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(null),
+  };
 }
 
 describe("applyManagedEnvironments", () => {
@@ -76,14 +94,17 @@ describe("applyManagedEnvironments", () => {
     });
 
     const resolveSandboxProviderDriver = readyDriverResolver();
+    const workerManager = runningWorkerManager();
     const result = await applyManagedEnvironments(noDb, config, {
       env: {},
-      environments: { ensureManagedSandboxEnvironment },
+      workerManager,
+      environments: environmentsSeam({ ensureManagedSandboxEnvironment }),
       resolveSandboxProviderDriver,
     });
 
     expect(result).toEqual({ ensured: 1, failed: 0 });
     expect(resolveSandboxProviderDriver).toHaveBeenCalledWith({ db: noDb, driverKey: "daytona" });
+    expect(workerManager.isRunning).toHaveBeenCalledWith("plugin-1");
     expect(ensureManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
     expect(ensureManagedSandboxEnvironment).toHaveBeenCalledWith({
       name: "Daytona",
@@ -113,7 +134,8 @@ describe("applyManagedEnvironments", () => {
     const pending = applyManagedEnvironments(noDb, config, {
       env: {},
       pluginsReady,
-      environments: { ensureManagedSandboxEnvironment },
+      workerManager: runningWorkerManager(),
+      environments: environmentsSeam({ ensureManagedSandboxEnvironment }),
       resolveSandboxProviderDriver: readyDriverResolver(),
     });
 
@@ -126,56 +148,121 @@ describe("applyManagedEnvironments", () => {
     expect(ensureManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
   });
 
-  it("skips (and counts failed) an entry whose provider plugin is missing", async () => {
-    const ensureManagedSandboxEnvironment = vi
-      .fn()
-      .mockResolvedValue(environmentRow());
+  it("skips an entry whose provider plugin is missing and archives its stale row", async () => {
+    const environments = environmentsSeam({
+      archiveManagedSandboxEnvironment: vi.fn().mockResolvedValue(environmentRow({ status: "archived" })),
+    });
     const config = parsedConfig({
       environments: [{ name: "Daytona", provider: "daytona" }],
     });
 
     const result = await applyManagedEnvironments(noDb, config, {
       env: {},
-      environments: { ensureManagedSandboxEnvironment },
+      workerManager: runningWorkerManager(),
+      environments,
       resolveSandboxProviderDriver: vi.fn(async () => null),
     });
 
     expect(result).toEqual({ ensured: 0, failed: 1 });
-    expect(ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+    expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+    expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledWith({
+      provider: "daytona",
+    });
   });
 
   it("skips (and counts failed) an entry whose provider plugin is not ready", async () => {
-    const ensureManagedSandboxEnvironment = vi
-      .fn()
-      .mockResolvedValue(environmentRow());
+    const environments = environmentsSeam();
     const config = parsedConfig({
       environments: [{ name: "Daytona", provider: "daytona" }],
     });
 
     const result = await applyManagedEnvironments(noDb, config, {
       env: {},
-      environments: { ensureManagedSandboxEnvironment },
+      workerManager: runningWorkerManager(),
+      environments,
       resolveSandboxProviderDriver: readyDriverResolver("disabled"),
     });
 
     expect(result).toEqual({ ensured: 0, failed: 1 });
-    expect(ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+    expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+    expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledWith({
+      provider: "daytona",
+    });
   });
 
-  it("is fail-safe per entry: an ensure failure is counted, not thrown", async () => {
-    const ensureManagedSandboxEnvironment = vi
-      .fn()
-      .mockRejectedValue(new Error("db exploded"));
+  it("skips an entry whose plugin record is ready but whose worker is not running", async () => {
+    const environments = environmentsSeam();
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    const workerManager = runningWorkerManager(false);
+    const result = await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager,
+      environments,
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(workerManager.isRunning).toHaveBeenCalledWith("plugin-1");
+    expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+    expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledWith({
+      provider: "daytona",
+    });
+  });
+
+  it("fails closed when no worker manager is provided", async () => {
+    const environments = environmentsSeam();
     const config = parsedConfig({
       environments: [{ name: "Daytona", provider: "daytona" }],
     });
 
     const result = await applyManagedEnvironments(noDb, config, {
       env: {},
-      environments: { ensureManagedSandboxEnvironment },
+      environments,
       resolveSandboxProviderDriver: readyDriverResolver(),
     });
 
     expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("counts a skipped entry once even when archiving its stale row fails", async () => {
+    const environments = environmentsSeam({
+      archiveManagedSandboxEnvironment: vi.fn().mockRejectedValue(new Error("db exploded")),
+    });
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    const result = await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      environments,
+      resolveSandboxProviderDriver: vi.fn(async () => null),
+    });
+
+    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
+  });
+
+  it("is fail-safe per entry: an ensure failure is counted, not thrown", async () => {
+    const environments = environmentsSeam({
+      ensureManagedSandboxEnvironment: vi.fn().mockRejectedValue(new Error("db exploded")),
+    });
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    const result = await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      environments,
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(environments.archiveManagedSandboxEnvironment).not.toHaveBeenCalled();
   });
 });

@@ -17,17 +17,23 @@
  *    logged and boot continues degraded (environment unavailable) rather
  *    than crash-looping a fleet.
  *
- * Ensuring is additionally synchronized with provider readiness: the caller's
- * `pluginsReady` promise (the bundled-plugin install/load pass) is awaited
- * first, and an entry whose provider plugin is not installed and `ready`
- * afterwards is skipped (counted failed) instead of being written as an
- * active row — otherwise the heartbeat would resume queued runs against an
- * environment whose lease acquisition cannot succeed yet.
+ * Ensuring is additionally synchronized with provider availability: the
+ * caller's `pluginsReady` promise (the bundled-plugin install/load pass) is
+ * awaited first, and an entry whose provider plugin is not installed, `ready`,
+ * AND running a live worker (`workerManager.isRunning`; a `ready` record whose
+ * activation failed has no worker and cannot serve leases) afterwards is
+ * skipped (counted failed) instead of being written as an active row —
+ * otherwise the heartbeat would resume queued runs against an environment
+ * whose lease acquisition cannot succeed yet. When such an entry was
+ * provisioned by an earlier boot, its still-active row is archived
+ * (`archiveManagedSandboxEnvironment`) for the same reason; the next healthy
+ * boot's ensure re-activates it.
  *
  * Removing an entry from the document stops future refreshes but never
  * deletes or archives the row — there is intentionally no unprovision path
  * here, matching `plugins.autoInstall` semantics (leases may still reference
- * the row; withdrawal is an explicit operator action).
+ * the row; withdrawal is an explicit operator action). Archiving above is
+ * scoped to a declared-but-unavailable provider, not to document removal.
  *
  * Provider credentials are never part of the declared config: every bundled
  * sandbox provider falls back to its documented process environment variable
@@ -41,6 +47,7 @@ import { environmentService } from "./environments.js";
 import type { ManagedInstanceConfig } from "./managed-config.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { resolvePluginSandboxProviderDriverByKey } from "./plugin-environment-driver.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 export interface ApplyManagedEnvironmentsOptions {
   env?: Record<string, string | undefined>;
@@ -51,16 +58,23 @@ export interface ApplyManagedEnvironmentsOptions {
    * driver. The promise never rejects (the chain catches internally).
    */
   pluginsReady?: Promise<unknown>;
+  /**
+   * The app's plugin worker manager, consulted per entry so an environment is
+   * only ensured while its provider plugin has a live worker (a `ready`
+   * registry record whose activation failed cannot serve leases). Fails
+   * closed: without a worker manager every entry is treated as unavailable.
+   */
+  workerManager?: Pick<PluginWorkerManager, "isRunning">;
   /** Test seam: overrides the environment service built from `db`. */
   environments?: Pick<
     ReturnType<typeof environmentService>,
-    "ensureManagedSandboxEnvironment"
+    "ensureManagedSandboxEnvironment" | "archiveManagedSandboxEnvironment"
   >;
   /** Test seam: overrides the sandbox-provider plugin driver lookup. */
   resolveSandboxProviderDriver?: (input: {
     db: Db;
     driverKey: string;
-  }) => Promise<{ plugin: { pluginKey: string; status: string } } | null>;
+  }) => Promise<{ plugin: { id: string; pluginKey: string; status: string } } | null>;
 }
 
 /**
@@ -102,16 +116,35 @@ export async function applyManagedEnvironments(
   for (const spec of managedConfig.environments) {
     try {
       const resolved = await resolveDriver({ db, driverKey: spec.provider });
-      if (!resolved || resolved.plugin.status !== "ready") {
+      // `ready` in the registry is necessary but not sufficient: activation
+      // can fail after install leaves the record `ready`, in which case no
+      // worker is running and the driver cannot serve leases.
+      const workerRunning =
+        resolved != null && (opts.workerManager?.isRunning(resolved.plugin.id) ?? false);
+      if (!resolved || resolved.plugin.status !== "ready" || !workerRunning) {
         failed += 1;
+        // A row provisioned by an earlier boot must not stay active either —
+        // archive it so run scheduling stops selecting it. Best-effort: an
+        // archive failure is logged, and the entry is already counted failed.
+        const archived = await environments
+          .archiveManagedSandboxEnvironment({ provider: spec.provider })
+          .catch((archiveErr: unknown) => {
+            logger.error(
+              { err: archiveErr, name: spec.name, provider: spec.provider },
+              "failed to archive the managed sandbox environment of an unavailable provider",
+            );
+            return null;
+          });
         logger.error(
           {
             name: spec.name,
             provider: spec.provider,
             pluginKey: resolved?.plugin.pluginKey ?? null,
             pluginStatus: resolved?.plugin.status ?? null,
+            workerRunning,
+            archivedEnvironmentId: archived?.id ?? null,
           },
-          "managed sandbox environment provider plugin is not installed and ready; skipping ensure (degraded: environment unavailable)",
+          "managed sandbox environment provider plugin is not installed, ready, and running; skipping ensure and archiving any previously provisioned row (degraded: environment unavailable)",
         );
         continue;
       }

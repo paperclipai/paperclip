@@ -201,6 +201,20 @@ function countFromRows(rows: Array<{ count: number | string | null | undefined }
 }
 
 export function environmentService(db: Db) {
+  /** The single Paperclip-managed sandbox row (`environments_managed_sandbox_idx`), if present. */
+  const findManagedSandboxRow = () =>
+    db
+      .select()
+      .from(environments)
+      .where(eq(environments.driver, "sandbox"))
+      .then(
+        (rows) =>
+          rows.find(
+            (row) =>
+              (row.metadata as Record<string, unknown> | null)?.managedByPaperclip === true,
+          ) ?? null,
+      );
+
   /**
    * Idempotently ensure THE Paperclip-managed sandbox environment for this
    * instance, configured for an arbitrary sandbox provider plugin. Mirrors
@@ -230,19 +244,6 @@ export function environmentService(db: Db) {
       managedSandboxProvider: input.provider,
       ...(input.extraMetadata ?? {}),
     };
-
-    const findManagedRow = () =>
-      db
-        .select()
-        .from(environments)
-        .where(eq(environments.driver, "sandbox"))
-        .then(
-          (rows) =>
-            rows.find(
-              (row) =>
-                (row.metadata as Record<string, unknown> | null)?.managedByPaperclip === true,
-            ) ?? null,
-        );
 
     const adopt = async (row: EnvironmentRow): Promise<Environment> => {
       const metadata: Record<string, unknown> = { ...(row.metadata ?? {}), ...desiredMetadata };
@@ -279,7 +280,7 @@ export function environmentService(db: Db) {
       return toEnvironment(updated);
     };
 
-    const existing = await findManagedRow();
+    const existing = await findManagedSandboxRow();
     if (existing) return adopt(existing);
 
     // The partial unique index `environments_managed_sandbox_idx` enforces
@@ -320,7 +321,7 @@ export function environmentService(db: Db) {
 
     // Either a concurrent caller won the managed slot, or an unmanaged row
     // holds the desired name. Adopt whichever exists.
-    const winner = await findManagedRow();
+    const winner = await findManagedSandboxRow();
     if (winner) return adopt(winner);
     const sameName = await db
       .select()
@@ -336,6 +337,39 @@ export function environmentService(db: Db) {
       return adopt(sameName);
     }
     throw new Error("Failed to ensure managed sandbox environment");
+  };
+
+  /**
+   * Archive the Paperclip-managed sandbox row when its provider became
+   * unavailable (plugin missing, not ready, or its worker not running), so
+   * run scheduling stops selecting an environment whose lease acquisition
+   * cannot succeed (`resolveEnvironment` rejects non-active rows).
+   *
+   * Scoped to the row provisioned for the SAME provider: a row that a
+   * provider switch left on a different provider is not touched (the ensure
+   * path adopts it once the new provider is healthy). Reactivation is
+   * automatic — the next successful `ensureManagedSandboxEnvironment` stamps
+   * the row `active` again.
+   *
+   * Returns the archived environment, or null when there is no active
+   * managed row for this provider.
+   */
+  const archiveManagedSandboxEnvironment = async (
+    input: { provider: string },
+  ): Promise<Environment | null> => {
+    const existing = await findManagedSandboxRow();
+    if (!existing || existing.status !== "active") return null;
+    const rowProvider = (existing.metadata as Record<string, unknown> | null)
+      ?.managedSandboxProvider;
+    if (rowProvider !== input.provider) return null;
+    const archived = await db
+      .update(environments)
+      .set({ status: "archived", updatedAt: new Date() })
+      // Guarded on status so a concurrent re-activation is not clobbered.
+      .where(and(eq(environments.id, existing.id), eq(environments.status, "active")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return archived ? toEnvironment(archived) : null;
   };
 
   return {
@@ -414,6 +448,8 @@ export function environmentService(db: Db) {
     },
 
     ensureManagedSandboxEnvironment,
+
+    archiveManagedSandboxEnvironment,
 
     /**
      * Idempotently ensure a managed Kubernetes sandbox environment exists for
