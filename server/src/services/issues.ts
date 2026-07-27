@@ -2183,10 +2183,28 @@ async function listIssueBlockerAttentionMap(
       companyId,
       nonBlockedRoots.map((row) => row.id),
     );
+    const sampleBlockerIds = [
+      ...new Set(
+        nonBlockedRoots
+          .map((row) => readinessMap.get(row.id)?.unresolvedBlockerIssueIds[0] ?? null)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const sampleIdentifierById = new Map<string, string | null>();
+    if (sampleBlockerIds.length > 0) {
+      const sampleRows = await dbOrTx
+        .select({ id: issues.id, identifier: issues.identifier })
+        .from(issues)
+        .where(inArray(issues.id, sampleBlockerIds));
+      for (const sampleRow of sampleRows) {
+        sampleIdentifierById.set(sampleRow.id, sampleRow.identifier);
+      }
+    }
     for (const row of nonBlockedRoots) {
       const readiness = readinessMap.get(row.id);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
       if (unresolvedBlockerCount <= 0) continue;
+      const sampleBlockerId = readiness?.unresolvedBlockerIssueIds[0] ?? null;
       attentionMap.set(
         row.id,
         createIssueBlockerAttention({
@@ -2194,7 +2212,9 @@ async function listIssueBlockerAttentionMap(
           reason: "attention_required",
           unresolvedBlockerCount,
           attentionBlockerCount: unresolvedBlockerCount,
-          sampleBlockerIdentifier: readiness?.unresolvedBlockerIssueIds[0] ?? null,
+          sampleBlockerIdentifier: sampleBlockerId
+            ? (sampleIdentifierById.get(sampleBlockerId) ?? sampleBlockerId)
+            : null,
         }),
       );
     }

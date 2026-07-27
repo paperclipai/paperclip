@@ -948,6 +948,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       reason: "attention_required",
       unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       attentionBlockerCount: readiness.unresolvedBlockerCount,
+      sampleBlockerIdentifier: "BFD-2",
     });
+    expect(parent?.blockerAttention?.sampleBlockerIdentifier).not.toBe(blockerId);
   });
 });

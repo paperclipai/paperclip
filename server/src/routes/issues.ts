@@ -2943,7 +2943,7 @@ export function issueRoutes(
     if (issue.status === "done" || issue.status === "cancelled") {
       // False terminal: done while first-class blockers remain open is not a valid
       // resolution. Keep recovery active so stranded work is not cancelled solely
-      // because status flipped to done under an open dependency (SFB-321 / SFB-305).
+      // because status flipped to done under an open dependency.
       if (issue.status === "done") {
         const readiness = await svc.getDependencyReadiness(issue.id);
         if (readiness.unresolvedBlockerCount > 0) {
