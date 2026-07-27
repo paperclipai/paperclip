@@ -1769,6 +1769,35 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(1);
     });
 
+    it("does not advance freshness when an execute fails before succeeding", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      sandbox.process.executeCommand
+        .mockRejectedValueOnce(new Error("command failed"))
+        .mockResolvedValue({
+          exitCode: 0,
+          result: "bash",
+          artifacts: { stdout: "bash" },
+        });
+      mockGet.mockResolvedValue(sandbox);
+
+      let nowMs = 7_000_000;
+      const restoreFreshness = setDaytonaHandleFreshnessClockForTest(() => nowMs);
+      try {
+        await expect(plugin.definition.onEnvironmentExecute?.(execParams("lease-a"))).rejects.toThrow(
+          "command failed",
+        );
+        nowMs += 8 * 60_000;
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      } finally {
+        restoreFreshness();
+      }
+
+      expect(sandbox.refreshData).toHaveBeenCalledTimes(1);
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+    });
+
     it("never refreshes when auto-stop is disabled, even after a long idle gap", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });

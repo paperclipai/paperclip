@@ -951,8 +951,16 @@ const sandboxHandleActivityGates = (() => {
 const sandboxHandleCache = (() => {
   const entries = new Map<string, SandboxHandleCacheEntry>();
 
+  function markFresh(scope: SandboxScope): void {
+    const entry = entries.get(sandboxHandleCacheKey(scope));
+    if (entry) {
+      entry.verifiedAtMs = handleFreshnessNow();
+    }
+  }
+
   async function get(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox> {
     const key = sandboxHandleCacheKey(scope);
+
     if (!options.bypassTeardownGate) {
       const gate = sandboxHandleTeardownGates.current(scope);
       if (gate) {
@@ -990,7 +998,6 @@ const sandboxHandleCache = (() => {
           throw error;
         }
       }
-      entry.verifiedAtMs = handleFreshnessNow();
       return sandbox;
     }
     // Single-flight: the first miss stores the in-flight promise under the
@@ -1035,7 +1042,7 @@ const sandboxHandleCache = (() => {
     entries.clear();
   }
 
-  return { get, clear, reset };
+  return { get, clear, reset, markFresh };
 })();
 
 /**
@@ -1331,6 +1338,7 @@ const plugin = definePlugin({
         return { providerLeaseId: null, metadata: { expired: true, workspaceSentinel } };
       }
       const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
+      sandboxHandleCache.markFresh(scope);
       return {
         providerLeaseId: sandbox.id,
         metadata: leaseMetadata({
@@ -1734,6 +1742,13 @@ const plugin = definePlugin({
       const getDurationMs = timingNow() - getStart;
       await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
       const result = await executeOneShot(sandbox, params, config);
+      sandboxHandleCache.markFresh({
+        driverKey: params.driverKey,
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        providerLeaseId: params.lease.providerLeaseId,
+        config,
+      });
       return {
         ...result,
         metadata: { ...(result.metadata ?? {}), getDurationMs },
@@ -1775,12 +1790,14 @@ const plugin = definePlugin({
     try {
       const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
       await ensureSandboxStarted(sandbox, timeoutSeconds);
-      return await performSyncIn({
+      const result = await performSyncIn({
         sandbox,
         operations: params.operations,
         remoteDir,
         timeoutSeconds,
       });
+      sandboxHandleCache.markFresh(scope);
+      return result;
     } finally {
       sandboxHandleActivityGates.end(scope, activityGate);
     }
@@ -1807,12 +1824,14 @@ const plugin = definePlugin({
     try {
       const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
       await ensureSandboxStarted(sandbox, timeoutSeconds);
-      return await performSyncOut({
+      const result = await performSyncOut({
         sandbox,
         operations: params.operations,
         remoteDir,
         timeoutSeconds,
       });
+      sandboxHandleCache.markFresh(scope);
+      return result;
     } finally {
       sandboxHandleActivityGates.end(scope, activityGate);
     }
