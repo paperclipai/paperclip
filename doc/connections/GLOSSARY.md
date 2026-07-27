@@ -12,7 +12,14 @@ v1, plugin, skill, MCP, and gateway language onto Apps v2.
 | Term | Definition | It is NOT |
 | --- | --- | --- |
 | App | Catalog entry for an external or first-party system: metadata, supported transports, auth modes, and action catalog. The unit of the store. | A running thing; a plugin. |
+| AppDefinition | Versioned, data-only authoring record for an App: identity, copy, supported methods, ownership options, fields, and setup guidance. | A company connection or executable plugin. |
 | Connection | A configured, credentialed instance of an app for this company, possibly per-user account. Carries status and health. | A plugin install; an MCP server config file. |
+| uid | Stable company-scoped connection address in `{namespace}/{slug}` form. | A database UUID or display name. |
+| Ownership | Who supplies and controls the OAuth client: platform-shared, platform-provisioned, customer, or DCR. | Connection kind or credential ownership. |
+| Subject | The app/workspace or Paperclip user on whose behalf a credential is requested. | The calling agent. |
+| Grant | Credential-bearing authorization for one connection subject and provider tenant. | A profile, rule, or permission bypass. |
+| Trigger | Provider-origin event definition that starts governed Paperclip work. | An unauthenticated webhook handler. |
+| Connector service | Paperclip-operated relay for managed OAuth callbacks, credential custody, and webhook intake at `connect.paperclip.ing`. | Paperclip ID or the per-company broker. |
 | Action / Tool | One invokable capability of a connection, risk-classified and quarantined when new or changed. | A free-form shell command or permission grant. |
 | Profile | Curated allowlist of actions bound to a scope such as company, project, agent, routine, or issue. | A permission system of its own. |
 | Rule | Allow, ask-first, or block per action. Ask-first lands in the Review queue. | A profile or catalog entry. |
@@ -51,7 +58,9 @@ Keep protocol and implementation terms behind Developer or Advanced surfaces:
 | Vocabulary term | Apps v2 object or surface |
 | --- | --- |
 | App | `tool_applications`, provider gallery cards, app detail metadata. |
+| AppDefinition | Catalog registry source used to author and seed Apps and setup methods. |
 | Connection | `tool_connections`, connection detail status/health, setup/configure flows. |
+| Grant | `connection_grants`, provider tenant and subject-specific credential refs. |
 | Action / Tool | Catalog entries discovered from MCP/OpenAPI/vendor wrappers. |
 | Profile | Access profiles and bindings. |
 | Rule | Policy rules such as allow, ask-first, block, rate limit, and trust rules. |

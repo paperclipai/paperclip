@@ -182,6 +182,17 @@ export function parseIssueExecutionWorkspaceSettings(
     if (mode === "isolated") return "isolated_workspace";
     return "";
   })();
+  const networkEgress = parseObject(parsed.networkEgress);
+  const allowFqdns = Array.isArray(networkEgress.allowFqdns)
+    ? networkEgress.allowFqdns
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => value.trim().toLowerCase())
+    : [];
+  const allowCidrs = Array.isArray(networkEgress.allowCidrs)
+    ? networkEgress.allowCidrs
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => value.trim())
+    : [];
   return {
     ...(normalizedMode
       ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] }
@@ -193,7 +204,21 @@ export function parseIssueExecutionWorkspaceSettings(
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
       : {}),
+    ...(allowFqdns.length > 0 || allowCidrs.length > 0
+      ? { networkEgress: { allowFqdns, allowCidrs } }
+      : {}),
   };
+}
+
+export function selectEnvironmentExecutionWorkspaceSettings(
+  parsedSettings: IssueExecutionWorkspaceSettings | null,
+  isolatedWorkspacesEnabled: boolean,
+): IssueExecutionWorkspaceSettings | null {
+  if (!parsedSettings) return null;
+  if (isolatedWorkspacesEnabled) return parsedSettings;
+  return parsedSettings.networkEgress
+    ? { networkEgress: parsedSettings.networkEgress }
+    : null;
 }
 
 export type ExecutionWorkspaceEnvironmentSource =

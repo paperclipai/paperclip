@@ -340,7 +340,7 @@ export function ProjectWorkspaceDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.id) });
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.urlKey) });
     if (lookupCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(lookupCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(lookupCompanyId) });
     }
   };
 

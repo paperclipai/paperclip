@@ -93,21 +93,15 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
   afterEach(async () => {
     vi.clearAllMocks();
     runningProcesses.clear();
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // reconcileIssueGraphLiveness heals dependency wakes by enqueuing an
+    // on-demand wake, which dispatches a heartbeat run fire-and-forget (see
+    // startNextQueuedRunForAgent → executeRun in the heartbeat service). That
+    // background run keeps writing rows (workspace_operations, heartbeat_run_events)
+    // after the awaited call resolves. Deterministically await those in-flight
+    // executions before clearing tables — otherwise an escaping heartbeat_run_events
+    // insert can land between the events delete and the heartbeat_runs delete and
+    // trip the run_events → runs foreign key.
+    await heartbeatService(db).drainActiveRunExecutions();
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(costEvents);

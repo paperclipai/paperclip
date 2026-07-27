@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { TOOL_APP_GALLERY, type AppGalleryEntry } from "@paperclipai/shared";
+import { CONNECTABLE_APP_DEFINITIONS, type AppDefinition } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import { AppsConnect } from "@/pages/apps/AppsConnect";
 
@@ -17,8 +17,8 @@ const COMPANY = "company-storybook";
 
 // Zapier is an api_key gallery app, so the key step renders both the new Name
 // field and a credential input — a representative shape for this screenshot.
-const ZAPIER = TOOL_APP_GALLERY.find((e) => e.key === "zapier") as AppGalleryEntry;
-const GALLERY: AppGalleryEntry[] = [ZAPIER];
+const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((e) => e.slug === "zapier") as AppDefinition;
+const GALLERY: AppDefinition[] = [ZAPIER];
 
 function seededClient() {
   const c = new QueryClient({

@@ -5,10 +5,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   InstanceExperimentalSettings as InstanceExperimentalSettingsPayload,
+  InstanceExperimentalSettingsWithManaged,
   IssueGraphLivenessAutoRecoveryPreview,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InstanceExperimentalSettings } from "./InstanceExperimentalSettings";
+import { queryKeys } from "../lib/queryKeys";
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
@@ -58,6 +60,8 @@ const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
 const APPS_TOGGLE_SELECTOR = 'button[aria-label="Toggle apps experimental setting"]';
 const SUMMARIES_TOGGLE_SELECTOR =
   'button[aria-label="Toggle summaries experimental setting"]';
+const STATUS_CARDS_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle status cards experimental setting"]';
 const AUTO_RECOVERY_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task graph liveness auto-recovery"]';
 
@@ -75,6 +79,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableExternalObjects: false,
     enableBuiltInAgents: false,
     enableSummaries: false,
+    enableStatusCards: false,
     enableDecisions: false,
     enableGoalsSidebarLink: false,
     enableTaskWatchdogs: false,
@@ -461,6 +466,54 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 
+  it("enables Summaries when enabling the Status Cards experimental toggle", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Status Cards");
+    expect(container.textContent).toContain("experimental shared status-card board");
+
+    const toggle = container.querySelector<HTMLButtonElement>(STATUS_CARDS_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableSummaries: true,
+      enableStatusCards: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    expect(
+      container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR)?.getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("disables Status Cards when disabling Summaries", async () => {
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableSummaries: true,
+      enableStatusCards: true,
+    };
+    await renderPage();
+
+    const summariesToggle = container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR);
+    await act(async () => {
+      summariesToggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableSummaries: false,
+      enableStatusCards: false,
+    });
+    expect(summariesToggle?.getAttribute("aria-checked")).toBe("false");
+    expect(
+      container.querySelector<HTMLButtonElement>(STATUS_CARDS_TOGGLE_SELECTOR)?.getAttribute("aria-checked"),
+    ).toBe("false");
+  });
+
   it("renders and patches the Server Info Debug View experimental toggle", async () => {
     await renderPage();
 
@@ -565,5 +618,175 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(document.body.querySelector('[data-slot="dialog-overlay"]')).toBeNull();
     const enabledToggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
     expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+describe("InstanceExperimentalSettings — cloud-managed keys", () => {
+  const MANAGED_BADGE_TEXT = "Managed by Paperclip Cloud";
+
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+  let queryClient: QueryClient;
+
+  async function renderPage(settings: InstanceExperimentalSettingsWithManaged) {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ ...settings });
+    root = createRoot(container);
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    flushSync(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <InstanceExperimentalSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockInstanceSettingsApi.updateExperimental.mockImplementation(async (patch) => ({
+      ...defaultExperimentalSettings(),
+      ...patch,
+    }));
+  });
+
+  afterEach(() => {
+    flushSync(() => {
+      root?.unmount();
+    });
+    root = null;
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it("renders a managed key locked with the badge while unmanaged keys stay editable", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      enableApps: true,
+      managedKeys: {
+        enableApps: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    });
+
+    expect(container.textContent).toContain(MANAGED_BADGE_TEXT);
+
+    const appsToggle = container.querySelector<HTMLButtonElement>(APPS_TOGGLE_SELECTOR);
+    expect(appsToggle?.getAttribute("aria-checked")).toBe("true");
+    expect(appsToggle?.disabled).toBe(true);
+
+    await act(() => appsToggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+
+    const summariesToggle = container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR);
+    expect(summariesToggle?.disabled).toBe(false);
+
+    await act(() => summariesToggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableSummaries: true,
+    });
+  });
+
+  it("locks Status Cards when managed Summaries is disabled", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      managedKeys: {
+        enableSummaries: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    });
+
+    const statusCardsToggle = container.querySelector<HTMLButtonElement>(STATUS_CARDS_TOGGLE_SELECTOR);
+    expect(statusCardsToggle?.disabled).toBe(true);
+
+    await act(() => statusCardsToggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("locks Summaries on when managed Status Cards is enabled", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      enableSummaries: true,
+      enableStatusCards: true,
+      managedKeys: {
+        enableStatusCards: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    });
+
+    const summariesToggle = container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR);
+    expect(summariesToggle?.disabled).toBe(true);
+
+    await act(() => summariesToggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("locks the managed auto-recovery toggle without opening the preview dialog", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      managedKeys: {
+        enableIssueGraphLivenessAutoRecovery: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    });
+
+    const toggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
+    expect(toggle?.disabled).toBe(true);
+
+    await act(() => toggle?.click());
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.previewIssueGraphLivenessAutoRecovery).not.toHaveBeenCalled();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("Confirm auto-recovery");
+  });
+
+  it("closes an open recovery preview when a refresh marks auto-recovery as managed", async () => {
+    mockInstanceSettingsApi.previewIssueGraphLivenessAutoRecovery.mockResolvedValue(
+      emptyRecoveryPreview(),
+    );
+    const settings = defaultExperimentalSettings();
+    await renderPage(settings);
+
+    const toggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
+    await act(() => toggle?.click());
+    await flushReact();
+    expect(document.body.textContent).toContain("Confirm auto-recovery");
+
+    const managedSettings: InstanceExperimentalSettingsWithManaged = {
+      ...settings,
+      enableIssueGraphLivenessAutoRecovery: true,
+      managedKeys: {
+        enableIssueGraphLivenessAutoRecovery: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    };
+    await act(() => {
+      queryClient.setQueryData(queryKeys.instance.experimentalSettings, managedSettings);
+    });
+    await flushReact();
+
+    expect(document.body.textContent).not.toContain("Confirm auto-recovery");
+    expect(document.body.querySelector('[data-slot="dialog-overlay"]')).toBeNull();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+    expect(mockInstanceSettingsApi.runIssueGraphLivenessAutoRecovery).not.toHaveBeenCalled();
+
+    const lockedToggle = container.querySelector<HTMLButtonElement>(AUTO_RECOVERY_TOGGLE_SELECTOR);
+    expect(lockedToggle?.disabled).toBe(true);
+  });
+
+  it("renders no managed badge and keeps toggles editable without managedKeys (self-hosted)", async () => {
+    await renderPage(defaultExperimentalSettings());
+
+    expect(container.textContent).not.toContain(MANAGED_BADGE_TEXT);
+
+    const appsToggle = container.querySelector<HTMLButtonElement>(APPS_TOGGLE_SELECTOR);
+    expect(appsToggle?.disabled).toBe(false);
+
+    await act(() => appsToggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableApps: true });
   });
 });

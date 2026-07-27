@@ -91,4 +91,41 @@ describe("plugin", () => {
     expect(result.ok).toBe(true);
     expect(result.warnings).toBeUndefined();
   });
+
+  // Defining both hooks is what makes the worker advertise the
+  // `environmentSyncIn`/`environmentSyncOut` verbs; the host runner then flips
+  // K8s to native single-exec transfer. Absent them, the base64 fallback stays.
+  it("defines the opt-in native file-sync hooks", () => {
+    expect(plugin.definition.onEnvironmentSyncIn).toBeTypeOf("function");
+    expect(plugin.definition.onEnvironmentSyncOut).toBeTypeOf("function");
+  });
+
+  it("file sync fails loud when the lease carries no workspace remote dir", async () => {
+    await expect(
+      plugin.definition.onEnvironmentSyncIn!({
+        driverKey: "kubernetes",
+        companyId: "co",
+        environmentId: "env",
+        config: { inCluster: true },
+        lease: { providerLeaseId: "lease-1", metadata: {} },
+        operations: [],
+      }),
+    ).rejects.toThrow(/workspace remote dir/);
+  });
+
+  it("file sync rejects the job backend (out of scope; sandbox-cr only)", async () => {
+    await expect(
+      plugin.definition.onEnvironmentSyncOut!({
+        driverKey: "kubernetes",
+        companyId: "co",
+        environmentId: "env",
+        config: { inCluster: true },
+        lease: {
+          providerLeaseId: "lease-1",
+          metadata: { remoteCwd: "/workspace", backend: "job", namespace: "paperclip-co" },
+        },
+        operations: [],
+      }),
+    ).rejects.toThrow(/only supported on the sandbox-cr backend/);
+  });
 });

@@ -121,7 +121,20 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
     findExistingIssueBlockerStrandedWake: mockFindExistingIssueBlockerStrandedWake,
   };
 });
-async function createApp(db: ReturnType<typeof createDb> | Record<string, never> = {}) {
+async function createApp(db?: ReturnType<typeof createDb>) {
+  const emptyRows: unknown[] = [];
+  const whereResult = {
+    limit: vi.fn(async () => emptyRows),
+    then: async (resolve: (rows: unknown[]) => unknown) => resolve(emptyRows),
+  };
+  const query: Record<string, unknown> = {};
+  query.innerJoin = vi.fn(() => query);
+  query.where = vi.fn(() => whereResult);
+  const routeDb = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => query),
+    })),
+  };
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -138,7 +151,7 @@ async function createApp(db: ReturnType<typeof createDb> | Record<string, never>
     };
     next();
   });
-  app.use("/api", issueRoutes(db as any, {} as any));
+  app.use("/api", issueRoutes((db ?? routeDb) as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -351,7 +364,10 @@ describe("issue dependency wakeups in issue routes", () => {
 
     const res = await request(await createApp())
       .patch("/api/issues/issue-1")
-      .send({ status: "blocked" });
+      .send({
+        status: "blocked",
+        unblockDescriptor: { owner: "board", action: "Await transitive blocker resolution" },
+      });
     expect(res.status).toBe(200);
     // Allow async wake side-effects (parent/sandbox) to settle without stranded wake.
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -415,7 +431,11 @@ describe("issue dependency wakeups in issue routes", () => {
 
     const res = await request(await createApp())
       .patch(`/api/issues/${parentIssueId}`)
-      .send({ status: "blocked", blockedByIssueIds: [childIssueId] });
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [childIssueId],
+        unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
+      });
 
     expect(res.status).toBe(200);
     await vi.waitFor(() => {

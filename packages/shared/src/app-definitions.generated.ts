@@ -1,0 +1,14 @@
+import a0 from "./app-definitions/zapier.json" with { type: "json" };
+import a1 from "./app-definitions/github.json" with { type: "json" };
+import a2 from "./app-definitions/slack.json" with { type: "json" };
+import a3 from "./app-definitions/notion.json" with { type: "json" };
+import a4 from "./app-definitions/linear.json" with { type: "json" };
+import a5 from "./app-definitions/google-sheets.json" with { type: "json" };
+import a6 from "./app-definitions/context7.json" with { type: "json" };
+import a7 from "./app-definitions/oauth-generic.json" with { type: "json" };
+import a8 from "./app-definitions/api-key-generic.json" with { type: "json" };
+import a9 from "./app-definitions/sentry.json" with { type: "json" };
+import a10 from "./app-definitions/vercel.json" with { type: "json" };
+import a11 from "./app-definitions/anthropic.json" with { type: "json" };
+import type { AppDefinition } from "./types/app-definition.js";
+export const APP_DEFINITIONS=[a0,a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11] as AppDefinition[];

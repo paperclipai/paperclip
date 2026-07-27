@@ -2,9 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   DEFAULT_ALLOWED_TYPES,
   INLINE_ATTACHMENT_TYPES,
+  inferOfficeAttachmentContentTypeFromFilename,
   isInlineAttachmentContentType,
   matchesContentType,
   normalizeContentType,
+  normalizeUploadAttachmentContentType,
   parseAllowedTypes,
 } from "../attachment-types.js";
 
@@ -97,6 +99,19 @@ describe("matchesContentType", () => {
     expect(matchesContentType("text/plain", patterns)).toBe(true);
     expect(matchesContentType("application/zip", patterns)).toBe(true);
   });
+
+  it("allows common Office document types by default", () => {
+    for (const contentType of [
+      "application/msword",
+      "application/vnd.ms-excel",
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ]) {
+      expect(matchesContentType(contentType, [...DEFAULT_ALLOWED_TYPES])).toBe(true);
+    }
+  });
 });
 
 describe("normalizeContentType", () => {
@@ -107,6 +122,67 @@ describe("normalizeContentType", () => {
   it("falls back to octet-stream when the type is missing", () => {
     expect(normalizeContentType(undefined)).toBe("application/octet-stream");
     expect(normalizeContentType("")).toBe("application/octet-stream");
+  });
+});
+
+describe("inferOfficeAttachmentContentTypeFromFilename", () => {
+  it("infers common Office content types from filenames", () => {
+    expect(inferOfficeAttachmentContentTypeFromFilename("notes.docx")).toBe(
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    expect(inferOfficeAttachmentContentTypeFromFilename("raw-data.xlsx")).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    expect(inferOfficeAttachmentContentTypeFromFilename("deck.pptx")).toBe(
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    );
+    expect(inferOfficeAttachmentContentTypeFromFilename("legacy.doc")).toBe("application/msword");
+    expect(inferOfficeAttachmentContentTypeFromFilename("legacy.xls")).toBe("application/vnd.ms-excel");
+    expect(inferOfficeAttachmentContentTypeFromFilename("legacy.ppt")).toBe("application/vnd.ms-powerpoint");
+  });
+
+  it("does not infer unknown extensions", () => {
+    expect(inferOfficeAttachmentContentTypeFromFilename("payload.bin")).toBeNull();
+    expect(inferOfficeAttachmentContentTypeFromFilename(undefined)).toBeNull();
+  });
+});
+
+describe("normalizeUploadAttachmentContentType", () => {
+  it("keeps explicit content types unchanged", () => {
+    expect(
+      normalizeUploadAttachmentContentType({
+        contentType: "application/pdf",
+        originalFilename: "raw-data.xlsx",
+      }),
+    ).toBe("application/pdf");
+  });
+
+  it("infers Office content type for generic binary uploads", () => {
+    expect(
+      normalizeUploadAttachmentContentType({
+        contentType: "application/octet-stream",
+        originalFilename: "raw-data.xlsx",
+      }),
+    ).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  });
+
+  it("keeps generic binary uploads generic when the inferred Office type is not allowed", () => {
+    expect(
+      normalizeUploadAttachmentContentType({
+        contentType: "application/octet-stream",
+        originalFilename: "raw-data.xlsx",
+        isAllowedContentType: (contentType) => contentType === "application/octet-stream",
+      }),
+    ).toBe("application/octet-stream");
+  });
+
+  it("keeps generic binary uploads generic for unknown filenames", () => {
+    expect(
+      normalizeUploadAttachmentContentType({
+        contentType: "application/octet-stream",
+        originalFilename: "payload.bin",
+      }),
+    ).toBe("application/octet-stream");
   });
 });
 

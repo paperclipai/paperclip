@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "slug": "anthropic",
+  "name": "Anthropic",
+  "description": "Use Anthropic APIs with a restricted key.",
+  "categories": [
+    "ai"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=anthropic.com&sz=128"
+  },
+  "urlPatterns": [
+    "https://api.anthropic.com/*"
+  ],
+  "methods": [
+    {
+      "key": "api-key",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use credentials from your provider account.",
+      "defaults": {
+        "serviceHost": "api.anthropic.com"
+      },
+      "guidanceMd": "Create a key in the Anthropic Console and rotate it if it has been exposed.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "sk-ant-api03-...",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "x-api-key"
+      }
+    }
+  ]
+}

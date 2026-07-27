@@ -15,11 +15,11 @@ import {
 import type { LucideIcon } from "lucide-react";
 import type {
   Agent,
-  AppGalleryEntry,
+  AppDefinition,
   ConnectToolAppResult,
   ToolAppConnectionActionSummary,
 } from "@paperclipai/shared";
-import { getToolAppGalleryEntryForUrl } from "@paperclipai/shared";
+import { credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod } from "@paperclipai/shared";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -83,8 +83,8 @@ function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
   return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : ["write", "destructive"];
 }
 
-function isGoogleSheetsEntry(entry: AppGalleryEntry | null): boolean {
-  return entry?.key === "google-sheets";
+function isGoogleSheetsEntry(entry: AppDefinition | null): boolean {
+  return entry?.slug === "google-sheets";
 }
 
 export function AppsConnect() {
@@ -109,7 +109,7 @@ export function AppsConnect() {
   });
 
   const [step, setStep] = useState<Step>(appKey || prefill.link || zapierSource ? "key" : "gallery");
-  const [entry, setEntry] = useState<AppGalleryEntry | null>(null);
+  const [entry, setEntry] = useState<AppDefinition | null>(null);
   const [galleryName, setGalleryName] = useState("");
   const [linkUrl, setLinkUrl] = useState(prefill.link);
   const [linkName, setLinkName] = useState(prefill.name || (zapierSource ? "Zapier" : ""));
@@ -160,15 +160,15 @@ export function AppsConnect() {
   useEffect(() => {
     if (!appKey || galleryQuery.isLoading || !galleryQuery.data) return;
 
-    const requestedEntry = galleryQuery.data.apps.find((candidate) => candidate.key === appKey);
-    if (!requestedEntry || requestedEntry.authKind === "oauth" || requestedEntry.availability?.available === false) {
+    const requestedEntry = galleryQuery.data.apps.find((candidate) => candidate.slug === appKey);
+    if (!requestedEntry || getAvailableConnectionMethod(requestedEntry)?.auth === "oauth" || requestedEntry.availability?.available === false) {
       setEntry(null);
       setStep("gallery");
       navigate("/apps/connect", { replace: true });
       return;
     }
 
-    if (entry?.key !== requestedEntry.key) {
+    if (entry?.slug !== requestedEntry.slug) {
       setEntry(requestedEntry);
       setGalleryName(requestedEntry.name);
       setLinkUrl("");
@@ -183,11 +183,11 @@ export function AppsConnect() {
     setInstallMode("none");
     setInstallAgentIds(new Set());
     setStep("key");
-  }, [appKey, entry?.key, galleryQuery.data, galleryQuery.isLoading, navigate]);
+  }, [appKey, entry?.slug, galleryQuery.data, galleryQuery.isLoading, navigate]);
 
   const setAppStep = (nextStep: Step) => {
     setStep(nextStep);
-    if (entry) navigate(appConnectHref(entry.key, nextStep));
+    if (entry) navigate(appConnectHref(entry.slug, nextStep));
   };
 
   const connectMutation = useMutation({
@@ -196,7 +196,7 @@ export function AppsConnect() {
         const sheetIds = isGoogleSheetsEntry(entry) ? parseGoogleSheetIds(googleSheetsLinks).ids : [];
         const trimmedGalleryName = galleryName.trim();
         return toolsApi.connectApp(selectedCompanyId!, {
-          galleryKey: entry.key,
+          galleryKey: entry.slug,
           name: trimmedGalleryName || undefined,
           credentialValues: credentials,
           configValues: isGoogleSheetsEntry(entry) ? { allowedSpreadsheetIds: sheetIds } : undefined,
@@ -284,7 +284,7 @@ export function AppsConnect() {
     entry?.name ??
     (linkName.trim() || defaultLinkName(linkUrl) || "this app");
   const zapierEntry = zapierSource
-    ? galleryQuery.data?.apps.find((app) => app.key === "zapier") ?? null
+    ? galleryQuery.data?.apps.find((app) => app.slug === "zapier") ?? null
     : null;
   const stepLabels = zapierSource
     ? ZAPIER_STEP_LABELS
@@ -311,7 +311,7 @@ export function AppsConnect() {
           labels={stepLabels}
           appIdentity={
             zapierSource
-              ? { name: "Zapier", logoUrl: zapierEntry?.logoUrl ?? null }
+              ? { name: "Zapier", logoUrl: zapierEntry?.branding.logoUrl ?? null }
               : undefined
           }
           onCancel={() => navigate(zapierSource ? "/apps/browse" : "/apps")}
@@ -338,10 +338,10 @@ export function AppsConnect() {
             setInstallMode("none");
             setInstallAgentIds(new Set());
             setStep("key");
-            navigate(appConnectHref(picked.key, "key"));
+            navigate(appConnectHref(picked.slug, "key"));
           }}
           onUseLink={(url) => {
-            const matchedEntry = getToolAppGalleryEntryForUrl(url, galleryQuery.data?.apps ?? []);
+            const matchedEntry = getAppDefinitionForUrl(url, galleryQuery.data?.apps ?? []);
             setEntry(null);
             setGalleryName("");
             setLinkUrl(url);
@@ -470,7 +470,7 @@ export function AppsConnect() {
       {step === "success" && (
         <SuccessStep
           appName={appName}
-          logoUrl={entry?.logoUrl}
+          logoUrl={entry?.branding.logoUrl}
           enabledCount={Object.values(enabled).filter(Boolean).length}
           access={access}
           installMode={installMode}
@@ -607,11 +607,11 @@ function GalleryStep({
   onPasteConfig,
 }: {
   loading: boolean;
-  apps: AppGalleryEntry[];
+  apps: AppDefinition[];
   /** Entered via the "Connect your own MCP server" card (PAP-12371, Finding C): focus the link path. */
   byo?: boolean;
   source?: string | null;
-  onPick: (entry: AppGalleryEntry) => void;
+  onPick: (entry: AppDefinition) => void;
   onUseLink: (link: string) => void;
   onRunYourOwn: () => void;
   onPasteConfig: () => void;
@@ -635,7 +635,7 @@ function GalleryStep({
     return apps.filter((a) => a.name.toLowerCase().includes(q));
   }, [apps, search]);
   const normalizedLink = normalizeAppLink(linkInput);
-  const matchedEntry = normalizedLink ? getToolAppGalleryEntryForUrl(normalizedLink, apps) : null;
+  const matchedEntry = normalizedLink ? getAppDefinitionForUrl(normalizedLink, apps) : null;
   const zapierSource = source === "zapier";
 
   const continueWithLink = () => {
@@ -672,12 +672,12 @@ function GalleryStep({
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         {filtered.map((app) => {
-          const copy = appCopyFor(app.key, app.tagline);
-          const oauth = app.authKind === "oauth";
+          const copy = appCopyFor(app.slug, app.description);
+          const oauth = getAvailableConnectionMethod(app)?.auth === "oauth";
           const unavailable = app.availability?.available === false;
           return (
             <button
-              key={app.key}
+              key={app.slug}
               type="button"
               disabled={oauth || unavailable}
               title={
@@ -691,7 +691,7 @@ function GalleryStep({
                 oauth || unavailable ? "cursor-not-allowed opacity-60" : "hover:border-foreground/30 hover:bg-accent/40",
               )}
             >
-              <AppLogo name={app.name} logoUrl={app.logoUrl} size={36} />
+              <AppLogo name={app.name} logoUrl={app.branding.logoUrl} size={36} />
               <div className="mt-3 text-sm font-bold text-foreground">{app.name}</div>
               <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{copy.tagline}</div>
               <div className="mt-3 text-xs font-semibold text-foreground">
@@ -740,7 +740,7 @@ function GalleryStep({
           {matchedEntry && (
             <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
               <div className="flex min-w-0 items-center gap-2 text-sm">
-                <AppLogo name={matchedEntry.name} logoUrl={matchedEntry.logoUrl} size={24} />
+                <AppLogo name={matchedEntry.name} logoUrl={matchedEntry.branding.logoUrl} size={24} />
                 <span className="truncate">This looks like {matchedEntry.name}.</span>
               </div>
               <Button
@@ -750,7 +750,7 @@ function GalleryStep({
                 disabled={matchedEntry.availability?.available === false}
                 onClick={() => {
                   setLinkError(null);
-                  if (matchedEntry.key === "zapier") {
+                  if (matchedEntry.slug === "zapier") {
                     continueWithLink();
                     return;
                   }
@@ -759,7 +759,7 @@ function GalleryStep({
               >
                 {matchedEntry.availability?.available === false
                   ? "Not available"
-                  : matchedEntry.key === "zapier"
+                  : matchedEntry.slug === "zapier"
                     ? "Continue"
                     : `Use ${matchedEntry.name}`}
               </Button>
@@ -1037,7 +1037,7 @@ function KeyStep({
   onBack,
   onConnect,
 }: {
-  entry: AppGalleryEntry;
+  entry: AppDefinition;
   name: string;
   onNameChange: (next: string) => void;
   values: Record<string, string>;
@@ -1049,8 +1049,13 @@ function KeyStep({
   onBack: () => void;
   onConnect: () => void;
 }) {
-  const copy = appCopyFor(entry.key, entry.tagline);
-  const fields = entry.credentialFields ?? [];
+  const copy = appCopyFor(entry.slug, entry.description);
+  const method = getAvailableConnectionMethod(entry);
+  const fields = (method?.credentialFields ?? []).map((field) => ({
+    ...field,
+    configPath: credentialConfigPath(field),
+    helpUrl: method?.consoleLinks?.keys ?? method?.consoleLinks?.docs ?? "",
+  }));
   const allFilled = fields.every(
     (f) => f.required === false || (values[f.configPath]?.trim().length ?? 0) > 0,
   );
@@ -1063,7 +1068,7 @@ function KeyStep({
     return (
       <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
         <div className="flex items-center gap-3">
-          <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={48} />
+          <AppLogo name={entry.name} logoUrl={entry.branding.logoUrl} size={48} />
           <div>
             <h2 className="text-lg font-bold tracking-tight sm:text-xl">Connect Google Sheets</h2>
             <p className="text-sm text-muted-foreground">{copy.short}</p>
@@ -1136,7 +1141,7 @@ function KeyStep({
   return (
     <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
       <div className="flex items-center gap-3">
-        <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={48} />
+        <AppLogo name={entry.name} logoUrl={entry.branding.logoUrl} size={48} />
         <div>
           <h2 className="text-xl font-bold tracking-tight">Connect {entry.name}</h2>
           <p className="text-sm text-muted-foreground">{copy.short}</p>

@@ -5,6 +5,8 @@ export {
   type InstanceGeneralSettings,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
+  instanceExperimentalSettingsWithManagedSchema,
+  managedSettingMetadataSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
@@ -106,6 +108,8 @@ export {
   type SummarySlotScopeSelectorInput,
   type WriteSummarySlotInput,
 } from "./summary-slot.js";
+
+export * from "./status-card.js";
 
 export {
   externalObjectStatusCategorySchema,
@@ -793,6 +797,8 @@ export {
   connectionTokenIssuancePathSchema,
   connectionTokenRequestSchema,
   connectionTokenScopeSchema,
+  connectionTokenSubjectSchema,
+  startConnectionAuthorizationSchema,
   createToolTrustRuleFromActionRequestSchema,
   revokeToolTrustRuleSchema,
   toolPolicyTestRequestSchema,
@@ -870,3 +876,4 @@ export {
   type RevokeToolTrustRule,
 } from "./tool-access.js";
 export * from "./skill-policy.js";
+export * from "./app-definition.js";

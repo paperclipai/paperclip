@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- 02 · Thread bottom (mobile) — strip + composer. 375×812 -->
+  <rect x="0" y="0" width="375" height="812" />
+
+  <!-- top bar -->
+  <line x1="0" y1="56" x2="375" y2="56" />
+  <polyline points="28,20 20,28 28,36" fill="none" />
+  <text x="44" y="33" font-size="14" font-weight="600" stroke="none" fill="#000">PAP-14557</text>
+
+  <!-- last comment (cut off) -->
+  <text x="188" y="80" font-size="12" text-anchor="middle" stroke="none" fill="#666">⌃  earlier comments</text>
+  <g transform="translate(16,96)">
+    <rect width="344" height="176" rx="8" />
+    <circle cx="28" cy="28" r="12" fill="#e6e6e6" />
+    <text x="48" y="24" font-size="14" font-weight="600" stroke="none" fill="#000">Senior Engineer Fable</text>
+    <text x="48" y="40" font-size="12" stroke="none" fill="#666">15m ago</text>
+    <line x1="16" y1="64" x2="328" y2="64" stroke="#666" />
+    <line x1="16" y1="80" x2="328" y2="80" stroke="#666" />
+    <line x1="16" y1="96" x2="328" y2="96" stroke="#666" />
+    <text x="16" y="128" font-size="14" font-weight="600" stroke="none" fill="#000">Next action (armed):</text>
+    <line x1="16" y1="148" x2="264" y2="148" stroke="#666" />
+  </g>
+
+  <!-- previous-issue nav card -->
+  <g transform="translate(16,296)">
+    <rect width="280" height="56" rx="8" />
+    <polyline points="20,20 14,28 20,36" fill="none" />
+    <text x="32" y="24" font-size="12" stroke="none" fill="#666">Previous · PAP-14544</text>
+    <text x="32" y="44" font-size="14" stroke="none" fill="#000">Phase 3 — rescore…</text>
+  </g>
+
+  <!-- NEW: monitor strip -->
+  <g transform="translate(16,536)">
+    <rect width="344" height="88" rx="8" />
+    <circle cx="28" cy="28" r="10" />
+    <line x1="28" y1="28" x2="28" y2="21" />
+    <line x1="28" y1="28" x2="33" y2="28" />
+    <text x="48" y="26" font-size="14" font-weight="600" stroke="none" fill="#000">Resumes in 2h 12m</text>
+    <text x="48" y="44" font-size="12" stroke="none" fill="#666">Thu Jul 17, 4:08 PM · Attempt 1</text>
+    <g transform="translate(48,52)">
+      <rect width="104" height="28" rx="4" />
+      <text x="52" y="19" font-size="12" text-anchor="middle" stroke="none" fill="#000">Check now</text>
+    </g>
+  </g>
+
+  <!-- composer -->
+  <g transform="translate(16,640)">
+    <rect width="344" height="136" rx="8" />
+    <text x="16" y="32" font-size="14" stroke="none" fill="#666">Reply…</text>
+    <g transform="translate(16,88)">
+      <rect width="32" height="32" rx="4" />
+      <line x1="10" y1="22" x2="22" y2="10" />
+    </g>
+    <g transform="translate(56,88)">
+      <rect width="120" height="32" rx="16" />
+      <text x="16" y="21" font-size="12" stroke="none" fill="#000">Agent mode</text>
+      <polyline points="96,14 102,20 108,14" fill="none" />
+    </g>
+    <g transform="translate(240,88)">
+      <rect width="88" height="32" rx="4" fill="#000" />
+      <text x="44" y="21" font-size="14" text-anchor="middle" stroke="none" fill="#fff">Send</text>
+    </g>
+  </g>
+
+  <!-- annotations -->
+  <g data-region="annotations">
+    <rect x="8" y="528" width="360" height="104" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(360,528)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+  </g>
+</svg>
