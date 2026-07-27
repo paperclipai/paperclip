@@ -1607,6 +1607,60 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.delete).toHaveBeenCalledTimes(1);
     });
 
+    it("waits for an in-flight syncIn before interactive cancel cleanup starts", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const hostDir = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-cancel-sync-"));
+      const source = path.join(hostDir, "payload.txt");
+      await fs.writeFile(source, "payload");
+      const remoteDir = "/home/daytona/paperclip-workspace";
+
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let resolveUpload!: () => void;
+      sandbox.fs.uploadFiles.mockImplementation(async () => {
+        await new Promise<void>((resolve) => {
+          resolveUpload = resolve;
+        });
+      });
+      mockGet.mockResolvedValue(sandbox);
+
+      const syncPromise = plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: { providerLeaseId: "lease-a", metadata: { remoteCwd: remoteDir } },
+        operations: [
+          {
+            operationId: "sync-op-1",
+            files: [{ sourcePath: source, targetPath: `${remoteDir}/payload.txt`, kind: "file" }],
+          },
+        ],
+      });
+      // Let syncIn register on the activity gate and reach the hung upload.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const cancelPromise = plugin.definition.onEnvironmentCancelInteractiveSetup?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: false },
+        reason: "cancelled",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // Cancel must drain the active sync before deleting the sandbox out from
+      // under it — the same activity-gate contract the execute path relies on.
+      expect(sandbox.delete).not.toHaveBeenCalled();
+
+      resolveUpload();
+      await Promise.all([syncPromise, cancelPromise]);
+
+      expect(sandbox.fs.uploadFiles).toHaveBeenCalledTimes(1);
+      expect(sandbox.delete).toHaveBeenCalledTimes(1);
+
+      await fs.rm(hostDir, { recursive: true, force: true });
+    });
+
     it("does not cache a failed populate (NotFound) — the next lookup re-fetches", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });
