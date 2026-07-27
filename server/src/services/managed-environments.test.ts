@@ -47,7 +47,35 @@ function readyDriverResolver(status = "ready") {
 }
 
 function runningWorkerManager(running = true) {
-  return { isRunning: vi.fn(() => running) };
+  return { isRunning: vi.fn(() => running), getWorker: vi.fn(() => undefined) };
+}
+
+type WorkerManagerSeam = NonNullable<ApplyManagedEnvironmentsOptions["workerManager"]>;
+type RecoveryHandle = NonNullable<ReturnType<WorkerManagerSeam["getWorker"]>>;
+
+/** A worker handle fake that records `ready` listeners so tests can fire them. */
+function recoveryHandle() {
+  const readyListeners: Array<(payload: { pluginId: string }) => void> = [];
+  const handle: RecoveryHandle = {
+    on: vi.fn((_event, listener) => {
+      readyListeners.push(listener);
+    }),
+    off: vi.fn((_event, listener) => {
+      const at = readyListeners.indexOf(listener);
+      if (at !== -1) readyListeners.splice(at, 1);
+    }),
+  };
+  return {
+    handle,
+    fireReady: () => {
+      for (const listener of [...readyListeners]) listener({ pluginId: "plugin-1" });
+    },
+  };
+}
+
+/** Lets the fire-and-forget recovery ensure settle. */
+function tick() {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 type EnvironmentsSeam = NonNullable<ApplyManagedEnvironmentsOptions["environments"]>;
@@ -210,6 +238,125 @@ describe("applyManagedEnvironments", () => {
     expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledWith({
       provider: "daytona",
     });
+    // No registered handle → no respawn is coming; degraded until next boot.
+    expect(workerManager.getWorker).toHaveBeenCalledWith("plugin-1");
+  });
+
+  it("reactivates the archived environment once when the provider worker recovers", async () => {
+    const environments = environmentsSeam();
+    const config = parsedConfig({
+      environments: [
+        { name: "Daytona", provider: "daytona", config: { target: "us" } },
+      ],
+    });
+
+    const { handle, fireReady } = recoveryHandle();
+    const workerManager = {
+      isRunning: vi.fn(() => false),
+      getWorker: vi.fn(() => handle),
+    };
+    const result = await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager,
+      environments,
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    // The boot pass itself stays degraded: archived, counted failed.
+    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(environments.archiveManagedSandboxEnvironment).toHaveBeenCalledWith({
+      provider: "daytona",
+    });
+    expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+
+    // Worker manager respawns the worker → the handle re-emits `ready`.
+    fireReady();
+    fireReady();
+    await tick();
+
+    expect(environments.ensureManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
+    expect(environments.ensureManagedSandboxEnvironment).toHaveBeenCalledWith({
+      name: "Daytona",
+      description: undefined,
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    expect(handle.off).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-checks isRunning after subscribing so a recovery during the archive is not missed", async () => {
+    const environments = environmentsSeam();
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    const { handle } = recoveryHandle();
+    // Down at the gate check, already back up by the time the listener is
+    // registered — the `ready` event has been missed.
+    const workerManager = {
+      isRunning: vi
+        .fn()
+        .mockReturnValueOnce(false)
+        .mockReturnValue(true),
+      getWorker: vi.fn(() => handle),
+    };
+    const result = await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager,
+      environments,
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+    await tick();
+
+    expect(result).toEqual({ ensured: 0, failed: 1 });
+    expect(environments.ensureManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not subscribe for recovery when the plugin record is missing or not ready", async () => {
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    for (const resolveSandboxProviderDriver of [
+      vi.fn(async () => null),
+      readyDriverResolver("disabled"),
+    ]) {
+      const workerManager = runningWorkerManager(false);
+      await applyManagedEnvironments(noDb, config, {
+        env: {},
+        workerManager,
+        environments: environmentsSeam(),
+        resolveSandboxProviderDriver,
+      });
+      expect(workerManager.getWorker).not.toHaveBeenCalled();
+    }
+  });
+
+  it("logs, not throws, when the recovery re-ensure fails", async () => {
+    const environments = environmentsSeam({
+      ensureManagedSandboxEnvironment: vi.fn().mockRejectedValue(new Error("db exploded")),
+    });
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    const { handle, fireReady } = recoveryHandle();
+    const workerManager = {
+      isRunning: vi.fn(() => false),
+      getWorker: vi.fn(() => handle),
+    };
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager,
+      environments,
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    fireReady();
+    await tick();
+    // The rejection is swallowed into a log line; reaching this point without
+    // an unhandled rejection is the assertion.
+    expect(environments.ensureManagedSandboxEnvironment).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when no worker manager is provided", async () => {

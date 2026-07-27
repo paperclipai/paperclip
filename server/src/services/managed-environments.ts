@@ -26,8 +26,12 @@
  * otherwise the heartbeat would resume queued runs against an environment
  * whose lease acquisition cannot succeed yet. When such an entry was
  * provisioned by an earlier boot, its still-active row is archived
- * (`archiveManagedSandboxEnvironment`) for the same reason; the next healthy
- * boot's ensure re-activates it.
+ * (`archiveManagedSandboxEnvironment`) for the same reason. Re-activation
+ * happens on the next healthy boot's ensure, or earlier: when the plugin
+ * record is `ready` and only the worker is down (a crash in restart-backoff),
+ * a one-shot `ready` listener on the worker handle re-runs the ensure as soon
+ * as the worker manager respawns the worker, so a transient crash does not
+ * leave the environment archived until someone restarts the server.
  *
  * Removing an entry from the document stops future refreshes but never
  * deletes or archives the row — there is intentionally no unprovision path
@@ -63,8 +67,20 @@ export interface ApplyManagedEnvironmentsOptions {
    * only ensured while its provider plugin has a live worker (a `ready`
    * registry record whose activation failed cannot serve leases). Fails
    * closed: without a worker manager every entry is treated as unavailable.
+   *
+   * `getWorker` is `PluginWorkerManager.getWorker` narrowed to the `ready`
+   * subscription used for post-archive recovery: a worker in crash-restart
+   * backoff re-emits `ready` when the manager respawns it, and the listener
+   * re-ensures the archived environment (see `applyManagedEnvironments`).
    */
-  workerManager?: Pick<PluginWorkerManager, "isRunning">;
+  workerManager?: Pick<PluginWorkerManager, "isRunning"> & {
+    getWorker(pluginId: string):
+      | {
+          on(event: "ready", listener: (payload: { pluginId: string }) => void): void;
+          off(event: "ready", listener: (payload: { pluginId: string }) => void): void;
+        }
+      | undefined;
+  };
   /** Test seam: overrides the environment service built from `db`. */
   environments?: Pick<
     ReturnType<typeof environmentService>,
@@ -111,6 +127,52 @@ export async function applyManagedEnvironments(
 
   const resolveDriver = opts.resolveSandboxProviderDriver ?? resolvePluginSandboxProviderDriverByKey;
   const environments = opts.environments ?? environmentService(db);
+
+  // Recovery path for a `ready` plugin whose worker was down at check time:
+  // that shape is usually a crash in restart-backoff, and the manager's
+  // respawn re-emits `ready` on the same handle. A one-shot listener re-runs
+  // the idempotent ensure so the recovered provider becomes selectable again
+  // without waiting for the next boot (this pass has already archived the
+  // row). The post-subscribe `isRunning` re-check closes the race where the
+  // worker recovered between the gate check and the subscription. No handle
+  // means no respawn is coming (activation never started a worker), so the
+  // degraded-until-next-boot posture stands.
+  const scheduleRecoveryReactivation = (
+    spec: ManagedInstanceConfig["environments"][number],
+    pluginId: string,
+  ): void => {
+    const manager = opts.workerManager;
+    const handle = manager?.getWorker(pluginId);
+    if (!handle) return;
+    let reactivated = false;
+    const reactivate = (): void => {
+      if (reactivated) return;
+      reactivated = true;
+      handle.off("ready", reactivate);
+      void environments
+        .ensureManagedSandboxEnvironment({
+          name: spec.name,
+          description: spec.description,
+          provider: spec.provider,
+          config: { ...spec.config },
+        })
+        .then((environment) => {
+          logger.info(
+            { environmentId: environment.id, name: spec.name, provider: spec.provider },
+            "managed sandbox environment reactivated after provider worker recovery",
+          );
+        })
+        .catch((err: unknown) => {
+          logger.error(
+            { err, name: spec.name, provider: spec.provider },
+            "failed to reactivate managed sandbox environment after provider worker recovery (degraded: environment unavailable until next boot)",
+          );
+        });
+    };
+    handle.on("ready", reactivate);
+    if (manager?.isRunning(pluginId)) reactivate();
+  };
+
   let ensured = 0;
   let failed = 0;
   for (const spec of managedConfig.environments) {
@@ -146,6 +208,12 @@ export async function applyManagedEnvironments(
           },
           "managed sandbox environment provider plugin is not installed, ready, and running; skipping ensure and archiving any previously provisioned row (degraded: environment unavailable)",
         );
+        // Only a `ready` record can recover without another boot: the worker
+        // manager restarts crashed workers, but nothing (re)installs a missing
+        // or non-ready plugin at runtime.
+        if (resolved && resolved.plugin.status === "ready") {
+          scheduleRecoveryReactivation(spec, resolved.plugin.id);
+        }
         continue;
       }
       const environment = await environments.ensureManagedSandboxEnvironment({
