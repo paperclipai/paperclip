@@ -16,11 +16,38 @@ function mergeStreamArguments(previous: string, incoming: string): string {
 
 function mergeStreamToolCalls(existing: unknown[], incoming: unknown[]): unknown[] {
   const merged = [...existing];
+  const matched = new Set<number>();
 
   for (const [position, rawCall] of incoming.entries()) {
     if (typeof rawCall !== "object" || rawCall === null || Array.isArray(rawCall)) continue;
     const call = rawCall as JsonRecord;
-    const index = typeof call.index === "number" && Number.isInteger(call.index) ? call.index : position;
+    const streamIndex = typeof call.index === "number" && Number.isInteger(call.index) ? call.index : position;
+    const callId = typeof call.id === "string" && call.id ? call.id : null;
+    let index = callId
+      ? merged.findIndex((existingCall) => (
+        typeof existingCall === "object" && existingCall !== null && !Array.isArray(existingCall) &&
+        (existingCall as JsonRecord).id === callId
+      ))
+      : -1;
+
+    if (index < 0) {
+      index = merged.findIndex((existingCall, existingPosition) => {
+        if (matched.has(existingPosition) || typeof existingCall !== "object" || existingCall === null || Array.isArray(existingCall)) {
+          return false;
+        }
+        const existingRecord = existingCall as JsonRecord;
+        const existingIndex = typeof existingRecord.index === "number" && Number.isInteger(existingRecord.index)
+          ? existingRecord.index
+          : existingPosition;
+        return existingIndex === streamIndex;
+      });
+    }
+
+    if (index < 0) {
+      index = merged[streamIndex] === undefined ? streamIndex : merged.length;
+    }
+
+    matched.add(index);
     const previous = typeof merged[index] === "object" && merged[index] !== null && !Array.isArray(merged[index])
       ? merged[index] as JsonRecord
       : {};
