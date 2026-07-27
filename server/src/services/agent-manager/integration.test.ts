@@ -148,7 +148,7 @@ describeEmbeddedPostgres("agent manager integration", () => {
           source: opts?.source ?? "automation",
           status: "queued",
           reason: opts?.reason ?? null,
-          contextSnapshot: opts?.contextSnapshot ?? {},
+          payload: opts?.payload ?? opts?.contextSnapshot ?? {},
           idempotencyKey: opts?.idempotencyKey ?? randomUUID(),
         });
         return null;
