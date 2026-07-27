@@ -49,6 +49,56 @@ describe("runRowSubtitle", () => {
       runRowSubtitle({ status: "succeeded", failureReason: null, triggerPayload: null }, variables),
     ).toBe("");
   });
+
+  it("distinguishes an intentional concurrency skip from suppression", () => {
+    expect(
+      runRowSubtitle({ status: "skipped", failureReason: null, triggerPayload: null }, variables),
+    ).toBe("Skipped: a live execution issue already existed");
+    expect(
+      runRowSubtitle({ status: "skipped", failureReason: "paused", triggerPayload: null }, variables),
+    ).toBe("Skipped: project was paused at the scheduled time");
+    expect(
+      runRowSubtitle(
+        { status: "skipped", failureReason: "no_external_activity", triggerPayload: null },
+        variables,
+      ),
+    ).toBe("Skipped: no external activity since the last run");
+  });
+
+  it("labels coalesced runs", () => {
+    expect(
+      runRowSubtitle({ status: "coalesced", failureReason: null, triggerPayload: null }, variables),
+    ).toBe("Coalesced into the existing live execution issue");
+  });
+
+  it("notes recovery for completed runs that were temporarily blocked", () => {
+    expect(
+      runRowSubtitle(
+        {
+          status: "completed",
+          failureReason: null,
+          triggerPayload: { transientFailure: { reason: "Execution issue moved to blocked" } },
+        },
+        variables,
+      ),
+    ).toBe("Recovered after transient failure: Execution issue moved to blocked");
+    // Legacy rows written before the failureReason fix keep the stale reason inline.
+    expect(
+      runRowSubtitle(
+        { status: "completed", failureReason: "Execution issue moved to blocked", triggerPayload: null },
+        variables,
+      ),
+    ).toBe("Recovered after transient failure: Execution issue moved to blocked");
+  });
+
+  it("keeps variable subtitles for cleanly completed runs", () => {
+    expect(
+      runRowSubtitle(
+        { status: "completed", failureReason: null, triggerPayload: { customer: "Acme" } },
+        variables,
+      ),
+    ).toBe('customer="Acme"');
+  });
 });
 
 describe("dedupedTriggerLabel", () => {
