@@ -1424,15 +1424,13 @@ describe("Daytona sandbox provider plugin", () => {
         providerLeaseId: "lease-a",
         config: { timeoutMs: 300000, reuseLease: true },
       });
-      while (!stopStarted) {
-        await Promise.resolve();
-      }
-
-      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
-      resolveRelease();
-      await releasePromise;
-
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(stopStarted).toBe(true);
+
+      const overlappingExec = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      resolveRelease();
+      await Promise.all([releasePromise, overlappingExec]);
+
       expect(mockGet).toHaveBeenCalledTimes(2);
       expect(sandbox.stop).toHaveBeenCalledTimes(1);
       expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);

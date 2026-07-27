@@ -837,14 +837,74 @@ type SandboxHandleCacheEntry = {
   verifiedAtMs: number;
 };
 
+type SandboxLookupOptions = {
+  bypassTeardownGate?: boolean;
+};
+
+type SandboxHandleTeardownGate = {
+  promise: Promise<void>;
+  release: () => void;
+};
+
+const sandboxHandleTeardownGates = (() => {
+  const gates = new Map<string, SandboxHandleTeardownGate>();
+
+  function begin(scope: SandboxScope): SandboxHandleTeardownGate {
+    const key = sandboxHandleCacheKey(scope);
+    const existing = gates.get(key);
+    if (existing) return existing;
+    let release!: () => void;
+    const gate: SandboxHandleTeardownGate = {
+      promise: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      release: () => release(),
+    };
+    gates.set(key, gate);
+    return gate;
+  }
+
+  function current(scope: SandboxScope): SandboxHandleTeardownGate | null {
+    return gates.get(sandboxHandleCacheKey(scope)) ?? null;
+  }
+
+  function end(scope: SandboxScope, gate: SandboxHandleTeardownGate): void {
+    const key = sandboxHandleCacheKey(scope);
+    if (gates.get(key) === gate) {
+      gates.delete(key);
+    }
+    gate.release();
+  }
+
+  function reset(): void {
+    gates.clear();
+  }
+
+  return { begin, current, end, reset };
+})();
+
 const sandboxHandleCache = (() => {
   const entries = new Map<string, SandboxHandleCacheEntry>();
 
-  async function get(scope: SandboxScope): Promise<Sandbox> {
+  async function get(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox> {
     const key = sandboxHandleCacheKey(scope);
+    if (!options.bypassTeardownGate) {
+      const gate = sandboxHandleTeardownGates.current(scope);
+      if (gate) {
+        await gate.promise;
+        return await get(scope, options);
+      }
+    }
     const entry = entries.get(key);
     if (entry) {
       const sandbox = await entry.sandbox;
+      if (!options.bypassTeardownGate) {
+        const gate = sandboxHandleTeardownGates.current(scope);
+        if (gate) {
+          await gate.promise;
+          return await get(scope, options);
+        }
+      }
       // Re-assert on every hit; evict + fail closed on any mismatch (C2).
       try {
         assertHandleMatchesLease(sandbox, scope.providerLeaseId);
@@ -880,7 +940,18 @@ const sandboxHandleCache = (() => {
     const populated: SandboxHandleCacheEntry = { sandbox: populate, verifiedAtMs: handleFreshnessNow() };
     entries.set(key, populated);
     try {
-      return await populate;
+      const sandbox = await populate;
+      if (!options.bypassTeardownGate) {
+        const gate = sandboxHandleTeardownGates.current(scope);
+        if (gate) {
+          if (entries.get(key) === populated) {
+            entries.delete(key);
+          }
+          await gate.promise;
+          return await get(scope, options);
+        }
+      }
+      return sandbox;
     } catch (error) {
       // A rejected populate (NotFound, network, id mismatch) must never remain
       // cached (C4/C5). Guard against clobbering a newer entry under the key.
@@ -909,15 +980,16 @@ const sandboxHandleCache = (() => {
  */
 export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleCache.reset();
+  sandboxHandleTeardownGates.reset();
 }
 
-async function getSandbox(scope: SandboxScope): Promise<Sandbox> {
-  return await sandboxHandleCache.get(scope);
+async function getSandbox(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox> {
+  return await sandboxHandleCache.get(scope, options);
 }
 
-async function getSandboxOrNull(scope: SandboxScope): Promise<Sandbox | null> {
+async function getSandboxOrNull(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox | null> {
   try {
-    return await getSandbox(scope);
+    return await getSandbox(scope, options);
   } catch (error) {
     if (error instanceof DaytonaNotFoundError) {
       return null;
@@ -1223,11 +1295,12 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
-    // C4: the lease's handle must not outlive its teardown. Evict before the
-    // async cleanup starts so overlapping exec/sync calls cannot see a handle
-    // that is already being stopped, archived, or deleted.
+    // C4: the lease's handle must not outlive its teardown. A teardown gate
+    // blocks fresh cache reads while cleanup is in flight so overlapping
+    // exec/sync calls cannot reacquire the same sandbox mid-stop/delete.
+    const teardownGate = sandboxHandleTeardownGates.begin(scope);
     try {
-      const sandbox = await getSandboxOrNull(scope);
+      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) return;
 
       evictSandboxHandle(scope);
@@ -1267,6 +1340,7 @@ const plugin = definePlugin({
 
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
     } finally {
+      sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);
     }
   },
@@ -1283,15 +1357,17 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
-    // C4: evict before the async delete starts so overlapping exec/sync calls
-    // cannot observe a handle that is already being torn down.
+    // C4: the teardown gate blocks fresh cache reads while delete is in flight
+    // so overlapping exec/sync calls cannot reacquire the same sandbox mid-teardown.
+    const teardownGate = sandboxHandleTeardownGates.begin(scope);
     try {
-      const sandbox = await getSandboxOrNull(scope);
+      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) return;
 
       evictSandboxHandle(scope);
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
     } finally {
+      sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);
     }
   },
@@ -1492,10 +1568,11 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
-    // C4: cancelling an interactive-setup lease deletes the sandbox, so its
-    // handle must be evicted regardless of teardown outcome.
+    // C4: cancelling an interactive-setup lease deletes the sandbox, so the
+    // teardown gate blocks fresh cache reads while delete is in flight.
+    const teardownGate = sandboxHandleTeardownGates.begin(scope);
     try {
-      const sandbox = await getSandboxOrNull(scope);
+      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) {
         return {
           status: "missing",
@@ -1516,6 +1593,7 @@ const plugin = definePlugin({
         },
       };
     } finally {
+      sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);
     }
   },
