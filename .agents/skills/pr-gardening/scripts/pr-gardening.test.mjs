@@ -94,6 +94,65 @@ test("candidate discovery deduplicates mentions and drops closed PRs", async () 
   assert.deepEqual(result.source.droppedUnavailablePullRequests.map((pullRequest) => pullRequest.number), [3]);
 });
 
+test("candidate discovery reports truncated issue matches without discarding the report", async () => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => warnings.push(message);
+
+  try {
+    const result = await findCandidates({
+      repo: "paperclipai/paperclip",
+      api_url: "http://paperclip.test",
+      api_key: "test-key",
+      company_id: "company-1",
+      paperclip_get: async (path) => {
+        if (path.includes("search/extract")) {
+          return {
+            hasMore: false,
+            results: [
+              {
+                issueId: "issue-truncated",
+                identifier: "PAP-TRUNCATED",
+                title: "Large PR thread",
+                status: "done",
+                assigneeAgentId: "agent-1",
+                updatedAt: "2026-07-13T00:00:00Z",
+                matchesTruncated: true,
+                matches: [],
+              },
+              {
+                issueId: "issue-truncated",
+                identifier: "PAP-TRUNCATED",
+                title: "Large PR thread",
+                status: "done",
+                assigneeAgentId: "agent-1",
+                updatedAt: "2026-07-13T00:00:00Z",
+                matchesTruncated: true,
+                matches: [],
+              },
+            ],
+          };
+        }
+        throw new Error(`Unexpected Paperclip path: ${path}`);
+      },
+      gh_json: async () => {
+        throw new Error("GitHub should not be queried without discovered pull requests");
+      },
+    });
+
+    assert.equal(result.source.truncated, true);
+    assert.deepEqual(result.source.truncatedIssues, [
+      { issueId: "issue-truncated", identifier: "PAP-TRUNCATED" },
+    ]);
+    assert.deepEqual(result.candidates, []);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /PAP-TRUNCATED/);
+    assert.match(warnings[0], /Proceeding with available data/);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
 test("missing-PR detection matches only deleted/nonexistent PR signals", () => {
   // gh's real signals for a deleted/nonexistent PR: GraphQL resolution failure and REST 404.
   assert.equal(isMissingPullRequestError(new Error("GraphQL: Could not resolve to a PullRequest with the number of 3")), true);
