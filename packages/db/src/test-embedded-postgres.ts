@@ -167,6 +167,25 @@ function formatEmbeddedPostgresError(error: unknown): string {
   return "embedded Postgres startup failed";
 }
 
+async function stopEmbeddedPostgresInstance(
+  instance: EmbeddedPostgresInstance | null,
+  timeoutMs = 5_000,
+) {
+  if (!instance) return;
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    await Promise.race([
+      instance.stop().catch(() => {}),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSupport> {
   let dataDir: string | null = null;
   let instance: EmbeddedPostgresInstance | null = null;

@@ -286,6 +286,7 @@ export const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug"
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
   "routine_execution",
+  "routine_exception",
   "stale_active_run_evaluation",
   "harness_liveness_escalation",
   "issue_productivity_review",
@@ -580,6 +581,7 @@ export type RoutineVariableType = (typeof ROUTINE_VARIABLE_TYPES)[number];
 
 export const ROUTINE_RUN_STATUSES = [
   "received",
+  "evaluating",
   "coalesced",
   "skipped",
   "issue_created",

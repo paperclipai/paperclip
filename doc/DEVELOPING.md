@@ -178,6 +178,38 @@ These browser suites are intended for targeted local verification and CI, not th
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+### Exception-led routine pilot
+
+Exception-led evaluation is a host-owned, default-off path for the two POL
+paper/shadow pilot routines. Routine API payloads, descriptions, variables,
+plugins, and agent output cannot supply evaluator implementations or results.
+
+Instance-admin configuration under
+`experimental.routineExceptionEvaluators` must enable the global gate and pin
+each binding to the exact company, routine revision, registered evaluator,
+contract version, input schema, and capability allow-list. Only the registered
+`pol.runtime-source-of-truth.v1` and `pol.approval-release.v1` evaluators are
+accepted, and only the two compiled pilot routine IDs may enter evaluation.
+A changed routine revision fails closed until the binding is repinned.
+
+Green evaluations retain a routine-run record and create no issue. Exceptions
+create or reuse a high-priority incident keyed by evaluator, contract,
+root-cause code, and affected resource. Disable the global or per-binding gate
+to restore issue-per-run dispatch without deleting run or incident history.
+
+Before enabling either pilot, configure the host-owned capability broker:
+
+- `PAPERCLIP_ROUTINE_EXCEPTION_BROKER_EXECUTABLE` — absolute path to the
+  broker executable. Paperclip invokes it directly without a shell and sends
+  one versioned JSON request on stdin.
+- `PAPERCLIP_ROUTINE_EXCEPTION_BROKER_SHA256` — lowercase SHA-256 digest of
+  that executable. Paperclip verifies the digest before the first invocation
+  and fails closed if configuration or verification is missing.
+
+The broker receives only compiled capability IDs and structured inputs. It must
+implement the per-capability path, host, query, and command restrictions; return
+one JSON value on stdout; and never return credentials or unrestricted paths.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:

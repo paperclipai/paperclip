@@ -18,7 +18,12 @@ import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { folders } from "./folders.js";
-import type { RoutineEnvConfig, RoutineRevisionSnapshotV1, RoutineVariable } from "@paperclipai/shared";
+import type {
+  RoutineEnvConfig,
+  RoutineExceptionEvaluationResultV1,
+  RoutineRevisionSnapshotV1,
+  RoutineVariable,
+} from "@paperclipai/shared";
 
 export const routines = pgTable(
   "routines",
@@ -153,6 +158,14 @@ export const routineRuns = pgTable(
     idempotencyKey: text("idempotency_key"),
     triggerPayload: jsonb("trigger_payload").$type<Record<string, unknown>>(),
     dispatchFingerprint: text("dispatch_fingerprint"),
+    evaluatorId: text("evaluator_id"),
+    evaluatorContractVersion: text("evaluator_contract_version"),
+    evaluationOutcome: text("evaluation_outcome"),
+    evaluationResult: jsonb("evaluation_result").$type<RoutineExceptionEvaluationResultV1>(),
+    evaluatorProvenance: jsonb("evaluator_provenance").$type<Record<string, unknown>>(),
+    exceptionFingerprint: text("exception_fingerprint"),
+    evidenceDigest: text("evidence_digest"),
+    evaluationLeaseExpiresAt: timestamp("evaluation_lease_expires_at", { withTimezone: true }),
     linkedIssueId: uuid("linked_issue_id").references(() => issues.id, { onDelete: "set null" }),
     coalescedIntoRunId: uuid("coalesced_into_run_id"),
     failureReason: text("failure_reason"),
@@ -170,6 +183,15 @@ export const routineRuns = pgTable(
     ),
     triggerIdx: index("routine_runs_trigger_idx").on(table.triggerId, table.createdAt),
     dispatchFingerprintIdx: index("routine_runs_dispatch_fingerprint_idx").on(table.routineId, table.dispatchFingerprint),
+    evaluatorOutcomeIdx: index("routine_runs_evaluator_outcome_idx").on(
+      table.evaluatorId,
+      table.evaluationOutcome,
+      table.createdAt,
+    ),
+    exceptionFingerprintIdx: index("routine_runs_exception_fingerprint_idx").on(
+      table.routineId,
+      table.exceptionFingerprint,
+    ),
     linkedIssueIdx: index("routine_runs_linked_issue_idx").on(table.linkedIssueId),
     idempotencyIdx: index("routine_runs_trigger_idempotency_idx").on(table.triggerId, table.idempotencyKey),
   }),

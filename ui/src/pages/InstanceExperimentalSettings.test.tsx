@@ -94,6 +94,10 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
+    routineExceptionEvaluators: {
+      enabled: false,
+      bindings: [],
+    },
   };
 }
 

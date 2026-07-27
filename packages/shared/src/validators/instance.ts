@@ -10,6 +10,7 @@ import {
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
+import { routineExceptionEvaluatorBindingSchema } from "./routine.js";
 
 function presetSchema<T extends readonly number[]>(presets: T, label: string) {
   return z.number().refine(
@@ -65,6 +66,10 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableWorktreeRunExecution: z.boolean().default(false),
   worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),
+  routineExceptionEvaluators: z.object({
+    enabled: z.boolean().default(false),
+    bindings: z.array(routineExceptionEvaluatorBindingSchema).max(2).default([]),
+  }).strict().default({ enabled: false, bindings: [] }),
   issueGraphLivenessAutoRecoveryLookbackHours: z
     .number()
     .int()

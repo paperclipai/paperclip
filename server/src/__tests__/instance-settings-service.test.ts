@@ -51,6 +51,10 @@ describe("instance settings service", () => {
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,
+      routineExceptionEvaluators: {
+        enabled: false,
+        bindings: [],
+      },
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
     });
   });

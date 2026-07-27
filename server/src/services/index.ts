@@ -81,6 +81,16 @@ export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
+export {
+  createDenyAllRoutineExceptionCapabilityBroker,
+  createRoutineExceptionEvidenceDigest,
+  createRoutineExceptionEvaluatorRegistry,
+  createRoutineExceptionFingerprint,
+  RoutineExceptionEvaluatorRegistry,
+  type RoutineExceptionCapabilityBroker,
+  type RoutineExceptionEvaluation,
+  type RoutineExceptionEvaluationProvenance,
+} from "./routine-exception-evaluation.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
