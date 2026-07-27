@@ -17,9 +17,12 @@ Replaces the previous prose anti-slop skill `stop-slop` (hardikpandya). `kill-ai
 
 `check.py`, `evidence.md` — **verbatim**.
 
-`SKILL.md` — one change: the frontmatter `description` was trimmed from 341 to 242 characters to fit the skills-repo lint limit (`scripts/skill-lint` `DESC_LIMIT = 250`), keeping the trigger keywords (AI smell, AI tells, slop, em dashes). The rule body is verbatim.
+`SKILL.md` — two changes:
 
-Body length: SKILL.md is ~450 lines, over the repo's `BODY_LIMIT = 120`. This is an accepted exception recorded in `scripts/skill-budget-baseline.json` (`body`), because the value of this skill is the complete measured ruleset kept inline; splitting it into `references/` risks dropping rules the checker assumes are present.
+1. The frontmatter `description` was trimmed from 341 to 242 characters to fit the skills-repo lint limit (`scripts/skill-lint` `DESC_LIMIT = 250`), keeping the trigger keywords (AI smell, AI tells, slop, em dashes).
+2. **Split for progressive disclosure (2026-07-27, Luke-approved)**, superseding the earlier keep-inline exception: the complete rule body (all sections with Bad/Good pairs, from "Punctuation" through "Where the rules come from") moved **verbatim** to `references/full-ruleset.md`. SKILL.md now carries the intro/principle paragraphs verbatim plus a compact rule index that preserves every measured budget `check.py` enforces (em-dash 1/1k, semicolon chain/3-per-1k, colon-pivot streak of 3, contrast + "not just" bans, triads 3/1k, anaphora, hedging, transitions, fragments 15%, sentence-flow run ≥10, labeled bullets 30%, MTLD 110, heading rules) and a router to the full ruleset.
+
+`check.py`, `evidence.md` remain **verbatim**; the checker reads drafts, not SKILL.md, so the split does not affect enforcement.
 
 ## House style note
 
@@ -33,7 +36,9 @@ SRC=/tmp/tools-refresh/agents/skills/kill-ai-smell
 # check.py + evidence.md are verbatim — diffs should be empty unless upstream changed them:
 diff -u "$SRC/check.py"    ~/Projects/personal/skills/kill-ai-smell/check.py
 diff -u "$SRC/evidence.md" ~/Projects/personal/skills/kill-ai-smell/evidence.md
-# SKILL.md diverges only in the frontmatter description — review upstream changes and re-apply the trim:
-diff -u "$SRC/SKILL.md"    ~/Projects/personal/skills/kill-ai-smell/SKILL.md
-# Then bump the "Vendored" date above.
+# The rule body now lives verbatim in references/full-ruleset.md (from "## Punctuation" onward).
+# Diff upstream's body against it; the intro paragraphs are verbatim in SKILL.md:
+diff -u <(sed -n '/^## Punctuation/,$p' "$SRC/SKILL.md") <(sed -n '/^## Punctuation/,$p' ~/Projects/personal/skills/kill-ai-smell/references/full-ruleset.md)
+# On upstream rule changes: update full-ruleset.md verbatim AND mirror any new/changed
+# rule + budget into the SKILL.md compact index. Then bump the "Vendored" date above.
 ```
