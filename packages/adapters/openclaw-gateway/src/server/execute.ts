@@ -1000,6 +1000,21 @@ const USAGE_LOOKUP_TIMEOUT_MS = 3_000;
 // the timeout twice, forever, for telemetry that is never going to arrive.
 const gatewaysWithoutSessionUsage = new Set<string>();
 
+// Only a gateway that cannot answer the method at all should be struck off. A session-scoped
+// error ("Invalid session reference: ...") means this key has no usage yet, which is the normal
+// answer for a session the gateway has never seen -- not evidence the method is missing.
+// Conflating the two disabled billing process-wide after a single ordinary error.
+export function indicatesSessionUsageUnsupported(message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    text.includes("gateway request timeout") ||
+    text.includes("gateway not connected") ||
+    text.includes("method not found") ||
+    text.includes("unknown method") ||
+    text.includes("-32601")
+  );
+}
+
 /** Test seam: this cache is process-wide and would otherwise leak between cases. */
 export function resetSessionUsageSupportForTest(): void {
   gatewaysWithoutSessionUsage.clear();
@@ -1023,11 +1038,18 @@ async function fetchSessionUsageTotals(
     return parseSessionUsageTotals(payload, sessionKey);
   } catch (err) {
     // Billing telemetry must never fail a run, nor slow down every subsequent one.
-    gatewaysWithoutSessionUsage.add(gatewayId);
     const message = err instanceof Error ? err.message : String(err);
+    if (indicatesSessionUsageUnsupported(message)) {
+      gatewaysWithoutSessionUsage.add(gatewayId);
+      await onLog(
+        "stdout",
+        `[openclaw-gateway] sessions.usage unavailable (${message}); usage will not be recorded for ${gatewayId}\n`,
+      );
+      return null;
+    }
     await onLog(
       "stdout",
-      `[openclaw-gateway] sessions.usage unavailable (${message}); usage will not be recorded for ${gatewayId}\n`,
+      `[openclaw-gateway] sessions.usage lookup failed for ${sessionKey} (${message})\n`,
     );
     return null;
   }
@@ -1399,12 +1421,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Sample cumulative session usage before dispatch so the run's own consumption can be
       // differenced out afterwards. Deliberately not awaited here: the run is what the user is
       // waiting on, and this resolves long before it finishes.
-      const sessionUsageBaselinePromise = fetchSessionUsageTotals(
-        client,
-        urlValue,
-        sessionKey,
-        ctx.onLog,
-      );
+      //
+      // The "run" strategy mints a fresh key per run, so there is nothing to difference out and
+      // the gateway would reject the lookup for a session it has never seen. Skip it: the
+      // post-run reading is the whole delta.
+      const sessionUsageBaselinePromise =
+        sessionKeyStrategy === "run"
+          ? Promise.resolve(null)
+          : fetchSessionUsageTotals(client, urlValue, sessionKey, ctx.onLog);
 
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
         timeoutMs: connectTimeoutMs,

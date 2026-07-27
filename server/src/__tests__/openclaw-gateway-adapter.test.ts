@@ -42,6 +42,7 @@ function buildContext(
 async function createMockGatewayServer(options?: {
   waitPayload?: Record<string, unknown>;
   waitDelayMs?: number;
+  rejectSessionsUsageForUnknownSession?: boolean;
 }) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
@@ -92,6 +93,22 @@ async function createMockGatewayServer(options?: {
 
       if (frame.method === "sessions.usage") {
         sessionsUsageCalls += 1;
+        // A real gateway rejects a lookup for a session it has not created yet, which is what
+        // the pre-dispatch baseline asks for when each run mints its own key.
+        if (options?.rejectSessionsUsageForUnknownSession && sessionsUsageCalls === 1) {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: {
+                code: "INVALID_REQUEST",
+                message: `Invalid session reference: ${frame.params?.key}`,
+              },
+            }),
+          );
+          return;
+        }
         socket.send(
           JSON.stringify({
             type: "res",
@@ -615,6 +632,38 @@ describe("openclaw gateway adapter execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(logs.some((entry) => entry.includes("[openclaw-gateway] waiting for runId=run-123"))).toBe(true);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  // Production regression: the gateway rejected the pre-dispatch baseline because the session
+  // did not exist yet, and the adapter mistook that for "this gateway has no sessions.usage",
+  // striking it off process-wide. 24 consecutive runs recorded no usage and no cost.
+  it("still records usage when the gateway rejects the pre-dispatch baseline", async () => {
+    const gateway = await createMockGatewayServer({
+      rejectSessionsUsageForUnknownSession: true,
+    });
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: { "x-openclaw-token": "gateway-token" },
+          payloadTemplate: { message: "wake now" },
+          waitTimeoutMs: 2000,
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      // No baseline to difference against, so the post-run reading is the whole delta.
+      expect(result.usage).toMatchObject({
+        inputTokens: 2_000,
+        outputTokens: 400,
+        cachedInputTokens: 10_000,
+      });
+      expect(result.model).toBe("claude-opus-5");
+      expect(result.billingType).toBe("subscription_included");
     } finally {
       await gateway.close();
     }

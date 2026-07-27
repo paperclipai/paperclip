@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { diffSessionUsage, parseSessionUsageTotals } from "./execute.js";
+import {
+  diffSessionUsage,
+  indicatesSessionUsageUnsupported,
+  parseSessionUsageTotals,
+} from "./execute.js";
 
 const KEY = "agent:kael:heartbeat";
 
@@ -101,5 +105,32 @@ describe("diffSessionUsage", () => {
 
   it("returns null when the post-run reading is unavailable", () => {
     expect(diffSessionUsage(before, null)).toBeNull();
+  });
+});
+
+describe("indicatesSessionUsageUnsupported", () => {
+  // Production regression: every run mints a fresh session key, so the gateway answered the
+  // baseline lookup with this error. Treating it as "method unsupported" struck the gateway
+  // off process-wide and silently dropped billing for 24 consecutive runs.
+  it("does not strike off a gateway for a session it has never seen", () => {
+    expect(
+      indicatesSessionUsageUnsupported(
+        "Invalid session reference: agent:main:paperclip:run:472b1f88-0b4a-48ce-90c4-aa646b031c15",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not strike off a gateway for any other session-scoped error", () => {
+    expect(indicatesSessionUsageUnsupported("Invalid session key: agent:main:paperclip")).toBe(
+      false,
+    );
+    expect(indicatesSessionUsageUnsupported("session not found")).toBe(false);
+  });
+
+  it("strikes off a gateway that cannot answer the method at all", () => {
+    expect(indicatesSessionUsageUnsupported("gateway request timeout (sessions.usage)")).toBe(true);
+    expect(indicatesSessionUsageUnsupported("gateway not connected")).toBe(true);
+    expect(indicatesSessionUsageUnsupported("Method not found")).toBe(true);
+    expect(indicatesSessionUsageUnsupported("JSON-RPC error -32601")).toBe(true);
   });
 });
