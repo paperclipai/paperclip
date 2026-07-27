@@ -199,6 +199,7 @@ function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progr
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
+    hiddenAt: null,
     status,
     assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     assigneeUserId: null,

@@ -104,6 +104,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
 }));
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -137,7 +138,7 @@ function registerRouteMocks() {
   }));
 
   vi.doMock("../services/activity-log.js", () => ({
-    logActivity: vi.fn(async () => undefined),
+    logActivity: mockLogActivity,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -184,7 +185,7 @@ function registerRouteMocks() {
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
     taskWatchdogService: () => mockTaskWatchdogService,
-    logActivity: vi.fn(async () => undefined),
+    logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
@@ -337,6 +338,8 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
     vi.clearAllMocks();
+    mockLogActivity.mockReset();
+    mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
@@ -1400,13 +1403,18 @@ describe("agent issue mutation checkout ownership", () => {
       explanation: "Target agent requires approval before task assignment.",
     }));
     decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "issue:mutate",
+      allowed: input.action === "issue:mutate" || input.action === "issue:read",
       action: input.action,
-      reason: input.action === "issue:mutate" ? "allow_self" : "deny_policy_restricted",
-      explanation:
+      reason:
         input.action === "issue:mutate"
-          ? "Allowed because the actor owns the assigned issue."
-          : "Target agent requires approval before task assignment.",
+          ? "allow_self"
+          : input.action === "issue:read"
+            ? "allow_company_member"
+            : "deny_policy_restricted",
+      explanation:
+        input.action === "tasks:assign"
+          ? "Target agent requires approval before task assignment."
+          : "Allowed to access the issue.",
     }));
     (mockAccessService as any).decide = decide;
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
@@ -1432,6 +1440,194 @@ describe("agent issue mutation checkout ownership", () => {
       }),
     }));
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows an unscoped task assignment grant to reassign a visible cross-owner issue", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "tasks:assign" ? "allow_explicit_grant" : "allow_company_member",
+      explanation: "Allowed by the field-specific test grant.",
+      ...(input.action === "tasks:assign"
+        ? { grant: { permissionKey: "tasks:assign", principalType: "agent", principalId: peerAgentId } }
+        : {}),
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(peerAgentId) });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ assigneeAgentId: peerAgentId }),
+    );
+  });
+
+  it("applies scoped task assignment decisions without widening issue mutation authority", async () => {
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string;
+      resource?: { assigneeAgentId?: string | null };
+    }) => {
+      const scopedAssignmentAllowed =
+        input.action === "tasks:assign" && input.resource?.assigneeAgentId === peerAgentId;
+      return {
+        allowed: input.action === "issue:read" || scopedAssignmentAllowed,
+        action: input.action,
+        reason: scopedAssignmentAllowed ? "allow_explicit_grant" : "deny_scope_mismatch",
+        explanation: scopedAssignmentAllowed ? "Allowed by tasks:assign_scope." : "Assignment scope does not match.",
+        ...(scopedAssignmentAllowed
+          ? { grant: { permissionKey: "tasks:assign_scope", principalType: "agent", principalId: peerAgentId } }
+          : {}),
+      };
+    });
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(peerAgentId) });
+
+    const allowed = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+    const deniedMutation = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ description: "Cross-owner content mutation" });
+
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+    expect(deniedMutation.status).toBe(403);
+    expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["status", { status: "blocked" }],
+    ["blockers", { blockedByIssueIds: [] }],
+    ["content", { description: "Cross-owner content mutation" }],
+    ["mixed assignment and status", { assigneeAgentId: peerAgentId, status: "blocked" }],
+  ])("rejects %s changes atomically when only task assignment is authorized", async (_label, patch) => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "deny_missing_grant" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate" ? "Independent issue mutation permission is missing." : "Allowed.",
+    }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send(patch);
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("denies cross-company assignment without existence leakage and audits the attempt safely", async () => {
+    const foreignCompanyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const res = await request(await createApp(peerActor({ companyId: foreignCompanyId })))
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Forbidden" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "authorization.task_assignment_decided",
+        entityId: issueId,
+        actorType: "system",
+        actorId: "authorization-boundary",
+        agentId: null,
+        runId: null,
+        details: expect.objectContaining({ decision: "deny", reason: "deny_company_boundary" }),
+      }),
+    );
+    const auditPayload = JSON.stringify(mockLogActivity.mock.calls.at(-1));
+    expect(auditPayload).not.toContain("Cross-owner content mutation");
+    expect(auditPayload).not.toMatch(/token|authorization.*bearer/i);
+  });
+
+  it("denies assignment to a hidden issue without leaking hidden content", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      hiddenAt: new Date("2026-07-27T18:00:00.000Z"),
+      title: "Private archived issue content",
+      assigneeAgentId: ownerAgentId,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "tasks:assign" ? "allow_explicit_grant" : "allow_company_member",
+      explanation: "Allowed by the field-specific test grant.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Forbidden" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "authorization.task_assignment_decided",
+        entityId: issueId,
+        actorType: "system",
+        actorId: "authorization-boundary",
+        agentId: null,
+        runId: null,
+        details: expect.objectContaining({ decision: "deny", reason: "deny_hidden_target" }),
+      }),
+    );
+    const auditPayload = JSON.stringify(mockLogActivity.mock.calls.at(-1));
+    expect(auditPayload).not.toContain("Private archived issue content");
+    expect(auditPayload).not.toContain(peerAgentId);
+    expect(auditPayload).not.toMatch(/token|authorization.*bearer/i);
+  });
+
+  it("audits allowed and denied assignment policy decisions without request content", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(peerAgentId) });
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "tasks:assign",
+      action: input.action,
+      reason: input.action === "tasks:assign" ? "allow_explicit_grant" : "allow_company_member",
+      explanation: "Allowed.",
+      ...(input.action === "tasks:assign"
+        ? { grant: { permissionKey: "tasks:assign", principalType: "agent", principalId: peerAgentId } }
+        : {}),
+    }));
+
+    const allowed = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read",
+      action: input.action,
+      reason: "deny_scope_mismatch",
+      explanation: "Assignment scope does not match.",
+    }));
+    const denied = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+    expect(denied.status).toBe(403);
+
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "authorization.task_assignment_decided",
+        details: expect.objectContaining({ decision: "allow", permissionKey: "tasks:assign" }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "authorization.task_assignment_decided",
+        details: expect.objectContaining({ decision: "deny", reason: "deny_scope_mismatch" }),
+      }),
+    );
   });
 
   describe("task watchdog scope grants", () => {

@@ -1801,6 +1801,53 @@ export function issueRoutes(
     assigneeUserId?: string | null;
   };
 
+  const taskAssignmentPatchFields = new Set(["assigneeAgentId", "assigneeUserId"]);
+
+  function hasTaskAssignmentPatch(body: Record<string, unknown>) {
+    return [...taskAssignmentPatchFields].some((field) => Object.prototype.hasOwnProperty.call(body, field));
+  }
+
+  function isTaskAssignmentOnlyPatch(body: Record<string, unknown>) {
+    const fields = Object.keys(body);
+    return fields.length > 0 && fields.every((field) => taskAssignmentPatchFields.has(field));
+  }
+
+  async function logTaskAssignmentAuthorizationDecision(input: {
+    req: Request;
+    companyId: string;
+    issueId?: string | null;
+    decision: "allow" | "deny";
+    reason: string;
+    permissionKey?: string | null;
+    redactActor?: boolean;
+  }) {
+    if (input.req.actor.type === "none") return;
+    const actor = input.redactActor
+      ? {
+          actorType: "system" as const,
+          actorId: "authorization-boundary",
+          agentId: null,
+          runId: null,
+        }
+      : getActorInfo(input.req);
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "authorization.task_assignment_decided",
+      entityType: input.issueId ? "issue" : "company",
+      entityId: input.issueId ?? input.companyId,
+      details: {
+        action: "tasks:assign",
+        decision: input.decision,
+        reason: input.reason,
+        permissionKey: input.permissionKey ?? null,
+      },
+    });
+  }
+
   async function resolveAssignmentProjectId(input: {
     companyId: string;
     projectId: string | null | undefined;
@@ -1813,6 +1860,8 @@ export function issueRoutes(
     return parent.projectId ?? null;
   }
 
+  // Canonical assignment-policy entry point for issue create, PATCH, and checkout.
+  // Keep all assignment paths routed through this helper so scope and audit behavior cannot drift.
   async function assertCanAssignTasks(
     req: Request,
     companyId: string,
@@ -1833,7 +1882,15 @@ export function issueRoutes(
       },
       scope: assignmentScope ?? null,
     });
-    if (decision.allowed) return;
+    await logTaskAssignmentAuthorizationDecision({
+      req,
+      companyId,
+      issueId: assignmentScope?.issueId,
+      decision: decision.allowed ? "allow" : "deny",
+      reason: decision.reason,
+      permissionKey: decision.grant?.permissionKey ?? null,
+    });
+    if (decision.allowed) return decision;
     throw forbidden(decision.explanation);
   }
 
@@ -5553,9 +5610,67 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    const assignmentPatchRequested = hasTaskAssignmentPatch(req.body);
+    if (!actorCanAccessCompany(req, existing.companyId)) {
+      if (assignmentPatchRequested) {
+        await logTaskAssignmentAuthorizationDecision({
+          req,
+          companyId: existing.companyId,
+          issueId: existing.id,
+          decision: "deny",
+          reason: "deny_company_boundary",
+          redactActor: true,
+        });
+      }
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
     assertCompanyAccess(req, existing.companyId);
+    if (req.actor.type === "agent" && assignmentPatchRequested && existing.hiddenAt !== null) {
+      await logTaskAssignmentAuthorizationDecision({
+        req,
+        companyId: existing.companyId,
+        issueId: existing.id,
+        decision: "deny",
+        reason: "deny_hidden_target",
+        redactActor: true,
+      });
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (isTaskAssignmentOnlyPatch(req.body)) {
+      const watchdogScope = req.actor.type === "agent"
+        ? await resolveTaskWatchdogMutationScope(db, req.actor)
+        : { kind: "none" as const };
+      if (watchdogScope.kind !== "none") {
+        if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+      } else {
+        const readDecision = await decideIssueAccess(req, existing, "issue:read");
+        if (!readDecision.allowed) {
+          await logTaskAssignmentAuthorizationDecision({
+            req,
+            companyId: existing.companyId,
+            issueId: existing.id,
+            decision: "deny",
+            reason: readDecision.reason,
+          });
+          res.status(403).json({ error: "Forbidden" });
+          return;
+        }
+      }
+    } else if (!(await assertAgentIssueMutationAllowed(req, res, existing))) {
+      if (assignmentPatchRequested) {
+        await logTaskAssignmentAuthorizationDecision({
+          req,
+          companyId: existing.companyId,
+          issueId: existing.id,
+          decision: "deny",
+          reason: "deny_independent_issue_mutation",
+        });
+      }
+      return;
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
