@@ -43,6 +43,8 @@ async function createMockGatewayServer(options?: {
   waitPayload?: Record<string, unknown>;
   waitDelayMs?: number;
   rejectSessionsUsageForUnknownSession?: boolean;
+  /** Mimics an older gateway whose closed params schema does not know a filter we send. */
+  rejectFilteredSessionsList?: boolean;
 }) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
@@ -51,6 +53,7 @@ async function createMockGatewayServer(options?: {
   // sessions.list rows carry cumulative session totals; the adapter samples them before and
   // after the run, so each call reports a higher total and the delta is what gets billed.
   let sessionsUsageCalls = 0;
+  let lastRequestedKey = "";
 
   wss.on("connection", (socket) => {
     socket.send(
@@ -92,7 +95,48 @@ async function createMockGatewayServer(options?: {
       }
 
       if (frame.method === "sessions.list") {
+        // The deployed gateway validates params against a closed schema and rejects the whole
+        // call for one unknown filter. The adapter must retry unfiltered, not lose the billing.
+        if (options?.rejectFilteredSessionsList && frame.params?.search !== undefined) {
+          lastRequestedKey = String(frame.params.search);
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: {
+                code: "INVALID_REQUEST",
+                message: "invalid sessions.list params: at root: unexpected property 'sortBy'",
+              },
+            }),
+          );
+          return;
+        }
         sessionsUsageCalls += 1;
+        if (options?.rejectFilteredSessionsList) {
+          // Unfiltered page: the wanted row sits among other agents' sessions, as it would live.
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                sessions: [
+                  { key: "agent:other:paperclip:run:decoy", inputTokens: 9_999, outputTokens: 9 },
+                  {
+                    key: lastRequestedKey,
+                    model: "claude-opus-5",
+                    modelProvider: "clawrouter",
+                    inputTokens: 1_000 * sessionsUsageCalls,
+                    outputTokens: 200 * sessionsUsageCalls,
+                    estimatedCostUsd: 0,
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
         // A real gateway rejects a lookup for a session it has not created yet, which is what
         // the pre-dispatch baseline asks for when each run mints its own key.
         if (options?.rejectSessionsUsageForUnknownSession && sessionsUsageCalls === 1) {
@@ -655,6 +699,38 @@ describe("openclaw gateway adapter execute", () => {
       expect(result.usage).toMatchObject({
         inputTokens: 2_000,
         outputTokens: 400,
+      });
+      expect(result.model).toBe("claude-opus-5");
+      expect(result.billingType).toBe("subscription_included");
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  // Production regression: the deployed gateway (OpenClaw 2026.7.1) validates sessions.list
+  // params against a closed schema and rejected `sortBy`, a filter that only exists in newer
+  // versions. The whole call failed, so a third deploy recorded no usage at all.
+  it("still records usage when the gateway rejects a filter it does not know", async () => {
+    const gateway = await createMockGatewayServer({
+      rejectFilteredSessionsList: true,
+    });
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: { "x-openclaw-token": "gateway-token" },
+          payloadTemplate: { message: "wake now" },
+          waitTimeoutMs: 2000,
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      // Both samples now survive the rejection, so this is a true delta (2x - 1x), found by
+      // scanning the unfiltered page and ignoring another agent's decoy row.
+      expect(result.usage).toMatchObject({
+        inputTokens: 1_000,
+        outputTokens: 200,
       });
       expect(result.model).toBe("claude-opus-5");
       expect(result.billingType).toBe("subscription_included");

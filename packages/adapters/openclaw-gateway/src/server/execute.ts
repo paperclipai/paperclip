@@ -1003,6 +1003,10 @@ export function diffSessionUsage(
 // answer at all, so the lookup is bounded well below the run timeout.
 const USAGE_LOOKUP_TIMEOUT_MS = 3_000;
 
+// Fallback page size when the gateway rejects our filters. The session was just used, so it
+// sorts near the top of any recency-ordered store; this is headroom, not a full scan.
+const UNFILTERED_USAGE_LOOKUP_LIMIT = 200;
+
 // Once a gateway fails to answer, stop asking it. Otherwise every run on that gateway pays
 // the timeout twice, forever, for telemetry that is never going to arrive.
 const gatewaysWithoutSessionUsage = new Set<string>();
@@ -1019,6 +1023,18 @@ export function indicatesSessionUsageUnsupported(message: string): boolean {
     text.includes("method not found") ||
     text.includes("unknown method") ||
     text.includes("-32601")
+  );
+}
+
+// The gateway validates sessions.list params against a closed schema, so a filter added in a
+// newer OpenClaw is rejected outright by an older one -- silently costing every run its billing.
+// Detect that specific rejection so the caller can retry without filters instead of giving up.
+export function indicatesRejectedListParams(message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    text.includes("unexpected property") ||
+    text.includes("invalid sessions.list params") ||
+    text.includes("-32602")
   );
 }
 
@@ -1040,16 +1056,33 @@ async function fetchSessionUsageTotals(
   try {
     // `search` matches the session key, so this returns the one row we need rather than the
     // agent's entire store; the limit is headroom for substring collisions, not paging.
-    const payload = await client.request<Record<string, unknown>>(
-      "sessions.list",
-      {
-        search: sessionKey,
-        limit: 25,
-        sortBy: "updatedAt",
-        ...(agentId ? { agentId } : {}),
-      },
-      { timeoutMs: USAGE_LOOKUP_TIMEOUT_MS },
-    );
+    // Params stay minimal on purpose: the gateway validates them against a CLOSED schema, so a
+    // param the running version has not shipped yet fails the entire call. Sorting is not worth
+    // that risk -- we match one exact key, so row order is irrelevant.
+    let payload: Record<string, unknown>;
+    try {
+      payload = await client.request<Record<string, unknown>>(
+        "sessions.list",
+        { search: sessionKey, limit: 25, ...(agentId ? { agentId } : {}) },
+        { timeoutMs: USAGE_LOOKUP_TIMEOUT_MS },
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!indicatesRejectedListParams(message)) {
+        throw err;
+      }
+      // Older gateway: one of our filters does not exist there. Ask for a recent page with no
+      // filters and find the key ourselves rather than losing this run's billing entirely.
+      await onLog(
+        "stdout",
+        `[openclaw-gateway] sessions.list rejected a filter (${message}); retrying unfiltered\n`,
+      );
+      payload = await client.request<Record<string, unknown>>(
+        "sessions.list",
+        { limit: UNFILTERED_USAGE_LOOKUP_LIMIT },
+        { timeoutMs: USAGE_LOOKUP_TIMEOUT_MS },
+      );
+    }
     const totals = parseSessionUsageTotals(payload, sessionKey);
     if (!totals) {
       // Silence is what let two deploys ship broken: say which key missed and what came back.

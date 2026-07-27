@@ -75,13 +75,18 @@ left runnable so they can be triggered manually if ever needed.
   rows expose no cache buckets, so cached reads bill at the full input rate (~2% over on
   observed runs); that errs toward over-reporting spend rather than dropping the run.
 
-  Two traps worth keeping on OpenClaw upgrades. Under the `run` key strategy every run mints a
+  Three traps worth keeping on OpenClaw upgrades. Under the `run` key strategy every run mints a
   fresh session key, so a pre-dispatch baseline asks about a session that does not exist yet
   and the gateway rejects it -- expected, and only a timeout/method-not-found may mark a
   gateway as lacking the method (`indicatesSessionUsageUnsupported`). Treating that ordinary
   rejection as "unsupported" once disabled billing process-wide for 24 runs. And when no row
   matches, the adapter logs the key and row count rather than recording zero: silent nulls are
-  what let two broken deploys look healthy.
+  what let two broken deploys look healthy. Third, and the reason to verify against the RUNNING
+  gateway rather than an upstream checkout: `sessions.list` params are validated against a
+  CLOSED schema, so a single filter the deployed version has not shipped fails the entire call.
+  `sortBy` (present upstream, absent in the deployed 2026.7.1) cost a whole deploy its billing.
+  Keep params minimal; on a params rejection the adapter retries unfiltered and finds the key
+  itself (`indicatesRejectedListParams`).
 - **Recovery:** suppress stale/paused routine recovery, source-scoped recovery actions.
 - **UI:** blocked-inbox row hit targets + optimistic mark-read/unread.
 - **CI adaptations:** fork canary publish opt-in, skip Cursor-only tests in fork release

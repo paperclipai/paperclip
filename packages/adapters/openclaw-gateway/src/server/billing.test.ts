@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   diffSessionUsage,
+  indicatesRejectedListParams,
   indicatesSessionUsageUnsupported,
   parseSessionUsageTotals,
 } from "./execute.js";
@@ -161,5 +162,26 @@ describe("indicatesSessionUsageUnsupported", () => {
     expect(indicatesSessionUsageUnsupported("gateway not connected")).toBe(true);
     expect(indicatesSessionUsageUnsupported("Method not found")).toBe(true);
     expect(indicatesSessionUsageUnsupported("JSON-RPC error -32601")).toBe(true);
+  });
+});
+
+describe("indicatesRejectedListParams", () => {
+  // Production regression, verbatim from the gateway. sessions.list params are validated against
+  // a CLOSED schema, so `sortBy` -- which exists in newer OpenClaw but not in the deployed
+  // 2026.7.1 -- failed the whole call, and with it the run's billing.
+  it("detects a param the running gateway version does not know", () => {
+    expect(
+      indicatesRejectedListParams("invalid sessions.list params: at root: unexpected property 'sortBy'"),
+    ).toBe(true);
+    expect(indicatesRejectedListParams("JSON-RPC error -32602: invalid params")).toBe(true);
+  });
+
+  // A gateway that cannot answer at all must stay struck off rather than retrying forever.
+  it("does not treat a missing method or a dead gateway as a bad filter", () => {
+    expect(indicatesRejectedListParams("Method not found")).toBe(false);
+    expect(indicatesRejectedListParams("gateway request timeout (sessions.list)")).toBe(false);
+    expect(indicatesRejectedListParams("Invalid session reference: agent:main:paperclip")).toBe(
+      false,
+    );
   });
 });
