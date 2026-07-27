@@ -1046,6 +1046,7 @@ const sandboxHandleCache = (() => {
 export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleCache.reset();
   sandboxHandleTeardownGates.reset();
+  sandboxHandleActivityGates.reset();
 }
 
 async function getSandbox(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox> {
