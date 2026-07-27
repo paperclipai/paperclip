@@ -1569,6 +1569,44 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(2);
     });
 
+    it("waits for an in-flight execute before interactive cancel cleanup starts", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let resolveExecute!: () => void;
+      sandbox.process.executeCommand.mockImplementation(async () => {
+        await new Promise<void>((resolve) => {
+          resolveExecute = resolve;
+        });
+        return {
+          exitCode: 0,
+          result: "bash",
+          artifacts: { stdout: "bash" },
+        };
+      });
+      mockGet.mockResolvedValue(sandbox);
+
+      const executePromise = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const cancelPromise = plugin.definition.onEnvironmentCancelInteractiveSetup?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: false },
+        reason: "cancelled",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sandbox.delete).not.toHaveBeenCalled();
+
+      resolveExecute();
+      await Promise.all([executePromise, cancelPromise]);
+
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
+      expect(sandbox.delete).toHaveBeenCalledTimes(1);
+    });
+
     it("does not cache a failed populate (NotFound) — the next lookup re-fetches", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });

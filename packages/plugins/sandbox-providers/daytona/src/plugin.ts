@@ -1651,6 +1651,8 @@ const plugin = definePlugin({
           },
         };
       }
+      evictSandboxHandle(scope);
+      await sandboxHandleActivityGates.waitForIdle(scope);
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
       return {
         status: params.reason === "timed_out" ? "timed_out" : "cancelled",
