@@ -199,14 +199,35 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     return [{ id: model, label: model }];
   }
 
-  const models = await discoverOpenCodeModelsCached({
-    command: input.command,
-    cwd: input.cwd,
-    env: input.env,
-  });
+  let models: AdapterModel[];
+  try {
+    models = await discoverOpenCodeModelsCached({
+      command: input.command,
+      cwd: input.cwd,
+      env: input.env,
+    });
+  } catch (err) {
+    // The availability probe is a best-effort pre-flight guard, not a gate. If
+    // `opencode models` itself cannot run — a transient CLI error, a timeout, a
+    // provider hiccup — do NOT abort the run. The real invocation is
+    // authoritative, so a probe that can't execute must never be fatal.
+    // (Previously this threw and crashed runs mid-flight, discarding the agent's
+    // completed work and its terminal disposition, which then reopened the issue.)
+    console.warn(
+      `[opencode-local] Model availability probe could not run for "${model}" (${
+        err instanceof Error ? err.message : String(err)
+      }); proceeding with the configured model.`,
+    );
+    return [{ id: model, label: model }];
+  }
 
   if (models.length === 0) {
-    throw new Error("OpenCode returned no models. Run `opencode models` and verify provider auth.");
+    // The probe ran but returned nothing (e.g. a transient provider-auth blip).
+    // Same reasoning as above: warn, don't block the run.
+    console.warn(
+      `[opencode-local] \`opencode models\` returned no models; proceeding with the configured model "${model}".`,
+    );
+    return [{ id: model, label: model }];
   }
 
   if (!models.some((entry) => entry.id === model)) {
