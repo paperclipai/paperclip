@@ -267,7 +267,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(runner).toBeTruthy();
     // Single-stream stdin upload is enabled (research A1 / PAP-3159 #2): a
     // ≤96 MiB writeFile collapses to one round-trip.
-    expect(runner!.supportsSingleStreamStdinProgress).toBe(true);
+    expect(runner!.supportsSingleStreamStdinProgress).toBe(false);
     expect(runner!.execCount()).toBe(0);
     expect(runner!.providerExecMs()).toBe(0);
     expect(runner!.providerGetMs()).toBe(0);

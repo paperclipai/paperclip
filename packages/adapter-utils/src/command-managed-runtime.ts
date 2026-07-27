@@ -149,6 +149,10 @@ function buildSyncInExtractDirectoryCommand(input: { remoteTarPath: string; targ
 function buildSyncInChmodCommand(input: { mode: number; targetPath: string }): string {
   return `chmod ${(input.mode & 0o7777).toString(8)} ${shellQuote(input.targetPath)}`;
 }
+function buildSyncInRenameCommand(input: { sourcePath: string; targetPath: string }): string {
+  return "mv -f " + shellQuote(input.sourcePath) + " " + shellQuote(input.targetPath);
+}
+
 
 /**
  * Host-side confinement guard for a sync operation's post-upload command `cwd`
@@ -364,10 +368,15 @@ export function createCommandManagedRuntimeClient(input: {
             bytesTransferred += tarBytes.byteLength;
           } else {
             const fileBytes = await fs.readFile(mapping.sourcePath);
-            await client.writeFile(mapping.targetPath, bufferToArrayBuffer(fileBytes));
+            const targetPathForWrite = mapping.mode != null ? mapping.targetPath + ".paperclip-syncin" : mapping.targetPath;
+            await client.writeFile(targetPathForWrite, bufferToArrayBuffer(fileBytes));
             if (mapping.mode != null) {
               await client.run(
-                buildSyncInChmodCommand({ mode: mapping.mode, targetPath: mapping.targetPath }),
+                buildSyncInChmodCommand({ mode: mapping.mode, targetPath: targetPathForWrite }),
+                { timeoutMs: input.timeoutMs },
+              );
+              await client.run(
+                buildSyncInRenameCommand({ sourcePath: targetPathForWrite, targetPath: mapping.targetPath }),
                 { timeoutMs: input.timeoutMs },
               );
             }

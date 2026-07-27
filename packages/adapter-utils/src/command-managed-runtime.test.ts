@@ -483,8 +483,8 @@ describe("command managed runtime", () => {
         operationId: "op-dir",
         files: [{ sourcePath: sourceDir, targetPath: targetDir, kind: "directory" }],
         postUploadCommands: [
-          { command: `touch ${shellQuoteForTest(path.join(markerDir, "1-first"))}` },
-          { command: `touch ${shellQuoteForTest(path.join(markerDir, "2-second"))}` },
+          { command: "touch " + shellQuoteForTest(path.join(markerDir, "1-first")) },
+          { command: "touch " + shellQuoteForTest(path.join(markerDir, "2-second")) },
         ],
       },
     ]);
@@ -507,6 +507,34 @@ describe("command managed runtime", () => {
     expect(untarIdx).toBeGreaterThan(uploadIdx);
     expect(cmd1Idx).toBeGreaterThan(untarIdx);
     expect(cmd2Idx).toBeGreaterThan(cmd1Idx);
+  });
+
+  it("fallback syncIn stages mode-constrained files before chmod and rename", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-mode-"));
+    cleanupDirs.push(rootDir);
+    const sourceFile = path.join(rootDir, "source.txt");
+    const targetFile = path.join(rootDir, "target.txt");
+    await writeFile(sourceFile, "payload\n", "utf8");
+
+    const { runner, calls } = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
+
+    await client.syncIn!([
+      {
+        operationId: "op-mode",
+        files: [{ sourcePath: sourceFile, targetPath: targetFile, kind: "file", mode: 0o640 }],
+      },
+    ]);
+
+    expect(await readFile(targetFile, "utf8")).toBe("payload\n");
+    const scripts = calls.map((call) => (call.args ?? []).join(" "));
+    expect(scripts).toHaveLength(3);
+    expect(scripts[0]).toContain(targetFile + ".paperclip-syncin.paperclip-upload");
+    expect(scripts[1]).toContain("chmod 640");
+    expect(scripts[1]).toContain(targetFile + ".paperclip-syncin");
+    expect(scripts[2]).toContain("mv -f");
+    expect(scripts[2]).toContain(targetFile + ".paperclip-syncin");
+    expect(scripts[2]).toContain(targetFile);
   });
 
   it("test_post_upload_commands_execute_verbatim_not_rewritten (C1 opaque)", async () => {
