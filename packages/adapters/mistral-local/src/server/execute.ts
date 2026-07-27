@@ -62,7 +62,10 @@ function resolveBillingType(envConfig: Record<string, unknown>): "api" | "subscr
  * Vibe CLI reads this file at startup; setting the env var alone is not always enough.
  */
 async function seedVibeEnvIfNeeded(envConfig: Record<string, unknown>): Promise<void> {
-  const apiKey = typeof envConfig.MISTRAL_API_KEY === "string" ? envConfig.MISTRAL_API_KEY.trim() : "";
+  const apiKey =
+    typeof envConfig.MISTRAL_API_KEY === "string"
+      ? envConfig.MISTRAL_API_KEY.trim().replace(/[\r\n]/g, "")
+      : "";
   if (!apiKey) return;
   try {
     let existing = "";
@@ -71,7 +74,10 @@ async function seedVibeEnvIfNeeded(envConfig: Record<string, unknown>): Promise<
     lines.push(`MISTRAL_API_KEY=${apiKey}`);
     await fs.mkdir(path.dirname(VIBE_ENV_FILE), { recursive: true });
     await fs.writeFile(VIBE_ENV_FILE, lines.join("\n") + "\n", { mode: 0o600 });
-  } catch { /* best-effort */ }
+    await fs.chmod(VIBE_ENV_FILE, 0o600);
+  } catch (err) {
+    console.error("[mistral_local] seedVibeEnvIfNeeded failed:", err);
+  }
 }
 
 /**
