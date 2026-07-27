@@ -31,9 +31,31 @@ import type {
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
+  PluginEnvironmentSyncResult,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
+import { performSyncIn, performSyncOut } from "./file-sync.js";
+
+// Injectable monotonic clock for provider-boundary timing (Open Q1). Defaults
+// to the real wall clock; `plugin.test.ts` overrides it via
+// `setDaytonaTimingClockForTest` so the measured `durationMs`/`getDurationMs`
+// are deterministic. The timing path never calls `Date.now()` directly.
+let timingNow: () => number = () => Date.now();
+
+/**
+ * Test seam: override the provider-timing clock and return a restore function.
+ * Not used in production, where the default wall clock always applies.
+ */
+export function setDaytonaTimingClockForTest(now: () => number): () => void {
+  const previous = timingNow;
+  timingNow = now;
+  return () => {
+    timingNow = previous;
+  };
+}
 
 interface DaytonaDriverConfig {
   apiKey: string | null;
@@ -666,6 +688,17 @@ function buildLoginShellScript(input: {
   return lines.join(" && ");
 }
 
+// The workspace remote dir is the confinement root for native file sync. It is
+// recorded on the lease metadata at acquire/resume time; require it so a sync can
+// never run without a concrete root to confine every sandbox path against.
+function resolveSyncRemoteDir(lease: { metadata?: Record<string, unknown> | null }): string {
+  const remoteCwd = lease.metadata?.remoteCwd;
+  if (typeof remoteCwd === "string" && remoteCwd.trim().length > 0) {
+    return remoteCwd.trim();
+  }
+  throw new Error("Daytona file sync requires a workspace remote dir on the lease metadata.");
+}
+
 async function createSandbox(
   params: PluginEnvironmentAcquireLeaseParams | PluginEnvironmentProbeParams | PluginEnvironmentStartInteractiveSetupParams,
   config: DaytonaDriverConfig,
@@ -728,6 +761,13 @@ async function executeOneShot(
   const timeoutSeconds = toTimeoutSeconds(effectiveTimeoutMs);
   const stdinPath = params.stdin != null ? `/tmp/paperclip-stdin-${randomUUID()}` : null;
 
+  // Marks the start of the `executeCommand` REST round-trip. Hoisted out of the
+  // try so the timeout path below can still attribute the exec wall-time it spent
+  // before the SDK aborted — a slow failed exec is exactly what we want to
+  // measure. Stays null until we are about to call `executeCommand`, so a timeout
+  // during the earlier `uploadFile` step honestly reports no `durationMs`.
+  let execStart: number | null = null;
+
   try {
     if (stdinPath) {
       await sandbox.fs.uploadFile(Buffer.from(params.stdin ?? "", "utf8"), stdinPath, timeoutSeconds);
@@ -745,24 +785,36 @@ async function executeOneShot(
     // profile sourcing when params.cwd is set, and the Daytona executor's own
     // cwd argument runs before our login-shell init, which is the wrong order
     // (env from .bashrc would override caller env).
+    // Time only the `executeCommand` REST round-trip (Open Q1) — the ~600ms
+    // login-shell wrapper — so the caller can attribute a step's exec time to
+    // the provider boundary via the free-form `metadata.durationMs`.
+    execStart = timingNow();
     const result = await sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds);
+    const durationMs = timingNow() - execStart;
 
     return {
       exitCode: typeof result.exitCode === "number" ? result.exitCode : 1,
       timedOut: false,
       stdout: result.result ?? result.artifacts?.stdout ?? "",
       stderr: "",
+      metadata: { durationMs },
     };
   } catch (error) {
     if (error instanceof DaytonaTimeoutError) {
       const timeoutMessage = gitNet
         ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
         : error.message.trim();
+      // Preserve provider-boundary exec attribution on the timeout path: if the
+      // SDK aborted the `executeCommand` call itself, report how long it ran
+      // before timing out so slow failed startup exec is attributed to the
+      // provider, not silently dropped.
+      const durationMs = execStart != null ? timingNow() - execStart : undefined;
       return {
         exitCode: null,
         timedOut: true,
         stdout: "",
         stderr: `${timeoutMessage}\n`,
+        ...(durationMs != null ? { metadata: { durationMs } } : {}),
       };
     }
     throw error;
@@ -1241,9 +1293,64 @@ const plugin = definePlugin({
     }
 
     const config = parseDriverConfig(params.config);
+    // Time the `client.get` sandbox re-fetch (Open Q1) separately from the
+    // `executeCommand` round-trip so telemetry can split the per-call REST-get
+    // cost from the exec cost. `ensureSandboxStarted` is a no-op for an
+    // already-started sandbox, so it is excluded from the get measurement.
+    const getStart = timingNow();
     const sandbox = await getSandbox(config, params.lease.providerLeaseId);
+    const getDurationMs = timingNow() - getStart;
     await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
-    return await executeOneShot(sandbox, params, config);
+    const result = await executeOneShot(sandbox, params, config);
+    return {
+      ...result,
+      metadata: { ...(result.metadata ?? {}), getDurationMs },
+    };
+  },
+
+  // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)
+  // makes the worker advertise `environmentSyncIn`/`environmentSyncOut`, so the
+  // host runner routes Daytona workspace/asset transfers through the SDK's batch
+  // `uploadFiles` (plus host-side tarballs for directories) instead of the
+  // base64-over-exec fallback. Providers that do not define these keep the
+  // byte-identical fallback.
+  async onEnvironmentSyncIn(
+    params: PluginEnvironmentSyncInParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    if (!params.lease.providerLeaseId) {
+      throw new Error("Daytona syncIn requires a provider lease ID.");
+    }
+    const config = parseDriverConfig(params.config);
+    const remoteDir = resolveSyncRemoteDir(params.lease);
+    const timeoutSeconds = toTimeoutSeconds(config.timeoutMs);
+    const sandbox = await getSandbox(config, params.lease.providerLeaseId);
+    await ensureSandboxStarted(sandbox, timeoutSeconds);
+    return await performSyncIn({
+      sandbox,
+      operations: params.operations,
+      remoteDir,
+      timeoutSeconds,
+    });
+  },
+
+  // Opt-in native outbound transfer. See onEnvironmentSyncIn.
+  async onEnvironmentSyncOut(
+    params: PluginEnvironmentSyncOutParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    if (!params.lease.providerLeaseId) {
+      throw new Error("Daytona syncOut requires a provider lease ID.");
+    }
+    const config = parseDriverConfig(params.config);
+    const remoteDir = resolveSyncRemoteDir(params.lease);
+    const timeoutSeconds = toTimeoutSeconds(config.timeoutMs);
+    const sandbox = await getSandbox(config, params.lease.providerLeaseId);
+    await ensureSandboxStarted(sandbox, timeoutSeconds);
+    return await performSyncOut({
+      sandbox,
+      operations: params.operations,
+      remoteDir,
+      timeoutSeconds,
+    });
   },
 });
 

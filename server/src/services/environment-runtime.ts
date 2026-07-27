@@ -7,13 +7,17 @@ import type {
   EnvironmentLease,
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
+  IssueExecutionWorkspaceSettings,
   PluginEnvironmentConfig,
   SandboxEnvironmentConfig,
 } from "@paperclipai/shared";
 import type {
+  PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentLease,
   PluginEnvironmentRealizeWorkspaceResult,
+  PluginEnvironmentSyncResult,
+  PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
 import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
 import { environmentService } from "./environments.js";
@@ -121,6 +125,7 @@ export interface EnvironmentDriverAcquireInput {
   heartbeatRunId: string | null;
   executionWorkspaceId: string | null;
   executionWorkspaceMode: ExecutionWorkspace["mode"] | null;
+  executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   /**
    * The harness/adapter type for this run (the agent's adapter). Drivers that
    * materialize a per-run sandbox use it to select the runtime image so a single
@@ -185,6 +190,10 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   timeoutMs?: number;
 }
 
+export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput {
+  operations: PluginSyncOperation[];
+}
+
 export interface EnvironmentRuntimeDriver {
   readonly driver: string;
   acquireRunLease(input: EnvironmentDriverAcquireInput): Promise<EnvironmentLease>;
@@ -193,6 +202,16 @@ export interface EnvironmentRuntimeDriver {
   destroyRunLease?(input: EnvironmentDriverLeaseInput): Promise<EnvironmentLease | null>;
   realizeWorkspace?(input: EnvironmentDriverRealizeWorkspaceInput): Promise<PluginEnvironmentRealizeWorkspaceResult>;
   execute?(input: EnvironmentDriverExecuteInput): Promise<PluginEnvironmentExecuteResult>;
+  /**
+   * Optional native inbound/outbound file transfer, delegated to the plugin
+   * worker's `environmentSyncIn`/`environmentSyncOut` verbs. Only present for
+   * plugin-backed sandbox drivers whose worker advertises both verbs; callers
+   * gate on {@link EnvironmentRuntimeDriver.supportsSync}.
+   */
+  syncIn?(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult>;
+  syncOut?(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult>;
+  /** True when the lease's plugin worker advertises both sync verbs. */
+  supportsSync?(input: EnvironmentDriverLeaseInput): boolean;
 }
 
 export interface EnvironmentRuntimeLeaseRecord {
@@ -722,6 +741,39 @@ function createSandboxEnvironmentDriver(
     }
   }
 
+  async function callPluginEnvironmentSync(
+    method: "environmentSyncIn" | "environmentSyncOut",
+    input: EnvironmentDriverSyncInput,
+  ): Promise<PluginEnvironmentSyncResult> {
+    if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager) {
+      throw new Error("Sandbox driver does not support native file sync for this lease.");
+    }
+    const pluginId = readString(input.lease.metadata?.pluginId);
+    const providerKey = readString(input.lease.metadata?.provider);
+    if (!pluginId || !providerKey) {
+      throw new Error("Sandbox lease is missing plugin/provider metadata for native file sync.");
+    }
+    const config = await resolvePluginSandboxRuntimeConfig({
+      environment: input.environment,
+      lease: input.lease,
+      provider: providerKey,
+    });
+    const sanitizedConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
+    return await pluginWorkerManager.call(pluginId, method, {
+      driverKey: providerKey,
+      companyId: input.lease.companyId,
+      environmentId: input.environment.id,
+      issueId: input.lease.issueId,
+      config: sanitizedConfig,
+      lease: {
+        providerLeaseId: input.lease.providerLeaseId,
+        metadata: input.lease.metadata ?? undefined,
+        expiresAt: input.lease.expiresAt?.toISOString() ?? null,
+      },
+      operations: input.operations,
+    }, resolvePluginSandboxRpcTimeoutMs(sanitizedConfig));
+  }
+
   return {
     driver: "sandbox",
 
@@ -1235,6 +1287,41 @@ function createSandboxEnvironmentDriver(
       throw new Error("Sandbox driver does not support direct command execution for built-in providers.");
     },
 
+    supportsSync(input) {
+      if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager) return false;
+      const pluginId = readString(input.lease.metadata?.pluginId);
+      if (!pluginId) return false;
+      const advertised = pluginWorkerManager.getWorker(pluginId)?.supportedMethods ?? [];
+      if (!advertised.includes("environmentSyncIn") || !advertised.includes("environmentSyncOut")) {
+        return false;
+      }
+      // A worker advertises the sync verbs process-wide, but an individual lease
+      // may run on a backend that has no data channel for the native transport
+      // (e.g. a batch/job backend whose sync hook rejects immediately). The
+      // provider flags such leases so they keep the byte-identical base64
+      // fallback instead of being routed to a hook that would only error.
+      //
+      // Also fall back for any lease persisted with `backend: "job"` directly:
+      // job leases created before `nativeFileSyncUnsupported` existed carry the
+      // backend field but not the flag, and the `job` backend has no pod-exec
+      // channel, so routing them to the native hook would only reject.
+      if (
+        input.lease.metadata?.nativeFileSyncUnsupported === true ||
+        input.lease.metadata?.backend === "job"
+      ) {
+        return false;
+      }
+      return true;
+    },
+
+    async syncIn(input) {
+      return await callPluginEnvironmentSync("environmentSyncIn", input);
+    },
+
+    async syncOut(input) {
+      return await callPluginEnvironmentSync("environmentSyncOut", input);
+    },
+
     async destroyRunLease(input) {
       return await destroyReusableSandboxLease({
         environment: input.environment,
@@ -1501,7 +1588,8 @@ function createPluginEnvironmentDriver(
         agentId: input.agentId ?? undefined,
         executionWorkspaceId: input.executionWorkspaceId ?? undefined,
         adapterType: input.adapterType ?? undefined,
-      });
+        executionWorkspaceSettings: input.executionWorkspaceSettings,
+      } as PluginEnvironmentAcquireLeaseParams);
 
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
@@ -1720,6 +1808,7 @@ export function environmentRuntimeService(
       /** Null for ad-hoc invocations (e.g. operator-initiated `Test` probes). */
       heartbeatRunId: string | null;
       persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+      executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
       /** The agent's adapter type for this run (mixed-harness environments). */
       adapterType?: string | null;
       /**
@@ -1745,6 +1834,7 @@ export function environmentRuntimeService(
         heartbeatRunId: input.heartbeatRunId,
         executionWorkspaceId: leaseContext.executionWorkspaceId,
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
+        executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         adapterType: input.adapterType ?? null,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
       });
@@ -1889,6 +1979,27 @@ export function environmentRuntimeService(
         throw new Error(`Environment driver "${driver.driver}" does not support command execution.`);
       }
       return await driver.execute(input);
+    },
+
+    supportsSync(input: EnvironmentDriverLeaseInput): boolean {
+      const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
+      return driver?.supportsSync?.(input) ?? false;
+    },
+
+    async syncIn(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult> {
+      const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver.syncIn) {
+        throw new Error(`Environment driver "${driver.driver}" does not support native file sync.`);
+      }
+      return await driver.syncIn(input);
+    },
+
+    async syncOut(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult> {
+      const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver.syncOut) {
+        throw new Error(`Environment driver "${driver.driver}" does not support native file sync.`);
+      }
+      return await driver.syncOut(input);
     },
   };
 }

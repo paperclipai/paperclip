@@ -15,6 +15,102 @@ export interface AgentMultiSelectOption {
   icon?: string | null;
 }
 
+export function AgentSelect({
+  agents,
+  value,
+  onChange,
+  placeholder = "Select agent…",
+  emptyMessage = "No agents yet.",
+  disabled = false,
+  triggerClassName,
+  id,
+}: {
+  agents: AgentMultiSelectOption[];
+  value: string;
+  onChange: (agentId: string) => void;
+  placeholder?: string;
+  emptyMessage?: string;
+  disabled?: boolean;
+  triggerClassName?: string;
+  id?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+  const selectedAgent = agents.find((agent) => agent.id === value);
+  const normalizedFilter = filter.trim().toLowerCase();
+  const filteredAgents = useMemo(
+    () =>
+      agents
+        .filter((agent) => `${agent.name} ${agent.title ?? ""}`.toLowerCase().includes(normalizedFilter))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [agents, normalizedFilter],
+  );
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) setFilter("");
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          size="sm"
+          className={cn("w-full justify-between", triggerClassName)}
+          disabled={disabled}
+        >
+          <span className={cn("min-w-0 truncate", !selectedAgent && "text-muted-foreground")}>
+            {selectedAgent?.name ?? placeholder}
+          </span>
+          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-(--radix-popover-trigger-width) p-0" align="start">
+        <div className="border-b border-border p-3">
+          <Input
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="Filter agents"
+            className="h-8"
+            autoFocus
+          />
+        </div>
+        {agents.length === 0 ? (
+          <div className="px-3 py-4 text-sm text-muted-foreground">{emptyMessage}</div>
+        ) : (
+          <div className="max-h-60 overflow-y-auto py-1">
+            {filteredAgents.map((agent) => (
+              <button
+                key={agent.id}
+                type="button"
+                className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-accent/30"
+                aria-label={`Select ${agent.name}`}
+                onClick={() => {
+                  onChange(agent.id);
+                  setOpen(false);
+                }}
+              >
+                <AgentIcon icon={agent.icon ?? null} className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-sm font-medium text-foreground">{agent.name}</span>
+                  {agent.title ? <span className="truncate text-xs text-muted-foreground">{agent.title}</span> : null}
+                </span>
+              </button>
+            ))}
+            {filteredAgents.length === 0 ? (
+              <div className="px-3 py-4 text-sm text-muted-foreground">No matches.</div>
+            ) : null}
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function AgentMultiSelect({
   agents,
   selectedAgentIds,

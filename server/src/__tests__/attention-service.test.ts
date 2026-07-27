@@ -35,6 +35,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
+import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -153,6 +154,8 @@ describeEmbeddedPostgres("attention service", () => {
     executionState?: Record<string, unknown> | null;
     updatedAt?: Date;
     createdAt?: Date;
+    unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
+    blockedTransitionAt?: Date | null;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -171,6 +174,8 @@ describeEmbeddedPostgres("attention service", () => {
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
+      unblockDescriptor: input.unblockDescriptor ?? null,
+      blockedTransitionAt: input.blockedTransitionAt ?? null,
       createdAt: input.createdAt,
       updatedAt: input.updatedAt,
     });
@@ -248,6 +253,7 @@ describeEmbeddedPostgres("attention service", () => {
       identifier: "ATN-4",
       title: "Blocked parent",
       status: "blocked",
+      blockedTransitionAt: new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1),
       updatedAt: new Date("2026-07-09T12:04:00.000Z"),
     });
     const blockerLeafId = await insertIssue({
@@ -885,6 +891,83 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
     expect(feed.items.some((item) => item.dedupKey === `approval:${approvalId}`)).toBe(true);
+  });
+
+  it("delivers a structured human unblock descriptor once per blocked transition", async () => {
+    const { companyId } = await seedCompany("ATU");
+    const transitionAt = new Date("2026-07-23T18:30:00.000Z");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATU-1",
+      title: "Needs board action",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Approve the exception" },
+      blockedTransitionAt: transitionAt,
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const items = feed.items.filter((item) => item.dedupKey === `blocked-owner:${issueId}:${transitionAt.toISOString()}`);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ sourceKind: "blocker_attention", whyNow: "Approve the exception" });
+  });
+
+  it("keeps legacy blocker attention visible for pre-rollout blocked issues", async () => {
+    const { companyId } = await seedCompany("ATP");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATP-1",
+      title: "Blocked before rollout",
+      status: "blocked",
+      blockedTransitionAt: new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 1),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items.some((item) => item.dedupKey === `blocker:${issueId}:ATP-1`)).toBe(true);
+  });
+
+  it("does not route pre-rollout human unblock descriptors", async () => {
+    const { companyId } = await seedCompany("ATQ");
+    const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 1);
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATQ-1",
+      title: "Human-owned before rollout",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Review the issue" },
+      blockedTransitionAt: transitionAt,
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items.some((item) => item.dedupKey === `blocked-owner:${issueId}:${transitionAt.toISOString()}`)).toBe(false);
+  });
+
+  it("returns one pending approval row when the approval is linked to multiple tasks", async () => {
+    const { companyId } = await seedCompany("ATM");
+    const approvalId = randomUUID();
+    const firstIssueId = "00000000-0000-4000-8000-000000000001";
+    const secondIssueId = "00000000-0000-4000-8000-000000000002";
+    await insertIssue({ companyId, id: firstIssueId, identifier: "ATM-1", title: "First task", status: "in_progress" });
+    await insertIssue({ companyId, id: secondIssueId, identifier: "ATM-2", title: "Second task", status: "in_progress" });
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Approve rollout" },
+    });
+    await db.insert(issueApprovals).values([
+      { companyId, issueId: secondIssueId, approvalId },
+      { companyId, issueId: firstIssueId, approvalId },
+    ]);
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const approvalItems = feed.items.filter((item) => item.dedupKey === `approval:${approvalId}`);
+
+    expect(approvalItems).toHaveLength(1);
+    expect(approvalItems[0]?.subject.metadata?.issueId).toBe(firstIssueId);
   });
 
   it("hides snoozed attention rows until snoozedUntil passes, then returns them unconditionally", async () => {

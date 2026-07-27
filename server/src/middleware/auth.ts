@@ -375,6 +375,19 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
   };
 }
 
+/**
+ * Whether this instance is managed by a Paperclip Cloud control plane.
+ * When the tenant server token is configured, the control plane owns the
+ * user/identity lifecycle for this instance: users arrive through trusted
+ * headers (resolveCloudTenantActor) and are deliberately never granted
+ * instance_admin. Surfaces that assume a self-hosted operator will claim
+ * the instance (e.g. the first-admin bootstrap gate) should treat a
+ * cloud-managed instance as already set up.
+ */
+export function isCloudManagedInstance(): boolean {
+  return Boolean(process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim());
+}
+
 export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
   const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
   if (!expectedToken) return null;

@@ -78,6 +78,7 @@ function item(
     detail: null,
     dismissal: null,
     ...overrides,
+    trainingExampleId: overrides.trainingExampleId ?? null,
   };
 }
 

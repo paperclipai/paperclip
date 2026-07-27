@@ -83,7 +83,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 60_000);
 
   async function insertAgentAndIssue() {
     const companyId = randomUUID();

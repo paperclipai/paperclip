@@ -114,7 +114,7 @@ function connection(overrides: Record<string, unknown> = {}) {
     applicationId: "app-1",
     name: "GitHub",
     connectionKind: "managed",
-    transport: "remote_http",
+    transport: "mcp_remote",
     status: "archived",
     transportConfig: { url: "https://github.example/mcp" },
     config: { url: "https://github.example/mcp" },

@@ -717,7 +717,7 @@ export function smokeLabService(db: Db, options: {
     companyId: string;
     applicationId: string;
     name: string;
-    transport: "local_stdio" | "remote_http";
+    transport: "local_stdio" | "mcp_remote";
     config: Record<string, unknown>;
     transportConfig?: Record<string, unknown>;
     actor?: SmokeLabActorInfo;
@@ -748,6 +748,7 @@ export function smokeLabService(db: Db, options: {
     const [created] = await db.insert(toolConnections).values({
       companyId: input.companyId,
       name: input.name,
+      uid: `smoke-lab/${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
       ...values,
       createdByAgentId: input.actor?.actorType === "agent" ? input.actor.agentId : null,
       createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId : null,
@@ -1089,7 +1090,7 @@ export function smokeLabService(db: Db, options: {
         companyId,
         applicationId: httpApp.row.id,
         name: HTTP_CONNECTION_NAME,
-        transport: "remote_http",
+        transport: "mcp_remote",
         config: {
           smokeLabFixture: "oauth-http",
           service: "smoke-lab.http-mcp-fixture",

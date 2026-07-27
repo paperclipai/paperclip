@@ -10,6 +10,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
+  selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -263,9 +264,23 @@ function buildHeaders(input: {
 }
 
 function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): string {
-  const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
-  const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
-  const taskMarkdown = nonEmpty(ctx.context.paperclipTaskMarkdown);
+  // Stable session keys (issue/agent strategy) resume the same remote Hermes
+  // conversation across runs; a stored session id from a prior run means that
+  // conversation already received the task brief, so pick the compact
+  // task-context variant under the shared resume rules.
+  const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const resumedSession =
+    (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
+    Boolean(nonEmpty(ctx.runtime?.sessionId));
+  const taskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, { resumedSession }));
+  const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
+    // The task-context markdown is the authoritative brief on this lane; keep
+    // the wake prompt's description copy out so the prompt carries it once.
+    suppressIssueDescription: Boolean(taskMarkdown),
+  });
+  const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
+    omitIssueDescription: Boolean(taskMarkdown),
+  });
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
   const lines = [

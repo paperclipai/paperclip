@@ -5,6 +5,8 @@ import {
   type SandboxManagedRuntimeAsset,
   type SandboxManagedRuntimeClient,
   type SandboxRemoteExecutionSpec,
+  type SandboxSyncOperation,
+  type SandboxSyncResult,
 } from "./sandbox-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
@@ -18,6 +20,25 @@ export interface CommandManagedRuntimeRunner {
    * and let the caller choose a chunked upload path when progress is requested.
    */
   supportsSingleStreamStdinProgress?: boolean;
+  /**
+   * Cumulative count of host→sandbox `execute` round-trips this runner has
+   * performed (Open Q1). Present only on runners that instrument the single
+   * exec seam (the sandbox runner); the per-step delta is emitted as
+   * `run.startup.step` `payload.roundTrips`. A `() => number` reader, never the
+   * runner itself, is threaded into `measureStartupStep` so the timing helper
+   * stays runner-agnostic.
+   */
+  execCount?(): number;
+  /**
+   * Cumulative provider-reported wall-time (ms) for the `executeCommand` REST
+   * call ({@link providerExecMs}) vs the `client.get` sandbox re-fetch that
+   * precedes it ({@link providerGetMs}), accumulated across every `execute`
+   * round-trip (Open Q1, finer attribution). Present only when the provider
+   * surfaces these durations on its result metadata; the per-step deltas are
+   * emitted as `payload.providerExecMs` / `payload.providerGetMs`.
+   */
+  providerExecMs?(): number;
+  providerGetMs?(): number;
   execute(input: {
     command: string;
     args?: string[];
@@ -28,6 +49,16 @@ export interface CommandManagedRuntimeRunner {
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
   }): Promise<RunProcessResult>;
+  /**
+   * Optional native inbound file transfer. Present only when the sandbox
+   * provider advertises both `environmentSyncIn` and `environmentSyncOut`; the
+   * client exposes `syncIn`/`syncOut` only when BOTH are present, so the
+   * orchestrator either uses the native path for both directions or falls back
+   * to the base64 transport for both.
+   */
+  syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  /** Optional native outbound file transfer. See {@link syncIn}. */
+  syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
 }
 
 export interface CommandManagedRuntimeSpec {
@@ -118,7 +149,7 @@ export function createCommandManagedRuntimeClient(input: {
     return result;
   };
 
-  return {
+  const client: SandboxManagedRuntimeClient = {
     makeDir: async (remotePath) => {
       await runShell(`mkdir -p ${shellQuote(remotePath)}`);
     },
@@ -240,6 +271,17 @@ export function createCommandManagedRuntimeClient(input: {
       requireSuccessfulResult(result, command);
     },
   };
+
+  // Expose the native sync capability to the orchestrator only when the runner
+  // supports BOTH directions; a provider that advertises just one verb (or
+  // neither) keeps the byte-identical base64 fallback for both.
+  const { syncIn, syncOut } = input.runner;
+  if (syncIn && syncOut) {
+    client.syncIn = (operations) => syncIn(operations);
+    client.syncOut = (operations) => syncOut(operations);
+  }
+
+  return client;
 }
 
 export async function prepareCommandManagedRuntime(input: {
@@ -248,6 +290,7 @@ export async function prepareCommandManagedRuntime(input: {
   adapterKey: string;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  syncWorkspace?: boolean;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
@@ -302,6 +345,7 @@ export async function prepareCommandManagedRuntime(input: {
           adapterKey: input.adapterKey,
           workspaceLocalDir: input.workspaceLocalDir,
           workspaceRemoteDir,
+          syncWorkspace: input.syncWorkspace,
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
@@ -338,6 +382,7 @@ export async function prepareCommandManagedRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
+    syncWorkspace: input.syncWorkspace,
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,

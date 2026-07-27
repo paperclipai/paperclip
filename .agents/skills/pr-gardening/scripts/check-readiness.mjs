@@ -8,6 +8,7 @@ import {
   parseArgs,
   readJson,
   reason,
+  summarizePullRequestBody,
   writeJson,
 } from "./lib.mjs";
 
@@ -114,7 +115,7 @@ export async function checkReadiness(candidatesDocument, options = {}) {
       "--repo",
       repository,
       "--json",
-      "number,url,title,state,isDraft,headRefOid,baseRefName,headRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,updatedAt",
+      "number,url,title,author,body,state,isDraft,headRefOid,baseRefName,headRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,updatedAt",
     ]);
     const checkRuns = fetchCheckRuns(repository, pullRequest.headRefOid);
     const comparison = ghJson([
@@ -134,6 +135,8 @@ export async function checkReadiness(candidatesDocument, options = {}) {
       number: pullRequest.number,
       url: pullRequest.url,
       title: pullRequest.title,
+      author: pullRequest.author?.login ?? candidate.author ?? null,
+      purpose: summarizePullRequestBody(pullRequest.body),
       state: pullRequest.state.toLowerCase(),
       isDraft: pullRequest.isDraft,
       headSha: pullRequest.headRefOid,
@@ -156,6 +159,9 @@ export async function checkReadiness(candidatesDocument, options = {}) {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     repository,
+    windowDays: candidatesDocument.windowDays ?? null,
+    authors: candidatesDocument.query?.authors ?? null,
+    truncatedIssues: candidatesDocument.source?.truncatedIssues ?? [],
     candidatesGeneratedAt: candidatesDocument.generatedAt,
     dryRun: Boolean(options.dry_run ?? candidatesDocument.dryRun),
     summary: {
