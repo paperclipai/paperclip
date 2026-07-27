@@ -5,6 +5,7 @@ import {
   classifyNpmViewFailure,
   collectReleasePackagesForChangedPaths,
   getBaseReleaseState,
+  validateReleaseBootstrap,
 } from "./check-release-package-bootstrap.mjs";
 
 test("manifest changes without base state validate all release-enabled packages", () => {
@@ -22,6 +23,10 @@ test("manifest changes without base state validate all release-enabled packages"
   assert.deepEqual(
     changedPackages.map((pkg) => pkg.name),
     ["@paperclipai/a", "@paperclipai/b"],
+  );
+  assert.deepEqual(
+    changedPackages.map((pkg) => pkg.newlyReleaseEnabled),
+    [true, true],
   );
 });
 
@@ -46,6 +51,7 @@ test("manifest changes only validate newly release-enabled packages relative to 
     changedPackages.map((pkg) => pkg.name),
     ["@paperclipai/b"],
   );
+  assert.deepEqual(changedPackages.map((pkg) => pkg.newlyReleaseEnabled), [true]);
 });
 
 test("package-specific changes only validate affected release-enabled packages", () => {
@@ -63,6 +69,7 @@ test("package-specific changes only validate affected release-enabled packages",
     changedPackages.map((pkg) => pkg.name),
     ["@paperclipai/b"],
   );
+  assert.deepEqual(changedPackages.map((pkg) => pkg.newlyReleaseEnabled), [false]);
 });
 
 test("npm E404 failures are treated as missing packages", () => {
@@ -101,4 +108,37 @@ test("base release state falls back to public packages when manifest is absent",
   assert.deepEqual([...baseReleaseState.byDir.entries()], [
     ["packages/a", { name: "@paperclipai/a", publishFromCi: true }],
   ]);
+});
+
+test("newly release-enabled missing packages warn instead of failing", () => {
+  const warnings = validateReleaseBootstrap(
+    [{ dir: "packages/new", name: "@paperclipai/new", newlyReleaseEnabled: true }],
+    () => ({ status: "missing" }),
+  );
+
+  assert.deepEqual(warnings, [
+    "@paperclipai/new (packages/new) is newly release-enabled but does not exist on npm yet; the first publish will bootstrap it after merge",
+  ]);
+});
+
+test("already release-enabled missing packages still fail", () => {
+  assert.throws(
+    () =>
+      validateReleaseBootstrap(
+        [{ dir: "packages/existing", name: "@paperclipai/existing", newlyReleaseEnabled: false }],
+        () => ({ status: "missing" }),
+      ),
+    /release package bootstrap check failed:.*@paperclipai\/existing/s,
+  );
+});
+
+test("registry errors still fail", () => {
+  assert.throws(
+    () =>
+      validateReleaseBootstrap(
+        [{ dir: "packages/new", name: "@paperclipai/new", newlyReleaseEnabled: true }],
+        () => ({ status: "registry_error", detail: "npm error code EAI_AGAIN" }),
+      ),
+    /release package bootstrap check could not verify npm state:.*EAI_AGAIN/s,
+  );
 });
