@@ -1969,11 +1969,38 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl =
+  const primaryApiUrl =
     process.env.PAPERCLIP_RUNTIME_API_URL ??
     process.env.PAPERCLIP_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
+  const runtimeApiCandidates = (() => {
+    try {
+      const parsed = JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]");
+      return Array.isArray(parsed)
+        ? parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [];
+    } catch {
+      return [];
+    }
+  })();
+  // Agents launched in an isolated runtime cannot use the host's loopback
+  // interface. The server discovers interface URLs at startup; use the first
+  // non-loopback candidate for direct launches, while keeping loopback as the
+  // fallback for ordinary local development.
+  const reachableCandidate = runtimeApiCandidates.find((candidate) => {
+    try {
+      const hostname = new URL(candidate).hostname.toLowerCase();
+      return hostname !== "localhost" && hostname !== "127.0.0.1" && hostname !== "::1";
+    } catch {
+      return false;
+    }
+  });
+  const apiUrl = reachableCandidate ?? primaryApiUrl;
   vars.PAPERCLIP_API_URL = apiUrl;
+  vars.PAPERCLIP_RUNTIME_API_URL = apiUrl;
+  if (runtimeApiCandidates.length > 0) {
+    vars.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
+  }
   return vars;
 }
 
