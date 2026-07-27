@@ -230,4 +230,33 @@ describe("sharedBuffersCheck", () => {
     expect(result.repairHint).toContain("Restart the Paperclip server");
     expect(execute).toHaveBeenCalledTimes(1);
   });
+
+  it("parses binary configured_setting units (MiB/GiB)", async () => {
+    const cases: Array<{ configured: string; hostMemoryBytes: number; expected: string }> = [
+      { configured: "512MiB", hostMemoryBytes: 2 * 1024 ** 3, expected: "512 MiB" },
+      { configured: "1GiB", hostMemoryBytes: 4 * 1024 ** 3, expected: "1 GiB" },
+      { configured: "2GiB", hostMemoryBytes: 8 * 1024 ** 3, expected: "2 GiB" },
+    ];
+    for (const { configured, hostMemoryBytes, expected } of cases) {
+      const execute = vi.fn().mockResolvedValueOnce([
+        {
+          setting: "128",
+          unit: "8kB",
+          pending_restart: true,
+          configured_setting: configured,
+        },
+      ]);
+      const openDb = vi.fn(async () => ({ db: { execute } as never, connectionString: "postgres://test" }));
+
+      const result = await sharedBuffersCheck(createConfig(), undefined, {
+        hostMemoryBytes,
+        openDb,
+      });
+
+      expect(result.status).toBe("warn");
+      expect(result.canRepair).toBe(false);
+      expect(result.message).toContain(expected);
+      expect(result.message).toContain("restart Paperclip to apply it");
+    }
+  });
 });
