@@ -7,13 +7,12 @@ import {
 
 const KEY = "agent:kael:heartbeat";
 
-function totals(over: Partial<Record<string, number>> = {}) {
+/** Shaped like a live sessions.list row (see session-utils-row.ts): no cache buckets. */
+function row(over: Record<string, unknown> = {}) {
   return {
-    input: 1000,
-    output: 200,
-    cacheRead: 5000,
-    cacheWrite: 0,
-    totalCost: 0.25,
+    inputTokens: 1000,
+    outputTokens: 200,
+    estimatedCostUsd: 0.25,
     ...over,
   };
 }
@@ -23,8 +22,8 @@ describe("parseSessionUsageTotals", () => {
     const parsed = parseSessionUsageTotals(
       {
         sessions: [
-          { key: "other", usage: totals({ input: 99 }) },
-          { key: KEY, model: "claude-opus-5", modelProvider: "clawrouter", usage: totals() },
+          row({ key: "other", inputTokens: 99 }),
+          row({ key: KEY, model: "claude-opus-5", modelProvider: "clawrouter" }),
         ],
       },
       KEY,
@@ -33,16 +32,45 @@ describe("parseSessionUsageTotals", () => {
     expect(parsed).toEqual({
       inputTokens: 1000,
       outputTokens: 200,
-      cachedInputTokens: 5000,
+      cachedInputTokens: 0,
       costUsd: 0.25,
       model: "claude-opus-5",
       provider: "clawrouter",
     });
   });
 
+  // Verbatim from the live gateway: gpt-5.6-sol on clawrouter, and no estimatedCostUsd,
+  // which is why Paperclip prices the tokens itself rather than trusting the gateway.
+  it("reads a live-shaped row that carries no cost estimate", () => {
+    const parsed = parseSessionUsageTotals(
+      {
+        sessions: [
+          {
+            key: "agent:smilerite:paperclip:run:4984a4ae-3858-4379-9bbc-b21d13d6fd53",
+            inputTokens: 202026,
+            outputTokens: 1610,
+            estimatedCostUsd: null,
+            model: "gpt-5.6-sol",
+            modelProvider: "clawrouter",
+            status: "done",
+          },
+        ],
+      },
+      "agent:smilerite:paperclip:run:4984a4ae-3858-4379-9bbc-b21d13d6fd53",
+    );
+
+    expect(parsed).toMatchObject({
+      inputTokens: 202026,
+      outputTokens: 1610,
+      costUsd: 0,
+      model: "gpt-5.6-sol",
+      provider: "clawrouter",
+    });
+  });
+
   it("matches on sessionId when the row key differs", () => {
     const parsed = parseSessionUsageTotals(
-      { sessions: [{ key: "family-row", sessionId: KEY, usage: totals() }] },
+      { sessions: [row({ key: "family-row", sessionId: KEY })] },
       KEY,
     );
     expect(parsed?.inputTokens).toBe(1000);
@@ -50,15 +78,16 @@ describe("parseSessionUsageTotals", () => {
 
   it("returns null when the key is absent among several rows", () => {
     const parsed = parseSessionUsageTotals(
-      { sessions: [{ key: "a", usage: totals() }, { key: "b", usage: totals() }] },
+      { sessions: [row({ key: "a" }), row({ key: "b" })] },
       KEY,
     );
     expect(parsed).toBeNull();
   });
 
-  it("falls back to report totals only when no session rows exist", () => {
-    const parsed = parseSessionUsageTotals({ sessions: [], totals: totals() }, KEY);
-    expect(parsed?.costUsd).toBe(0.25);
+  // A missing row means the session is not in the store yet, not that it burned nothing.
+  // Reporting zero would bill the run at nothing while looking like a success.
+  it("returns null rather than zero when no row matches", () => {
+    expect(parseSessionUsageTotals({ sessions: [] }, KEY)).toBeNull();
   });
 
   it("returns null for junk payloads", () => {

@@ -61,14 +61,27 @@ left runnable so they can be triggered manually if ever needed.
   The openclaw-gateway adapter recovers usage the same way. The gateway's run-completion
   payload carries no `usage`, `model` or `costUsd` at all, so OpenClaw-backed agents wrote
   no cost event whatsoever (368 runs over 14 days, entirely invisible). OpenClaw does track
-  it and exposes it as the `sessions.usage` RPC, so the adapter samples that before dispatch
-  and after completion and records the difference -- the RPC returns CUMULATIVE session
-  totals, and a session outlives many runs, so writing them undifferenced would over-bill
-  badly. Inline meta is still preferred if the gateway ever starts sending it. Guarded by
-  `packages/adapters/openclaw-gateway/src/server/billing.test.ts`. Note `sessions.usage` is
-  `advertise: false` upstream (`operator.read` scope, which the adapter's `operator.admin`
-  connection covers) -- an unadvertised method is a weaker contract, so re-verify it on
-  OpenClaw upgrades.
+  it on the session store entry, projected onto each `sessions.list` row, so the adapter
+  samples that before dispatch and after completion and records the difference -- the rows
+  carry CUMULATIVE session totals, and a session outlives many runs under the issue/fixed key
+  strategies, so writing them undifferenced would over-bill badly. Inline meta is still
+  preferred if the gateway ever starts sending it. Guarded by
+  `packages/adapters/openclaw-gateway/src/server/billing.test.ts`.
+
+  Deliberately NOT `sessions.usage`, despite the name: that RPC derives usage by scanning the
+  session transcript, and these agents run the pi-fork runtime whose transcripts it cannot
+  read. Live it returned a row whose `usage` was null while the store entry beside it held
+  580k input tokens -- which shipped as two deploys that recorded nothing. `sessions.list`
+  rows expose no cache buckets, so cached reads bill at the full input rate (~2% over on
+  observed runs); that errs toward over-reporting spend rather than dropping the run.
+
+  Two traps worth keeping on OpenClaw upgrades. Under the `run` key strategy every run mints a
+  fresh session key, so a pre-dispatch baseline asks about a session that does not exist yet
+  and the gateway rejects it -- expected, and only a timeout/method-not-found may mark a
+  gateway as lacking the method (`indicatesSessionUsageUnsupported`). Treating that ordinary
+  rejection as "unsupported" once disabled billing process-wide for 24 runs. And when no row
+  matches, the adapter logs the key and row count rather than recording zero: silent nulls are
+  what let two broken deploys look healthy.
 - **Recovery:** suppress stale/paused routine recovery, source-scoped recovery actions.
 - **UI:** blocked-inbox row hit targets + optimistic mark-read/unread.
 - **CI adaptations:** fork canary publish opt-in, skip Cursor-only tests in fork release

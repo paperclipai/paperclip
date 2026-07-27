@@ -926,9 +926,16 @@ function parseUsage(value: unknown): AdapterExecutionResult["usage"] | undefined
 
 /**
  * The gateway's run-completion payload carries no token usage, so OpenClaw-backed agents
- * recorded every run at zero cost. OpenClaw does track it, exposed as the `sessions.usage`
- * RPC, but those are CUMULATIVE session totals: a session outlives many runs, so the totals
- * must be sampled before and after a run and differenced to get that run's consumption.
+ * recorded every run at zero cost. OpenClaw does track it, on the session store entry, which
+ * `sessions.list` projects onto each row.
+ *
+ * These are CUMULATIVE session totals: under the issue/fixed key strategies a session outlives
+ * many runs, so the totals are sampled before and after a run and differenced.
+ *
+ * Deliberately not `sessions.usage`, despite the name: that RPC derives usage by scanning the
+ * session transcript, and these agents run on the pi-fork runtime whose transcripts it cannot
+ * read. Live, it returned a row whose `usage` was null while the store entry beside it held
+ * 580k input tokens. The store entry is what OpenClaw itself bills from.
  */
 type SessionUsageTotals = {
   inputTokens: number;
@@ -944,25 +951,25 @@ export function parseSessionUsageTotals(payload: unknown, sessionKey: string): S
   if (!record) return null;
 
   const rows = Array.isArray(record.sessions) ? record.sessions.map(asRecord) : [];
-  const match =
-    rows.find((row) => row && (nonEmpty(row.key) === sessionKey || nonEmpty(row.sessionId) === sessionKey)) ??
-    (rows.length === 1 ? rows[0] : null);
-
-  // Fall back to report-wide totals only when the key resolved to a single row's absence;
-  // with several rows an unmatched key means the session simply has no usage yet.
-  const usage = asRecord(match?.usage) ?? (rows.length === 0 ? asRecord(record.totals) : null);
-  if (!usage) return null;
+  const match = rows.find(
+    (row) => row && (nonEmpty(row.key) === sessionKey || nonEmpty(row.sessionId) === sessionKey),
+  );
+  // An unmatched key means this session has no store row yet, which is not the same as zero
+  // usage -- reporting zero here would bill the run at nothing and look like success.
+  if (!match) return null;
 
   return {
-    inputTokens: asNumber(usage.input, 0),
-    outputTokens: asNumber(usage.output, 0),
-    cachedInputTokens: asNumber(usage.cacheRead, 0),
-    costUsd: asNumber(usage.totalCost, 0),
-    // Model drives server-side pricing: OpenClaw counts tokens but cannot price these models
-    // (its cost totals come back zero with missingCostEntries), so Paperclip prices them from
-    // MODEL_RATES and needs the model name more than it needs the gateway's cost figure.
-    model: match ? (nonEmpty(match.model) ?? nonEmpty(match.modelOverride) ?? null) : null,
-    provider: match ? (nonEmpty(match.modelProvider) ?? nonEmpty(match.providerOverride) ?? null) : null,
+    inputTokens: asNumber(match.inputTokens, 0),
+    outputTokens: asNumber(match.outputTokens, 0),
+    // The store row exposes no cache buckets, so cached reads bill at the full input rate.
+    // On observed runs that is a ~2% overstatement -- preferable to dropping the run entirely,
+    // and it errs toward over- rather than under-reporting spend to the budget guards.
+    cachedInputTokens: 0,
+    // OpenClaw's own estimate is usually absent (it cannot price these models), so Paperclip
+    // prices from MODEL_RATES and needs the model name more than the gateway's cost figure.
+    costUsd: asNumber(match.estimatedCostUsd, 0),
+    model: nonEmpty(match.model) ?? nonEmpty(match.modelOverride) ?? null,
+    provider: nonEmpty(match.modelProvider) ?? nonEmpty(match.providerOverride) ?? null,
   };
 }
 
@@ -1024,18 +1031,37 @@ async function fetchSessionUsageTotals(
   client: GatewayWsClient,
   gatewayId: string,
   sessionKey: string,
+  agentId: string | null,
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void> | void,
 ): Promise<SessionUsageTotals | null> {
   if (gatewaysWithoutSessionUsage.has(gatewayId)) {
     return null;
   }
   try {
+    // `search` matches the session key, so this returns the one row we need rather than the
+    // agent's entire store; the limit is headroom for substring collisions, not paging.
     const payload = await client.request<Record<string, unknown>>(
-      "sessions.usage",
-      { key: sessionKey },
+      "sessions.list",
+      {
+        search: sessionKey,
+        limit: 25,
+        sortBy: "updatedAt",
+        ...(agentId ? { agentId } : {}),
+      },
       { timeoutMs: USAGE_LOOKUP_TIMEOUT_MS },
     );
-    return parseSessionUsageTotals(payload, sessionKey);
+    const totals = parseSessionUsageTotals(payload, sessionKey);
+    if (!totals) {
+      // Silence is what let two deploys ship broken: say which key missed and what came back.
+      const rows = Array.isArray(asRecord(payload)?.sessions)
+        ? (asRecord(payload)?.sessions as unknown[]).length
+        : 0;
+      await onLog(
+        "stdout",
+        `[openclaw-gateway] no usage row for ${sessionKey} (${rows} row(s) returned); usage not recorded\n`,
+      );
+    }
+    return totals;
   } catch (err) {
     // Billing telemetry must never fail a run, nor slow down every subsequent one.
     const message = err instanceof Error ? err.message : String(err);
@@ -1043,13 +1069,13 @@ async function fetchSessionUsageTotals(
       gatewaysWithoutSessionUsage.add(gatewayId);
       await onLog(
         "stdout",
-        `[openclaw-gateway] sessions.usage unavailable (${message}); usage will not be recorded for ${gatewayId}\n`,
+        `[openclaw-gateway] sessions.list unavailable (${message}); usage will not be recorded for ${gatewayId}\n`,
       );
       return null;
     }
     await onLog(
       "stdout",
-      `[openclaw-gateway] sessions.usage lookup failed for ${sessionKey} (${message})\n`,
+      `[openclaw-gateway] sessions.list lookup failed for ${sessionKey} (${message})\n`,
     );
     return null;
   }
@@ -1428,7 +1454,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const sessionUsageBaselinePromise =
         sessionKeyStrategy === "run"
           ? Promise.resolve(null)
-          : fetchSessionUsageTotals(client, urlValue, sessionKey, ctx.onLog);
+          : fetchSessionUsageTotals(client, urlValue, sessionKey, configuredAgentId, ctx.onLog);
 
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
         timeoutMs: connectTimeoutMs,
@@ -1556,7 +1582,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? null
           : diffSessionUsage(
               await sessionUsageBaselinePromise,
-              await fetchSessionUsageTotals(client, urlValue, sessionKey, ctx.onLog),
+              await fetchSessionUsageTotals(client, urlValue, sessionKey, configuredAgentId, ctx.onLog),
             );
       const effectiveUsage = usage ?? parseUsage(sessionUsageDelta);
       const effectiveCostUsd = costUsd > 0 ? costUsd : (sessionUsageDelta?.costUsd ?? 0);

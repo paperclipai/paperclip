@@ -48,7 +48,7 @@ async function createMockGatewayServer(options?: {
   const wss = new WebSocketServer({ server });
 
   let agentPayload: Record<string, unknown> | null = null;
-  // sessions.usage returns cumulative session totals; the adapter samples it before and
+  // sessions.list rows carry cumulative session totals; the adapter samples them before and
   // after the run, so each call reports a higher total and the delta is what gets billed.
   let sessionsUsageCalls = 0;
 
@@ -91,7 +91,7 @@ async function createMockGatewayServer(options?: {
         return;
       }
 
-      if (frame.method === "sessions.usage") {
+      if (frame.method === "sessions.list") {
         sessionsUsageCalls += 1;
         // A real gateway rejects a lookup for a session it has not created yet, which is what
         // the pre-dispatch baseline asks for when each run mints its own key.
@@ -103,7 +103,7 @@ async function createMockGatewayServer(options?: {
               ok: false,
               error: {
                 code: "INVALID_REQUEST",
-                message: `Invalid session reference: ${frame.params?.key}`,
+                message: `Invalid session reference: ${frame.params?.search}`,
               },
             }),
           );
@@ -117,16 +117,12 @@ async function createMockGatewayServer(options?: {
             payload: {
               sessions: [
                 {
-                  key: frame.params?.key,
+                  key: frame.params?.search,
                   model: "claude-opus-5",
                   modelProvider: "clawrouter",
-                  usage: {
-                    input: 1_000 * sessionsUsageCalls,
-                    output: 200 * sessionsUsageCalls,
-                    cacheRead: 5_000 * sessionsUsageCalls,
-                    cacheWrite: 0,
-                    totalCost: 0,
-                  },
+                  inputTokens: 1_000 * sessionsUsageCalls,
+                  outputTokens: 200 * sessionsUsageCalls,
+                  estimatedCostUsd: 0,
                 },
               ],
             },
@@ -572,11 +568,10 @@ describe("openclaw gateway adapter execute", () => {
       expect(result.provider).toBe("clawrouter");
 
       // The gateway reports no usage on the completion payload, so billing comes from the
-      // sessions.usage delta: second sample (2x) minus the pre-dispatch baseline (1x).
+      // sessions.list delta: second sample (2x) minus the pre-dispatch baseline (1x).
       expect(result.usage).toMatchObject({
         inputTokens: 1_000,
         outputTokens: 200,
-        cachedInputTokens: 5_000,
       });
       expect(result.model).toBe("claude-opus-5");
       // OpenClaw cannot price these models, so the server prices them from tokens.
@@ -660,7 +655,6 @@ describe("openclaw gateway adapter execute", () => {
       expect(result.usage).toMatchObject({
         inputTokens: 2_000,
         outputTokens: 400,
-        cachedInputTokens: 10_000,
       });
       expect(result.model).toBe("claude-opus-5");
       expect(result.billingType).toBe("subscription_included");
