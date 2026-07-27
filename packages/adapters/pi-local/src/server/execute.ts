@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, type AdapterBillingType, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -133,6 +133,38 @@ async function buildPiSkillsDir(config: Record<string, unknown>): Promise<string
 
 function resolvePiBiller(env: Record<string, string>, provider: string | null): string {
   return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
+}
+
+/**
+ * Billers that front a subscription (or subscription-backed proxy) instead of metering
+ * per token. They report no per-call cost, so the server has to estimate cost from token
+ * counts -- and it only estimates for subscription billing types.
+ */
+const SUBSCRIPTION_BILLERS = /^(clawrouter|claude-bridge|claude-code|codex|cursor)$/i;
+
+/** Presence of one of these implies the run is metered directly against a provider account. */
+const METERED_API_KEY_ENV_VARS = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GEMINI_API_KEY",
+  "XAI_API_KEY",
+  "OPENROUTER_API_KEY",
+];
+
+function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
+  const raw = env[key];
+  return typeof raw === "string" && raw.trim().length > 0;
+}
+
+/**
+ * Pi routes through subscription-backed providers by default (no API key in the agent env),
+ * so an unresolved billing type means subscription, not "unknown". Emitting "unknown" here
+ * suppresses server-side cost estimation entirely and records every run at zero cost.
+ */
+export function resolvePiBillingType(env: Record<string, string>, biller: string): AdapterBillingType {
+  if (SUBSCRIPTION_BILLERS.test(biller)) return "subscription_included";
+  if (METERED_API_KEY_ENV_VARS.some((key) => hasNonEmptyEnvValue(env, key))) return "metered_api";
+  return "subscription_included";
 }
 
 async function ensureSessionsDir(): Promise<string> {
@@ -773,6 +805,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: attempt.proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
+      const piBiller = resolvePiBiller(runtimeEnv, provider);
 
       return {
         exitCode: effectiveExitCode,
@@ -790,9 +823,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
         provider: provider,
-        biller: resolvePiBiller(runtimeEnv, provider),
+        biller: piBiller,
         model: model,
-        billingType: "unknown",
+        billingType: resolvePiBillingType(runtimeEnv, piBiller),
         costUsd: attempt.parsed.usage.costUsd,
         resultJson: {
           stdout: attempt.proc.stdout,

@@ -47,6 +47,13 @@ left runnable so they can be triggered manually if ever needed.
   openclaw-gateway protocol v4, workspace_finalize op-log FK race fix.
 - **Provider/adapter:** pi-adapter rate-limits classified transient, non-UUID run-id
   rejected at trust boundaries.
+- **Cost/billing:** the pi-local adapter resolves `billingType` (upstream hardcodes
+  `"unknown"`, which suppresses cost estimation and records every subscription run at
+  zero), and `MODEL_RATES` covers the models this fleet actually runs
+  (`claude-opus-5`, `gpt-5.6-*`). Guarded by `packages/adapters/pi-local/src/server/billing.test.ts`
+  and the `fleet model rate coverage (fork)` block in `server/src/__tests__/model-costs.test.ts`
+  -- if an upstream sync reverts either half, those tests fail. Rates for models upstream
+  does not price are fork estimates; correct the constants if list prices change.
 - **Recovery:** suppress stale/paused routine recovery, source-scoped recovery actions.
 - **UI:** blocked-inbox row hit targets + optimistic mark-read/unread.
 - **CI adaptations:** fork canary publish opt-in, skip Cursor-only tests in fork release

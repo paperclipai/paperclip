@@ -18,7 +18,7 @@ interface ModelRates {
 
 const MODEL_RATES: Array<{ match: RegExp; rates: ModelRates }> = [
   {
-    match: /claude-opus-4/i,
+    match: /claude-opus-(4|5)/i,
     rates: {
       inputMicrosPerMillion: 5_000_000,
       cachedInputMicrosPerMillion: 500_000,
@@ -39,6 +39,17 @@ const MODEL_RATES: Array<{ match: RegExp; rates: ModelRates }> = [
       inputMicrosPerMillion: 1_000_000,
       cachedInputMicrosPerMillion: 100_000,
       outputMicrosPerMillion: 5_000_000,
+    },
+  },
+  {
+    // Cached tokens arrive as a separate count from clawrouter/pi (observed:
+    // input 10_304 vs cached 76_453 on the same event), so they are not netted
+    // out of inputTokens the way the direct-OpenAI gpt-5.5 entry assumes.
+    match: /gpt-5\.6/i,
+    rates: {
+      inputMicrosPerMillion: 5_000_000,
+      cachedInputMicrosPerMillion: 500_000,
+      outputMicrosPerMillion: 30_000_000,
     },
   },
   {
