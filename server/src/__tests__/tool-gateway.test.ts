@@ -3915,6 +3915,7 @@ rl.on("line", (line) => {
       "demo-plugin:structured": { content: "structured ok", data: { ok: true } },
       "demo-plugin:text_only": { content: "text only" },
       "demo-plugin:failing": { error: "plugin refused the call" },
+      "demo-plugin:empty_error": { error: "", content: "ignored on failure" },
     };
     const dispatcher: PluginToolDispatcher = {
       initialize: async () => {},
@@ -3989,6 +3990,16 @@ rl.on("line", (line) => {
       .expect(200);
     expect(failing.body.result).toEqual({
       content: [{ type: "text", text: "plugin refused the call" }],
+      isError: true,
+    });
+
+    const emptyError = await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer ${session.token}`)
+      .send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "demo-plugin:empty_error", arguments: {} } })
+      .expect(200);
+    expect(emptyError.body.result).toEqual({
+      content: [{ type: "text", text: "ignored on failure" }],
       isError: true,
     });
   });
