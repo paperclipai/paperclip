@@ -440,11 +440,15 @@ async function copyWorkspaceEntry(sourceRoot: string, targetRoot: string, relati
 
   const stagedTargetPath = buildUniqueStagingPath({ targetPath, suffix: ".paperclip-copy" });
   await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
-  await fs.copyFile(sourcePath, stagedTargetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
-    await fs.copyFile(sourcePath, stagedTargetPath);
-  });
-  await fs.chmod(stagedTargetPath, stats.mode);
-  await fs.rename(stagedTargetPath, targetPath);
+  try {
+    await fs.copyFile(sourcePath, stagedTargetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+      await fs.copyFile(sourcePath, stagedTargetPath);
+    });
+    await fs.chmod(stagedTargetPath, stats.mode);
+    await fs.rename(stagedTargetPath, targetPath);
+  } finally {
+    await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 export async function mirrorDirectory(

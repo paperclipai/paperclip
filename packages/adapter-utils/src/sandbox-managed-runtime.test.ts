@@ -104,6 +104,36 @@ describe("sandbox managed runtime", () => {
     expect(chmodMock.mock.invocationCallOrder[0]).toBeLessThan(renameMock.mock.invocationCallOrder[0]);
   });
 
+  it("cleans up a staged sibling when chmod fails before rename", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-copy-cleanup-"));
+    cleanupDirs.push(rootDir);
+    const sourceDir = path.join(rootDir, "source");
+    const targetDir = path.join(rootDir, "target");
+    const relativePath = path.join("nested", "script.sh");
+    const sourcePath = path.join(sourceDir, relativePath);
+    const targetPath = path.join(targetDir, relativePath);
+    await mkdir(path.dirname(sourcePath), { recursive: true });
+    await writeFile(sourcePath, "#!/bin/sh\necho hello\n", { mode: 0o600 });
+    await mkdir(targetDir, { recursive: true });
+
+    const chmodMock = vi.mocked(fsPromises.chmod);
+    const renameMock = vi.mocked(fsPromises.rename);
+    chmodMock.mockClear();
+    renameMock.mockClear();
+    chmodMock.mockImplementationOnce(async () => {
+      throw new Error("chmod failed");
+    });
+
+    await expect(mirrorDirectory(sourceDir, targetDir)).rejects.toThrow(/chmod failed/);
+
+    expect(chmodMock).toHaveBeenCalledTimes(1);
+    expect(renameMock).not.toHaveBeenCalled();
+    const stagedPath = chmodMock.mock.calls[0]?.[0];
+    expect(stagedPath).toContain(".paperclip-copy.");
+    await expect(readFile(stagedPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(targetPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("syncs workspace and assets through a provider-neutral sandbox client", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-managed-"));
     cleanupDirs.push(rootDir);
