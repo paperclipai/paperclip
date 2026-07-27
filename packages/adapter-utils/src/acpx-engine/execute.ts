@@ -1747,8 +1747,21 @@ async function buildRuntime(input: {
   let runtimeEnv: Record<string, string> = {};
   try {
     if (useRemoteProcessSession) {
-      // Step 5 — bridge.paperclip: start the sandbox ACP API callback bridge.
-      paperclipBridge = await measureStartupStep(input.ctx, nowMs, "bridge.paperclip", () =>
+      // Steps 5 + 6 — bring up BOTH host-side sandbox bridges concurrently. Their
+      // remote subtrees are disjoint (`…/paperclip-bridge/…` vs
+      // `…/process-sessions/…`), so the env-INDEPENDENT setup of each overlaps,
+      // trending wall time from serial (~bridge.paperclip + ~bridge.process-session)
+      // toward ~max(the two). The ONE real dependency — the paperclip bridge's
+      // returned `env` must reach the process-session LAUNCH — is sequenced by
+      // `finalizeLaunchEnv`: the process-session bridge runs its env-independent
+      // dir/script setup first, then awaits that thunk right before its launch, so
+      // the launch always observes the merged paperclip env.
+      //
+      // Measurement caveat: both starts share ONE runner counter, so their
+      // overlapping `providerExecMs`/`roundTrips` deltas are approximate (the same
+      // caveat as `acp.handshake`). Both `run.startup.step` events still emit —
+      // `measureStartupStep` records them in a `finally`, even on a start failure.
+      const paperclipStart = measureStartupStep(input.ctx, nowMs, "bridge.paperclip", () =>
         startAdapterExecutionTargetPaperclipBridge({
           runId,
           target: { ...executionTarget, streamRunLogs: false },
@@ -1760,36 +1773,57 @@ async function buildRuntime(input: {
         }),
         stepMetrics,
       );
-      if (paperclipBridge) {
-        Object.assign(env, paperclipBridge.env);
-        await input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n");
-      }
+      // The single sequencing point (paperclip `env` → process-session launch).
+      // Memoized so the merge + log + `runtimeEnv` build run EXACTLY once whether
+      // the process-session bridge consumes it at launch or we finalize it below.
+      let launchEnvPromise: Promise<Record<string, string>> | null = null;
+      const finalizeLaunchEnv = (): Promise<Record<string, string>> =>
+        (launchEnvPromise ??= (async () => {
+          const paperclip = await paperclipStart;
+          if (paperclip) {
+            Object.assign(env, paperclip.env);
+            await input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n");
+          }
+          return (runtimeEnv = resolveRuntimeEnv(env));
+        })());
+      const processSessionStart = measureStartupStep(input.ctx, nowMs, "bridge.process-session", () =>
+        startAdapterExecutionTargetProcessSessionBridge({
+          runId,
+          target: executionTarget,
+          runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
+          adapterKey: input.engine.adapterType,
+          command: "sh",
+          args: ["-lc", `exec ${agentCommandShell}`],
+          cwd: sessionCwd,
+          // Deferred: the process-session bridge runs its env-independent setup,
+          // then calls this to get the launch env AFTER the paperclip env merge.
+          env: finalizeLaunchEnv,
+          timeoutSec,
+          onLog: input.ctx.onLog,
+        }),
+        stepMetrics,
+      );
+      // Settle BOTH starts (mirrors `cleanupRemoteBridges`' `Promise.allSettled`):
+      // collect whichever handles started plus the first failure. Both handles
+      // stay individually declared so the catch below can stop whichever started.
+      const started = await settleRemoteBridgeStarts(paperclipStart, processSessionStart);
+      paperclipBridge = started.paperclipBridge;
+      processSessionBridge = started.processSessionBridge;
+      if (started.failure) throw started.failure;
+      // Guarantee the paperclip env merge ran even if the process-session bridge
+      // returned without consuming the launch env (memoized ⇒ a no-op if it did).
+      await finalizeLaunchEnv();
+    } else {
+      // Local / runner-less lanes never start a bridge, but the returned prepared
+      // runtime and the log builder still read `runtimeEnv`.
+      runtimeEnv = resolveRuntimeEnv(env);
     }
-    runtimeEnv = Object.fromEntries(
-      Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    );
-    // Step 6 — bridge.process-session: start the in-sandbox process session.
-    processSessionBridge = useRemoteProcessSession
-      ? await measureStartupStep(input.ctx, nowMs, "bridge.process-session", () =>
-          startAdapterExecutionTargetProcessSessionBridge({
-            runId,
-            target: executionTarget,
-            runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
-            adapterKey: input.engine.adapterType,
-            command: "sh",
-            args: ["-lc", `exec ${agentCommandShell}`],
-            cwd: sessionCwd,
-            env: runtimeEnv,
-            timeoutSec,
-            onLog: input.ctx.onLog,
-          }),
-          stepMetrics,
-        )
-      : null;
   } catch (err) {
-    await paperclipBridge?.stop().catch(() => {});
+    // On a partial concurrent bring-up failure, ONE bridge may have started while
+    // the other threw; `Promise.allSettled` stops whichever started so no live
+    // bridge leaks (mirrors `cleanupRemoteBridges`). Both handles are individually
+    // declared above, so either may be non-null here.
+    await Promise.allSettled([paperclipBridge?.stop(), processSessionBridge?.stop()]);
     // The staged home / copy-back teardown must run even if a bridge fails to
     // start after the workspace + managed home were already staged into the
     // sandbox, so a refreshed credential is copied back on this error path too.
@@ -1914,6 +1948,54 @@ async function applySessionConfigOptions(input: {
       `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
     );
   }
+}
+
+/**
+ * Build the process-session launch env: the host env overlaid with the run's
+ * `env` (so the merged paperclip bridge vars win) and a guaranteed `PATH`,
+ * narrowed to string values. Shared by the remote concurrent bring-up and the
+ * local / runner-less lane so both resolve the runtime env identically.
+ */
+function resolveRuntimeEnv(env: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
+
+/**
+ * Bring up the two host-side sandbox bridges concurrently and settle both.
+ *
+ * Mirrors `cleanupRemoteBridges`' `Promise.allSettled` idiom (settle, not
+ * `Promise.all`): running BOTH starts to completion is what lets the caller STOP
+ * a bridge that DID start when its sibling threw — so a partial failure never
+ * leaks a live bridge. Returns whichever handles started plus the first failure
+ * (paperclip before process-session) for the caller to rethrow through the
+ * shared abandon path.
+ */
+async function settleRemoteBridgeStarts(
+  paperclipStart: Promise<AdapterExecutionTargetPaperclipBridgeHandle | null>,
+  processSessionStart: Promise<AdapterExecutionTargetProcessSessionBridgeHandle | null>,
+): Promise<{
+  paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null;
+  processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null;
+  failure: unknown;
+}> {
+  const [paperclip, processSession] = await Promise.allSettled([
+    paperclipStart,
+    processSessionStart,
+  ]);
+  return {
+    paperclipBridge: paperclip.status === "fulfilled" ? paperclip.value : null,
+    processSessionBridge: processSession.status === "fulfilled" ? processSession.value : null,
+    failure:
+      paperclip.status === "rejected"
+        ? paperclip.reason
+        : processSession.status === "rejected"
+          ? processSession.reason
+          : null,
+  };
 }
 
 async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void> {

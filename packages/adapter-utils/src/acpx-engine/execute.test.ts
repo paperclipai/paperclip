@@ -1851,6 +1851,85 @@ describe("ACPX engine remote sandbox staging seam (PR 1: workspace + cwd)", () =
     expect(sessionInputs[0]?.cwd).toBe(remoteCwd);
   });
 
+  it("hands the merged paperclip env to the process-session launch when the setups overlap", async () => {
+    const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    // Decode the process-session LAUNCH payload (the base64 command blob) — the
+    // in-sandbox process env is carried there, NOT in the exec's own `env`.
+    let launchPayload: Record<string, unknown> | null = null;
+    (executionTarget as { runner: unknown }).runner = createLocalSandboxRunner((input) => {
+      if (input.env?.PAPERCLIP_SANDBOX_EXEC_CHANNEL === "bridge") {
+        const script = input.args?.[1] ?? "";
+        const match = script.match(/PAPERCLIP_PROCESS_SESSION_COMMAND_B64='([^']+)'/);
+        if (match) {
+          launchPayload = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8")) as Record<
+            string,
+            unknown
+          >;
+        }
+      }
+    });
+
+    await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget },
+    );
+
+    // The process-session bridge receives its launch env as a DEFERRED thunk —
+    // the seam that lets its env-independent setup overlap the paperclip bridge
+    // start instead of running strictly after it.
+    const processArgs = vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mock.calls[0]![0];
+    expect(typeof processArgs.env).toBe("function");
+
+    // ...and despite the overlap the launch still observes the MERGED paperclip
+    // env: the paperclip-`env` → process-session-launch hand-off stays sequenced
+    // under concurrency (bridge base URL + minted bridge token both present, and
+    // the token is NOT the host run JWT).
+    const payloadEnv = ((launchPayload as Record<string, unknown> | null)?.env ?? {}) as Record<
+      string,
+      unknown
+    >;
+    expect(payloadEnv).toMatchObject({ PAPERCLIP_API_BRIDGE_MODE: "queue_v1" });
+    expect(String(payloadEnv.PAPERCLIP_API_URL ?? "")).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(payloadEnv.PAPERCLIP_API_KEY).toBeTruthy();
+    expect(payloadEnv.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
+  });
+
+  it("stops the process-session bridge when the paperclip bridge fails under concurrency", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    // The paperclip bridge fails; the process-session bridge — started CONCURRENTLY
+    // with it — still resolves a live handle. The abandon path must stop that
+    // handle so no started bridge leaks on partial failure.
+    const stop = vi.fn(async () => {});
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(async () => {
+      throw new Error("paperclip bridge boom");
+    });
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(
+      async () => ({ agentCommand: null, stop }) as never,
+    );
+
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => buildRuntime() as never,
+    });
+
+    await expect(
+      execute({
+        runId: "run-bridge-fail",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+        context: {},
+        authToken: "real-run-jwt",
+        executionTarget,
+        onLog: async () => {},
+        onMeta: async () => {},
+        onEvent: async () => {},
+      } as never),
+    ).rejects.toThrow("paperclip bridge boom");
+
+    // The concurrently-started process-session bridge was stopped exactly once.
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
   it("test_remote_session_new_uses_in_sandbox_cwd", async () => {
     const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
     const { sessionInputs, runtimeOptions } = await runExecutor(

@@ -1303,7 +1303,12 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   command: string;
   args: string[];
   cwd: string;
-  env: Record<string, string>;
+  // The launch env is consumed ONLY when building the base64 `commandPayload`
+  // below — never during the env-INDEPENDENT dir/script setup. Accepting a
+  // resolver (in addition to a plain object) lets a caller overlap that setup
+  // with other work — e.g. starting the paperclip callback bridge — and hand the
+  // merged env in right before the launch.
+  env: Record<string, string> | (() => Promise<Record<string, string>>);
   timeoutSec?: number | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }): Promise<AdapterExecutionTargetProcessSessionBridgeHandle | null> {
@@ -1339,11 +1344,15 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   await client.makeDir(eventsDir);
   await syncProcessSessionRemoteScript({ client, remoteScriptPath });
 
+  // Resolve the launch env AFTER the env-independent setup above, so a caller
+  // can defer it until an upstream dependency (e.g. the paperclip bridge's env)
+  // is ready without blocking the dir/script setup.
+  const launchEnv = typeof input.env === "function" ? await input.env() : input.env;
   const commandPayload = Buffer.from(JSON.stringify({
     command: input.command,
     args: input.args,
     cwd: input.cwd || target.remoteCwd,
-    env: sanitizeRemoteExecutionEnv(input.env),
+    env: sanitizeRemoteExecutionEnv(launchEnv),
   }), "utf8").toString("base64");
 
   await onLog("stdout", `[paperclip] Starting ACP process session bridge in sandbox (${target.providerKey ?? "provider"}).\n`);
