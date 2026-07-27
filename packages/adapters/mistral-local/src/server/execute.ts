@@ -69,7 +69,9 @@ async function seedVibeEnvIfNeeded(envConfig: Record<string, unknown>): Promise<
   if (!apiKey) return;
   try {
     let existing = "";
-    try { existing = await fs.readFile(VIBE_ENV_FILE, "utf-8"); } catch { /* file may not exist yet */ }
+    try { existing = await fs.readFile(VIBE_ENV_FILE, "utf-8"); } catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
     const lines = existing.split("\n").filter((l) => !l.startsWith("MISTRAL_API_KEY="));
     lines.push(`MISTRAL_API_KEY=${apiKey}`);
     await fs.mkdir(path.dirname(VIBE_ENV_FILE), { recursive: true });
