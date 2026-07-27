@@ -49,7 +49,12 @@ import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+  SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  buildFinishSuccessfulRunHandoffIdempotencyKey,
+  decideSuccessfulRunHandoff,
+  findExistingFinishSuccessfulRunHandoffWake,
+  isSuccessfulRunHandoffInsideSettleWindow,
   buildSuccessfulRunHandoffExhaustedNotice,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
@@ -136,7 +141,7 @@ type ResolvedDependencyWakeBackstopOptions = {
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "startedAt" | "updatedAt" | "finishedAt"
 > & {
   resultJson?: unknown;
 } | null;
@@ -577,6 +582,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        startedAt: heartbeatRuns.startedAt,
+        updatedAt: heartbeatRuns.updatedAt,
+        finishedAt: heartbeatRuns.finishedAt,
         resultJson: heartbeatRuns.resultJson,
       })
       .from(heartbeatRuns)
@@ -605,6 +613,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        startedAt: heartbeatRuns.startedAt,
+        updatedAt: heartbeatRuns.updatedAt,
+        finishedAt: heartbeatRuns.finishedAt,
         resultJson: heartbeatRuns.resultJson,
       })
       .from(heartbeatRuns)
@@ -830,6 +841,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        startedAt: heartbeatRuns.startedAt,
+        updatedAt: heartbeatRuns.updatedAt,
+        finishedAt: heartbeatRuns.finishedAt,
         resultJson: heartbeatRuns.resultJson,
       })
       .from(heartbeatRuns)
@@ -931,6 +945,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     return queued;
+  }
+
+  async function enqueueSuccessfulRunHandoffRecovery(
+    issue: typeof issues.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    latestRun: NonNullable<LatestIssueRun>,
+  ) {
+    const idempotencyKey = buildFinishSuccessfulRunHandoffIdempotencyKey({
+      issueId: issue.id,
+      sourceRunId: latestRun.id,
+    });
+    const [existingWake, hasQueuedWake, budgetBlocked] = await Promise.all([
+      findExistingFinishSuccessfulRunHandoffWake(db, {
+        companyId: issue.companyId,
+        idempotencyKey,
+      }),
+      hasQueuedIssueWake(issue.companyId, issue.id, agent.id),
+      isInvocationBudgetBlocked(issue, agent.id),
+    ]);
+
+    const decision = decideSuccessfulRunHandoff({
+      run: latestRun as any,
+      issue,
+      agent,
+      livenessState: latestRun.livenessState as any,
+      detectedProgressSummary: null,
+      taskKey: issue.id,
+      hasActiveExecutionPath: false,
+      hasQueuedWake,
+      hasPendingInteractionOrApproval: false,
+      hasPersistedMonitor: Boolean(issue.monitorNextCheckAt),
+      hasExplicitBlockerPath: false,
+      hasOpenChildPath: false,
+      hasOpenRecoveryIssue: false,
+      hasPauseHold: false,
+      hasActiveRoutineContinuation: false,
+      budgetBlocked,
+      idempotentWakeExists: Boolean(existingWake),
+    });
+    if (decision.kind !== "enqueue") return null;
+
+    return deps.enqueueWakeup(decision.targetAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+      payload: decision.payload,
+      contextSnapshot: decision.contextSnapshot,
+      idempotencyKey: decision.idempotencyKey,
+      requestedByActorType: "system",
+      requestedByActorId: "recovery",
+    });
   }
 
   async function enqueueInitialAssignedTodoDispatch(issue: typeof issues.$inferSelect, agentId: string) {
@@ -3102,6 +3167,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
         result.skipped += 1;
+        continue;
+      }
+      if (
+        latestRun?.status === "succeeded" &&
+        isProductiveContinuationRun(latestRun) &&
+        !successfulRunHandoffRecoveryEvidence(latestRun)
+      ) {
+        if (isSuccessfulRunHandoffInsideSettleWindow(latestRun)) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const queued = await enqueueSuccessfulRunHandoffRecovery(issue, agent, latestRun);
+        if (queued) {
+          result.continuationRequeued += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          logger.debug(
+            {
+              issueId: issue.id,
+              runId: latestRun.id,
+              settleWindowMs: SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS,
+            },
+            "Skipped delayed successful-run handoff enqueue after settle window",
+          );
+          result.skipped += 1;
+        }
         continue;
       }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {

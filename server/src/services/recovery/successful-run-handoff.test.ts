@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+  SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -8,6 +9,7 @@ import {
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
+  isSuccessfulRunHandoffInsideSettleWindow,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
@@ -201,6 +203,37 @@ describe("successful run handoff decision", () => {
     expect(decide({ run: { ...run, status: "failed", errorCode: "adapter_failed" } as any })).toEqual({
       kind: "skip",
       reason: "source run did not succeed",
+    });
+  });
+
+  it("holds successful runs inside the settle window instead of creating a corrective handoff wake", () => {
+    const nowMs = Date.now();
+    const freshRun = {
+      ...run,
+      finishedAt: new Date(nowMs - SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS + 1_000),
+      updatedAt: new Date(nowMs - SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS + 1_000),
+      startedAt: new Date(nowMs - SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS + 30_000),
+    } as any;
+
+    expect(isSuccessfulRunHandoffInsideSettleWindow(freshRun, nowMs)).toBe(true);
+    expect(decide({ run: freshRun })).toEqual({
+      kind: "skip",
+      reason: "successful run is still inside the handoff settle window",
+    });
+  });
+
+  it("skips aged successful runs when a live execution path has already reclaimed the issue", () => {
+    const agedRun = {
+      ...run,
+      finishedAt: new Date("2026-07-27T10:00:00.000Z"),
+      updatedAt: new Date("2026-07-27T10:00:00.000Z"),
+      startedAt: new Date("2026-07-27T09:50:00.000Z"),
+    } as any;
+
+    expect(isSuccessfulRunHandoffInsideSettleWindow(agedRun, new Date("2026-07-27T12:00:00.000Z").getTime())).toBe(false);
+    expect(decide({ run: agedRun, hasActiveExecutionPath: true })).toEqual({
+      kind: "skip",
+      reason: "issue already has an active execution path",
     });
   });
 
