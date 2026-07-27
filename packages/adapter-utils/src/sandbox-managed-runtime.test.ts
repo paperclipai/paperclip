@@ -13,6 +13,15 @@ import {
   type SandboxManagedRuntimeClient,
 } from "./sandbox-managed-runtime.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    chmod: vi.fn(actual.chmod),
+    rename: vi.fn(actual.rename),
+  };
+});
+
 const execFile = promisify(execFileCallback);
 
 async function git(cwd: string, args: string[]): Promise<string> {
@@ -77,21 +86,19 @@ describe("sandbox managed runtime", () => {
     await writeFile(sourcePath, "#!/bin/sh\necho hello\n", { mode: 0o600 });
     await mkdir(targetDir, { recursive: true });
 
-    const chmodSpy = vi.spyOn(fsPromises, "chmod");
-    const renameSpy = vi.spyOn(fsPromises, "rename");
-    try {
-      await mirrorDirectory(sourceDir, targetDir);
+    const chmodMock = vi.mocked(fsPromises.chmod);
+    const renameMock = vi.mocked(fsPromises.rename);
+    chmodMock.mockClear();
+    renameMock.mockClear();
 
-      await expect(readFile(targetPath, "utf8")).resolves.toBe("#!/bin/sh\necho hello\n");
-      expect(chmodSpy).toHaveBeenCalledTimes(1);
-      expect(renameSpy).toHaveBeenCalledTimes(1);
-      expect(chmodSpy.mock.calls[0]?.[0]).toContain(".paperclip-copy");
-      expect(chmodSpy.mock.calls[0]?.[0]).not.toBe(targetPath);
-      expect(chmodSpy.mock.invocationCallOrder[0]).toBeLessThan(renameSpy.mock.invocationCallOrder[0]);
-    } finally {
-      chmodSpy.mockRestore();
-      renameSpy.mockRestore();
-    }
+    await mirrorDirectory(sourceDir, targetDir);
+
+    await expect(readFile(targetPath, "utf8")).resolves.toBe("#!/bin/sh\necho hello\n");
+    expect(chmodMock).toHaveBeenCalledTimes(1);
+    expect(renameMock).toHaveBeenCalledTimes(1);
+    expect(chmodMock.mock.calls[0]?.[0]).toContain(".paperclip-copy");
+    expect(chmodMock.mock.calls[0]?.[0]).not.toBe(targetPath);
+    expect(chmodMock.mock.invocationCallOrder[0]).toBeLessThan(renameMock.mock.invocationCallOrder[0]);
   });
 
   it("syncs workspace and assets through a provider-neutral sandbox client", async () => {
