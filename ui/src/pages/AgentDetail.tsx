@@ -24,6 +24,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { shouldOfferClaudeHostLogin } from "../lib/claude-host-login";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
@@ -2972,6 +2973,16 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     return entry?.user?.name ?? entry?.user?.email ?? null;
   }, [run.responsibleUserId, userDirectory]);
   const responsibleDenialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
+  // Instance execution policy (general settings). When `executionMode` is
+  // "kubernetes" a host-local `claude login` cannot authenticate sandboxed
+  // runs, so the login button is replaced with a credential hint. Reuses the
+  // same general-settings query the rest of the UI uses.
+  const { data: generalSettings } = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+    retry: false,
+  });
+  const offerClaudeHostLogin = shouldOfferClaudeHostLogin(generalSettings?.executionMode);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
 
@@ -3227,7 +3238,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
               </div>
             )}
-            {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && (
+            {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && !offerClaudeHostLogin && (
+              <p className="text-xs text-muted-foreground">
+                This instance runs agents in the Kubernetes sandbox. Connect a provider credential
+                in the agent's Configuration to fix authentication.
+              </p>
+            )}
+            {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && offerClaudeHostLogin && (
               <div className="space-y-2">
                 <Button
                   variant="outline"

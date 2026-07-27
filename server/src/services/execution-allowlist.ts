@@ -16,6 +16,8 @@
  * unit-testable.
  */
 
+import type { InstanceExecutionMode } from "@paperclipai/shared";
+
 /** Provider key (== plugin driverKey) of the first-party Kubernetes sandbox provider. */
 export const KUBERNETES_PROVIDER_KEY = "kubernetes" as const;
 
@@ -53,6 +55,26 @@ export type ExecutionAllowlistDecision =
 /** True when the policy forces all execution onto the Kubernetes sandbox. */
 export function isExecutionForcedToKubernetes(policy: ExecutionPolicy | null | undefined): boolean {
   return policy?.executionMode === "kubernetes";
+}
+
+/**
+ * Why a host-local `claude login` is unavailable under the given execution
+ * mode, or `null` when it is allowed.
+ *
+ * `claude login` runs as a process on the server host and writes login state
+ * to the host filesystem. When the instance forces all agent execution onto
+ * the Kubernetes sandbox (`executionMode === "kubernetes"`), sandboxed runs
+ * can never see that host-local state, so offering the login is a dead end.
+ */
+export function claudeHostLoginUnavailableReason(
+  executionMode: InstanceExecutionMode | undefined,
+): string | null {
+  if (executionMode !== "kubernetes") return null;
+  return (
+    "This instance runs agents in the Kubernetes sandbox; a host-local Claude " +
+    "login cannot authenticate sandboxed runs. Connect a credential in the " +
+    "agent's configuration instead."
+  );
 }
 
 /**
