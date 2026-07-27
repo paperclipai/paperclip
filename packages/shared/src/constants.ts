@@ -78,6 +78,20 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
+// Config keys owned by Paperclip/company state rather than one concrete adapter.
+// `paperclipSkillSync` is persisted in adapterConfig but must survive adapter swaps.
+export const ADAPTER_AGNOSTIC_KEYS = [
+  "env",
+  "promptTemplate",
+  "instructionsFilePath",
+  "cwd",
+  "timeoutSec",
+  "graceSec",
+  "bootstrapPromptTemplate",
+  "paperclipSkillSync",
+] as const;
+export type AdapterAgnosticKey = (typeof ADAPTER_AGNOSTIC_KEYS)[number];
+
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;
 export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
 
