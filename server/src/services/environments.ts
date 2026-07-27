@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import type { EnvironmentCustomImageSetupSessionStatus } from "@paperclipai/shared";
 import {
   agents,
   companySecretBindings,
@@ -42,7 +43,11 @@ const DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION =
 const KUBERNETES_PROVIDER_KEY = "kubernetes";
 /** Metadata marker for the company's managed-by-config Kubernetes sandbox environment. */
 const KUBERNETES_MANAGED_MARKER = "managedKubernetesSandbox";
-const ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES = ["starting", "waiting_for_user", "capturing"] as const;
+export const ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES = [
+  "starting",
+  "waiting_for_user",
+  "capturing",
+] as const satisfies readonly EnvironmentCustomImageSetupSessionStatus[];
 
 /**
  * Configuration accepted by `ensureKubernetesEnvironment`. Mirrors the keys of
@@ -552,11 +557,13 @@ export function environmentService(db: Db) {
 
       const isManagedLocal = environment.driver === "local";
       const isInstanceDefault = countFromRows(instanceDefaultRows) > 0;
+      const activeLeaseCount = countFromRows(activeLeaseRows);
+      const activeCustomImageSetupSessionCount = countFromRows(activeSetupRows);
+      const hasActiveRuntimeUse = activeLeaseCount > 0 || activeCustomImageSetupSessionCount > 0;
       const deleteBlockedReasons: EnvironmentDeleteBlockedReason[] = [];
       if (isManagedLocal) deleteBlockedReasons.push("managed_local");
       if (isInstanceDefault) deleteBlockedReasons.push("instance_default");
-      const activeLeaseCount = countFromRows(activeLeaseRows);
-      const activeCustomImageSetupSessionCount = countFromRows(activeSetupRows);
+      if (hasActiveRuntimeUse) deleteBlockedReasons.push("active_runtime_use");
 
       return {
         environmentId: id,
@@ -574,9 +581,19 @@ export function environmentService(db: Db) {
         activeRuntimeUse: {
           activeLeaseCount,
           activeCustomImageSetupSessionCount,
-          hasActiveRuntimeUse: activeLeaseCount > 0 || activeCustomImageSetupSessionCount > 0,
+          hasActiveRuntimeUse,
         },
       };
+    },
+
+    releaseActiveLeasesForEnvironment: async (id: string): Promise<number> => {
+      const now = new Date();
+      const rows = await db
+        .update(environmentLeases)
+        .set({ status: "released", releasedAt: now, lastUsedAt: now, updatedAt: now })
+        .where(and(eq(environmentLeases.environmentId, id), eq(environmentLeases.status, "active")))
+        .returning();
+      return rows.length;
     },
 
     listLeases: async (
