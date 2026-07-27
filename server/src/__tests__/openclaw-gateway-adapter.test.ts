@@ -47,6 +47,9 @@ async function createMockGatewayServer(options?: {
   const wss = new WebSocketServer({ server });
 
   let agentPayload: Record<string, unknown> | null = null;
+  // sessions.usage returns cumulative session totals; the adapter samples it before and
+  // after the run, so each call reports a higher total and the delta is what gets billed.
+  let sessionsUsageCalls = 0;
 
   wss.on("connection", (socket) => {
     socket.send(
@@ -81,6 +84,34 @@ async function createMockGatewayServer(options?: {
               features: { methods: ["connect", "agent", "agent.wait"], events: ["agent"] },
               snapshot: { version: 1, ts: Date.now() },
               policy: { maxPayload: 1_000_000, maxBufferedBytes: 1_000_000, tickIntervalMs: 30_000 },
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "sessions.usage") {
+        sessionsUsageCalls += 1;
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              sessions: [
+                {
+                  key: frame.params?.key,
+                  model: "claude-opus-5",
+                  modelProvider: "clawrouter",
+                  usage: {
+                    input: 1_000 * sessionsUsageCalls,
+                    output: 200 * sessionsUsageCalls,
+                    cacheRead: 5_000 * sessionsUsageCalls,
+                    cacheWrite: 0,
+                    totalCost: 0,
+                  },
+                },
+              ],
             },
           }),
         );
@@ -185,6 +216,7 @@ async function createMockGatewayServerWithPairing() {
   const wss = new WebSocketServer({ server });
 
   let agentPayload: Record<string, unknown> | null = null;
+  let sessionsUsageCalls = 0;
   let approved = false;
   let pendingRequestId = "req-1";
   let lastSeenDeviceId: string | null = null;
@@ -304,6 +336,34 @@ async function createMockGatewayServerWithPairing() {
               device: {
                 deviceId: lastSeenDeviceId ?? "device-unknown",
               },
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "sessions.usage") {
+        sessionsUsageCalls += 1;
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              sessions: [
+                {
+                  key: frame.params?.key,
+                  model: "claude-opus-5",
+                  modelProvider: "clawrouter",
+                  usage: {
+                    input: 1_000 * sessionsUsageCalls,
+                    output: 200 * sessionsUsageCalls,
+                    cacheRead: 5_000 * sessionsUsageCalls,
+                    cacheWrite: 0,
+                    totalCost: 0,
+                  },
+                },
+              ],
             },
           }),
         );
@@ -492,7 +552,18 @@ describe("openclaw gateway adapter execute", () => {
       expect(result.exitCode).toBe(0);
       expect(result.timedOut).toBe(false);
       expect(result.summary).toContain("chachacha");
-      expect(result.provider).toBe("openclaw");
+      expect(result.provider).toBe("clawrouter");
+
+      // The gateway reports no usage on the completion payload, so billing comes from the
+      // sessions.usage delta: second sample (2x) minus the pre-dispatch baseline (1x).
+      expect(result.usage).toMatchObject({
+        inputTokens: 1_000,
+        outputTokens: 200,
+        cachedInputTokens: 5_000,
+      });
+      expect(result.model).toBe("claude-opus-5");
+      // OpenClaw cannot price these models, so the server prices them from tokens.
+      expect(result.billingType).toBe("subscription_included");
 
       const payload = gateway.getAgentPayload();
       expect(payload).toBeTruthy();

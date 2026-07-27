@@ -57,6 +57,18 @@ left runnable so they can be triggered manually if ever needed.
   gpt-5.6 is tiered per variant (luna $1/$6, terra $2.50/$15, sol $5/$30 per M in/out, each
   `-pro` matching its base) and `claude-opus-5-fast` is double standard opus-5, so entry
   order matters -- `MODEL_RATES` takes the first match. Re-check that card when prices move.
+
+  The openclaw-gateway adapter recovers usage the same way. The gateway's run-completion
+  payload carries no `usage`, `model` or `costUsd` at all, so OpenClaw-backed agents wrote
+  no cost event whatsoever (368 runs over 14 days, entirely invisible). OpenClaw does track
+  it and exposes it as the `sessions.usage` RPC, so the adapter samples that before dispatch
+  and after completion and records the difference -- the RPC returns CUMULATIVE session
+  totals, and a session outlives many runs, so writing them undifferenced would over-bill
+  badly. Inline meta is still preferred if the gateway ever starts sending it. Guarded by
+  `packages/adapters/openclaw-gateway/src/server/billing.test.ts`. Note `sessions.usage` is
+  `advertise: false` upstream (`operator.read` scope, which the adapter's `operator.admin`
+  connection covers) -- an unadvertised method is a weaker contract, so re-verify it on
+  OpenClaw upgrades.
 - **Recovery:** suppress stale/paused routine recovery, source-scoped recovery actions.
 - **UI:** blocked-inbox row hit targets + optimistic mark-read/unread.
 - **CI adaptations:** fork canary publish opt-in, skip Cursor-only tests in fork release
