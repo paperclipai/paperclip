@@ -356,6 +356,22 @@ function canonicalJson(value: unknown): string {
       : val);
 }
 
+// True when the material state (status, assignee, blockers, pending
+// interaction/approval paths) of the leaf `issueId` differs between the snapshot
+// the watchdog reviewed at wake and the current snapshot. A target that is not a
+// hashed leaf in either snapshot (e.g. a non-leaf parent, whose writes never
+// affected the stop fingerprint) is treated as unchanged.
+function targetLeafMaterialChanged(
+  reviewed: TaskWatchdogMaterialLeaf[],
+  current: TaskWatchdogMaterialLeaf[],
+  issueId: string,
+) {
+  const before = reviewed.find((leaf) => leaf.issueId === issueId) ?? null;
+  const after = current.find((leaf) => leaf.issueId === issueId) ?? null;
+  if (!before && !after) return false;
+  return canonicalJson(before) !== canonicalJson(after);
+}
+
 function isShrinkOfReviewedSnapshot(
   current: TaskWatchdogStopSnapshot,
   reviewed: TaskWatchdogStopSnapshot | null | undefined,
@@ -1617,7 +1633,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     companyId: string;
     watchedIssueId: string;
     stopFingerprint: string | null;
-  }) {
+  }, targetIssueId?: string | null) {
     if (!scope.stopFingerprint) {
       return {
         allowed: false as const,
@@ -1644,28 +1660,59 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
 
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
     const classification = classifyTaskWatchdogSubtree(input);
-    // A task-watchdog run legitimately performs several sanctioned mutations to
-    // its stopped subtree (reassign, transition status, create child issues).
-    // Each such write moves the derived stop fingerprint, so requiring the
-    // re-derived fingerprint to still equal the wake-time `scope.stopFingerprint`
-    // locked the run out of every gated mutation after its first: the guard was
-    // treating the watchdog's OWN sanctioned writes as staleness, permanently,
-    // with no route to refresh the frozen wake fingerprint. Staleness must
-    // protect against *revival* — a live, waiting, already-reviewed, or
-    // not-applicable path appearing — not against the watchdog remediating the
-    // subtree it was woken for. So gate solely on the subtree still being
-    // stopped; the frozen wake fingerprint is preserved in the rejection details
-    // only as diagnostic context.
-    if (classification.state === "stopped") {
-      return { allowed: true as const, classification };
+
+    // First, revival: staleness must block once the subtree regains a live,
+    // waiting, already-reviewed, or not-applicable path. This is the genuine
+    // safety property and is independent of the leaf being mutated.
+    if (classification.state !== "stopped") {
+      return {
+        allowed: false as const,
+        reason:
+          "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
+        classification,
+      };
     }
 
-    return {
-      allowed: false as const,
-      reason:
-        "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
-      classification,
-    };
+    // The subtree is still stopped. A watchdog run legitimately makes several
+    // sanctioned mutations to *distinct* stopped leaves (reassign, transition,
+    // create child), and every write moves the whole-subtree stop fingerprint —
+    // so requiring the re-derived fingerprint to still equal the frozen
+    // wake-time `scope.stopFingerprint` locked the run out of every gated
+    // mutation after its first (there is no route to refresh the wake
+    // fingerprint). Rather than a subtree-wide match, verify freshness of the
+    // *specific* leaf being mutated: allow only while that leaf's material state
+    // still matches what the watchdog reviewed at wake. This keeps a concurrent
+    // third-party edit to a leaf from being silently overwritten, while no
+    // longer treating the watchdog's own writes to other leaves as staleness.
+    const reviewed = parseStopSnapshot(watchdog.lastObservedStopSnapshot);
+    if (!reviewed || reviewed.fingerprint !== scope.stopFingerprint) {
+      // Reviewed baseline for this run is unavailable (e.g. advanced by a
+      // concurrent reconcile); fall back to strict whole-subtree equality so the
+      // guard is never loosened without a baseline to compare against.
+      if (classification.stopFingerprint === scope.stopFingerprint) {
+        return { allowed: true as const, classification };
+      }
+      return {
+        allowed: false as const,
+        reason:
+          "Task-watchdog review is stale because the watched subtree stop fingerprint changed; refresh the source state before mutating it.",
+        classification,
+      };
+    }
+
+    if (
+      targetIssueId &&
+      targetLeafMaterialChanged(reviewed.materialLeaves, classification.stopSnapshot.materialLeaves, targetIssueId)
+    ) {
+      return {
+        allowed: false as const,
+        reason:
+          "Task-watchdog review is stale because the target issue was materially changed since it was reviewed; refresh the source state before mutating it.",
+        classification,
+      };
+    }
+
+    return { allowed: true as const, classification };
   }
 
   return {
