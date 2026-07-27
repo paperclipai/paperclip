@@ -443,7 +443,7 @@ export function companyService(db: Db) {
     remove: async (id: string) => {
       // Kill live managed runtime processes before their rows disappear, so
       // the hard delete cannot leave orphaned processes behind.
-      await stopRuntimeServicesForCompany({ companyId: id });
+      await stopRuntimeServicesForCompany({ db, companyId: id });
       return db.transaction(async (tx) => {
         // Delete from child tables in dependency order: tables whose FKs have
         // no ON DELETE action must be emptied before the rows they reference.
