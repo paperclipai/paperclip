@@ -9,6 +9,7 @@ import {
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { logActivity, smokeLabService } from "../services/index.js";
+import { instanceActorFromRequest, logInstanceActivity } from "../services/instance-activity-log.js";
 
 function configuredPublicBaseUrl() {
   const raw = (
@@ -71,9 +72,11 @@ export function smokeLabRoutes(db: Db, options: {
 
   router.post("/companies/:companyId/smoke-lab/oauth/authorize", formParser, async (req, res) => {
     await assertSmokeLabEnabled();
+    const companyId = req.params.companyId as string;
+    const clientId = stringBodyValue(req.body, "client_id") ?? "smoke-client";
     const location = svc.completeAuthorize({
-      companyId: req.params.companyId as string,
-      clientId: stringBodyValue(req.body, "client_id") ?? "smoke-client",
+      companyId,
+      clientId,
       redirectUri: stringBodyValue(req.body, "redirect_uri") ?? "http://127.0.0.1/callback",
       state: stringBodyValue(req.body, "state"),
       scope: stringBodyValue(req.body, "scope"),
@@ -81,19 +84,40 @@ export function smokeLabRoutes(db: Db, options: {
       password: stringBodyValue(req.body, "password"),
       requestOrigin: configuredPublicBaseUrl() ?? undefined,
     });
+    // The fake-OAuth surface is deliberately unauthenticated; the instance
+    // stream records the mutation with an explicit pre-auth actor.
+    await logInstanceActivity(db, {
+      ...instanceActorFromRequest(req),
+      action: "smoke_lab.oauth_authorize_submitted",
+      entityType: "smoke_lab_oauth",
+      entityId: companyId,
+      companyId,
+      details: { clientId },
+    });
     res.redirect(302, location);
   });
 
   router.post("/companies/:companyId/smoke-lab/oauth/token", formParser, async (req, res) => {
     await assertSmokeLabEnabled();
-    res.json(svc.issueToken({
-      companyId: req.params.companyId as string,
-      grantType: stringBodyValue(req.body, "grant_type"),
+    const companyId = req.params.companyId as string;
+    const grantType = stringBodyValue(req.body, "grant_type");
+    const issued = svc.issueToken({
+      companyId,
+      grantType,
       code: stringBodyValue(req.body, "code"),
       refreshToken: stringBodyValue(req.body, "refresh_token"),
       clientId: stringBodyValue(req.body, "client_id"),
       redirectUri: stringBodyValue(req.body, "redirect_uri"),
-    }));
+    });
+    await logInstanceActivity(db, {
+      ...instanceActorFromRequest(req),
+      action: "smoke_lab.oauth_token_issued",
+      entityType: "smoke_lab_oauth",
+      entityId: companyId,
+      companyId,
+      details: { grantType: grantType ?? null },
+    });
+    res.json(issued);
   });
 
   router.get("/companies/:companyId/smoke-lab/oauth/userinfo", async (req, res) => {
@@ -106,10 +130,19 @@ export function smokeLabRoutes(db: Db, options: {
 
   router.post("/companies/:companyId/smoke-lab/oauth/revoke", formParser, async (req, res) => {
     await assertSmokeLabEnabled();
-    res.json(svc.revoke({
-      companyId: req.params.companyId as string,
+    const companyId = req.params.companyId as string;
+    const revoked = svc.revoke({
+      companyId,
       token: stringBodyValue(req.body, "token"),
-    }));
+    });
+    await logInstanceActivity(db, {
+      ...instanceActorFromRequest(req),
+      action: "smoke_lab.oauth_token_revoked",
+      entityType: "smoke_lab_oauth",
+      entityId: companyId,
+      companyId,
+    });
+    res.json(revoked);
   });
 
   router.get("/companies/:companyId/smoke-lab/services", async (req, res) => {

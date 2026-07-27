@@ -53,6 +53,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
+import { instanceActorFromRequest, logInstanceActivity } from "../services/instance-activity-log.js";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
@@ -3578,6 +3579,30 @@ export function agentRoutes(
         adapterConfig: agent.adapterConfig,
       },
       config: runtimeConfig,
+    });
+
+    // Claude login mutates host-level credentials shared across the whole
+    // instance, so it is recorded in both the company and instance streams.
+    const claudeLoginActor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: claudeLoginActor.actorType,
+      actorId: claudeLoginActor.actorId,
+      agentId: claudeLoginActor.agentId,
+      runId: claudeLoginActor.runId,
+      agentApiKeyId: claudeLoginActor.agentApiKeyId,
+      action: "agent.claude_login_run",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { agentId: agent.id, agentName: agent.name },
+    });
+    await logInstanceActivity(db, {
+      ...instanceActorFromRequest(req),
+      action: "agent.claude_login_run",
+      entityType: "agent",
+      entityId: agent.id,
+      companyId: agent.companyId,
+      details: { agentId: agent.id, agentName: agent.name },
     });
 
     res.json(result);

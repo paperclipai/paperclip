@@ -14,6 +14,7 @@ import {
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { logInstanceActivity, instanceActorFromRequest } from "../services/instance-activity-log.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -103,6 +104,23 @@ export function healthRoutes(
     if (!written) {
       res.status(404).json({ error: "dev_server_supervisor_unavailable" });
       return;
+    }
+
+    // In local_trusted this surface is reachable without a signed-in human;
+    // the instance stream still records the (possibly pre-auth) caller.
+    if (db) {
+      await logInstanceActivity(db, {
+        ...instanceActorFromRequest(req),
+        action: "instance.dev_server_restart_requested",
+        entityType: "dev_server",
+        entityId: "default",
+        details: {
+          reason: "manual_restart_now",
+          dirty: persistedDevServerStatus.dirty,
+          changedPathCount: persistedDevServerStatus.changedPathCount,
+          pendingMigrationCount: persistedDevServerStatus.pendingMigrations.length,
+        },
+      });
     }
 
     res.status(202).json({ status: "restart_requested" });

@@ -30,6 +30,7 @@ import {
   logActivity,
   workTimelineService,
 } from "../services/index.js";
+import { instanceActorFromRequest, logInstanceActivity } from "../services/instance-activity-log.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
@@ -535,6 +536,16 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
+    // Deletion purges the company's own activity_log, so the record of the
+    // deletion itself must live in the instance-scoped stream.
+    await logInstanceActivity(db, {
+      ...instanceActorFromRequest(req),
+      action: "company.deleted",
+      entityType: "company",
+      entityId: companyId,
+      companyId,
+      details: { name: company.name ?? null },
+    });
     res.json({ ok: true });
   });
 

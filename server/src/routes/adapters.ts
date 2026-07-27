@@ -18,7 +18,8 @@ import fs from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { Router } from "express";
+import { Router, type Request } from "express";
+import type { Db } from "@paperclipai/db";
 import {
   listServerAdapters,
   findServerAdapter,
@@ -44,6 +45,7 @@ import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
+import { logInstanceActivity, instanceActorFromRequest } from "../services/instance-activity-log.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const execFileAsync = promisify(execFile);
@@ -191,8 +193,25 @@ function registerWithSessionManagement(adapter: ServerAdapterModule): void {
 // Router
 // ---------------------------------------------------------------------------
 
-export function adapterRoutes() {
+export function adapterRoutes(db: Db) {
   const router = Router();
+
+  // Adapter lifecycle installs/reloads executable server-side code for the
+  // whole instance, so every mutation lands in the instance audit stream.
+  async function logAdapterAction(
+    req: Request,
+    action: string,
+    adapterType: string,
+    details: Record<string, unknown> = {},
+  ) {
+    await logInstanceActivity(db, {
+      ...instanceActorFromRequest(req),
+      action,
+      entityType: "adapter",
+      entityId: adapterType,
+      details,
+    });
+  }
 
   /**
    * GET /api/adapters
@@ -333,6 +352,13 @@ export function adapterRoutes() {
         "External adapter installed and registered",
       );
 
+      await logAdapterAction(req, "adapter.installed", adapterModule.type, {
+        packageName: canonicalName,
+        version: installedVersion ?? explicitVersion ?? null,
+        isLocalPath,
+        isReinstall,
+      });
+
       res.status(201).json({
         type: adapterModule.type,
         packageName: canonicalName,
@@ -398,6 +424,7 @@ export function adapterRoutes() {
 
     if (changed) {
       logger.info({ type: adapterType, disabled }, "Adapter enabled/disabled");
+      await logAdapterAction(req, disabled ? "adapter.disabled" : "adapter.enabled", adapterType);
     }
 
     res.json({ type: adapterType, disabled, changed });
@@ -430,6 +457,14 @@ export function adapterRoutes() {
     const changed = setOverridePaused(adapterType, paused);
 
     logger.info({ type: adapterType, paused, changed }, "Adapter override toggle");
+
+    if (changed) {
+      await logAdapterAction(
+        req,
+        paused ? "adapter.override_paused" : "adapter.override_resumed",
+        adapterType,
+      );
+    }
 
     res.json({ type: adapterType, paused, changed });
   });
@@ -504,6 +539,11 @@ export function adapterRoutes() {
 
     logger.info({ type: adapterType }, "External adapter unregistered and removed");
 
+    await logAdapterAction(req, "adapter.removed", adapterType, {
+      packageName: externalRecord.packageName ?? null,
+      isLocalPath: Boolean(externalRecord.localPath),
+    });
+
     res.json({ type: adapterType, removed: true });
   });
 
@@ -552,6 +592,8 @@ export function adapterRoutes() {
       }
 
       logger.info({ type, version: newVersion }, "External adapter reloaded at runtime");
+
+      await logAdapterAction(req, "adapter.reloaded", type, { version: newVersion ?? null });
 
       res.json({ type, version: newVersion, reloaded: true });
     } catch (err) {
@@ -620,6 +662,11 @@ export function adapterRoutes() {
       }
 
       logger.info({ type, version: newVersion }, "Adapter reinstalled from npm");
+
+      await logAdapterAction(req, "adapter.reinstalled", type, {
+        packageName: record.packageName,
+        version: newVersion ?? null,
+      });
 
       res.json({ type, version: newVersion, reinstalled: true });
     } catch (err) {
