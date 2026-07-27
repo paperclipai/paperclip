@@ -89,8 +89,15 @@ function parseProviderConfig(
 // itself writes): { mcp: { name: { type: "remote", url, headers } } }. Server names
 // are deduped the same way claude-local's writePaperclipClaudeMcpConfig does, since
 // Paperclip-granted gateway names are not guaranteed unique across connections.
-function buildOpenCodeMcpConfig(servers: AdapterRuntimeMcpServer[]): Record<string, unknown> {
-  const usedNames = new Set<string>();
+// Unlike claude-local (which writes a dedicated, standalone mcp-config.json),
+// this config is merged into the user's own opencode.json, so `reservedNames`
+// must also seed the collision set with the user's existing `mcp` keys —
+// otherwise a managed name matching a user-defined server silently replaces it.
+function buildOpenCodeMcpConfig(
+  servers: AdapterRuntimeMcpServer[],
+  reservedNames: Iterable<string> = [],
+): Record<string, unknown> {
+  const usedNames = new Set<string>(reservedNames);
   const mcp: Record<string, unknown> = {};
   for (const server of servers) {
     let name = server.name;
@@ -217,7 +224,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   // claude_local/codex_local already get via their own MCP config injection.
   if (mcpServers.length > 0) {
     const existingMcp = isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {};
-    nextConfig.mcp = { ...existingMcp, ...buildOpenCodeMcpConfig(mcpServers) };
+    nextConfig.mcp = { ...existingMcp, ...buildOpenCodeMcpConfig(mcpServers, Object.keys(existingMcp)) };
     notes.push(`Injected ${mcpServers.length} Paperclip-managed MCP server(s) into OpenCode config.`);
   }
 
