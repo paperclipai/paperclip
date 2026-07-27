@@ -53,7 +53,10 @@ left runnable so they can be triggered manually if ever needed.
   (`claude-opus-5`, `gpt-5.6-*`). Guarded by `packages/adapters/pi-local/src/server/billing.test.ts`
   and the `fleet model rate coverage (fork)` block in `server/src/__tests__/model-costs.test.ts`
   -- if an upstream sync reverts either half, those tests fail. Rates for models upstream
-  does not price are fork estimates; correct the constants if list prices change.
+  does not price come from the OpenRouter model list (`https://openrouter.ai/api/v1/models`):
+  gpt-5.6 is tiered per variant (luna $1/$6, terra $2.50/$15, sol $5/$30 per M in/out, each
+  `-pro` matching its base) and `claude-opus-5-fast` is double standard opus-5, so entry
+  order matters -- `MODEL_RATES` takes the first match. Re-check that card when prices move.
 - **Recovery:** suppress stale/paused routine recovery, source-scoped recovery actions.
 - **UI:** blocked-inbox row hit targets + optimistic mark-read/unread.
 - **CI adaptations:** fork canary publish opt-in, skip Cursor-only tests in fork release

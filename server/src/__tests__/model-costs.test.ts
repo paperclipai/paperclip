@@ -146,6 +146,39 @@ describe("fleet model rate coverage (fork)", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("prices each gpt-5.6 variant at its own published tier", () => {
+    // luna < terra < sol; a single shared rate over-bills the cheaper tiers.
+    const cost = (model: string) =>
+      resolveCostEventCostCents({
+        costCents: 0,
+        billingType: "subscription_included",
+        provider: "clawrouter",
+        model,
+        inputTokens: 1_000_000,
+        cachedInputTokens: 0,
+        outputTokens: 1_000_000,
+      });
+    expect(cost("clawrouter/gpt-5.6-luna")).toBe(700);
+    expect(cost("clawrouter/gpt-5.6-terra")).toBe(1750);
+    expect(cost("clawrouter/gpt-5.6-sol")).toBe(3500);
+    expect(cost("clawrouter/gpt-5.6-terra-pro")).toBe(1750);
+  });
+
+  it("prices claude-opus-5-fast above standard opus-5", () => {
+    const cost = (model: string) =>
+      resolveCostEventCostCents({
+        costCents: 0,
+        billingType: "subscription_included",
+        provider: "clawrouter",
+        model,
+        inputTokens: 1_000_000,
+        cachedInputTokens: 0,
+        outputTokens: 1_000_000,
+      });
+    expect(cost("clawrouter/claude-opus-5-200k")).toBe(3000);
+    expect(cost("clawrouter/claude-opus-5-fast")).toBe(6000);
+  });
+
   it("prices uncached input for gpt-5.6 instead of netting it against cached tokens", () => {
     // clawrouter reports cached tokens separately; netting them out would zero the
     // uncached input whenever cached > input, which is the common case.

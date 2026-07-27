@@ -18,6 +18,14 @@ interface ModelRates {
 
 const MODEL_RATES: Array<{ match: RegExp; rates: ModelRates }> = [
   {
+    match: /claude-opus-5-fast/i,
+    rates: {
+      inputMicrosPerMillion: 10_000_000,
+      cachedInputMicrosPerMillion: 1_000_000,
+      outputMicrosPerMillion: 50_000_000,
+    },
+  },
+  {
     match: /claude-opus-(4|5)/i,
     rates: {
       inputMicrosPerMillion: 5_000_000,
@@ -41,10 +49,30 @@ const MODEL_RATES: Array<{ match: RegExp; rates: ModelRates }> = [
       outputMicrosPerMillion: 5_000_000,
     },
   },
+  // gpt-5.6 is tiered per variant (luna < terra < sol); each -pro variant prices the
+  // same as its base. Most specific first -- MODEL_RATES takes the first match.
+  // Cached tokens arrive as a separate count from clawrouter/pi (observed:
+  // input 10_304 vs cached 76_453 on the same event), so they are not netted
+  // out of inputTokens the way the direct-OpenAI gpt-5.5 entry assumes.
   {
-    // Cached tokens arrive as a separate count from clawrouter/pi (observed:
-    // input 10_304 vs cached 76_453 on the same event), so they are not netted
-    // out of inputTokens the way the direct-OpenAI gpt-5.5 entry assumes.
+    match: /gpt-5\.6-luna/i,
+    rates: {
+      inputMicrosPerMillion: 1_000_000,
+      cachedInputMicrosPerMillion: 100_000,
+      outputMicrosPerMillion: 6_000_000,
+    },
+  },
+  {
+    match: /gpt-5\.6-terra/i,
+    rates: {
+      inputMicrosPerMillion: 2_500_000,
+      cachedInputMicrosPerMillion: 250_000,
+      outputMicrosPerMillion: 15_000_000,
+    },
+  },
+  {
+    // sol, and the fallback for any unrecognised gpt-5.6 variant: price at the top
+    // of the family rather than under-reporting spend.
     match: /gpt-5\.6/i,
     rates: {
       inputMicrosPerMillion: 5_000_000,
