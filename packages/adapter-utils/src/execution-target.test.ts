@@ -3,6 +3,8 @@ import * as ssh from "./ssh.js";
 import * as serverUtils from "./server-utils.js";
 import {
   adapterExecutionTargetUsesManagedHome,
+  BridgeResponseBodyTooLargeError,
+  createPaperclipBridgeForwardRequestHandler,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
@@ -399,5 +401,112 @@ describe("resolveAdapterExecutionTargetCwd", () => {
     expect(resolveAdapterExecutionTargetCwd(null, "", "/Users/host/repo/server")).toBe(
       "/Users/host/repo/server",
     );
+  });
+});
+
+describe("createPaperclipBridgeForwardRequestHandler", () => {
+  const baseRequest = {
+    method: "GET",
+    path: "/api/agents/me",
+    query: "",
+    headers: { accept: "application/json" },
+    body: "",
+  };
+
+  const makeHandler = (fetchImpl: typeof fetch, maxBodyBytes = 64) =>
+    createPaperclipBridgeForwardRequestHandler({
+      runId: "run-bridge-map",
+      hostApiUrl: "http://127.0.0.1:9",
+      hostApiToken: "host-token",
+      maxBodyBytes,
+      fetchImpl,
+    });
+
+  it("relays a successful upstream response verbatim", async () => {
+    const handler = makeHandler(async () =>
+      new Response('{"ok":true}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const result = await handler(baseRequest);
+
+    expect(result.status).toBe(200);
+    expect(result.headers["content-type"]).toBe("application/json");
+    expect(result.body).toBe('{"ok":true}');
+  });
+
+  it("maps an oversized response body to a 413 with the too-large code", async () => {
+    const handler = makeHandler(async () =>
+      new Response("x".repeat(1024), {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+
+    const result = await handler(baseRequest);
+
+    expect(result.status).toBe(413);
+    const body = JSON.parse(result.body) as Record<string, unknown>;
+    expect(body.code).toBe("bridge_response_too_large");
+    // The upstream call itself succeeded; only relaying the payload failed.
+    expect(body.upstreamStatus).toBe(200);
+  });
+
+  it("maps a mid-stream body read failure to a 502, not a 413", async () => {
+    // A stream that yields one small chunk and then faults, i.e. the upstream
+    // connection dropped mid-body. This must not be reported as "payload too
+    // large" or the agent would give up instead of retrying.
+    const faultyBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+        controller.error(new Error("socket hang up"));
+      },
+    });
+    const handler = makeHandler(async () => new Response(faultyBody, { status: 200 }));
+
+    const result = await handler(baseRequest);
+
+    expect(result.status).toBe(502);
+    const body = JSON.parse(result.body) as Record<string, unknown>;
+    expect(body.code).toBe("bridge_upstream_read_failed");
+    expect(body.error).toContain("socket hang up");
+    expect(body.upstreamStatus).toBe(200);
+  });
+
+  it("maps a fetch timeout to a 504 with the ambiguous-outcome warning", async () => {
+    const handler = makeHandler(async () => {
+      const error = new Error("The operation was aborted due to timeout");
+      error.name = "TimeoutError";
+      throw error;
+    });
+
+    const result = await handler({ ...baseRequest, method: "POST", body: '{"mutate":true}' });
+
+    expect(result.status).toBe(504);
+    const body = JSON.parse(result.body) as Record<string, unknown>;
+    expect(body.code).toBe("bridge_upstream_timeout");
+    expect(body.error).toContain("may or may not have been applied");
+  });
+
+  it("maps other fetch rejections to a 502 unreachable error", async () => {
+    const handler = makeHandler(async () => {
+      throw new Error("connect ECONNREFUSED 127.0.0.1:9");
+    });
+
+    const result = await handler(baseRequest);
+
+    expect(result.status).toBe(502);
+    const body = JSON.parse(result.body) as Record<string, unknown>;
+    expect(body.code).toBe("bridge_upstream_unreachable");
+    expect(body.error).toContain("ECONNREFUSED");
+  });
+
+  it("exposes a typed size-limit error so only that failure maps to 413", () => {
+    const error = new BridgeResponseBodyTooLargeError(64);
+    expect(error.code).toBe("BODY_TOO_LARGE");
+    expect(error.message).toContain("64 bytes");
+    expect(error).toBeInstanceOf(Error);
   });
 });
