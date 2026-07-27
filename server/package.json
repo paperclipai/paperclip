@@ -59,6 +59,7 @@
     "@paperclipai/shared": "workspace:*",
     "@paperclipai/skills-catalog": "workspace:*",
     "@paperclipai/hermes-paperclip-adapter": "workspace:*",
+    "@simplewebauthn/server": "^13.3.2",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "better-auth": "1.6.23",

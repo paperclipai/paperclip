@@ -39,6 +39,7 @@ const apiPrefixes: Record<string, string> = {
   "instance-database-backups.ts": "/api",
   "instance-settings.ts": "/api",
   "issues.ts": "/api",
+  "issue-lock-webauthn.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
   "openapi.ts": "/api",

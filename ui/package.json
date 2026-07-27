@@ -47,6 +47,7 @@
     "@paperclipai/hermes-paperclip-adapter": "workspace:*",
     "@paperclipai/shared": "workspace:*",
     "@radix-ui/react-slot": "^1.3.0",
+    "@simplewebauthn/browser": "^13.3.0",
     "@tailwindcss/typography": "^0.5.20",
     "@tanstack/react-query": "^5.101.2",
     "@xterm/addon-fit": "^0.11.0",

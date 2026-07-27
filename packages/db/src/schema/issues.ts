@@ -7,6 +7,7 @@ import {
   timestamp,
   integer,
   jsonb,
+  boolean,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -32,6 +33,12 @@ export const issues = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
+    // UI-level lock (MAT-112, WebAuthn/Touch ID gate). When true, the browser
+    // must present a valid unlock session (see webauthn_credentials) before the
+    // API returns description/comments to a board (non-agent) actor. This is an
+    // interface-level gate only: the row stays unencrypted and agent API access
+    // is intentionally preserved.
+    locked: boolean("locked").notNull().default(false),
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),
     priority: text("priority").notNull().default("medium"),

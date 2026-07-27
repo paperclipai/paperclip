@@ -6692,6 +6692,67 @@ registerCurrentRoute({
   }),
 });
 
+// ─── Issue lock (WebAuthn / Touch ID re-auth gate, MAT-112) ────────────────────
+
+const webauthnRegisterVerifyBodySchema = z.object({
+  response: z.record(z.unknown()),
+  deviceLabel: z.string().optional(),
+});
+
+const webauthnUnlockVerifyBodySchema = z.object({
+  response: z.record(z.unknown()),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/webauthn/issue-lock/status",
+  tags: ["issues"],
+  summary: "Get issue-lock WebAuthn registration and unlock state",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/webauthn/issue-lock/register/options",
+  tags: ["issues"],
+  summary: "Get WebAuthn registration options for the issue-lock gate",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/webauthn/issue-lock/register/verify",
+  tags: ["issues"],
+  summary: "Verify a WebAuthn registration and persist the credential",
+  request: { body: jsonBody(webauthnRegisterVerifyBodySchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/webauthn/issue-lock/unlock/options",
+  tags: ["issues"],
+  summary: "Get WebAuthn authentication options to unlock issues",
+  responses: { 200: r.ok(), 401: r.unauthorized, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/webauthn/issue-lock/unlock/verify",
+  tags: ["issues"],
+  summary: "Verify a WebAuthn assertion and open the unlock session",
+  request: { body: jsonBody(webauthnUnlockVerifyBodySchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/webauthn/issue-lock/relock",
+  tags: ["issues"],
+  summary: "End the unlock session (re-lock issues in this browser)",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

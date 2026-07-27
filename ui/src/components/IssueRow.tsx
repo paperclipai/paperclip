@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Archive, Eye, Flag } from "lucide-react";
+import { Archive, Eye, Flag, Lock } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -191,6 +191,12 @@ export function IssueRow({
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className={cn("line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none", titleClassName)}>
+          {issue.locked ? (
+            <Lock
+              className="mr-1 inline-block h-3.5 w-3.5 shrink-0 -translate-y-px text-muted-foreground"
+              aria-label="Zaklenjeno"
+            />
+          ) : null}
           {issue.title}{titleSuffix}
         </span>
         {checklistDependencyChips ? (

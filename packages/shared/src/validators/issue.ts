@@ -541,6 +541,8 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  // MAT-112 issue-lock toggle. Board-only; enforced in the PATCH handler.
+  locked: z.boolean().optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
