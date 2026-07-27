@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import {
+  adapterConfigPathIsUserLocked,
+  readPaperclipSkillSyncPreference,
+  writePaperclipSkillSyncPreference,
+} from "@paperclipai/adapter-utils/server-utils";
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
@@ -1062,12 +1066,32 @@ export function builtInAgentService(db: Db) {
   }
 
   async function syncBundledSkillToAgent(agent: Agent, skill: CompanySkill) {
-    const desired = readPaperclipSkillSyncPreference(agent.adapterConfig as Record<string, unknown>).desiredSkillEntries;
+    const currentConfig = agent.adapterConfig as Record<string, unknown>;
+    if (adapterConfigPathIsUserLocked(currentConfig, "paperclipSkillSync.desiredSkills")) {
+      console.warn(
+        `Built-in skill sync skipped user-locked paperclipSkillSync.desiredSkills for agent ${agent.id}`,
+      );
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "system",
+        actorId: "built-in-agent-service",
+        action: "agent.adapter_config_change_skipped",
+        entityType: "agent",
+        entityId: agent.id,
+        details: {
+          fields: [{ path: "paperclipSkillSync.desiredSkills", type: "array", count: 1 }],
+          changedCount: 0,
+          skippedCount: 1,
+        },
+      });
+      return agent;
+    }
+    const desired = readPaperclipSkillSyncPreference(currentConfig).desiredSkillEntries;
     const nextDesired = [
       ...desired.filter((entry) => entry.key !== skill.key),
       { key: skill.key, versionId: skill.currentVersionId ?? null },
     ];
-    const adapterConfig = writePaperclipSkillSyncPreference(agent.adapterConfig as Record<string, unknown>, nextDesired);
+    const adapterConfig = writePaperclipSkillSyncPreference(currentConfig, nextDesired);
     const updated = await agentSvc.update(agent.id, { adapterConfig }, {
       allowBuiltInAgentMetadata: true,
       recordRevision: { source: "built-in-bundle:skill-sync" },

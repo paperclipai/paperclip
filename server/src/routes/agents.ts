@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
@@ -31,6 +32,8 @@ import {
 } from "@paperclipai/shared";
 import {
   resolvePaperclipInstanceRootForAdapter,
+  adapterConfigPathIsUserLocked,
+  readAdapterConfigUserLocks,
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -53,7 +56,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -177,6 +180,13 @@ export function agentRoutes(
     "agentsMdPath",
   ] as const;
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
+  // Instruction *bundle-definition* keys an agent must never set — these point
+  // the managed instructions bundle at an arbitrary host location and must be
+  // rejected with 403, not silently stripped. Concrete path pointers
+  // (instructionsFilePath/agentsMdPath) are NOT sensitive: they are dropped by
+  // the agent adapterConfig allowlist like any other non-allowlisted field.
+  const AGENT_SENSITIVE_INSTRUCTIONS_BUNDLE_KEYS: readonly string[] = KNOWN_INSTRUCTIONS_BUNDLE_KEYS
+    .filter((key) => !KNOWN_INSTRUCTIONS_PATH_KEYS.has(key));
 
   const router = Router();
   const svc = agentService(db);
@@ -194,6 +204,7 @@ export function agentRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
+  const issuesSvc = issueService(db);
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -1042,6 +1053,264 @@ export function agentRoutes(
     return value as Record<string, unknown>;
   }
 
+  function mergeAdapterConfigPatch(
+    current: Record<string, unknown>,
+    patch: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const merged = { ...current };
+    for (const [key, value] of Object.entries(patch)) {
+      const currentRecord = asRecord(current[key]);
+      const patchRecord = asRecord(value);
+      merged[key] = currentRecord && patchRecord
+        ? mergeAdapterConfigPatch(currentRecord, patchRecord)
+        : value;
+    }
+    return merged;
+  }
+
+  function changedAdapterConfigPaths(
+    before: Record<string, unknown>,
+    after: Record<string, unknown>,
+    prefix = "",
+  ): string[] {
+    const paths: string[] = [];
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      if (key === "_userLocked") continue;
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (isDeepStrictEqual(before[key], after[key])) continue;
+      if (path === "env") {
+        paths.push(path);
+        continue;
+      }
+      const beforeRecord = asRecord(before[key]);
+      const afterRecord = asRecord(after[key]);
+      if (beforeRecord && afterRecord) {
+        const nested = changedAdapterConfigPaths(beforeRecord, afterRecord, path);
+        paths.push(...(nested.length > 0 ? nested : [path]));
+      } else {
+        paths.push(path);
+      }
+    }
+    return paths.sort();
+  }
+
+  function restoreAdapterConfigPath(
+    target: Record<string, unknown>,
+    source: Record<string, unknown>,
+    path: string,
+  ) {
+    const parts = path.split(".");
+    const leaf = parts.pop();
+    if (!leaf) return;
+    let targetCursor = target;
+    let sourceCursor = source;
+    for (const part of parts) {
+      const sourceChild = asRecord(sourceCursor[part]);
+      if (!sourceChild) return;
+      const targetChild = asRecord(targetCursor[part]);
+      targetCursor[part] = targetChild ? { ...targetChild } : {};
+      targetCursor = targetCursor[part] as Record<string, unknown>;
+      sourceCursor = sourceChild;
+    }
+    if (Object.hasOwn(sourceCursor, leaf)) targetCursor[leaf] = sourceCursor[leaf];
+    else delete targetCursor[leaf];
+  }
+
+  function adapterConfigValueShape(value: unknown) {
+    if (Array.isArray(value)) return { type: "array", count: value.length };
+    const record = asRecord(value);
+    if (record) return { type: "object", count: Object.keys(record).length };
+    return { type: value === null ? "null" : typeof value, count: value === undefined ? 0 : 1 };
+  }
+
+  function readAdapterConfigPath(config: Record<string, unknown>, path: string): unknown {
+    let value: unknown = config;
+    for (const part of path.split(".")) {
+      const record = asRecord(value);
+      if (!record) return undefined;
+      value = record[part];
+    }
+    return value;
+  }
+
+  // Enumerate every leaf path an agent actually sent in a requested adapterConfig
+  // so the allowlist can decide, per leaf, whether a write is the allowed
+  // `paperclipSkillSync.desiredSkills` or a stripped extra. Unlike
+  // `changedAdapterConfigPaths({}, requested)` (which stops at top-level keys
+  // because the empty `before` never recurses), this walks nested objects to the
+  // leaf. `env` is collapsed to a single leaf and `_userLocked` is skipped so
+  // individual environment variable names never surface in audit paths.
+  function enumerateRequestedAdapterConfigPaths(
+    config: Record<string, unknown>,
+    prefix = "",
+  ): string[] {
+    const paths: string[] = [];
+    for (const key of Object.keys(config)) {
+      if (key === "_userLocked") continue;
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (path === "env") {
+        paths.push(path);
+        continue;
+      }
+      const record = asRecord(config[key]);
+      if (record && Object.keys(record).length > 0) {
+        paths.push(...enumerateRequestedAdapterConfigPaths(record, path));
+      } else {
+        paths.push(path);
+      }
+    }
+    return paths.sort();
+  }
+
+  type AdapterConfigMutation = {
+    changedPaths: string[];
+    skippedPaths: string[];
+    strippedPaths: string[];
+    fields: Array<{ path: string; type: string; count: number }>;
+  };
+
+  function enforceAgentAdapterConfigAllowlist(input: {
+    existing: Record<string, unknown>;
+    requested: Record<string, unknown>;
+    isAgentCaller: boolean;
+  }): {
+    requested: Record<string, unknown>;
+    strippedPaths: string[];
+    lockedPaths: string[];
+    fields: Array<{ path: string; type: string; count: number }>;
+  } {
+    if (!input.isAgentCaller) {
+      return { requested: input.requested, strippedPaths: [], lockedPaths: [], fields: [] };
+    }
+
+    // Compare each requested leaf path against the existing config so that a
+    // no-op patch (an agent re-sending a value identical to the current one) is
+    // not recorded as a strip, and — critically — so that an allowed nested
+    // write (`paperclipSkillSync.desiredSkills`) is not misreported as a strip
+    // of its top-level parent. We enumerate the full leaf key-space the agent
+    // actually sent (a partial patch must not treat omitted existing keys as
+    // changes) and drop paths whose requested value already matches existing.
+    const requestedPaths = enumerateRequestedAdapterConfigPaths(input.requested);
+    const strippedPaths = requestedPaths.filter(
+      (path) =>
+        path !== "paperclipSkillSync.desiredSkills" &&
+        !isDeepStrictEqual(
+          readAdapterConfigPath(input.existing, path),
+          readAdapterConfigPath(input.requested, path),
+        ),
+    );
+    const lockedPaths = strippedPaths.filter((path) =>
+      adapterConfigPathIsUserLocked(input.existing, path),
+    );
+    const skillSync = asRecord(input.requested.paperclipSkillSync);
+    const requested = skillSync && hasOwn(skillSync, "desiredSkills")
+      ? { paperclipSkillSync: { desiredSkills: skillSync.desiredSkills } }
+      : {};
+
+    return {
+      requested,
+      strippedPaths,
+      lockedPaths,
+      fields: strippedPaths.map((path) => ({
+        path,
+        ...adapterConfigValueShape(readAdapterConfigPath(input.requested, path)),
+      })),
+    };
+  }
+
+  function applyAdapterConfigUserLockPolicy(input: {
+    actorType: "user" | "agent";
+    existing: Record<string, unknown>;
+    requested: Record<string, unknown>;
+    effective: Record<string, unknown>;
+  }): { config: Record<string, unknown>; mutation: AdapterConfigMutation | null } {
+    const attemptedPaths = changedAdapterConfigPaths(input.existing, input.effective);
+    if (input.actorType === "user") {
+      const baseLocks = hasOwn(input.requested, "_userLocked")
+        ? readAdapterConfigUserLocks(input.requested)
+        : readAdapterConfigUserLocks(input.existing);
+      return {
+        config: {
+          ...input.effective,
+          _userLocked: Array.from(new Set([...baseLocks, ...attemptedPaths])).sort(),
+        },
+        mutation: null,
+      };
+    }
+
+    const existingLocks = readAdapterConfigUserLocks(input.existing);
+    const skippedLocks = Array.from(new Set(attemptedPaths.flatMap((attemptedPath) =>
+      existingLocks.filter((lockedPath) =>
+        attemptedPath === lockedPath
+        || attemptedPath.startsWith(`${lockedPath}.`)
+        || lockedPath.startsWith(`${attemptedPath}.`),
+      ),
+    )));
+    const config = { ...input.effective };
+    for (const lockedPath of skippedLocks) {
+      restoreAdapterConfigPath(config, input.existing, lockedPath);
+    }
+    config._userLocked = existingLocks;
+    return {
+      config,
+      mutation: {
+        changedPaths: changedAdapterConfigPaths(input.existing, config),
+        skippedPaths: attemptedPaths.filter((path) =>
+          adapterConfigPathIsUserLocked(input.existing, path),
+        ),
+        strippedPaths: [],
+        fields: attemptedPaths.map((path) => ({
+          path,
+          ...adapterConfigValueShape(readAdapterConfigPath(config, path)),
+        })),
+      },
+    };
+  }
+
+  async function commentOnLinkedParentForAdapterConfigMutation(input: {
+    companyId: string;
+    agentId: string;
+    agentName: string;
+    runId: string | null;
+    changedPaths: string[];
+    skippedPaths: string[];
+    strippedPaths: string[];
+    fields: Array<{ path: string; type: string; count: number }>;
+  }) {
+    if (!input.runId) return;
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    const linkedIssueId = readRunIssueId(asRecord(run?.contextSnapshot));
+    if (!linkedIssueId) return;
+    const linkedIssue = await db
+      .select({ id: issuesTable.id, parentId: issuesTable.parentId })
+      .from(issuesTable)
+      .where(and(eq(issuesTable.id, linkedIssueId), eq(issuesTable.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!linkedIssue) return;
+
+    const fieldRows = input.fields.map((field) =>
+      `- \`${field.path}\`: ${field.type}, count ${field.count}`,
+    );
+    await issuesSvc.addComment(
+      linkedIssue.parentId ?? linkedIssue.id,
+      [
+        "## Agent adapter config update",
+        "",
+        `Agent \`${input.agentName}\` attempted an adapter configuration update.`,
+        "",
+        ...fieldRows,
+        `- Changed fields: ${input.changedPaths.length}`,
+        `- Skipped user-locked fields: ${input.skippedPaths.length}`,
+        `- Stripped fields: ${input.strippedPaths.length}${input.strippedPaths.length > 0 ? ` (${input.strippedPaths.map((path) => `\`${path}\``).join(", ")})` : ""}`,
+      ].join("\n"),
+      { agentId: input.agentId, runId: input.runId },
+    );
+  }
+
   function asNonEmptyString(value: unknown): string | null {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
@@ -1469,9 +1738,10 @@ export function agentRoutes(
     req: Request,
     adapterConfig: Record<string, unknown> | null | undefined,
     path = "adapterConfig",
+    keys: readonly string[] = KNOWN_INSTRUCTIONS_BUNDLE_KEYS,
   ) {
     if (req.actor.type !== "agent" || !adapterConfig) return;
-    const changedSensitiveKeys = KNOWN_INSTRUCTIONS_BUNDLE_KEYS
+    const changedSensitiveKeys = keys
       .filter((key) => adapterConfig[key] !== undefined)
       .map((key) => `${path}.${key}`);
     if (changedSensitiveKeys.length === 0) return;
@@ -1887,7 +2157,15 @@ export function agentRoutes(
       if (!agent) return;
       await assertCanUpdateAgent(req, agent);
 
-      const requestedSkills = normalizeDesiredSkillSelections(req.body.desiredSkills);
+      const actor = getActorInfo(req);
+      const desiredSkillsLocked = actor.actorType === "agent"
+        && adapterConfigPathIsUserLocked(
+          agent.adapterConfig as Record<string, unknown>,
+          "paperclipSkillSync.desiredSkills",
+        );
+      const requestedSkills = desiredSkillsLocked
+        ? readPaperclipSkillSyncPreference(agent.adapterConfig as Record<string, unknown>).desiredSkillEntries
+        : normalizeDesiredSkillSelections(req.body.desiredSkills);
       const {
         adapterConfig: nextAdapterConfig,
         desiredSkills,
@@ -1906,16 +2184,17 @@ export function agentRoutes(
       if (!desiredSkills || !desiredSkillEntries || !runtimeSkillEntries) {
         throw unprocessable("Skill sync requires desiredSkills.");
       }
-      const actor = getActorInfo(req);
-      const updated = await svc.update(agent.id, {
-        adapterConfig: nextAdapterConfig,
-      }, {
-        recordRevision: {
-          createdByAgentId: actor.agentId,
-          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-          source: "skill-sync",
-        },
-      });
+      const updated = desiredSkillsLocked
+        ? agent
+        : await svc.update(agent.id, {
+            adapterConfig: nextAdapterConfig,
+          }, {
+            recordRevision: {
+              createdByAgentId: actor.agentId,
+              createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+              source: "skill-sync",
+            },
+          });
       if (!updated) {
         res.status(404).json({ error: "Agent not found" });
         return;
@@ -1932,7 +2211,7 @@ export function agentRoutes(
         ...runtimeConfig,
         paperclipRuntimeSkills: runtimeSkillEntries,
       };
-      const snapshot = adapter?.syncSkills
+      const rawSnapshot = adapter?.syncSkills
         ? await adapter.syncSkills({
             agentId: updated.id,
             companyId: updated.companyId,
@@ -1947,6 +2226,15 @@ export function agentRoutes(
               config: runtimeSkillConfig,
             })
           : buildUnsupportedSkillSnapshot(updated.adapterType, desiredSkillEntries);
+      const snapshot = desiredSkillsLocked
+        ? {
+            ...rawSnapshot,
+            warnings: [
+              ...rawSnapshot.warnings,
+              "Skipped user-locked paperclipSkillSync.desiredSkills update.",
+            ],
+          }
+        : rawSnapshot;
 
       await logActivity(db, {
         companyId: updated.companyId,
@@ -1968,6 +2256,44 @@ export function agentRoutes(
           warningCount: snapshot.warnings.length,
         },
       });
+
+      if (actor.actorType === "agent") {
+        const adapterConfigMutation = {
+          changedPaths: desiredSkillsLocked ? [] : ["paperclipSkillSync.desiredSkills"],
+          skippedPaths: desiredSkillsLocked ? ["paperclipSkillSync.desiredSkills"] : [],
+          strippedPaths: [],
+          fields: [{
+            path: "paperclipSkillSync.desiredSkills",
+            type: "array",
+            count: requestedSkills?.length ?? 0,
+          }],
+        };
+        await logActivity(db, {
+          companyId: updated.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          action: desiredSkillsLocked
+            ? "agent.adapter_config_change_skipped"
+            : "agent.adapter_config_changed",
+          entityType: "agent",
+          entityId: updated.id,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          details: {
+            fields: adapterConfigMutation.fields,
+            changedCount: adapterConfigMutation.changedPaths.length,
+            skippedCount: adapterConfigMutation.skippedPaths.length,
+          },
+        });
+        await commentOnLinkedParentForAdapterConfigMutation({
+          companyId: updated.companyId,
+          agentId: actor.agentId!,
+          agentName: updated.name,
+          runId: actor.runId ?? null,
+          ...adapterConfigMutation,
+        });
+      }
 
       res.json(snapshot);
     },
@@ -2949,6 +3275,16 @@ export function agentRoutes(
     }
 
     const patchData = { ...(req.body as Record<string, unknown>) };
+    const touchesProfileFields = touchesAgentProfileChangeConsentFields(patchData);
+    const profileOnlyChange = touchesProfileFields && Object.keys(patchData).every((key) =>
+      (AGENT_PROFILE_CHANGE_CONSENT_FIELDS as readonly string[]).includes(key),
+    );
+    if (!profileOnlyChange) {
+      await assertCanUpdateAgent(req, existing);
+    }
+    const actor = getActorInfo(req);
+    let adapterConfigMutation: AdapterConfigMutation | null = null;
+    let strippedAdapterConfigMutation: Pick<AdapterConfigMutation, "strippedPaths" | "fields"> | null = null;
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     if (hasOwn(patchData, "adapterConfig")) {
@@ -2957,12 +3293,72 @@ export function agentRoutes(
         res.status(422).json({ error: "adapterConfig must be an object" });
         return;
       }
-      assertNoAgentAdapterConfigMutation(req, adapterConfig);
-      const changingInstructionsConfig = adapterConfigTouchesInstructionsConfig(adapterConfig);
-      if (changingInstructionsConfig) {
+      // Security-sensitive fields must be rejected with 403 by the existing
+      // permission checks — not silently stripped by the allowlist. Evaluate
+      // the ORIGINAL requested config (before the allowlist drops non-sensitive
+      // extras) so the allowlist can never neuter these boundaries. Host-executed
+      // workspace commands and instruction *bundle-definition* keys are rejected;
+      // concrete path pointers and other non-sensitive fields stay strippable.
+      assertNoAgentHostWorkspaceCommandMutation(
+        req,
+        collectAgentAdapterWorkspaceCommandPaths(adapterConfig),
+      );
+      assertNoAgentInstructionsConfigMutation(
+        req,
+        adapterConfig,
+        "adapterConfig",
+        AGENT_SENSITIVE_INSTRUCTIONS_BUNDLE_KEYS,
+      );
+      // User/board callers still gate instruction-path changes through the
+      // protected-change permission. Agent callers never reach here for
+      // sensitive keys (rejected above) and have path pointers stripped below.
+      if (req.actor.type !== "agent" && adapterConfigTouchesInstructionsConfig(adapterConfig)) {
         await assertCanManageInstructionsPath(req, existing);
       }
-      patchData.adapterConfig = adapterConfig;
+      const allowlist = enforceAgentAdapterConfigAllowlist({
+        existing: asRecord(existing.adapterConfig) ?? {},
+        requested: adapterConfig,
+        isAgentCaller: req.actor.type === "agent",
+      });
+      if (allowlist.lockedPaths.length > 0) {
+        const refusedMutation: AdapterConfigMutation = {
+          changedPaths: [],
+          skippedPaths: allowlist.lockedPaths,
+          strippedPaths: allowlist.strippedPaths,
+          fields: allowlist.fields,
+        };
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "agent.adapter_config_change_skipped",
+          entityType: "agent",
+          entityId: existing.id,
+          details: {
+            fields: refusedMutation.fields,
+            changedCount: 0,
+            skippedCount: refusedMutation.skippedPaths.length,
+            strippedCount: refusedMutation.strippedPaths.length,
+          },
+        });
+        await commentOnLinkedParentForAdapterConfigMutation({
+          companyId: existing.companyId,
+          agentId: actor.agentId!,
+          agentName: existing.name,
+          runId: actor.runId ?? null,
+          ...refusedMutation,
+        });
+        throw badRequest(
+          `Agent-initiated adapterConfig update includes user-locked fields outside the allowlist: ${allowlist.lockedPaths.join(", ")}`,
+        );
+      }
+      strippedAdapterConfigMutation = allowlist.strippedPaths.length > 0
+        ? { strippedPaths: allowlist.strippedPaths, fields: allowlist.fields }
+        : null;
+      patchData.adapterConfig = allowlist.requested;
     }
 
     const requestedAdapterType = hasOwn(patchData, "adapterType")
@@ -2991,6 +3387,7 @@ export function agentRoutes(
       if (
         requestedAdapterConfig
         && replaceAdapterConfig
+        && req.actor.type !== "agent"
         && KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) =>
           existingAdapterConfig[key] !== undefined && requestedAdapterConfig[key] === undefined,
         )
@@ -2998,8 +3395,12 @@ export function agentRoutes(
         await assertCanManageInstructionsPath(req, existing);
       }
       let rawEffectiveAdapterConfig = requestedAdapterConfig ?? existingAdapterConfig;
-      if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
-        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...requestedAdapterConfig };
+      if (
+        requestedAdapterConfig
+        && !changingAdapterType
+        && (!replaceAdapterConfig || req.actor.type === "agent")
+      ) {
+        rawEffectiveAdapterConfig = mergeAdapterConfigPatch(existingAdapterConfig, requestedAdapterConfig);
       }
       if (changingAdapterType) {
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
@@ -3015,6 +3416,24 @@ export function agentRoutes(
           existingAdapterConfig,
           rawEffectiveAdapterConfig,
         );
+      }
+      if (requestedAdapterConfig) {
+        const lockPolicy = applyAdapterConfigUserLockPolicy({
+          actorType: req.actor.type === "agent" ? "agent" : "user",
+          existing: existingAdapterConfig,
+          requested: requestedAdapterConfig,
+          effective: rawEffectiveAdapterConfig,
+        });
+        rawEffectiveAdapterConfig = lockPolicy.config;
+        adapterConfigMutation = lockPolicy.mutation;
+        if (adapterConfigMutation && strippedAdapterConfigMutation) {
+          adapterConfigMutation = {
+            ...adapterConfigMutation,
+            strippedPaths: strippedAdapterConfigMutation.strippedPaths,
+            fields: [...adapterConfigMutation.fields, ...strippedAdapterConfigMutation.fields]
+              .sort((left, right) => left.path.localeCompare(right.path)),
+          };
+        }
       }
       const effectiveAdapterConfig = applyCodexLocalKeyIsolation(
         existing.companyId,
@@ -3053,17 +3472,10 @@ export function agentRoutes(
         },
       );
     }
-    const touchesProfileFields = touchesAgentProfileChangeConsentFields(patchData);
-    const profileOnlyChange = touchesProfileFields && Object.keys(patchData).every((key) =>
-      (AGENT_PROFILE_CHANGE_CONSENT_FIELDS as readonly string[]).includes(key),
-    );
     if (profileOnlyChange) {
       await assertCanApplyAgentProfileChange(req, existing);
-    } else {
-      await assertCanUpdateAgent(req, existing);
     }
 
-    const actor = getActorInfo(req);
     const agent = await svc.update(id, patchData, {
       recordRevision: {
         createdByAgentId: actor.agentId,
@@ -3088,6 +3500,37 @@ export function agentRoutes(
       entityId: agent.id,
       details: summarizeAgentUpdateDetails(patchData),
     });
+
+    if (adapterConfigMutation) {
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: adapterConfigMutation.skippedPaths.length > 0
+          ? "agent.adapter_config_change_skipped"
+          : adapterConfigMutation.strippedPaths.length > 0
+            ? "agent.adapter_config_change_stripped"
+            : "agent.adapter_config_changed",
+        entityType: "agent",
+        entityId: agent.id,
+        details: {
+          fields: adapterConfigMutation.fields,
+          changedCount: adapterConfigMutation.changedPaths.length,
+          skippedCount: adapterConfigMutation.skippedPaths.length,
+          strippedCount: adapterConfigMutation.strippedPaths.length,
+        },
+      });
+      await commentOnLinkedParentForAdapterConfigMutation({
+        companyId: agent.companyId,
+        agentId: actor.agentId!,
+        agentName: agent.name,
+        runId: actor.runId ?? null,
+        ...adapterConfigMutation,
+      });
+    }
 
     res.json(agent);
   });

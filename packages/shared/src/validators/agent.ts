@@ -37,6 +37,17 @@ export const upsertAgentInstructionsFileSchema = z.object({
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
 
 const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
+  const userLocked = value._userLocked;
+  if (userLocked !== undefined) {
+    const parsed = z.array(z.string().trim().min(1).max(200)).max(100).safeParse(userLocked);
+    if (!parsed.success || new Set(parsed.data).size !== parsed.data.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "adapterConfig._userLocked must be a unique array of non-empty field paths",
+        path: ["_userLocked"],
+      });
+    }
+  }
   const envValue = value.env;
   if (envValue === undefined) return;
   const parsed = envConfigSchema.safeParse(envValue);
