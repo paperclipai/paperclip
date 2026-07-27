@@ -28,7 +28,10 @@ vi.mock("@daytonaio/sdk", () => ({
   DaytonaTimeoutError: MockDaytonaTimeoutError,
 }));
 
-import plugin, { setDaytonaTimingClockForTest } from "./plugin.js";
+import plugin, {
+  setDaytonaTimingClockForTest,
+  __resetDaytonaSandboxHandleCacheForTest,
+} from "./plugin.js";
 import manifest from "./manifest.js";
 
 function createMockSandbox(overrides: {
@@ -87,6 +90,9 @@ describe("Daytona sandbox provider plugin", () => {
     mockSnapshotDelete.mockReset();
     vi.restoreAllMocks();
     delete process.env.DAYTONA_API_KEY;
+    // The started-sandbox handle cache is process-scoped; clear it between tests
+    // so a handle memoized under a reused composite key never leaks forward.
+    __resetDaytonaSandboxHandleCacheForTest();
   });
 
   it("declares environment lifecycle handlers", async () => {
@@ -1295,6 +1301,237 @@ describe("Daytona sandbox provider plugin", () => {
     expect(result).toMatchObject({ exitCode: null, timedOut: true });
     expect(result?.stderr).toMatch(/unreachable|credentials/i);
   });
+
+  // ─── Per-lease started-sandbox handle cache (PAP-3159 lever 1 / A1) ─────────
+  // These prove the Stage-1 security conditions: single-fetch-per-lease, strict
+  // composite-key isolation (no cross-lease / cross-company / cross-env reuse),
+  // eviction at every teardown, no caching of failed populates, single-flight
+  // concurrency, and sentinel re-verification on a cached resume.
+  describe("started-sandbox handle cache", () => {
+    function execParams(
+      providerLeaseId: string,
+      overrides: { companyId?: string; environmentId?: string; driverKey?: string } = {},
+    ) {
+      return {
+        driverKey: overrides.driverKey ?? "daytona",
+        companyId: overrides.companyId ?? "company-1",
+        environmentId: overrides.environmentId ?? "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: { providerLeaseId, metadata: {} },
+        command: "printf",
+        args: ["hi"],
+        timeoutMs: 1000,
+      };
+    }
+
+    it("reuses the cached handle across execs on one lease (single client.get)", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+
+      // Second exec is served from the cache: no second REST re-fetch.
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps getDurationMs present (≈0) on a cache hit", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      const hit = await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+
+      // The observability contract holds even when the fetch is elided.
+      expect(typeof (hit!.metadata as Record<string, unknown>)?.getDurationMs).toBe("number");
+    });
+
+    it("never serves lease A's handle to lease B (distinct fetch per lease)", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandboxA = createMockSandbox({ id: "lease-a" });
+      const sandboxB = createMockSandbox({ id: "lease-b" });
+      mockGet.mockImplementation(async (id: string) => (id === "lease-a" ? sandboxA : sandboxB));
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-b"));
+
+      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(sandboxA.process.executeCommand).toHaveBeenCalledTimes(1);
+      expect(sandboxB.process.executeCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not share a handle across companies or environments for the same providerLeaseId", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      mockGet.mockImplementation(async () => createMockSandbox({ id: "sandbox-x" }));
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("sandbox-x", { companyId: "company-1", environmentId: "env-1" }));
+      await plugin.definition.onEnvironmentExecute?.(execParams("sandbox-x", { companyId: "company-2", environmentId: "env-1" }));
+      await plugin.definition.onEnvironmentExecute?.(execParams("sandbox-x", { companyId: "company-1", environmentId: "env-2" }));
+
+      // Three distinct composite keys → three independent fetches; the bare
+      // providerLeaseId is never a shared cache slot.
+      expect(mockGet).toHaveBeenCalledTimes(3);
+    });
+
+    it("evicts the cached handle on release so the next lookup re-fetches", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      mockGet.mockImplementation(async () => createMockSandbox({ id: "lease-a" }));
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a")); // miss → get #1 (cached)
+      await plugin.definition.onEnvironmentReleaseLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: false },
+      });
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a")); // evicted → get #2
+
+      // Without eviction the release would hit the cache and the second exec too,
+      // leaving mockGet at 1. Two calls proves the entry was dropped on release.
+      expect(mockGet).toHaveBeenCalledTimes(2);
+    });
+
+    it("evicts the cached handle on destroy so the next lookup re-fetches", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      mockGet.mockImplementation(async () => createMockSandbox({ id: "lease-a" }));
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await plugin.definition.onEnvironmentDestroyLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: false },
+      });
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+
+      expect(mockGet).toHaveBeenCalledTimes(2);
+    });
+
+    it("evicts the cached handle on interactive-setup cancel so the next lookup re-fetches", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      mockGet.mockImplementation(async () => createMockSandbox({ id: "lease-a" }));
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await plugin.definition.onEnvironmentCancelInteractiveSetup?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: false },
+        reason: "cancelled",
+      });
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+
+      expect(mockGet).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not cache a failed populate (NotFound) — the next lookup re-fetches", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet
+        .mockRejectedValueOnce(new MockDaytonaNotFoundError("missing"))
+        .mockResolvedValue(sandbox);
+
+      const first = await plugin.definition.onEnvironmentResumeLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: true },
+      });
+      expect(first).toEqual({ providerLeaseId: null, metadata: { expired: true } });
+
+      // The rejected populate must not linger; the exec re-fetches successfully.
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      expect(mockGet).toHaveBeenCalledTimes(2);
+    });
+
+    it("single-flights concurrent misses on one lease into a single client.get", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let resolveGet: ((value: unknown) => void) | undefined;
+      mockGet.mockImplementation(
+        () => new Promise((resolve) => { resolveGet = resolve; }),
+      );
+
+      const p1 = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      const p2 = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      // Let both execs reach the shared in-flight populate before it resolves.
+      await Promise.resolve();
+      resolveGet?.(sandbox);
+      await Promise.all([p1, p2]);
+
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps concurrent different-lease populates isolated (no promise crossing)", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandboxA = createMockSandbox({ id: "lease-a" });
+      const sandboxB = createMockSandbox({ id: "lease-b" });
+      mockGet.mockImplementation(async (id: string) => (id === "lease-a" ? sandboxA : sandboxB));
+
+      await Promise.all([
+        plugin.definition.onEnvironmentExecute?.(execParams("lease-a")),
+        plugin.definition.onEnvironmentExecute?.(execParams("lease-b")),
+      ]);
+
+      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(mockGet).toHaveBeenCalledWith("lease-a");
+      expect(mockGet).toHaveBeenCalledWith("lease-b");
+      // Each lease executed in its OWN sandbox, never the other's handle.
+      expect(sandboxA.process.executeCommand).toHaveBeenCalledTimes(1);
+      expect(sandboxB.process.executeCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-verifies the workspace sentinel on a cached resume and evicts on mismatch", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a", state: "started" });
+      // Every executeCommand (exec body + sentinel `cat`) returns a NON-matching token.
+      sandbox.process.executeCommand.mockResolvedValue({
+        exitCode: 0,
+        result: JSON.stringify({ token: "other-token" }),
+        artifacts: { stdout: JSON.stringify({ token: "other-token" }) },
+      });
+      mockGet.mockImplementation(async () => sandbox);
+
+      // Prime the cache with a successful exec on this lease.
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      const sentinelCallsBefore = sandbox.process.executeCommand.mock.calls.length;
+
+      // Resume hits the cache but MUST still verify the sentinel; mismatch expires.
+      const resumed = await plugin.definition.onEnvironmentResumeLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: true },
+        leaseMetadata: {
+          workspaceSentinel: {
+            path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+            token: "expected-token",
+            result: "written",
+          },
+        },
+      });
+      expect(resumed).toMatchObject({
+        providerLeaseId: null,
+        metadata: { expired: true, workspaceSentinel: { result: "mismatch" } },
+      });
+      // The sentinel `cat` ran on the cached handle — verification was not skipped.
+      expect(sandbox.process.executeCommand.mock.calls.length).toBeGreaterThan(sentinelCallsBefore);
+
+      // The mismatched entry was evicted, so the next exec re-fetches.
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      expect(mockGet).toHaveBeenCalledTimes(2);
+    });
+  });
 });
 
 describe("daytona native file-sync hooks", () => {
@@ -1315,7 +1552,9 @@ describe("daytona native file-sync hooks", () => {
   }
 
   beforeEach(() => {
+    mockGet.mockReset();
     process.env.DAYTONA_API_KEY = "host-key";
+    __resetDaytonaSandboxHandleCacheForTest();
   });
 
   afterEach(async () => {
