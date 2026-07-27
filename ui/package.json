@@ -54,7 +54,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
-    "i18next": "^26.3.1",
+    "i18next": "^26.3.6",
     "lexical": "0.47.0",
     "lucide-react": "^0.577.0",
     "mermaid": "^11.16.0",
