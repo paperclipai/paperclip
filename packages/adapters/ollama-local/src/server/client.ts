@@ -14,14 +14,26 @@ function mergeStreamArguments(previous: string, incoming: string): string {
   return `${previous}${incoming}`;
 }
 
-function mergeStreamToolCalls(existing: unknown[], incoming: unknown[]): unknown[] {
+type StreamToolCallMergeState = {
+  nextUnidentifiedByStreamIndex: Map<number, number>;
+};
+
+function streamToolCallIndex(call: JsonRecord, position: number): number {
+  return typeof call.index === "number" && Number.isInteger(call.index) ? call.index : position;
+}
+
+function mergeStreamToolCalls(
+  existing: unknown[],
+  incoming: unknown[],
+  state: StreamToolCallMergeState,
+): unknown[] {
   const merged = [...existing];
   const matched = new Set<number>();
 
   for (const [position, rawCall] of incoming.entries()) {
     if (typeof rawCall !== "object" || rawCall === null || Array.isArray(rawCall)) continue;
     const call = rawCall as JsonRecord;
-    const streamIndex = typeof call.index === "number" && Number.isInteger(call.index) ? call.index : position;
+    const streamIndex = streamToolCallIndex(call, position);
     const callId = typeof call.id === "string" && call.id ? call.id : null;
     let index = callId
       ? merged.findIndex((existingCall) => (
@@ -30,17 +42,29 @@ function mergeStreamToolCalls(existing: unknown[], incoming: unknown[]): unknown
       ))
       : -1;
 
-    if (index < 0) {
+    if (index < 0 && callId) {
       index = merged.findIndex((existingCall, existingPosition) => {
         if (matched.has(existingPosition) || typeof existingCall !== "object" || existingCall === null || Array.isArray(existingCall)) {
           return false;
         }
         const existingRecord = existingCall as JsonRecord;
-        const existingIndex = typeof existingRecord.index === "number" && Number.isInteger(existingRecord.index)
-          ? existingRecord.index
-          : existingPosition;
-        return existingIndex === streamIndex;
+        return !existingRecord.id && streamToolCallIndex(existingRecord, existingPosition) === streamIndex;
       });
+    }
+
+    if (index < 0 && !callId) {
+      const candidates = merged.flatMap((existingCall, existingPosition) => {
+        if (matched.has(existingPosition) || typeof existingCall !== "object" || existingCall === null || Array.isArray(existingCall)) {
+          return [];
+        }
+        const existingRecord = existingCall as JsonRecord;
+        return streamToolCallIndex(existingRecord, existingPosition) === streamIndex ? [existingPosition] : [];
+      });
+      if (candidates.length > 0) {
+        const cursor = state.nextUnidentifiedByStreamIndex.get(streamIndex) ?? candidates[0];
+        index = candidates.find((candidate) => candidate >= cursor) ?? candidates[0];
+        state.nextUnidentifiedByStreamIndex.set(streamIndex, index + 1);
+      }
     }
 
     if (index < 0) {
@@ -159,6 +183,9 @@ export async function readResponseBody(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const nativeMode = response.headers.get("content-type")?.includes("ndjson") ?? false;
+  const toolCallMergeState: StreamToolCallMergeState = {
+    nextUnidentifiedByStreamIndex: new Map(),
+  };
   let pending = "";
   let final: JsonRecord = {};
   try {
@@ -172,13 +199,15 @@ export async function readResponseBody(
         if (events.length === 0) {
           try {
             const parsed = JSON.parse(chunk) as JsonRecord;
-            final = await mergeStreamEvent(final, parsed, options.onDelta);
+            final = await mergeStreamEvent(final, parsed, toolCallMergeState, options.onDelta);
           } catch {
             // Ignore comments and incomplete vendor events.
           }
         } else {
           for (const event of events) {
-            if (event !== "[DONE]") final = await mergeStreamEvent(final, event, options.onDelta);
+            if (event !== "[DONE]") {
+              final = await mergeStreamEvent(final, event, toolCallMergeState, options.onDelta);
+            }
           }
         }
       }
@@ -187,7 +216,7 @@ export async function readResponseBody(
     if (pending.trim()) {
       try {
         const parsed = JSON.parse(pending) as JsonRecord;
-        final = await mergeStreamEvent(final, parsed, options.onDelta);
+        final = await mergeStreamEvent(final, parsed, toolCallMergeState, options.onDelta);
       } catch {
         // Ignore a trailing delimiter.
       }
@@ -202,6 +231,7 @@ export async function readResponseBody(
 async function mergeStreamEvent(
   current: JsonRecord,
   event: JsonRecord,
+  toolCallMergeState: StreamToolCallMergeState,
   onDelta?: (text: string) => Promise<void>,
 ): Promise<JsonRecord> {
   const choices = Array.isArray(event.choices) ? event.choices : [];
@@ -234,7 +264,7 @@ async function mergeStreamEvent(
       : null;
   const existingToolCalls = Array.isArray(existingMessage.tool_calls) ? existingMessage.tool_calls : [];
   const toolCalls = incomingToolCalls
-    ? mergeStreamToolCalls(existingToolCalls, incomingToolCalls)
+    ? mergeStreamToolCalls(existingToolCalls, incomingToolCalls, toolCallMergeState)
     : null;
   const mergedMessage: JsonRecord = {
     ...existingMessage,
