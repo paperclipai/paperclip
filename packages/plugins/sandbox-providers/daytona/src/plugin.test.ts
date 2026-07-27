@@ -1661,6 +1661,44 @@ describe("Daytona sandbox provider plugin", () => {
       await fs.rm(hostDir, { recursive: true, force: true });
     });
 
+    it("waits for an in-flight snapshot capture before destroy cleanup starts", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let resolveSnapshot!: () => void;
+      sandbox._experimental_createSnapshot.mockImplementation(async () => {
+        await new Promise<void>((resolve) => {
+          resolveSnapshot = resolve;
+        });
+      });
+      mockGet.mockResolvedValue(sandbox);
+
+      const capturePromise = plugin.definition.onEnvironmentCaptureTemplate?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: false },
+        templateLabel: "snapshot-check",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const destroyPromise = plugin.definition.onEnvironmentDestroyLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: false },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sandbox.delete).not.toHaveBeenCalled();
+
+      resolveSnapshot();
+      await Promise.all([capturePromise, destroyPromise]);
+
+      expect(sandbox._experimental_createSnapshot).toHaveBeenCalledTimes(1);
+      expect(sandbox.delete).toHaveBeenCalledTimes(1);
+    });
+
     it("does not cache a failed populate (NotFound) — the next lookup re-fetches", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });
@@ -1841,6 +1879,34 @@ describe("Daytona sandbox provider plugin", () => {
         await expect(plugin.definition.onEnvironmentExecute?.(execParams("lease-a"))).rejects.toThrow(
           "command failed",
         );
+        nowMs += 8 * 60_000;
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      } finally {
+        restoreFreshness();
+      }
+
+      expect(sandbox.refreshData).toHaveBeenCalledTimes(1);
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not advance freshness when an execute times out before succeeding", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      sandbox.process.executeCommand
+        .mockRejectedValueOnce(new MockDaytonaTimeoutError("timed out"))
+        .mockResolvedValue({
+          exitCode: 0,
+          result: "bash",
+          artifacts: { stdout: "bash" },
+        });
+      mockGet.mockResolvedValue(sandbox);
+
+      let nowMs = 8_000_000;
+      const restoreFreshness = setDaytonaHandleFreshnessClockForTest(() => nowMs);
+      try {
+        const first = await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+        expect(first).toMatchObject({ timedOut: true, exitCode: null });
         nowMs += 8 * 60_000;
         await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
       } finally {

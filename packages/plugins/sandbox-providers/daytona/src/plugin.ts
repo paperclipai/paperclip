@@ -1315,13 +1315,15 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
-    const sandbox = await getSandboxOrNull(scope);
-    if (!sandbox) {
-      return { providerLeaseId: null, metadata: { expired: true } };
-    }
-
-    await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+    const activityGate = await sandboxHandleActivityGates.begin(scope);
     try {
+      const sandbox = await getSandboxOrNull(scope);
+      if (!sandbox) {
+        return { providerLeaseId: null, metadata: { expired: true } };
+      }
+
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+      try {
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
       // C3: a resumed lease must clear the workspace sentinel before it is
       // trusted, even when the handle came from the cache. On any non-match we
@@ -1350,10 +1352,13 @@ const plugin = definePlugin({
           workspaceSentinel,
         }),
       };
-    } catch (error) {
-      evictSandboxHandle(scope);
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
-      throw error;
+      } catch (error) {
+        evictSandboxHandle(scope);
+        await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
+        throw error;
+      }
+    } finally {
+      sandboxHandleActivityGates.end(scope, activityGate);
     }
   },
 
@@ -1459,15 +1464,21 @@ const plugin = definePlugin({
         : params.workspace.remotePath ?? params.workspace.localPath ?? "/paperclip-workspace";
 
     if (params.lease.providerLeaseId) {
-      const sandbox = await getSandbox({
+      const scope: SandboxScope = {
         driverKey: params.driverKey,
         companyId: params.companyId,
         environmentId: params.environmentId,
         providerLeaseId: params.lease.providerLeaseId,
         config,
-      });
-      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
-      await sandbox.fs.createFolder(remoteCwd, "755");
+      };
+      const activityGate = await sandboxHandleActivityGates.begin(scope);
+      try {
+        const sandbox = await getSandbox(scope);
+        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+        await sandbox.fs.createFolder(remoteCwd, "755");
+      } finally {
+        sandboxHandleActivityGates.end(scope, activityGate);
+      }
     }
 
     return {
@@ -1527,28 +1538,31 @@ const plugin = definePlugin({
         },
       };
     }
-    const sandbox = await getSandboxOrNull({
+    const scope = {
       driverKey: params.driverKey,
       companyId: params.companyId,
       environmentId: params.environmentId,
       providerLeaseId: params.providerLeaseId,
       config,
-    });
-    if (!sandbox) {
-      return {
-        providerLeaseId: null,
-        status: "missing",
-        connectionSummary: null,
-        connectionPayload: null,
-        metadata: {
-          provider: "daytona",
-          missing: true,
-        },
-      };
-    }
+    };
+    const activityGate = await sandboxHandleActivityGates.begin(scope);
+    try {
+      const sandbox = await getSandboxOrNull(scope);
+      if (!sandbox) {
+        return {
+          providerLeaseId: null,
+          status: "missing",
+          connectionSummary: null,
+          connectionPayload: null,
+          metadata: {
+            provider: "daytona",
+            missing: true,
+          },
+        };
+      }
 
-    await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
-    const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+      const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
     const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
     const connection = params.includeConnectionPayload === true
       ? await createSshConnection(sandbox, resolveConnectionExpiresInMinutes(params.connectionExpiresInMinutes))
@@ -1566,17 +1580,20 @@ const plugin = definePlugin({
           connectionPayload: null,
         };
 
-    return {
-      providerLeaseId: sandbox.id,
-      status: "waiting_for_user",
-      ...connection,
-      metadata: interactiveSetupMetadata({
-        config,
-        sandbox,
-        shellCommand,
-        remoteCwd,
-      }),
-    };
+      return {
+        providerLeaseId: sandbox.id,
+        status: "waiting_for_user",
+        ...connection,
+        metadata: interactiveSetupMetadata({
+          config,
+          sandbox,
+          shellCommand,
+          remoteCwd,
+        }),
+      };
+    } finally {
+      sandboxHandleActivityGates.end(scope, activityGate);
+    }
   },
 
   async onEnvironmentCaptureTemplate(
@@ -1586,13 +1603,16 @@ const plugin = definePlugin({
     if (!params.providerLeaseId) {
       throw new Error("Cannot capture a Daytona template without a setup sandbox lease.");
     }
-    const sandbox = await getSandbox({
+    const scope = {
       driverKey: params.driverKey,
       companyId: params.companyId,
       environmentId: params.environmentId,
       providerLeaseId: params.providerLeaseId,
       config,
-    });
+    };
+    const activityGate = await sandboxHandleActivityGates.begin(scope);
+    try {
+      const sandbox = await getSandbox(scope);
     const createSnapshot = (sandbox as DaytonaInteractiveSandbox)._experimental_createSnapshot;
     if (typeof createSnapshot !== "function") {
       throw new Error(
@@ -1607,20 +1627,23 @@ const plugin = definePlugin({
       ? Math.trunc(params.timeoutMs)
       : config.timeoutMs;
 
-    await createSnapshot.call(sandbox, templateRef, toTimeoutSeconds(timeoutMs));
+      await createSnapshot.call(sandbox, templateRef, toTimeoutSeconds(timeoutMs));
 
-    return {
-      templateKind: "snapshot",
-      templateRef,
-      metadata: {
-        provider: "daytona",
-        sandboxId: sandbox.id,
-        capturedAt: new Date().toISOString(),
-        sourceTemplateRefRedacted: Boolean(params.sourceTemplateRef),
-        previousTemplateRefRedacted: Boolean(params.previousTemplateRef),
-        timeoutMs,
-      },
-    };
+      return {
+        templateKind: "snapshot",
+        templateRef,
+        metadata: {
+          provider: "daytona",
+          sandboxId: sandbox.id,
+          capturedAt: new Date().toISOString(),
+          sourceTemplateRefRedacted: Boolean(params.sourceTemplateRef),
+          previousTemplateRefRedacted: Boolean(params.previousTemplateRef),
+          timeoutMs,
+        },
+      };
+    } finally {
+      sandboxHandleActivityGates.end(scope, activityGate);
+    }
   },
 
   async onEnvironmentCancelInteractiveSetup(
@@ -1742,13 +1765,15 @@ const plugin = definePlugin({
       const getDurationMs = timingNow() - getStart;
       await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
       const result = await executeOneShot(sandbox, params, config);
-      sandboxHandleCache.markFresh({
-        driverKey: params.driverKey,
-        companyId: params.companyId,
-        environmentId: params.environmentId,
-        providerLeaseId: params.lease.providerLeaseId,
-        config,
-      });
+      if (!result.timedOut) {
+        sandboxHandleCache.markFresh({
+          driverKey: params.driverKey,
+          companyId: params.companyId,
+          environmentId: params.environmentId,
+          providerLeaseId: params.lease.providerLeaseId,
+          config,
+        });
+      }
       return {
         ...result,
         metadata: { ...(result.metadata ?? {}), getDurationMs },
