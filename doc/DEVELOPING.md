@@ -404,6 +404,7 @@ eval "$(paperclipai worktree env)"
 | `--server-port <port>` | Preferred server port |
 | `--db-port <port>` | Preferred embedded Postgres port |
 | `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `minimal`) |
+| `--preserve-live-work` | Explicitly bypass seed quarantine for copied runs, wakeups, monitors, agent timers, and assigned open issues. The worktree run-execution toggle is still reset. |
 | `--no-seed` | Skip database seeding from the source instance |
 | `--force` | Replace existing repo-local config and isolated instance data |
 
@@ -440,6 +441,7 @@ For an already-created worktree where you want the CLI to decide whether to rebu
 | `--from-data-dir <path>` | Source `PAPERCLIP_HOME` used when deriving the source config |
 | `--from-instance <id>` | Source instance id when deriving the source config (default: `default`) |
 | `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `minimal`) |
+| `--preserve-live-work` | Explicitly bypass seed quarantine for copied runs, wakeups, monitors, agent timers, and assigned open issues. The worktree run-execution toggle is still reset. |
 | `--no-seed` | Repair metadata only when bootstrapping a missing worktree config |
 | `--allow-live-target` | Override the guard that requires the target worktree DB to be stopped first |
 
@@ -466,7 +468,8 @@ For an already-created worktree where you want to keep the existing repo-local c
 | `--from-config <path>` | Source config.json to seed from |
 | `--from-data-dir <path>` | Source `PAPERCLIP_HOME` used when deriving the source config |
 | `--from-instance <id>` | Source instance id when deriving the source config |
-| `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `full`) |
+| `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `minimal`) |
+| `--preserve-live-work` | Explicitly bypass seed quarantine for copied runs, wakeups, monitors, agent timers, and assigned open issues. The worktree run-execution toggle is still reset. |
 | `--yes` | Skip the destructive confirmation prompt |
 | `--allow-live-target` | Override the guard that requires the target worktree DB to be stopped first |
 
@@ -484,8 +487,7 @@ pnpm paperclipai worktree reseed \
 # From inside a worktree, reseed it from the default instance config.
 cd /path/to/paperclip/.paperclip/worktrees/PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat
 pnpm paperclipai worktree reseed \
-  --from-instance default \
-  --seed-mode full
+  --from-instance default
 ```
 
 **`pnpm paperclipai worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated Paperclip instance inside it. This combines `git worktree add` with `worktree init` in a single step.
@@ -501,6 +503,7 @@ pnpm paperclipai worktree reseed \
 | `--server-port <port>` | Preferred server port |
 | `--db-port <port>` | Preferred embedded Postgres port |
 | `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `minimal`) |
+| `--preserve-live-work` | Explicitly bypass seed quarantine for copied runs, wakeups, monitors, agent timers, and assigned open issues. The worktree run-execution toggle is still reset. |
 | `--no-seed` | Skip database seeding from the source instance |
 | `--force` | Replace existing repo-local config and isolated instance data |
 

@@ -42,6 +42,8 @@ type WorktreeEnvBootstrapResult =
   | { envPath: string; missingEnv: true }
   | { envPath: string; missingEnv: false };
 
+const WORKTREE_IDENTITY_ENV_KEYS = new Set(["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID"]);
+
 export function isLinkedGitWorktreeCheckout(rootDir: string): boolean {
   const gitMetadataPath = path.join(rootDir, ".git");
   if (!existsSync(gitMetadataPath)) return false;
@@ -120,7 +122,11 @@ export function bootstrapDevRunnerWorktreeEnv(
     env,
   );
   for (const [key, value] of Object.entries(entries)) {
-    if (typeof env[key] === "string" && env[key]!.trim().length > 0) continue;
+    if (
+      !WORKTREE_IDENTITY_ENV_KEYS.has(key) &&
+      typeof env[key] === "string" &&
+      env[key]!.trim().length > 0
+    ) continue;
     env[key] = value;
   }
 

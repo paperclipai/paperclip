@@ -210,6 +210,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: heartbeatServiceFactoryMock,
   issueService: vi.fn(() => ({ update: vi.fn(async () => null) })),
   instanceSettingsService: vi.fn(() => ({
+    getExperimental: vi.fn(async () => ({})),
     getGeneral: vi.fn(async () => ({
       backupRetention: {
         dailyDays: 7,

@@ -677,6 +677,9 @@ export type {
   ManagedSettingMetadata,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
+  WorktreeRunExecutionSuppressedReason,
+  WorktreeRunExecutionActivationState,
+  WorktreeRunEngineStatus,
   BackupRetentionPolicy,
   Agent,
   AgentAccessState,
@@ -1368,6 +1371,7 @@ export {
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   PAPERCLIP_CLOUD_MANAGED_BY,
+  WORKTREE_SEED_QUARANTINE_ERROR_CODE,
 } from "./types/instance.js";
 
 export type {

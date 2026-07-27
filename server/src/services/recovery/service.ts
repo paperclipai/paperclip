@@ -77,6 +77,7 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
+type ExecutionProvenance = { instanceNonce: string; seedEpoch: string };
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
@@ -701,7 +702,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
   }
 
-  async function getLatestIssueRun(companyId: string, issueId: string): Promise<LatestIssueRun> {
+  async function getLatestIssueRun(
+    companyId: string,
+    issueId: string,
+    provenance?: ExecutionProvenance | null,
+  ): Promise<LatestIssueRun> {
     return db
       .select({
         id: heartbeatRuns.id,
@@ -718,6 +723,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           eq(heartbeatRuns.companyId, companyId),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          provenance ? eq(heartbeatRuns.instanceNonce, provenance.instanceNonce) : undefined,
+          provenance ? eq(heartbeatRuns.seedEpoch, provenance.seedEpoch) : undefined,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
@@ -729,6 +736,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     companyId: string,
     issueId: string,
     agentId: string,
+    provenance?: ExecutionProvenance | null,
   ): Promise<LatestIssueRun> {
     return db
       .select({
@@ -747,6 +755,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          provenance ? eq(heartbeatRuns.instanceNonce, provenance.instanceNonce) : undefined,
+          provenance ? eq(heartbeatRuns.seedEpoch, provenance.seedEpoch) : undefined,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
@@ -760,6 +770,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     agentId: string,
     errorCodeToMatch: string | null,
     since: Date | null = null,
+    provenance?: ExecutionProvenance | null,
   ) {
     const rows = await db
       .select({
@@ -775,6 +786,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          provenance ? eq(heartbeatRuns.instanceNonce, provenance.instanceNonce) : undefined,
+          provenance ? eq(heartbeatRuns.seedEpoch, provenance.seedEpoch) : undefined,
           ...(since ? [or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since))] : []),
         ),
       )
@@ -806,7 +819,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { consecutive, latestFinishedAt };
   }
 
-  async function hasActiveExecutionPath(companyId: string, issueId: string, agentId?: string | null) {
+  async function hasActiveExecutionPath(
+    companyId: string,
+    issueId: string,
+    agentId?: string | null,
+    provenance?: ExecutionProvenance | null,
+  ) {
     const [run, deferredWake] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
@@ -817,6 +835,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
             sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
             agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+            provenance ? eq(heartbeatRuns.instanceNonce, provenance.instanceNonce) : undefined,
+            provenance ? eq(heartbeatRuns.seedEpoch, provenance.seedEpoch) : undefined,
           ),
         )
         .limit(1)
@@ -830,6 +850,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             eq(agentWakeupRequests.status, "deferred_issue_execution"),
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
             agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
+            provenance ? eq(agentWakeupRequests.instanceNonce, provenance.instanceNonce) : undefined,
+            provenance ? eq(agentWakeupRequests.seedEpoch, provenance.seedEpoch) : undefined,
           ),
         )
         .limit(1)
@@ -876,7 +898,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
-  async function hasQueuedIssueWake(companyId: string, issueId: string, agentId?: string | null) {
+  async function hasQueuedIssueWake(
+    companyId: string,
+    issueId: string,
+    agentId?: string | null,
+    provenance?: ExecutionProvenance | null,
+  ) {
     return db
       .select({ id: agentWakeupRequests.id })
       .from(agentWakeupRequests)
@@ -886,6 +913,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(agentWakeupRequests.status, "queued"),
           sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
           agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
+          provenance ? eq(agentWakeupRequests.instanceNonce, provenance.instanceNonce) : undefined,
+          provenance ? eq(agentWakeupRequests.seedEpoch, provenance.seedEpoch) : undefined,
         ),
       )
       .limit(1)
@@ -943,7 +972,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
-  async function getLatestIssueRunSince(companyId: string, issueId: string, agentId: string, since: Date): Promise<LatestIssueRun> {
+  async function getLatestIssueRunSince(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    since: Date,
+    provenance?: ExecutionProvenance | null,
+  ): Promise<LatestIssueRun> {
     return db
       .select({
         id: heartbeatRuns.id,
@@ -962,6 +997,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(heartbeatRuns.agentId, agentId),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
           or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since)),
+          provenance ? eq(heartbeatRuns.instanceNonce, provenance.instanceNonce) : undefined,
+          provenance ? eq(heartbeatRuns.seedEpoch, provenance.seedEpoch) : undefined,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
@@ -3463,7 +3500,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       readNonEmptyString(monitor.externalRef) === latestRun.id;
   }
 
-  async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+  async function reconcileStrandedAssignedIssues(opts?: {
+    issueCreatedAtGte?: Date | null;
+    executionProvenance?: ExecutionProvenance | null;
+  }) {
     const candidates = await db
       .select()
       .from(issues)
@@ -3526,6 +3566,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issue.companyId,
         issue.id,
         issue.status === "in_review" ? agentId : null,
+        opts?.executionProvenance,
       )) {
         result.skipped += 1;
         continue;
@@ -3541,14 +3582,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      let latestRun = await getLatestIssueRun(issue.companyId, issue.id, opts?.executionProvenance);
       if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
         result.skipped += 1;
         continue;
       }
       const recoveryNow = new Date();
       const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId
-        ? await getLatestIssueRunForAgent(issue.companyId, issue.id, participantAgentId)
+        ? await getLatestIssueRunForAgent(
+            issue.companyId,
+            issue.id,
+            participantAgentId,
+            opts?.executionProvenance,
+          )
         : null;
       const providerQuotaMonitorRun = issue.status === "in_review"
         ? participantLatestRunForRecovery
@@ -3636,7 +3682,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             continue;
           }
 
-          if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId)) {
+          if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId, opts?.executionProvenance)) {
             result.skipped += 1;
             continue;
           }
@@ -3651,6 +3697,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issue.id,
             agentId,
             acceptedInteractionResolvedAt,
+            opts?.executionProvenance,
           );
           const { consecutive } = await summarizeRecentContinuationRetries(
             issue.companyId,
@@ -3658,6 +3705,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             agentId,
             CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE,
             acceptedInteractionResolvedAt,
+            opts?.executionProvenance,
           );
           if (consecutive >= INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS && latestPostResolutionRun) {
             const resolved = await resolveContinuationWaitingOnReview(issue);
@@ -3822,7 +3870,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (await hasQueuedIssueWake(issue.companyId, issue.id, participantAgentId)) {
+        if (await hasQueuedIssueWake(
+          issue.companyId,
+          issue.id,
+          participantAgentId,
+          opts?.executionProvenance,
+        )) {
           result.skipped += 1;
           continue;
         }
@@ -3857,7 +3910,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       if (issue.status === "todo") {
         if (!latestRun) {
-          if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
+          if (await hasQueuedIssueWake(issue.companyId, issue.id, null, opts?.executionProvenance)) {
             result.skipped += 1;
             continue;
           }
@@ -4049,6 +4102,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issue.id,
             agentId,
             classification.errorCode,
+            null,
+            opts?.executionProvenance,
           );
           if (consecutive >= classification.maxAttempts) {
             const failureSummary = summarizeRunFailureForIssueComment(latestRun);
