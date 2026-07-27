@@ -6,6 +6,7 @@ import {
   activityLog,
   agentApiKeys,
   agents,
+  authUsers,
   boardApiKeys,
   heartbeatRuns,
 } from "@paperclipai/db";
@@ -32,10 +33,25 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string };
-  agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
+  agentKey?: {
+    id: string;
+    agentId: string;
+    companyId: string;
+    keyHash: string;
+    responsibleUserId?: string | null;
+    lastUsedAt?: Date | null;
+  };
   run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null };
+  boardKey?: {
+    id: string;
+    userId: string;
+    keyHash: string;
+    lastUsedAt?: Date | null;
+  };
 }) {
   const activity: Array<Record<string, unknown>> = [];
+  const selectedTables: unknown[] = [];
+  const updatedTables: unknown[] = [];
   const agentRow = {
     id: input.agent.id,
     companyId: input.agent.companyId,
@@ -48,6 +64,7 @@ function createDbState(input: {
         companyId: input.agentKey.companyId,
         keyHash: input.agentKey.keyHash,
         responsibleUserId: input.agentKey.responsibleUserId ?? null,
+        lastUsedAt: input.agentKey.lastUsedAt ?? null,
         revokedAt: null,
         scopeConfig: null,
       }
@@ -60,20 +77,36 @@ function createDbState(input: {
         responsibleUserId: input.run.responsibleUserId ?? null,
       }
     : null;
+  const boardKeyRow = input.boardKey
+    ? {
+        id: input.boardKey.id,
+        userId: input.boardKey.userId,
+        keyHash: input.boardKey.keyHash,
+        lastUsedAt: input.boardKey.lastUsedAt ?? null,
+        revokedAt: null,
+        expiresAt: null,
+      }
+    : null;
+  const boardUserRow = input.boardKey
+    ? { id: input.boardKey.userId, name: "Board User", email: "board@example.com" }
+    : null;
 
   const db = {
     select: () =>
       createSelectChain((table) => {
-        if (table === boardApiKeys) return [];
+        selectedTables.push(table);
+        if (table === boardApiKeys) return boardKeyRow ? [boardKeyRow] : [];
+        if (table === authUsers) return boardUserRow ? [boardUserRow] : [];
         if (table === agentApiKeys) return keyRow ? [keyRow] : [];
         if (table === agents) return [agentRow];
         if (table === heartbeatRuns) return runRow ? [runRow] : [];
         return [];
       }),
-    update: () => ({
+    update: (table: unknown) => ({
       set() {
         return {
           where() {
+            updatedTables.push(table);
             return Promise.resolve([]);
           },
         };
@@ -87,7 +120,7 @@ function createDbState(input: {
     }),
   } as any;
 
-  return { db, activity };
+  return { db, activity, selectedTables, updatedTables };
 }
 
 function createApp(db: any) {
@@ -377,5 +410,143 @@ describe("agent auth middleware", () => {
       entityId: keyId,
       details: { method: "GET", url: `/companies/${companyId}/protected` },
     });
+  });
+
+  it("authenticates local agent JWTs without querying the key tables", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db, selectedTables } = createDbState({
+      agent: { id: agentId, companyId },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "agent", agentId, source: "agent_jwt" });
+    expect(selectedTables).not.toContain(boardApiKeys);
+    expect(selectedTables).not.toContain(agentApiKeys);
+  });
+
+  it("skips the board key lookup for non-board bearer tokens", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_test_agent_key";
+    const { db, selectedTables } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+      },
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "agent", source: "agent_key" });
+    expect(selectedTables).not.toContain(boardApiKeys);
+  });
+
+  it("still checks the board key table for board-prefixed tokens", async () => {
+    const { db, selectedTables } = createDbState({
+      agent: { id: randomUUID(), companyId: randomUUID() },
+    });
+
+    await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", "Bearer pcp_board_unknown_token");
+
+    expect(selectedTables).toContain(boardApiKeys);
+  });
+
+  it("refreshes agent key lastUsedAt only when the stamp is stale", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_test_agent_key";
+    const baseKey = {
+      id: randomUUID(),
+      agentId,
+      companyId,
+      keyHash: hashToken(token),
+      responsibleUserId: "user-key",
+    };
+
+    const fresh = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: { ...baseKey, lastUsedAt: new Date() },
+    });
+    const freshRes = await request(createApp(fresh.db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+    expect(freshRes.status).toBe(200);
+    expect(fresh.updatedTables).not.toContain(agentApiKeys);
+
+    const stale = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: { ...baseKey, lastUsedAt: new Date(Date.now() - 5 * 60_000) },
+    });
+    const staleRes = await request(createApp(stale.db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+    expect(staleRes.status).toBe(200);
+    expect(stale.updatedTables).toContain(agentApiKeys);
+
+    const never = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: { ...baseKey, lastUsedAt: null },
+    });
+    const neverRes = await request(createApp(never.db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+    expect(neverRes.status).toBe(200);
+    expect(never.updatedTables).toContain(agentApiKeys);
+  });
+
+  it("refreshes board key lastUsedAt only when the stamp is stale", async () => {
+    const token = "pcp_board_test_key";
+    const baseBoardKey = {
+      id: randomUUID(),
+      userId: randomUUID(),
+      keyHash: hashToken(token),
+    };
+
+    const fresh = createDbState({
+      agent: { id: randomUUID(), companyId: randomUUID() },
+      boardKey: { ...baseBoardKey, lastUsedAt: new Date() },
+    });
+    const freshRes = await request(createApp(fresh.db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+    expect(freshRes.status).toBe(200);
+    expect(freshRes.body).toMatchObject({ type: "board", source: "board_key" });
+    expect(fresh.updatedTables).not.toContain(boardApiKeys);
+
+    const stale = createDbState({
+      agent: { id: randomUUID(), companyId: randomUUID() },
+      boardKey: { ...baseBoardKey, lastUsedAt: new Date(Date.now() - 5 * 60_000) },
+    });
+    const staleRes = await request(createApp(stale.db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+    expect(staleRes.status).toBe(200);
+    expect(stale.updatedTables).toContain(boardApiKeys);
+
+    const never = createDbState({
+      agent: { id: randomUUID(), companyId: randomUUID() },
+      boardKey: { ...baseBoardKey, lastUsedAt: null },
+    });
+    const neverRes = await request(createApp(never.db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+    expect(neverRes.status).toBe(200);
+    expect(never.updatedTables).toContain(boardApiKeys);
   });
 });
