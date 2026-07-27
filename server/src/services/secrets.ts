@@ -453,6 +453,20 @@ export type AgentSecretAccessEntry = {
 type ResolveAdapterConfigForRuntimeOptions = {
   adapterType?: string | null;
   skipUserSecrets?: boolean;
+  /**
+   * Selects how user-scoped secrets are mediated for this resolution.
+   *
+   * - `"declared"` (default): the resolver injects a `configPath`, activating
+   *   `resolveUserSecretValue`'s declaration guard. A persisted consumer's real
+   *   declaration rows satisfy it; an undeclared required ref → `binding_missing`.
+   * - `"owner_scoped"`: for a prospective, non-persisted config (e.g. adapter
+   *   test-environment). The user-secret call omits `configPath` so the
+   *   declaration lookup is skipped and the value resolves by definition + owner
+   *   boundary; the company `secret_ref` call routes through `bindingContext:
+   *   undefined` (audit-only `accessContext`) to preserve today's zero-enforcement
+   *   company-secret behavior while gaining actor attribution. Opt-in per call.
+   */
+  userSecretMediation?: "declared" | "owner_scoped";
 };
 
 export type RuntimeSecretManifestEntry = {
@@ -4538,6 +4552,21 @@ export function secretService(db: Db) {
       context?: Omit<SecretBindingContext, "configPath">,
       opts?: ResolveAdapterConfigForRuntimeOptions,
     ): Promise<{ config: Record<string, unknown>; secretKeys: Set<string>; manifest: RuntimeSecretManifestEntry[] }> => {
+      const ownerScoped = opts?.userSecretMediation === "owner_scoped";
+      // Fail closed: owner_scoped skips declaration mediation, so an
+      // allowedBindingIds allowlist has no declaration to enforce against.
+      // Rejecting (rather than silently stripping) prevents a future low-trust
+      // owner_scoped caller from bypassing an allowlist by choosing this mode.
+      // Any supplied array — including an empty one, which requests "allow
+      // nothing" — is rejected: owner_scoped cannot honor either intent, and
+      // letting `[]` slip through would resolve every owner secret, the exact
+      // opposite of what an empty allowlist asks for.
+      if (ownerScoped && Array.isArray(context?.allowedBindingIds)) {
+        throw unprocessable(
+          "allowedBindingIds is not supported with owner_scoped user-secret mediation",
+          { code: "owner_scoped_allowed_bindings_unsupported" },
+        );
+      }
       const resolved = { ...adapterConfig };
       const secretKeys = new Set<string>();
       const manifest: RuntimeSecretManifestEntry[] = [];
@@ -4564,10 +4593,18 @@ export function secretService(db: Db) {
                 binding.secretId,
                 binding.version,
                 context
-                  ? {
-                      bindingContext: { ...context, configPath: `env.${key}` },
-                      accessContext: { ...context, configPath: `env.${key}` },
-                    }
+                  ? ownerScoped
+                    ? {
+                        // owner_scoped: omit bindingContext so assertBindingContext
+                        // returns null (no binding enforcement) — preserves today's
+                        // undefined-context behavior for a prospective config —
+                        // while still carrying the actor via accessContext for audit.
+                        accessContext: { ...context, configPath: `env.${key}` },
+                      }
+                    : {
+                        bindingContext: { ...context, configPath: `env.${key}` },
+                        accessContext: { ...context, configPath: `env.${key}` },
+                      }
                   : undefined,
               );
               env[key] = secretResolution.value;
@@ -4584,11 +4621,20 @@ export function secretService(db: Db) {
                   allowMissingOverride: binding.allowMissingOverride,
                 },
                 context
-                  ? {
-                      ...context,
-                      configPath: `env.${key}`,
-                      responsibleUserId: context.responsibleUserId ?? null,
-                    }
+                  ? ownerScoped
+                    ? {
+                        // owner_scoped: omit configPath so resolveUserSecretValue's
+                        // `if (context?.configPath)` declaration guard stays false —
+                        // resolution proceeds by definition + owner boundary, with no
+                        // declaration row required for a prospective config.
+                        ...context,
+                        responsibleUserId: context.responsibleUserId ?? null,
+                      }
+                    : {
+                        ...context,
+                        configPath: `env.${key}`,
+                        responsibleUserId: context.responsibleUserId ?? null,
+                      }
                   : undefined,
               );
               if (secretResolution) {
@@ -4621,11 +4667,18 @@ export function secretService(db: Db) {
               allowMissingOverride: binding.allowMissingOverride,
             },
             context
-              ? {
-                  ...context,
-                  configPath: key,
-                  responsibleUserId: context.responsibleUserId ?? null,
-                }
+              ? ownerScoped
+                ? {
+                    // owner_scoped: omit configPath so the declaration guard stays
+                    // false — resolve by definition + owner boundary.
+                    ...context,
+                    responsibleUserId: context.responsibleUserId ?? null,
+                  }
+                : {
+                    ...context,
+                    configPath: key,
+                    responsibleUserId: context.responsibleUserId ?? null,
+                  }
               : undefined,
           );
           if (secretResolution) {
@@ -4640,10 +4693,16 @@ export function secretService(db: Db) {
           binding.secretId,
           binding.version,
           context
-            ? {
-                bindingContext: { ...context, configPath: key },
-                accessContext: { ...context, configPath: key },
-              }
+            ? ownerScoped
+              ? {
+                  // owner_scoped: omit bindingContext (no binding enforcement),
+                  // carry the actor via accessContext for audit only.
+                  accessContext: { ...context, configPath: key },
+                }
+              : {
+                  bindingContext: { ...context, configPath: key },
+                  accessContext: { ...context, configPath: key },
+                }
             : undefined,
         );
         resolved[key] = secretResolution.value;

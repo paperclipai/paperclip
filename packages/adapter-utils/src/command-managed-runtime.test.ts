@@ -239,6 +239,60 @@ describe("command managed runtime", () => {
     expect(calls.filter((call) => call.stdin != null).length).toBe(1);
   });
 
+  it("stages runtime assets without replacing or restoring an in-place workspace", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-assets-only-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localHomeDir = path.join(rootDir, "local-home");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await mkdir(localHomeDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "local workspace\n", "utf8");
+    await writeFile(path.join(remoteWorkspaceDir, "README.md"), "authoritative workspace\n", "utf8");
+    await writeFile(path.join(localHomeDir, "auth.json"), '{"token":"host"}\n', "utf8");
+
+    const { runner } = makeSpawnRunner();
+    let restoredAuth = "";
+    const prepared = await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "codex",
+      workspaceLocalDir: localWorkspaceDir,
+      syncWorkspace: false,
+      assets: [
+        {
+          key: "home",
+          localDir: localHomeDir,
+          restore: async ({ assetDir, readFile }) => {
+            restoredAuth = (await readFile(path.join(assetDir, "auth.json"))).toString("utf8");
+          },
+        },
+      ],
+    });
+
+    expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
+    expect(prepared.assetDirs.home).toBe(path.join(remoteWorkspaceDir, ".paperclip-runtime", "codex", "home"));
+    await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe(
+      "authoritative workspace\n",
+    );
+    await expect(readFile(path.join(prepared.assetDirs.home, "auth.json"), "utf8")).resolves.toBe(
+      '{"token":"host"}\n',
+    );
+
+    await writeFile(path.join(prepared.assetDirs.home, "auth.json"), '{"token":"remote"}\n', "utf8");
+    await prepared.restoreWorkspace();
+
+    expect(restoredAuth).toBe('{"token":"remote"}\n');
+    await expect(readFile(path.join(localWorkspaceDir, "README.md"), "utf8")).resolves.toBe(
+      "local workspace\n",
+    );
+  });
+
   it("runs setup commands from a stable root cwd when staging into a nested remote workspace dir", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-nested-"));
     cleanupDirs.push(rootDir);

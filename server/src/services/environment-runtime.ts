@@ -7,10 +7,12 @@ import type {
   EnvironmentLease,
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
+  IssueExecutionWorkspaceSettings,
   PluginEnvironmentConfig,
   SandboxEnvironmentConfig,
 } from "@paperclipai/shared";
 import type {
+  PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentLease,
   PluginEnvironmentRealizeWorkspaceResult,
@@ -123,6 +125,7 @@ export interface EnvironmentDriverAcquireInput {
   heartbeatRunId: string | null;
   executionWorkspaceId: string | null;
   executionWorkspaceMode: ExecutionWorkspace["mode"] | null;
+  executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   /**
    * The harness/adapter type for this run (the agent's adapter). Drivers that
    * materialize a per-run sandbox use it to select the runtime image so a single
@@ -1585,7 +1588,8 @@ function createPluginEnvironmentDriver(
         agentId: input.agentId ?? undefined,
         executionWorkspaceId: input.executionWorkspaceId ?? undefined,
         adapterType: input.adapterType ?? undefined,
-      });
+        executionWorkspaceSettings: input.executionWorkspaceSettings,
+      } as PluginEnvironmentAcquireLeaseParams);
 
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
@@ -1804,6 +1808,7 @@ export function environmentRuntimeService(
       /** Null for ad-hoc invocations (e.g. operator-initiated `Test` probes). */
       heartbeatRunId: string | null;
       persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+      executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
       /** The agent's adapter type for this run (mixed-harness environments). */
       adapterType?: string | null;
       /**
@@ -1829,6 +1834,7 @@ export function environmentRuntimeService(
         heartbeatRunId: input.heartbeatRunId,
         executionWorkspaceId: leaseContext.executionWorkspaceId,
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
+        executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         adapterType: input.adapterType ?? null,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
       });

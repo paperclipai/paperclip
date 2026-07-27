@@ -94,6 +94,7 @@ export type {
   PluginDefinition,
   PaperclipPlugin,
   PluginHealthDiagnostics,
+  PluginConfigChangeContext,
   PluginConfigValidationResult,
   PluginWebhookInput,
   PluginApiRequestInput,

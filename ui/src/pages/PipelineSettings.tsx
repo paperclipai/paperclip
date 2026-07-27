@@ -1372,7 +1372,7 @@ export function PipelineSettings() {
   });
   const currentUserId = sessionQuery.data?.user?.id ?? sessionQuery.data?.session?.userId ?? null;
   const activeProjects = useMemo(
-    () => (projectsQuery.data ?? []).filter((project) => !project.archivedAt),
+    () => projectsQuery.data ?? [],
     [projectsQuery.data],
   );
   const { orderedProjects } = useProjectOrder({

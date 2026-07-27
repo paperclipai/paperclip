@@ -296,3 +296,191 @@ describe("worker invocation scope propagation", () => {
     }
   });
 });
+
+describe("worker configChanged cross-tenant guard", () => {
+  // Spin up a worker-rpc-host wired to in-memory streams and expose a
+  // request/response `callWorker` plus `initialize`/`stop` helpers.
+  function makeWorker(plugin: ReturnType<typeof definePlugin>) {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+
+    const worker = startWorkerRpcHost({
+      plugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(
+              Object.assign(new Error(response.error.message), {
+                code: response.error.code,
+              }),
+            );
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (!isJsonRpcResponse(message)) return;
+      pending.get(String(message.id))?.(message);
+      pending.delete(String(message.id));
+    });
+
+    async function initialize() {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.config-guard-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Config Guard Test",
+          description: "Test plugin",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: [],
+          entrypoints: {},
+        },
+        config: {},
+        databaseNamespace: null,
+      });
+    }
+
+    function stop() {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+
+    return { callWorker, initialize, stop };
+  }
+
+  it("fails closed when a second, distinct company's config would overwrite a single-tenant worker", async () => {
+    const applied: Array<{ companyId: string | null; token: unknown }> = [];
+    const plugin = definePlugin({
+      async setup() {},
+      async onConfigChanged(newConfig, context) {
+        applied.push({
+          companyId: context?.companyId ?? null,
+          token: newConfig.slackBotToken,
+        });
+      },
+    });
+    const { callWorker, initialize, stop } = makeWorker(plugin);
+
+    try {
+      await initialize();
+
+      // Company A's config is delivered first (deterministic ORDER BY companyId
+      // in the loader) and applied.
+      await expect(
+        callWorker("configChanged", {
+          config: { companyId: "company-a", slackBotToken: "xoxb-A" },
+          companyId: "company-a",
+        }),
+      ).resolves.toBeNull();
+
+      // Company B's *distinct* config must be rejected rather than silently
+      // collapsing the single worker onto B's bot token (the vulnerability).
+      await expect(
+        callWorker("configChanged", {
+          config: { companyId: "company-b", slackBotToken: "xoxb-B" },
+          companyId: "company-b",
+        }),
+      ).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG,
+      });
+
+      // The worker stayed bound to company A; company B never reached the
+      // plugin. Against the pre-fix code this array would be
+      // [company-a, company-b] (last-write-wins collapse).
+      expect(applied).toEqual([{ companyId: "company-a", token: "xoxb-A" }]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("allows an idempotent replay of the same config under a different scope row", async () => {
+    // Mirrors the live single-tenant gateway: several plugin_config rows keyed
+    // by distinct row companyIds but all embedding the same config. Replaying
+    // them must be a no-op, not a fail-closed rejection.
+    const appliedScopes: Array<string | null> = [];
+    const plugin = definePlugin({
+      async setup() {},
+      async onConfigChanged(_newConfig, context) {
+        appliedScopes.push(context?.companyId ?? null);
+      },
+    });
+    const { callWorker, initialize, stop } = makeWorker(plugin);
+
+    try {
+      await initialize();
+      const embedded = { companyId: "company-a", slackBotToken: "xoxb-A" };
+
+      await callWorker("configChanged", {
+        config: { ...embedded },
+        companyId: "row-scope-1",
+      });
+      await expect(
+        callWorker("configChanged", {
+          config: { ...embedded },
+          companyId: "row-scope-2",
+        }),
+      ).resolves.toBeNull();
+
+      expect(appliedScopes).toEqual(["row-scope-1", "row-scope-2"]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("threads per-company config to a plugin that opts into multiCompanyConfig", async () => {
+    const applied: Array<{ companyId: string | null; token: unknown }> = [];
+    const plugin = definePlugin({
+      multiCompanyConfig: true,
+      async setup() {},
+      async onConfigChanged(newConfig, context) {
+        applied.push({
+          companyId: context?.companyId ?? null,
+          token: newConfig.slackBotToken,
+        });
+      },
+    });
+    const { callWorker, initialize, stop } = makeWorker(plugin);
+
+    try {
+      await initialize();
+
+      await callWorker("configChanged", {
+        config: { companyId: "company-a", slackBotToken: "xoxb-A" },
+        companyId: "company-a",
+      });
+      await expect(
+        callWorker("configChanged", {
+          config: { companyId: "company-b", slackBotToken: "xoxb-B" },
+          companyId: "company-b",
+        }),
+      ).resolves.toBeNull();
+
+      // Both companies' configs delivered, each tagged with its own scope.
+      expect(applied).toEqual([
+        { companyId: "company-a", token: "xoxb-A" },
+        { companyId: "company-b", token: "xoxb-B" },
+      ]);
+    } finally {
+      stop();
+    }
+  });
+});
