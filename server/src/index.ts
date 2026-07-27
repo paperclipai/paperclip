@@ -41,6 +41,7 @@ import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/e
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
+  applyManagedEnvironments,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
@@ -857,6 +858,22 @@ export async function startServer(): Promise<StartedServer> {
     }
   } catch (err) {
     logger.error({ err }, "failed to apply forced execution policy from environment");
+    throw err;
+  }
+
+  // Ensure sandbox environments declared in the managed-config document
+  // (`environments` section) before the heartbeat resumes queued runs. The
+  // document already parsed fail-closed above; the ensure step itself is
+  // fail-safe per entry (a degraded boot beats a fleet-wide crash loop), but
+  // a contradictory deployment that also forces PAPERCLIP_EXECUTION_MODE
+  // throws here and fails startup.
+  try {
+    const managedEnvironmentsResult = await applyManagedEnvironments(db as any, managedConfig);
+    if (managedEnvironmentsResult) {
+      logger.warn(managedEnvironmentsResult, "managed sandbox environments ensured from managed config");
+    }
+  } catch (err) {
+    logger.error({ err }, "failed to apply managed environments from managed config");
     throw err;
   }
 

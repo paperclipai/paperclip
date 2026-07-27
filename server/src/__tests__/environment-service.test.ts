@@ -630,6 +630,114 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect((rows[0]?.metadata as Record<string, unknown>)?.managedKubernetesSandbox).toBe(true);
   });
 
+  it("ensures and refreshes a managed sandbox environment for an arbitrary provider", async () => {
+    const created = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      description: "Managed Daytona sandbox environment.",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+
+    expect(created.driver).toBe("sandbox");
+    expect(created.name).toBe("Daytona");
+    expect(created.config.provider).toBe("daytona");
+    expect(created.config.target).toBe("us");
+    expect(created.metadata?.managedByPaperclip).toBe(true);
+    expect(created.metadata?.managedSandboxProvider).toBe("daytona");
+
+    // Idempotent: a second call refreshes config and name in place.
+    const refreshed = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona (EU)",
+      provider: "daytona",
+      config: { target: "eu" },
+    });
+    expect(refreshed.id).toBe(created.id);
+    expect(refreshed.name).toBe("Daytona (EU)");
+    expect(refreshed.config.target).toBe("eu");
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(eq(environments.driver, "sandbox"));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("adopts the managed slot on a provider switch and drops the stale kubernetes marker", async () => {
+    const kubernetes = await svc.ensureKubernetesEnvironment({ inCluster: true, backend: "job" });
+    expect(kubernetes.metadata?.managedKubernetesSandbox).toBe(true);
+
+    const daytona = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+
+    expect(daytona.id).toBe(kubernetes.id);
+    expect(daytona.name).toBe("Daytona");
+    expect(daytona.config.provider).toBe("daytona");
+    expect(daytona.config.backend).toBeUndefined();
+    expect(daytona.metadata?.managedSandboxProvider).toBe("daytona");
+    expect(daytona.metadata?.managedKubernetesSandbox).toBeUndefined();
+    expect(await svc.findKubernetesEnvironment()).toBeNull();
+
+    // And back: the kubernetes wrapper re-adopts the same row.
+    const restored = await svc.ensureKubernetesEnvironment({ inCluster: true, backend: "job" });
+    expect(restored.id).toBe(kubernetes.id);
+    expect(restored.metadata?.managedKubernetesSandbox).toBe(true);
+  });
+
+  it("adopts an existing unmanaged sandbox row holding the desired name", async () => {
+    const handMade = await svc.create({
+      name: "Daytona",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "daytona", target: "us" },
+    });
+    expect(handMade.metadata?.managedByPaperclip).toBeUndefined();
+
+    const adopted = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "eu" },
+    });
+    expect(adopted.id).toBe(handMade.id);
+    expect(adopted.config.target).toBe("eu");
+    expect(adopted.metadata?.managedByPaperclip).toBe(true);
+    expect(adopted.metadata?.managedSandboxProvider).toBe("daytona");
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(eq(environments.driver, "sandbox"));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("keeps the current name when the desired name belongs to another row", async () => {
+    await svc.create({
+      name: "Daytona",
+      driver: "ssh",
+      status: "active",
+      config: {
+        host: "fixture.example.test",
+        port: 22,
+        username: "fixture",
+        remoteWorkspacePath: "/srv/paperclip",
+      },
+    });
+    const kubernetes = await svc.ensureKubernetesEnvironment({ inCluster: true });
+
+    // The managed slot is adopted, but the rename would collide with the ssh
+    // row on environments_name_idx; the ensure keeps the existing name.
+    const adopted = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    expect(adopted.id).toBe(kubernetes.id);
+    expect(adopted.name).toBe(kubernetes.name);
+    expect(adopted.config.provider).toBe("daytona");
+  });
+
   it("returns a conflict when creating a second environment with the same name", async () => {
     await seedEnvironment();
 
