@@ -10,7 +10,10 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
-import { parseCmdWrapperContent } from "./cmd-wrapper-resolution.js";
+import {
+  parseCmdWrapperContent,
+  resolvePercentVars,
+} from "./cmd-wrapper-resolution.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -2233,8 +2236,12 @@ async function resolveSpawnTarget(
         try {
           await fs.access(resolvedExe);
           // Merge SET-based env overrides on top of the caller's sanitized env.
+          // Resolve %VAR% references using the caller's env so that patterns
+          // like %PATH% expand correctly with spawn(shell: false).
           const mergedEnv = Object.keys(envOverrides).length > 0
-            ? { ...env, ...envOverrides }
+            ? { ...env, ...Object.fromEntries(
+                Object.entries(envOverrides).map(([k, v]) => [k, resolvePercentVars(v, env)])
+              )}
             : undefined;
           return { command: resolvedExe, args, env: mergedEnv };
         } catch {

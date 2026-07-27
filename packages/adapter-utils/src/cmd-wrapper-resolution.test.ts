@@ -136,7 +136,7 @@ describe(".cmd wrapper resolution", () => {
 
   it("handles SET with quoted key-value pairs (SET \"KEY=VALUE\")", () => {
     // npm .cmd wrappers often use SET "KEY=VALUE" format
-    const content = `SET "NODE_ENV=production\nSET "MY_VAR=hello`;
+    const content = `SET "NODE_ENV=production"\nSET "MY_VAR=hello"`;
     const result = parseCmdWrapperContent(content);
     expect(result.envOverrides).toEqual({
       NODE_ENV: "production",
