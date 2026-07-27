@@ -1436,6 +1436,43 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
     });
 
+    it("waits for an in-flight execute before teardown cleanup starts", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let resolveExecute!: () => void;
+      sandbox.process.executeCommand.mockImplementation(async () => {
+        await new Promise<void>((resolve) => {
+          resolveExecute = resolve;
+        });
+        return {
+          exitCode: 0,
+          result: "bash",
+          artifacts: { stdout: "bash" },
+        };
+      });
+      mockGet.mockResolvedValue(sandbox);
+
+      const executePromise = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const releasePromise = plugin.definition.onEnvironmentReleaseLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: true },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sandbox.stop).not.toHaveBeenCalled();
+
+      resolveExecute();
+      await Promise.all([executePromise, releasePromise]);
+
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+    });
+
     it("keeps the teardown gate closed until overlapping teardowns both finish", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });

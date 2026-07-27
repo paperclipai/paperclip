@@ -890,6 +890,64 @@ const sandboxHandleTeardownGates = (() => {
   return { begin, current, end, reset };
 })();
 
+type SandboxHandleActivityGate = {
+  promise: Promise<void>;
+  release: () => void;
+  refCount: number;
+};
+
+const sandboxHandleActivityGates = (() => {
+  const gates = new Map<string, SandboxHandleActivityGate>();
+
+  async function begin(scope: SandboxScope): Promise<SandboxHandleActivityGate> {
+    const key = sandboxHandleCacheKey(scope);
+    while (true) {
+      const teardownGate = sandboxHandleTeardownGates.current(scope);
+      if (teardownGate) {
+        await teardownGate.promise;
+        continue;
+      }
+      const existing = gates.get(key);
+      if (existing) {
+        existing.refCount += 1;
+        return existing;
+      }
+      let release!: () => void;
+      const gate: SandboxHandleActivityGate = {
+        promise: new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+        release: () => release(),
+        refCount: 1,
+      };
+      gates.set(key, gate);
+      return gate;
+    }
+  }
+
+  async function waitForIdle(scope: SandboxScope): Promise<void> {
+    const gate = gates.get(sandboxHandleCacheKey(scope));
+    if (!gate) return;
+    await gate.promise;
+  }
+
+  function end(scope: SandboxScope, gate: SandboxHandleActivityGate): void {
+    const key = sandboxHandleCacheKey(scope);
+    gate.refCount -= 1;
+    if (gate.refCount > 0) return;
+    if (gates.get(key) === gate) {
+      gates.delete(key);
+    }
+    gate.release();
+  }
+
+  function reset(): void {
+    gates.clear();
+  }
+
+  return { begin, waitForIdle, end, reset };
+})();
+
 const sandboxHandleCache = (() => {
   const entries = new Map<string, SandboxHandleCacheEntry>();
 
@@ -1311,6 +1369,7 @@ const plugin = definePlugin({
       if (!sandbox) return;
 
       evictSandboxHandle(scope);
+      await sandboxHandleActivityGates.waitForIdle(scope);
 
       if (config.reuseLease) {
         if (sandbox.state !== "stopped") {
@@ -1372,6 +1431,7 @@ const plugin = definePlugin({
       if (!sandbox) return;
 
       evictSandboxHandle(scope);
+      await sandboxHandleActivityGates.waitForIdle(scope);
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
@@ -1644,29 +1704,46 @@ const plugin = definePlugin({
     }
 
     const config = parseDriverConfig(params.config);
-    // Time the sandbox handle lookup (Open Q1) separately from the
-    // `executeCommand` round-trip so telemetry can split the per-call get cost
-    // from the exec cost. With the per-lease handle cache this collapses to ~0
-    // on a hit (no `client.get` REST round-trip), but the field stays present so
-    // `providerGetMs` remains observable — and still captures the occasional
-    // freshness refresh the cache issues after an idle gap. `ensureSandboxStarted`
-    // is a no-op for an already-started sandbox, so it is excluded from the get
-    // measurement.
-    const getStart = timingNow();
-    const sandbox = await getSandbox({
+    const activityGate = await sandboxHandleActivityGates.begin({
       driverKey: params.driverKey,
       companyId: params.companyId,
       environmentId: params.environmentId,
       providerLeaseId: params.lease.providerLeaseId,
       config,
     });
-    const getDurationMs = timingNow() - getStart;
-    await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
-    const result = await executeOneShot(sandbox, params, config);
-    return {
-      ...result,
-      metadata: { ...(result.metadata ?? {}), getDurationMs },
-    };
+    try {
+      // Time the sandbox handle lookup (Open Q1) separately from the
+      // `executeCommand` round-trip so telemetry can split the per-call get cost
+      // from the exec cost. With the per-lease handle cache this collapses to ~0
+      // on a hit (no `client.get` REST round-trip), but the field stays present so
+      // `providerGetMs` remains observable — and still captures the occasional
+      // freshness refresh the cache issues after an idle gap. `ensureSandboxStarted`
+      // is a no-op for an already-started sandbox, so it is excluded from the get
+      // measurement.
+      const getStart = timingNow();
+      const sandbox = await getSandbox({
+        driverKey: params.driverKey,
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        providerLeaseId: params.lease.providerLeaseId,
+        config,
+      }, { bypassTeardownGate: true });
+      const getDurationMs = timingNow() - getStart;
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
+      const result = await executeOneShot(sandbox, params, config);
+      return {
+        ...result,
+        metadata: { ...(result.metadata ?? {}), getDurationMs },
+      };
+    } finally {
+      sandboxHandleActivityGates.end({
+        driverKey: params.driverKey,
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        providerLeaseId: params.lease.providerLeaseId,
+        config,
+      }, activityGate);
+    }
   },
 
   // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)
@@ -1684,20 +1761,26 @@ const plugin = definePlugin({
     const config = parseDriverConfig(params.config);
     const remoteDir = resolveSyncRemoteDir(params.lease);
     const timeoutSeconds = toTimeoutSeconds(config.timeoutMs);
-    const sandbox = await getSandbox({
+    const scope = {
       driverKey: params.driverKey,
       companyId: params.companyId,
       environmentId: params.environmentId,
       providerLeaseId: params.lease.providerLeaseId,
       config,
-    });
-    await ensureSandboxStarted(sandbox, timeoutSeconds);
-    return await performSyncIn({
-      sandbox,
-      operations: params.operations,
-      remoteDir,
-      timeoutSeconds,
-    });
+    };
+    const activityGate = await sandboxHandleActivityGates.begin(scope);
+    try {
+      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
+      await ensureSandboxStarted(sandbox, timeoutSeconds);
+      return await performSyncIn({
+        sandbox,
+        operations: params.operations,
+        remoteDir,
+        timeoutSeconds,
+      });
+    } finally {
+      sandboxHandleActivityGates.end(scope, activityGate);
+    }
   },
 
   // Opt-in native outbound transfer. See onEnvironmentSyncIn.
@@ -1710,20 +1793,26 @@ const plugin = definePlugin({
     const config = parseDriverConfig(params.config);
     const remoteDir = resolveSyncRemoteDir(params.lease);
     const timeoutSeconds = toTimeoutSeconds(config.timeoutMs);
-    const sandbox = await getSandbox({
+    const scope = {
       driverKey: params.driverKey,
       companyId: params.companyId,
       environmentId: params.environmentId,
       providerLeaseId: params.lease.providerLeaseId,
       config,
-    });
-    await ensureSandboxStarted(sandbox, timeoutSeconds);
-    return await performSyncOut({
-      sandbox,
-      operations: params.operations,
-      remoteDir,
-      timeoutSeconds,
-    });
+    };
+    const activityGate = await sandboxHandleActivityGates.begin(scope);
+    try {
+      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
+      await ensureSandboxStarted(sandbox, timeoutSeconds);
+      return await performSyncOut({
+        sandbox,
+        operations: params.operations,
+        remoteDir,
+        timeoutSeconds,
+      });
+    } finally {
+      sandboxHandleActivityGates.end(scope, activityGate);
+    }
   },
 });
 
