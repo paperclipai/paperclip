@@ -68,7 +68,7 @@ export function hasCmdSubstitution(value: string): boolean {
  * If any SET value contains cmd.exe-only substitution syntax (%VAR:...=...%
  * or %VAR:~...%), returns exeRelativePath: null to force fallback to cmd.exe.
  */
-export function parseCmdWrapperContent(content: string): {
+export function parseCmdWrapperContent(content: string, baseEnv?: Record<string, string | undefined>): {
   exeRelativePath: string | null;
   envOverrides: Record<string, string>;
 } {
@@ -102,7 +102,11 @@ export function parseCmdWrapperContent(content: string): {
       if (hasCmdSubstitution(value)) {
         return { exeRelativePath: null, envOverrides: {} };
       }
-      envOverrides[key] = value;
+      // Process SETs sequentially: expand %VAR% against accumulated overrides
+      // (simulating cmd.exe's sequential SET behavior where later assignments
+      // can reference earlier ones, e.g. SET A=x + SET B=%A% → B=x)
+      const expanded = resolvePercentVars(value, { ...baseEnv, ...envOverrides });
+      envOverrides[key] = expanded;
     }
   }
 
