@@ -1,4 +1,4 @@
-import * as fsPromises from "node:fs/promises";
+import { promises as fsPromises } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -13,12 +13,15 @@ import {
   type SandboxManagedRuntimeClient,
 } from "./sandbox-managed-runtime.js";
 
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs/promises")>();
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
   return {
     ...actual,
-    chmod: vi.fn(actual.chmod),
-    rename: vi.fn(actual.rename),
+    promises: {
+      ...actual.promises,
+      chmod: vi.fn(actual.promises.chmod),
+      rename: vi.fn(actual.promises.rename),
+    },
   };
 });
 
