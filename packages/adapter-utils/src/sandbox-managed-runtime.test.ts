@@ -1,3 +1,4 @@
+import * as fsPromises from "node:fs/promises";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -62,6 +63,35 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(targetDir, ".claude.json"), "utf8")).resolves.toBe("{\"keep\":true}\n");
     await expect(readFile(path.join(targetDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
     await expect(readFile(path.join(targetDir, "stale.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("applies file mode on a staged sibling before renaming into place", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-copy-mode-"));
+    cleanupDirs.push(rootDir);
+    const sourceDir = path.join(rootDir, "source");
+    const targetDir = path.join(rootDir, "target");
+    const relativePath = path.join("nested", "script.sh");
+    const sourcePath = path.join(sourceDir, relativePath);
+    const targetPath = path.join(targetDir, relativePath);
+    await mkdir(path.dirname(sourcePath), { recursive: true });
+    await writeFile(sourcePath, "#!/bin/sh\necho hello\n", { mode: 0o600 });
+    await mkdir(targetDir, { recursive: true });
+
+    const chmodSpy = vi.spyOn(fsPromises, "chmod");
+    const renameSpy = vi.spyOn(fsPromises, "rename");
+    try {
+      await mirrorDirectory(sourceDir, targetDir);
+
+      await expect(readFile(targetPath, "utf8")).resolves.toBe("#!/bin/sh\necho hello\n");
+      expect(chmodSpy).toHaveBeenCalledTimes(1);
+      expect(renameSpy).toHaveBeenCalledTimes(1);
+      expect(chmodSpy.mock.calls[0]?.[0]).toContain(".paperclip-copy");
+      expect(chmodSpy.mock.calls[0]?.[0]).not.toBe(targetPath);
+      expect(chmodSpy.mock.invocationCallOrder[0]).toBeLessThan(renameSpy.mock.invocationCallOrder[0]);
+    } finally {
+      chmodSpy.mockRestore();
+      renameSpy.mockRestore();
+    }
   });
 
   it("syncs workspace and assets through a provider-neutral sandbox client", async () => {

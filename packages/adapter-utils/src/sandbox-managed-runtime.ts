@@ -433,10 +433,13 @@ async function copyWorkspaceEntry(sourceRoot: string, targetRoot: string, relati
     return;
   }
 
-  await fs.copyFile(sourcePath, targetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
-    await fs.copyFile(sourcePath, targetPath);
+  const stagedTargetPath = `${targetPath}.paperclip-copy`;
+  await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+  await fs.copyFile(sourcePath, stagedTargetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+    await fs.copyFile(sourcePath, stagedTargetPath);
   });
-  await fs.chmod(targetPath, stats.mode);
+  await fs.chmod(stagedTargetPath, stats.mode);
+  await fs.rename(stagedTargetPath, targetPath);
 }
 
 export async function mirrorDirectory(
