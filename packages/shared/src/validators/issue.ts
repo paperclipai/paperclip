@@ -908,11 +908,12 @@ export const requestConfirmationToolActionResultSchema = z.object({
 
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
+  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "superseded_by_interaction", "stale_target"]),
   targetMutationApplied: z.literal(false).optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
+  supersedingInteractionId: z.string().uuid().nullable().optional(),
   resumeFailure: requestConfirmationResumeFailureSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionResultSchema.optional(),
 });
@@ -1031,12 +1032,13 @@ export const requestItemVerdictsResultItemSchema = z.object({
 
 export const requestItemVerdictsResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "cancelled"]),
+  outcome: z.enum(["resolved", "superseded_by_comment", "superseded_by_interaction", "stale_target", "cancelled"]),
   complete: z.boolean(),
   items: z.array(requestItemVerdictsResultItemSchema)
     .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
+  supersedingInteractionId: z.string().uuid().nullable().optional(),
 }).superRefine((value, ctx) => {
   const itemIds = new Set<string>();
   for (const [index, item] of value.items.entries()) {

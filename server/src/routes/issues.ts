@@ -9523,6 +9523,9 @@ export function issueRoutes(
       agentId: actor.agentId,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
+    const supersededInteractionIds = Array.isArray((interaction as { supersededInteractionIds?: unknown }).supersededInteractionIds)
+      ? (interaction as { supersededInteractionIds: string[] }).supersededInteractionIds
+      : [];
 
     await logActivity(db, {
       companyId: issue.companyId,
@@ -9534,12 +9537,13 @@ export function issueRoutes(
       action: "issue.thread_interaction_created",
       entityType: "issue",
       entityId: issue.id,
-      details: {
-        interactionId: interaction.id,
-        interactionKind: interaction.kind,
-        interactionStatus: interaction.status,
-        continuationPolicy: interaction.continuationPolicy,
-      },
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          continuationPolicy: interaction.continuationPolicy,
+          ...(supersededInteractionIds.length > 0 ? { supersededInteractionIds } : {}),
+        },
     });
 
     res.status(201).json(interaction);

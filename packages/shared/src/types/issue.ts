@@ -1156,10 +1156,11 @@ export interface RequestItemVerdictsPayload {
 
 export interface RequestConfirmationResult {
   version: 1;
-  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
+  outcome: "accepted" | "rejected" | "superseded_by_comment" | "superseded_by_interaction" | "stale_target";
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
+  supersedingInteractionId?: string | null;
   resumeFailure?: {
     status: "retrying" | "needs_attention";
     errorCode: string | null;
@@ -1188,11 +1189,12 @@ export interface RequestItemVerdictsResultItem {
 
 export interface RequestItemVerdictsResult {
   version: 1;
-  outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled";
+  outcome: "resolved" | "superseded_by_comment" | "superseded_by_interaction" | "stale_target" | "cancelled";
   complete: boolean;
   items: RequestItemVerdictsResultItem[];
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
+  supersedingInteractionId?: string | null;
 }
 
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {

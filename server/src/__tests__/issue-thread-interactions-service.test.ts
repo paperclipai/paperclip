@@ -892,6 +892,149 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.idempotencyKey).toBe("run-1:questionnaire");
   });
 
+  it("supersedes an older pending request_confirmation when a later run creates a replacement with a different idempotency key", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Single open decision surface",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "First agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "Second agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: firstRunId,
+        companyId,
+        agentId: firstAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date("2026-07-27T10:00:00.000Z"),
+      },
+      {
+        id: secondRunId,
+        companyId,
+        agentId: secondAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date("2026-07-27T10:17:00.000Z"),
+      },
+    ]);
+
+    const first = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      idempotencyKey: "run-1:confirmation",
+      sourceRunId: firstRunId,
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Use candidate A?",
+        acceptLabel: "Use A",
+        rejectLabel: "Keep current",
+      },
+    }, {
+      agentId: firstAgentId,
+    });
+
+    const second = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      idempotencyKey: "run-2:confirmation",
+      sourceRunId: secondRunId,
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Use candidate B instead?",
+        acceptLabel: "Use B",
+        rejectLabel: "Keep current",
+      },
+    }, {
+      agentId: secondAgentId,
+    }) as Awaited<ReturnType<typeof interactionsSvc.create>> & { supersededInteractionIds?: string[] };
+
+    expect(second.id).not.toBe(first.id);
+    expect(second.supersededInteractionIds).toEqual([first.id]);
+
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows).toHaveLength(2);
+
+    const expired = rows.find((row) => row.id === first.id);
+    const pending = rows.find((row) => row.id === second.id);
+    expect(expired).toMatchObject({
+      id: first.id,
+      kind: "request_confirmation",
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded_by_interaction",
+        supersedingInteractionId: second.id,
+      },
+      resolvedByAgentId: secondAgentId,
+    });
+    expect(pending).toMatchObject({
+      id: second.id,
+      kind: "request_confirmation",
+      status: "pending",
+      idempotencyKey: "run-2:confirmation",
+      sourceRunId: secondRunId,
+    });
+    expect(rows.filter((row) => row.status === "pending")).toHaveLength(1);
+  });
+
   it("accepts request_confirmation interactions without creating child issues", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

@@ -110,12 +110,18 @@ type UserCommentSupersedableInteraction =
   | TargetBoundInteraction
   | AskUserQuestionsInteraction;
 
+const SINGLE_OPEN_DECISION_SURFACE_KINDS = TARGET_BOUND_INTERACTION_KINDS;
+
 function isRequestConfirmationLikeKind(kind: string): kind is RequestConfirmationLikeKind {
   return (REQUEST_CONFIRMATION_INTERACTION_KINDS as readonly string[]).includes(kind);
 }
 
 function isTargetBoundInteractionKind(kind: string): kind is TargetBoundInteractionKind {
   return (TARGET_BOUND_INTERACTION_KINDS as readonly string[]).includes(kind);
+}
+
+function isSingleOpenDecisionSurfaceKind(kind: string): kind is TargetBoundInteractionKind {
+  return (SINGLE_OPEN_DECISION_SURFACE_KINDS as readonly string[]).includes(kind);
 }
 
 function isUserCommentSupersedableKind(kind: string): kind is UserCommentSupersedableKind {
@@ -293,6 +299,28 @@ function buildSupersededByCommentResult(row: IssueThreadInteractionRow, commentI
     version: 1,
     outcome: "superseded_by_comment",
     commentId,
+  } as const;
+}
+
+function buildSupersededByInteractionResult(
+  row: IssueThreadInteractionRow,
+  supersedingInteractionId: string,
+) {
+  if (row.kind === "request_item_verdicts") {
+    const interaction = hydrateInteraction(row) as RequestItemVerdictsInteraction;
+    return {
+      version: 1,
+      outcome: "superseded_by_interaction",
+      complete: false,
+      items: interaction.result?.items ?? [],
+      supersedingInteractionId,
+    } satisfies RequestItemVerdictsResult;
+  }
+
+  return {
+    version: 1,
+    outcome: "superseded_by_interaction",
+    supersedingInteractionId,
   } as const;
 }
 
@@ -859,11 +887,12 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
 
 export function issueThreadInteractionService(db: Db) {
   async function getIdempotentInteraction(args: {
+    dbHandle?: Pick<Db, "select">;
     issueId: string;
     companyId: string;
     idempotencyKey: string;
   }) {
-    return db
+    return (args.dbHandle ?? db)
       .select()
       .from(issueThreadInteractions)
       .where(and(
@@ -922,6 +951,53 @@ export function issueThreadInteractionService(db: Db) {
       throw conflict("Interaction has already been resolved");
     }
     return current;
+  }
+
+  async function supersedePendingDecisionSurfaces(dbHandle: Db | any, args: {
+    issueId: string;
+    companyId: string;
+    createdInteractionId: string;
+    actor: InteractionActor;
+  }) {
+    const pendingRows = await dbHandle
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, args.companyId),
+        eq(issueThreadInteractions.issueId, args.issueId),
+        eq(issueThreadInteractions.status, "pending"),
+        inArray(issueThreadInteractions.kind, [...SINGLE_OPEN_DECISION_SURFACE_KINDS]),
+      ))
+      .for("update");
+
+    const supersededRows = pendingRows.filter((row: IssueThreadInteractionRow) => row.id !== args.createdInteractionId);
+    if (supersededRows.length === 0) return [];
+
+    const now = new Date();
+    const updatedRows: IssueThreadInteractionRow[] = [];
+    for (const row of supersededRows) {
+      const [updated] = await dbHandle
+        .update(issueThreadInteractions)
+        .set({
+          status: "expired",
+          result: buildSupersededByInteractionResult(row, args.createdInteractionId),
+          resolvedByAgentId: args.actor.agentId ?? null,
+          resolvedByUserId: args.actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, row.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+
+      if (updated) {
+        updatedRows.push(updated);
+      }
+    }
+
+    return updatedRows;
   }
 
   async function acceptRequestConfirmation(args: {
@@ -1162,46 +1238,108 @@ export function issueThreadInteractionService(db: Db) {
         });
       }
 
-      let created: IssueThreadInteractionRow;
-      try {
-        [created] = await db
-          .insert(issueThreadInteractions)
-          .values({
-            companyId: issue.companyId,
-            issueId: issue.id,
-            kind: data.kind,
-            status: "pending",
-            continuationPolicy: data.continuationPolicy,
-            idempotencyKey: data.idempotencyKey ?? null,
-            sourceCommentId: data.sourceCommentId ?? null,
-            sourceRunId: data.sourceRunId ?? null,
-            title: data.title ?? null,
-            summary: data.summary ?? null,
-            createdByAgentId: actor.agentId ?? null,
-            createdByUserId: actor.userId ?? null,
-            payload: data.payload,
-          })
-          .returning();
-      } catch (error) {
-        if (!data.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
-          throw error;
+      const shouldEnforceSingleOpenDecisionSurface = isSingleOpenDecisionSurfaceKind(data.kind);
+      const createdResult = await db.transaction(async (tx) => {
+        if (shouldEnforceSingleOpenDecisionSurface) {
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(
+              eq(issues.id, issue.id),
+              eq(issues.companyId, issue.companyId),
+            ))
+            .for("update");
         }
-        const existing = await getIdempotentInteraction({
-          issueId: issue.id,
-          companyId: issue.companyId,
-          idempotencyKey: data.idempotencyKey,
-        });
-        if (!existing) throw error;
-        if (!isEquivalentCreateRequest(existing, data, actor)) {
-          throw conflict("Interaction idempotency key already exists for a different request", {
+
+        if (data.idempotencyKey) {
+          const existing = await getIdempotentInteraction({
+            dbHandle: tx,
+            issueId: issue.id,
+            companyId: issue.companyId,
             idempotencyKey: data.idempotencyKey,
           });
+          if (existing) {
+            if (!isEquivalentCreateRequest(existing, data, actor)) {
+              throw conflict("Interaction idempotency key already exists for a different request", {
+                idempotencyKey: data.idempotencyKey,
+              });
+            }
+            return {
+              interaction: hydrateInteraction(existing),
+              supersededInteractions: [] as IssueThreadInteractionRow[],
+            };
+          }
         }
-        return hydrateInteraction(existing);
+
+        let created: IssueThreadInteractionRow;
+        try {
+          [created] = await tx
+            .insert(issueThreadInteractions)
+            .values({
+              companyId: issue.companyId,
+              issueId: issue.id,
+              kind: data.kind,
+              status: "pending",
+              continuationPolicy: data.continuationPolicy,
+              idempotencyKey: data.idempotencyKey ?? null,
+              sourceCommentId: data.sourceCommentId ?? null,
+              sourceRunId: data.sourceRunId ?? null,
+              title: data.title ?? null,
+              summary: data.summary ?? null,
+              createdByAgentId: actor.agentId ?? null,
+              createdByUserId: actor.userId ?? null,
+              payload: data.payload,
+            })
+            .returning();
+        } catch (error) {
+          if (!data.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
+            throw error;
+          }
+          const existing = await getIdempotentInteraction({
+            dbHandle: tx,
+            issueId: issue.id,
+            companyId: issue.companyId,
+            idempotencyKey: data.idempotencyKey,
+          });
+          if (!existing) throw error;
+          if (!isEquivalentCreateRequest(existing, data, actor)) {
+            throw conflict("Interaction idempotency key already exists for a different request", {
+              idempotencyKey: data.idempotencyKey,
+            });
+          }
+          return {
+            interaction: hydrateInteraction(existing),
+            supersededInteractions: [] as IssueThreadInteractionRow[],
+          };
+        }
+
+        const supersededInteractions = shouldEnforceSingleOpenDecisionSurface
+          ? await supersedePendingDecisionSurfaces(tx, {
+              issueId: issue.id,
+              companyId: issue.companyId,
+              createdInteractionId: created.id,
+              actor,
+            })
+          : [];
+
+        await touchIssue(tx, issue.id);
+        return {
+          interaction: hydrateInteraction(created),
+          supersededInteractions,
+        };
+      });
+
+      if (createdResult.supersededInteractions.length === 0) {
+        return createdResult.interaction;
       }
 
-      await touchIssue(db, issue.id);
-      return hydrateInteraction(created);
+      await Promise.all(createdResult.supersededInteractions.map(async (row) =>
+        emitInteractionResolvedTelemetry(db, hydrateInteraction(row))));
+
+      return {
+        ...createdResult.interaction,
+        supersededInteractionIds: createdResult.supersededInteractions.map((row) => row.id),
+      };
     },
 
     acceptInteraction: async (
