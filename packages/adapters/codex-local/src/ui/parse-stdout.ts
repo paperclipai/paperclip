@@ -165,6 +165,24 @@ function parseToolUseItem(
   }];
 }
 
+/**
+ * Codex `error` items that report a degraded-but-working condition rather than
+ * a failure. Kept deliberately narrow and anchored: an over-broad pattern here
+ * would silence real errors, which is far worse than showing an extra one.
+ */
+const NON_FATAL_ADVISORY_PATTERNS: RegExp[] = [
+  // Requested model is absent from the CLI's compiled metadata table. The turn
+  // proceeds on fallback metadata, so this warns that context-window and token
+  // accounting are approximate -- it does not mean the run failed.
+  /^model metadata for .+ not found\b/i,
+];
+
+function isNonFatalAdvisory(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) return false;
+  return NON_FATAL_ADVISORY_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
 function parseCodexItem(
   item: Record<string, unknown>,
   ts: string,
@@ -209,6 +227,15 @@ function parseCodexItem(
 
   if (itemType === "error" && phase === "completed") {
     const text = errorText(item.message ?? item.error ?? item);
+    // Codex reports non-fatal advisories through the same `error` item type it
+    // uses for genuine failures, so routing every one to stderr makes a healthy
+    // run look broken. The model-metadata advisory is emitted at session start
+    // before the first API call, which puts it at item_0 -- the first line a
+    // reader sees on a run that then completes normally. Demote the known
+    // advisories to a neutral notice; anything unrecognised stays stderr.
+    if (isNonFatalAdvisory(text)) {
+      return [{ kind: "system", ts, text }];
+    }
     return [{ kind: "stderr", ts, text: text || "error" }];
   }
 
