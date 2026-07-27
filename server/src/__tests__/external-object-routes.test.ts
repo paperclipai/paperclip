@@ -277,17 +277,29 @@ describe("external object routes", () => {
     expect(mockExternalObjectsService.refreshIssueObjects).not.toHaveBeenCalled();
   });
 
+  it("requires manual refresh force to be a boolean", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/external-objects/refresh`)
+      .send({ force: "true" });
+
+    expect(res.status).toBe(400);
+    expect(mockExternalObjectsService.refreshIssueObjects).not.toHaveBeenCalled();
+  });
+
   it("allows the checked-out agent to request manual refresh", async () => {
     const app = await createApp(ownerActor());
 
     const res = await request(app)
       .post(`/api/issues/${issueId}/external-objects/refresh`)
-      .send({});
+      .send({ force: true });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(issueId, ownerAgentId, ownerRunId);
     expect(mockExternalObjectsService.refreshIssueObjects).toHaveBeenCalledWith(issueId, expect.objectContaining({
       companyId,
+      force: true,
       actor: expect.objectContaining({ actorType: "agent", actorId: ownerAgentId }),
     }));
   });

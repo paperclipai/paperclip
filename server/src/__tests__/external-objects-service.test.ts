@@ -328,11 +328,6 @@ describe("GitHub external object provider", () => {
       }),
       { ok: false, liveness: "unreachable", errorCode: "github_rate_limited" },
     ],
-    [
-      "not-found",
-      new Response("", { status: 404, headers: { etag: '"missing"' } }),
-      { ok: true, snapshot: expect.objectContaining({ displayKey: "GitHub Pull Request", iconKey: "github", statusKey: "not_found", statusIconKey: "archive", statusCategory: "archived", statusTone: "muted" }) },
-    ],
   ])("maps %s responses to provider-safe results", async (_name, githubResponse, expected) => {
     const provider = createGitHubExternalObjectProvider({} as any, {
       fetch: async () => githubResponse,
@@ -347,6 +342,25 @@ describe("GitHub external object provider", () => {
 
     expect(result).toEqual(expect.objectContaining(expected));
     expect(JSON.stringify(result)).not.toContain("http");
+  });
+
+  it.each([
+    ["anonymous", false, "auth_required", "github_auth_required"],
+    ["authenticated", true, "unreachable", "github_not_found_unverified"],
+  ])("treats a %s GitHub 404 as an unverified failure", async (_name, hasToken, liveness, errorCode) => {
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch: async () => new Response("", { status: 404, headers: { etag: '"missing"' } }),
+      tokenProvider: hasToken ? async () => "ghp_secret" : null,
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toMatchObject({ ok: false, liveness, errorCode });
+    expect(JSON.stringify(result)).not.toContain("ghp_secret");
   });
 });
 
@@ -527,6 +541,75 @@ describeEmbeddedPostgres("externalObjectService", () => {
 
     expect(refreshed).toHaveLength(1);
     expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("bypasses refresh backoff only when forced through an issue refresh", async () => {
+    const { companyId, issueId } = await createIssue();
+    const resolve = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: {
+        statusCategory: "open" as const,
+        statusTone: "info" as const,
+        statusKey: "open",
+        statusLabel: "Open",
+        ttlSeconds: 300,
+      },
+    }));
+    const resolver: ExternalObjectResolver = {
+      providerKey: "url",
+      objectType: "link",
+      resolve,
+    };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false });
+    await svc.syncIssue(issueId);
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+    await db
+      .update(externalObjects)
+      .set({ nextRefreshAt: new Date(Date.now() + 60_000) })
+      .where(eq(externalObjects.id, object.id));
+
+    const skipped = await svc.refreshIssueObjects(issueId, { companyId });
+    const explicitlySkipped = await svc.refreshIssueObjects(issueId, { companyId, force: false });
+
+    expect(skipped).toMatchObject([{ refreshed: false, reason: "backoff" }]);
+    expect(explicitlySkipped).toMatchObject([{ refreshed: false, reason: "backoff" }]);
+    expect(resolve).not.toHaveBeenCalled();
+
+    const forced = await svc.refreshIssueObjects(issueId, { companyId, force: true });
+
+    expect(forced).toMatchObject([{ refreshed: true, reason: "resolved" }]);
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains confirmed GitHub state when an anonymous 404 cannot verify visibility", async () => {
+    const { companyId, issueId } = await createIssue();
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        state: "open",
+        draft: false,
+        merged: false,
+        title: "Visible PR",
+      })))
+      .mockResolvedValueOnce(new Response("", { status: 404 }));
+    const svc = externalObjectService(db, {
+      github: { fetch, tokenProvider: null },
+    });
+    await svc.syncIssue(issueId);
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+
+    await svc.refreshObject(object.id, { companyId, force: true });
+    const failed = await svc.refreshObject(object.id, { companyId, force: true });
+    const updated = await db.select().from(externalObjects).then((rows) => rows[0]!);
+
+    expect(failed).toMatchObject({ refreshed: true, reason: "auth_required" });
+    expect(updated).toMatchObject({
+      statusKey: "open",
+      statusLabel: "Open",
+      isTerminal: false,
+      liveness: "auth_required",
+      lastErrorCode: "github_auth_required",
+    });
   });
 
   it("removes comment mentions when a synced comment is hard-deleted", async () => {

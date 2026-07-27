@@ -889,6 +889,7 @@ export function externalObjectService(
   async function refreshIssueObjects(issueId: string, input: {
     companyId: string;
     objectIds?: string[];
+    force?: boolean;
     actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId">;
   }) {
     if (!(await isEnabled())) return [];
@@ -898,7 +899,11 @@ export function externalObjectService(
       .filter((id) => !input.objectIds || input.objectIds.includes(id));
     const results = [];
     for (const objectId of objectIds) {
-      results.push(await refreshObject(objectId, { companyId: input.companyId, actor: input.actor }));
+      results.push(await refreshObject(objectId, {
+        companyId: input.companyId,
+        force: input.force,
+        actor: input.actor,
+      }));
     }
     return results;
   }

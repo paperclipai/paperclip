@@ -527,6 +527,7 @@ const externalObjectSummariesBodySchema = z.object({
 
 const refreshExternalObjectsBodySchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
+  force: z.boolean().optional(),
 }).strict();
 
 const environmentCustomImageCompanyQuerySchema = z.object({

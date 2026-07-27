@@ -204,6 +204,7 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
 });
 const refreshExternalObjectsSchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
+  force: z.boolean().optional(),
 }).strict();
 const inboxArchiveBodySchema = z.object({
   userId: z.string().trim().min(1).optional(),
@@ -5801,6 +5802,7 @@ export function issueRoutes(
     const results = await externalObjectsSvc.refreshIssueObjects(issue.id, {
       companyId: issue.companyId,
       objectIds: req.body.objectIds,
+      force: req.body.force,
       actor,
     });
     await logActivity(db, {
