@@ -844,6 +844,7 @@ type SandboxLookupOptions = {
 type SandboxHandleTeardownGate = {
   promise: Promise<void>;
   release: () => void;
+  refCount: number;
 };
 
 const sandboxHandleTeardownGates = (() => {
@@ -852,13 +853,17 @@ const sandboxHandleTeardownGates = (() => {
   function begin(scope: SandboxScope): SandboxHandleTeardownGate {
     const key = sandboxHandleCacheKey(scope);
     const existing = gates.get(key);
-    if (existing) return existing;
+    if (existing) {
+      existing.refCount += 1;
+      return existing;
+    }
     let release!: () => void;
     const gate: SandboxHandleTeardownGate = {
       promise: new Promise<void>((resolve) => {
         release = resolve;
       }),
       release: () => release(),
+      refCount: 1,
     };
     gates.set(key, gate);
     return gate;
@@ -870,6 +875,8 @@ const sandboxHandleTeardownGates = (() => {
 
   function end(scope: SandboxScope, gate: SandboxHandleTeardownGate): void {
     const key = sandboxHandleCacheKey(scope);
+    gate.refCount -= 1;
+    if (gate.refCount > 0) return;
     if (gates.get(key) === gate) {
       gates.delete(key);
     }

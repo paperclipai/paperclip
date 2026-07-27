@@ -1436,6 +1436,67 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
     });
 
+    it("keeps the teardown gate closed until overlapping teardowns both finish", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let stopStarted = false;
+      let deleteStarted = false;
+      let resolveStop!: () => void;
+      let resolveDelete!: () => void;
+      const stopGate = new Promise<void>((resolve) => {
+        resolveStop = resolve;
+      });
+      const deleteGate = new Promise<void>((resolve) => {
+        resolveDelete = resolve;
+      });
+      sandbox.stop.mockImplementation(() => {
+        stopStarted = true;
+        return stopGate;
+      });
+      sandbox.delete.mockImplementation(() => {
+        deleteStarted = true;
+        return deleteGate;
+      });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      const releasePromise = plugin.definition.onEnvironmentReleaseLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: true },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(stopStarted).toBe(true);
+
+      const destroyPromise = plugin.definition.onEnvironmentDestroyLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: true },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(deleteStarted).toBe(true);
+
+      resolveDelete();
+      await destroyPromise;
+
+      const overlappingExec = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
+
+      resolveStop();
+      await Promise.all([releasePromise, overlappingExec]);
+
+      expect(mockGet).toHaveBeenCalledTimes(3);
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+      expect(sandbox.delete).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+    });
+
     it("evicts the cached handle on destroy so the next lookup re-fetches", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       mockGet.mockImplementation(async () => createMockSandbox({ id: "lease-a" }));
