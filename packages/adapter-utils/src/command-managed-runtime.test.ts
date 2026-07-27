@@ -528,7 +528,7 @@ describe("command managed runtime", () => {
 
     expect(await readFile(targetFile, "utf8")).toBe("payload\n");
     const scripts = calls.map((call) => (call.args ?? []).join(" "));
-    expect(scripts).toHaveLength(3);
+    expect(scripts).toHaveLength(4);
     expect(scripts[0]).toContain(targetFile + ".paperclip-syncin.");
     expect(scripts[0]).toContain(".paperclip-upload.");
     expect(scripts[1]).toContain("chmod 640");
@@ -536,6 +536,53 @@ describe("command managed runtime", () => {
     expect(scripts[2]).toContain("mv -f");
     expect(scripts[2]).toContain(targetFile + ".paperclip-syncin.");
     expect(scripts[2]).toContain(targetFile);
+    expect(scripts[3]).toContain("rm -rf");
+    expect(scripts[3]).toContain(targetFile + ".paperclip-syncin.");
+  });
+
+  it("fallback syncIn cleans up a staged file when chmod fails before rename", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-cleanup-"));
+    cleanupDirs.push(rootDir);
+    const sourceFile = path.join(rootDir, "source.txt");
+    const targetFile = path.join(rootDir, "target.txt");
+    await writeFile(sourceFile, "payload\n", "utf8");
+
+    const { runner, calls } = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
+    const delegatedExecute = runner.execute.bind(runner);
+    runner.execute = async (input) => {
+      const script = (input.args ?? []).join(" ");
+      if (script.includes("chmod 600")) {
+        calls.push({ command: input.command, args: input.args, cwd: input.cwd, stdin: input.stdin });
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "chmod failed",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        };
+      }
+      return await delegatedExecute(input);
+    };
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
+
+    await expect(
+      client.syncIn!([
+        {
+          operationId: "op-cleanup",
+          files: [{ sourcePath: sourceFile, targetPath: targetFile, kind: "file", mode: 0o600 }],
+        },
+      ]),
+    ).rejects.toThrow(/chmod failed/);
+
+    const chmodCall = calls.find((call) => (call.args ?? []).join(" ").includes("chmod 600"));
+    expect(chmodCall).toBeDefined();
+    const stagedPath = (chmodCall?.args ?? []).join(" ").match(/chmod 600 '([^']+)'/)?.[1];
+    expect(stagedPath).toBeDefined();
+    await expect(readFile(stagedPath!, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(calls.some((call) => (call.args ?? []).join(" ").includes(`rm -rf '${stagedPath}'`))).toBe(true);
+    await expect(readFile(targetFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("test_post_upload_commands_execute_verbatim_not_rewritten (C1 opaque)", async () => {

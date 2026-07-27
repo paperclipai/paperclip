@@ -158,6 +158,10 @@ function buildUniqueStagingPath(input: { targetPath: string; suffix: string }): 
   return `${input.targetPath}${input.suffix}.${randomUUID()}`;
 }
 
+async function bestEffortRemoveRemotePath(client: SandboxManagedRuntimeClient, remotePath: string): Promise<void> {
+  await client.remove(remotePath).catch(() => undefined);
+}
+
 /**
  * Host-side confinement guard for a sync operation's post-upload command `cwd`
  * (Security Condition C2). Runs BEFORE any handoff — native delegation OR the
@@ -354,42 +358,51 @@ export function createCommandManagedRuntimeClient(input: {
         let filesTransferred = 0;
         let bytesTransferred = 0;
         for (const [index, mapping] of operation.files.entries()) {
-          if (mapping.kind === "directory") {
-            const archivePath = path.join(tempDir, `syncin-${index}.tar`);
-            await createTarballFromDirectory({
-              localDir: mapping.sourcePath,
-              archivePath,
-              exclude: mapping.exclude,
-              followSymlinks: mapping.followSymlinks,
-            });
-            const tarBytes = await fs.readFile(archivePath);
-            const remoteTarPath = buildUniqueStagingPath({
-              targetPath: mapping.targetPath,
-              suffix: ".paperclip-syncin.tar",
-            });
-            await client.writeFile(remoteTarPath, bufferToArrayBuffer(tarBytes));
-            await client.run(
-              buildSyncInExtractDirectoryCommand({ remoteTarPath, targetDir: mapping.targetPath }),
-              { timeoutMs: input.timeoutMs },
-            );
-            bytesTransferred += tarBytes.byteLength;
-          } else {
-            const fileBytes = await fs.readFile(mapping.sourcePath);
-            const targetPathForWrite = mapping.mode != null
-              ? buildUniqueStagingPath({ targetPath: mapping.targetPath, suffix: ".paperclip-syncin" })
-              : mapping.targetPath;
-            await client.writeFile(targetPathForWrite, bufferToArrayBuffer(fileBytes));
-            if (mapping.mode != null) {
+          const cleanupPaths: string[] = [];
+          try {
+            if (mapping.kind === "directory") {
+              const archivePath = path.join(tempDir, `syncin-${index}.tar`);
+              await createTarballFromDirectory({
+                localDir: mapping.sourcePath,
+                archivePath,
+                exclude: mapping.exclude,
+                followSymlinks: mapping.followSymlinks,
+              });
+              const tarBytes = await fs.readFile(archivePath);
+              const remoteTarPath = buildUniqueStagingPath({
+                targetPath: mapping.targetPath,
+                suffix: ".paperclip-syncin.tar",
+              });
+              cleanupPaths.push(remoteTarPath);
+              await client.writeFile(remoteTarPath, bufferToArrayBuffer(tarBytes));
               await client.run(
-                buildSyncInChmodCommand({ mode: mapping.mode, targetPath: targetPathForWrite }),
+                buildSyncInExtractDirectoryCommand({ remoteTarPath, targetDir: mapping.targetPath }),
                 { timeoutMs: input.timeoutMs },
               );
-              await client.run(
-                buildSyncInRenameCommand({ sourcePath: targetPathForWrite, targetPath: mapping.targetPath }),
-                { timeoutMs: input.timeoutMs },
-              );
+              bytesTransferred += tarBytes.byteLength;
+            } else {
+              const fileBytes = await fs.readFile(mapping.sourcePath);
+              const targetPathForWrite = mapping.mode != null
+                ? buildUniqueStagingPath({ targetPath: mapping.targetPath, suffix: ".paperclip-syncin" })
+                : mapping.targetPath;
+              if (mapping.mode != null) cleanupPaths.push(targetPathForWrite);
+              await client.writeFile(targetPathForWrite, bufferToArrayBuffer(fileBytes));
+              if (mapping.mode != null) {
+                await client.run(
+                  buildSyncInChmodCommand({ mode: mapping.mode, targetPath: targetPathForWrite }),
+                  { timeoutMs: input.timeoutMs },
+                );
+                await client.run(
+                  buildSyncInRenameCommand({ sourcePath: targetPathForWrite, targetPath: mapping.targetPath }),
+                  { timeoutMs: input.timeoutMs },
+                );
+              }
+              bytesTransferred += fileBytes.byteLength;
             }
-            bytesTransferred += fileBytes.byteLength;
+          } finally {
+            for (const cleanupPath of cleanupPaths.reverse()) {
+              await bestEffortRemoveRemotePath(client, cleanupPath);
+            }
           }
           filesTransferred += 1;
         }
