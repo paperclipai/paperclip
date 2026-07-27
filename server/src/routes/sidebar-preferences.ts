@@ -55,6 +55,7 @@ export function sidebarPreferenceRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "sidebar_preferences.project_order_updated",
         entityType: "company",
         entityId: companyId,

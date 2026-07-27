@@ -129,6 +129,7 @@ describe("server info snapshot", () => {
       gitCommand: () => {
         throw new Error("fatal: not a git repository");
       },
+      buildCommitCommand: () => null,
     });
 
     expect(snapshot).toEqual({
@@ -136,6 +137,32 @@ describe("server info snapshot", () => {
       git: {
         available: false,
         unavailableReason: "git_unavailable",
+      },
+    });
+  });
+
+  it("uses deployment commit metadata when the runtime has no git directory", () => {
+    const snapshot = createServerInfoSnapshot({
+      now: new Date("2026-06-26T00:00:00.000Z"),
+      gitCommand: () => {
+        throw new Error("fatal: not a git repository");
+      },
+      buildCommitCommand: () => "0123456789abcdef0123456789abcdef01234567",
+    });
+
+    expect(snapshot).toEqual({
+      processStartedAt: "2026-06-26T00:00:00.000Z",
+      git: {
+        available: true,
+        fullSha: "0123456789abcdef0123456789abcdef01234567",
+        shortSha: "0123456",
+        branchName: null,
+        subject: "Source build",
+        committedAt: null,
+        localChanges: {
+          available: false,
+          unavailableReason: "git_status_unavailable",
+        },
       },
     });
   });

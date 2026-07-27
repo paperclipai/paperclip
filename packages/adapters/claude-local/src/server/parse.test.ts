@@ -10,6 +10,7 @@ import {
   isClaudeRefusalResult,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
+  isClaudeModelNotFoundError,
 } from "./parse.js";
 
 describe("detectClaudeLoginRequired", () => {
@@ -31,6 +32,25 @@ describe("detectClaudeLoginRequired", () => {
         stderr: "Invalid API key",
       }).requiresLogin,
     ).toBe(false);
+  });
+});
+
+describe("isClaudeModelNotFoundError", () => {
+  it("detects model resolution failures from structured and fallback output", () => {
+    expect(isClaudeModelNotFoundError({
+      parsed: {
+        result: "API Error: 404 model not found: claude-haiku-4-6",
+      },
+    })).toBe(true);
+    expect(isClaudeModelNotFoundError({
+      stderr: "Unknown model claude-haiku-4-6",
+    })).toBe(true);
+  });
+
+  it("does not classify unrelated provider failures as model resolution errors", () => {
+    expect(isClaudeModelNotFoundError({
+      errorMessage: "API Error: 503 service unavailable",
+    })).toBe(false);
   });
 });
 

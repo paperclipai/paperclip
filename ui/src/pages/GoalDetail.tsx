@@ -72,8 +72,8 @@ export function GoalDetail() {
   });
 
   const { data: allProjects } = useQuery({
-    queryKey: queryKeys.projects.list(resolvedCompanyId!),
-    queryFn: () => projectsApi.list(resolvedCompanyId!),
+    queryKey: queryKeys.projects.list(resolvedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(resolvedCompanyId!, { includeArchived: true }),
     enabled: !!resolvedCompanyId
   });
 

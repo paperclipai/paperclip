@@ -40,6 +40,28 @@ describe("resolveServerVersion", () => {
     ).toBe("2026.626.0+58.git.518fc71ce");
   });
 
+  it("keeps the package version when git describe output is unparseable", () => {
+    expect(
+      resolveServerVersion({
+        buildCommit: "0123456789abcdef0123456789abcdef01234567",
+        packageVersion: "2026.706.0",
+        gitDescribeCommand: () => "canary/v2026.706.0-canary.1",
+        debugLog: vi.fn(),
+      }),
+    ).toBe("2026.706.0");
+  });
+
+  it("keeps the formal version for an exact release tag even when build metadata exists", () => {
+    expect(
+      resolveServerVersion({
+        buildCommit: "0123456789abcdef0123456789abcdef01234567",
+        packageVersion: "2026.706.0",
+        gitDescribeCommand: () => "v2026.706.0-0-g012345678\n",
+        debugLog: vi.fn(),
+      }),
+    ).toBe("2026.706.0");
+  });
+
   it("falls back to package version without throwing when git is unavailable", () => {
     const debugLog = vi.fn();
     const cause = new Error("spawn git ENOENT");
@@ -52,6 +74,7 @@ describe("resolveServerVersion", () => {
 
     expect(
       resolveServerVersion({
+        buildCommit: null,
         packageVersion: "2026.706.0",
         gitDescribeCommand: () => {
           throw err;
@@ -75,11 +98,86 @@ describe("resolveServerVersion", () => {
     );
   });
 
+  it("uses deployment commit metadata when a source build has no git directory", () => {
+    expect(
+      resolveServerVersion({
+        buildVersion: null,
+        buildCommit: "0123456789abcdef0123456789abcdef01234567",
+        packageVersion: "2026.706.0",
+        gitDescribeCommand: () => {
+          throw new Error("fatal: not a git repository");
+        },
+        debugLog: vi.fn(),
+      }),
+    ).toBe("2026.706.0+0.git.0123456");
+  });
+
+  it("uses the stamped build version when a Docker image has no git directory", () => {
+    const debugLog = vi.fn();
+
+    expect(
+      resolveServerVersion({
+        // A real CalVer describe stamped by CI wins over the coarse build-commit
+        // stamp and the source placeholder — this is the analytics/debug-panel fix.
+        buildVersion: "v2026.722.0-15-g4c55f0d",
+        buildCommit: "0123456789abcdef0123456789abcdef01234567",
+        packageVersion: "0.3.1",
+        gitDescribeCommand: () => {
+          throw new Error("fatal: not a git repository");
+        },
+        debugLog,
+      }),
+    ).toBe("2026.722.0+15.git.4c55f0d");
+    expect(debugLog).toHaveBeenCalledWith(
+      { reason: "build_version" },
+      "using stamped build version for server version",
+    );
+  });
+
+  it("collapses an on-tag stamped build version to the release version", () => {
+    expect(
+      resolveServerVersion({
+        buildVersion: "v2026.722.0-0-g4c55f0d",
+        packageVersion: "0.3.1",
+        gitDescribeCommand: () => {
+          throw new Error("no git");
+        },
+        debugLog: vi.fn(),
+      }),
+    ).toBe("2026.722.0");
+  });
+
+  it("uses a pre-resolved stamped build version verbatim", () => {
+    expect(
+      resolveServerVersion({
+        buildVersion: "2026.725.0-canary.2",
+        packageVersion: "0.3.1",
+        gitDescribeCommand: () => {
+          throw new Error("no git");
+        },
+        debugLog: vi.fn(),
+      }),
+    ).toBe("2026.725.0-canary.2");
+  });
+
+  it("keeps the live git-derived version even when a build version is stamped", () => {
+    expect(
+      resolveServerVersion({
+        // A stamped version is only a fallback: a real checkout's git describe wins.
+        buildVersion: "v2020.1.1-0-g0000000",
+        packageVersion: "0.3.1",
+        gitDescribeCommand: () => "v2026.626.0-58-g518fc71ce\n",
+        debugLog: vi.fn(),
+      }),
+    ).toBe("2026.626.0+58.git.518fc71ce");
+  });
+
   it("skips git metadata probing for packaged installs under node_modules", () => {
     const debugLog = vi.fn();
 
     expect(
       resolveServerVersion({
+        buildCommit: "0123456789abcdef0123456789abcdef01234567",
         packageVersion: "2026.707.0-canary.12",
         debugLog,
         packageRoot: "/tmp/npm/_npx/example/node_modules/@paperclipai/server",
@@ -98,6 +196,7 @@ describe("resolveServerVersion", () => {
 
     expect(
       resolveServerVersion({
+        buildCommit: null,
         packageVersion: "2026.707.0-canary.12",
         debugLog,
         gitDescribeCommand,
@@ -119,6 +218,7 @@ describe("resolveServerVersion", () => {
     try {
       expect(
         resolveServerVersion({
+          buildCommit: null,
           packageVersion: "2026.706.0",
           gitDescribeCommand: () => {
             throw new Error("fatal: not a git repository");

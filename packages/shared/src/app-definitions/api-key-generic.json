@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "slug": "api-key-generic",
+  "name": "API key app",
+  "description": "Connect an API using a key from your provider.",
+  "categories": [
+    "other"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=openapis.org&sz=128"
+  },
+  "urlPatterns": [],
+  "methods": [
+    {
+      "key": "api-key",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use credentials from your provider account.",
+      "defaults": {},
+      "guidanceMd": "Create a restricted API key and paste it here.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste the API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      }
+    }
+  ]
+}

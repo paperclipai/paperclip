@@ -107,6 +107,32 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(assignment).toContain("Write your final output as issue document `output`");
   });
 
+  it("strips the description for the compact resume variant but keeps directives and the wake comment", () => {
+    const input = {
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Ship the fix",
+        workMode: "standard",
+        description: "Full multi-paragraph brief that the session already received.",
+      },
+      wakeComment: {
+        id: "comment-1",
+        body: "Please also update the changelog.",
+      },
+    };
+
+    const full = buildPaperclipTaskMarkdown(input);
+    expect(full).toContain("Issue description:");
+    expect(full).toContain("Full multi-paragraph brief that the session already received.");
+
+    const compact = buildPaperclipTaskMarkdown({ ...input, includeDescription: false });
+    expect(compact).not.toContain("Issue description:");
+    expect(compact).not.toContain("Full multi-paragraph brief");
+    expect(compact).toContain("- Issue: \"PAP-3404\"");
+    expect(compact).toContain("Please also update the changelog.");
+  });
+
   it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
     const commentWake = buildPaperclipTaskMarkdown({
       issue: {

@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { toCompanyRelativePath } from "@/lib/company-routes";
 import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { createZipArchive } from "../lib/zip";
@@ -559,9 +560,10 @@ function ExportPreviewPane({
 /** Extract the file path from the current URL pathname (after /company/export/files/) */
 function filePathFromLocation(pathname: string): string | null {
   const marker = "/company/export/files/";
-  const idx = pathname.indexOf(marker);
+  const relativePathname = toCompanyRelativePath(pathname);
+  const idx = relativePathname.indexOf(marker);
   if (idx === -1) return null;
-  const filePath = decodeURIComponent(pathname.slice(idx + marker.length));
+  const filePath = decodeURIComponent(relativePathname.slice(idx + marker.length));
   return filePath || null;
 }
 
@@ -612,7 +614,7 @@ export function CompanyExport() {
     [agents],
   );
   const visibleProjects = useMemo(
-    () => projects.filter((project: Project) => !project.archivedAt),
+    () => projects,
     [projects],
   );
   const { orderedAgents } = useAgentOrder({

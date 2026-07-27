@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import type { SecretBindingTargetType } from "@paperclipai/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
@@ -199,6 +200,7 @@ export function getActorInfo(req: Request): (
     actorId: string;
     agentId: string | null;
     runId: string | null;
+    agentApiKeyId: string | null;
     actorSource: "agent_key" | "agent_jwt";
   }
   | {
@@ -207,6 +209,7 @@ export function getActorInfo(req: Request): (
     sessionId: string | null;
     agentId: null;
     runId: string | null;
+    agentApiKeyId: null;
     actorSource: "local_implicit" | "session" | "board_key" | "cloud_tenant";
   }
 ) {
@@ -218,6 +221,7 @@ export function getActorInfo(req: Request): (
       actorId: req.actor.agentId ?? "unknown-agent",
       agentId: req.actor.agentId ?? null,
       runId: req.actor.runId ?? null,
+      agentApiKeyId: req.actor.keyId ?? null,
       actorSource,
     };
   }
@@ -235,6 +239,51 @@ export function getActorInfo(req: Request): (
     sessionId: req.actor.sessionId ?? null,
     agentId: null,
     runId: req.actor.runId ?? null,
+    agentApiKeyId: null,
     actorSource,
+  };
+}
+
+/**
+ * The actor-scoped fields of a secret-binding context, keyed to a caller-supplied
+ * consumer identity. Structurally matches `SecretConsumerContext` in
+ * `services/secrets.ts` (whose types are not exported), so the return value slots
+ * into `resolveAdapterConfigForRuntime`'s 3rd argument
+ * (`Omit<SecretBindingContext, "configPath">`) unchanged.
+ */
+export type ActorSecretContext = {
+  consumerType: SecretBindingTargetType;
+  consumerId: string;
+  actorType: "agent" | "user";
+  actorId: string | null;
+  actorSource: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+  responsibleUserId: string | null;
+};
+
+/**
+ * Build the actor-scoped portion of a secret-binding context from `req.actor`,
+ * taking the consumer identity as parameters. The responsible user is derived
+ * server-side (`req.actor.userId ?? req.actor.onBehalfOfUserId ?? null`) and is
+ * never request-body-controllable; a `null` result surfaces downstream as the
+ * intended `responsible_user_missing` loud failure for a required user secret.
+ *
+ * `consumerType` is a parameter (not hardcoded `"agent"`) so callers can record an
+ * honest consumer — `agent` for a persisted agent, `environment`/`system` for a
+ * prospective config with no persisted consumer.
+ *
+ * Never sets `configPath` (the resolver injects it) or `allowedBindingIds`.
+ */
+export function buildActorSecretContext(
+  req: Request,
+  params: { consumerType: SecretBindingTargetType; consumerId: string },
+): ActorSecretContext {
+  const info = getActorInfo(req);
+  return {
+    consumerType: params.consumerType,
+    consumerId: params.consumerId,
+    actorType: info.actorType,
+    actorId: info.actorId,
+    actorSource: info.actorSource,
+    responsibleUserId: req.actor.userId ?? req.actor.onBehalfOfUserId ?? null,
   };
 }

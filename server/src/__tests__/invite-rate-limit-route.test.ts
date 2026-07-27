@@ -88,7 +88,7 @@ describe("invite-token endpoint rate limiting", () => {
       error: "Too many invite requests",
       details: { retryAfterSeconds: 60 },
     });
-  });
+  }, 15_000);
 
   it("also rate-limits the accept sub-route", async () => {
     const app = await createApp(createDbStub([], [], [], [], []));

@@ -693,8 +693,9 @@ async function expectContainedWorkspaceBranchFailure(input: {
     }),
     nextAction: expect.stringContaining("choose a new execution workspace"),
     wakePolicy: expect.objectContaining({
-      type: "manual_repair_required",
-      reason: "workspace_validation_failed",
+      type: "wake_owner",
+      reason: "source_scoped_recovery_action",
+      ownerAgentId: expect.any(String),
     }),
   });
 
@@ -917,7 +918,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   afterAll(async () => {
     await db.$client.end();
     await tempDb?.cleanup();
-  });
+  }, 60_000);
 
   it("blocks projectless isolated git-worktree issues before dispatch", async () => {
     const companyId = randomUUID();

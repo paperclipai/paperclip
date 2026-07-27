@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   ISSUE_PRIORITIES,
+  ROUTINE_ACTIVITY_GATE_POLICIES,
+  ROUTINE_ACTIVITY_GATE_SCOPES,
   ROUTINE_CATCH_UP_POLICIES,
   ROUTINE_CONCURRENCY_POLICIES,
   ROUTINE_STATUSES,
@@ -61,6 +63,7 @@ export const routineVariableSchema = z.object({
 
 export const createRoutineSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
+  folderId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentIssueId: z.string().uuid().optional().nullable(),
   title: z.string().trim().min(1).max(200),
@@ -70,6 +73,8 @@ export const createRoutineSchema = z.object({
   status: z.enum(ROUTINE_STATUSES).optional().default("active"),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
+  activityGatePolicy: z.enum(ROUTINE_ACTIVITY_GATE_POLICIES).optional(),
+  activityGateScope: z.enum(ROUTINE_ACTIVITY_GATE_SCOPES).optional(),
   variables: z.array(routineVariableSchema).optional().default([]),
   env: envConfigSchema.optional().nullable(),
 });
@@ -85,6 +90,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   id: z.string().uuid(),
   companyId: z.string().uuid(),
   projectId: z.string().uuid().nullable(),
+  folderId: z.string().uuid().nullable().optional(),
   goalId: z.string().uuid().nullable(),
   parentIssueId: z.string().uuid().nullable(),
   title: z.string().trim().min(1).max(200),
@@ -94,6 +100,8 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   status: z.enum(ROUTINE_STATUSES),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES),
+  activityGatePolicy: z.enum(ROUTINE_ACTIVITY_GATE_POLICIES).default("always"),
+  activityGateScope: z.enum(ROUTINE_ACTIVITY_GATE_SCOPES).default("company"),
   variables: z.array(routineVariableSchema),
   env: envConfigSchema.nullable().default(null),
   responsibleUserId: z.string().nullable().default(null),

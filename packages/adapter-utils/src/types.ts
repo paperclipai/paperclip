@@ -144,6 +144,15 @@ export interface AdapterRuntimeMcpAccess {
   getServers(): AdapterRuntimeMcpServer[];
 }
 
+export interface AdapterRuntimeEvent {
+  eventType: string;
+  stream?: "system" | "stdout" | "stderr";
+  level?: "info" | "warn" | "error";
+  color?: string;
+  message?: string;
+  payload?: Record<string, unknown>;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -162,6 +171,7 @@ export interface AdapterExecutionContext {
   runtimeMcp?: AdapterRuntimeMcpAccess;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;

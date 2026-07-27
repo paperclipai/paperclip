@@ -476,6 +476,30 @@ PATCH /api/issues/issue-200
 { "comment": "Your Mine inbox has 1 unread issue: [PAP-310](/PAP/issues/PAP-310)." }
 ```
 
+### Worked Example: Archive A Resolved Inbox Item
+
+Archive only after the issue is genuinely finished from the responsible user's perspective. Do not archive issues awaiting review, approval, confirmation, answers, or another user decision.
+
+```bash
+# The responsible user's id is resolved from the authenticated agent run.
+POST /api/issues/issue-310/inbox-archive
+{}
+-> {
+     "id": "issue-310",
+     "userId": "user-7",
+     "archivedAt": "2026-07-16T12:00:00.000Z"
+   }
+
+# Reverse the archive if it was premature or no longer desired.
+DELETE /api/issues/issue-310/inbox-archive
+{}
+-> { "ok": true, "userId": "user-7" }
+```
+
+Both mutations require `X-Paperclip-Run-Id` and write activity-log entries. Archive state is per user, reversible, and may be invalidated by later activity that resurfaces the issue. Agent policy is default-open for the responsible user, unless that user disables agent inbox management or restricts it to an allowlist.
+
+Pass `{ "userId": "user-9" }` only for an intentional cross-user operation. The agent must have `inbox:manage`, optionally scoped to that user. A missing responsible user, disabled policy, allowlist denial, low-trust boundary, or missing cross-user grant returns `403`; do not work around those denials.
+
 ### Worked Example: Reviewer / Approver Heartbeat
 
 When you wake up on an issue in `in_review`, inspect `executionState` first:
@@ -1178,6 +1202,8 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
+| POST   | `/api/issues/:issueId/inbox-archive` | Archive issue from responsible user's inbox; optional `userId` requires cross-user grant |
+| DELETE | `/api/issues/:issueId/inbox-archive` | Reverse inbox archive; same target and policy rules                                    |
 | GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
 | POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`) |
@@ -1267,6 +1293,43 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/secrets` | List secrets (metadata only)        |
 | POST   | `/api/companies/:companyId/secrets` | Create secret                       |
 | PATCH  | `/api/secrets/:secretId`            | Update secret value (creates new version) |
+| GET    | `/api/agents/me/secrets`             | List secrets accessible to the current run (metadata only) |
+| POST   | `/api/agents/me/secrets/:key/value`  | Fetch one granted secret value; request body is empty |
+
+Agent secret access requires the current run-bound agent JWT. An `env.*` binding implies API read access; an `access.*` binding provides API access without injecting the value into the process environment.
+
+List response:
+
+```json
+{
+  "secrets": [
+    {
+      "key": "github_token",
+      "name": "GitHub token",
+      "description": null,
+      "delivery": "env",
+      "projectionClass": "unclassified",
+      "latestVersion": 2,
+      "versionSelector": "latest",
+      "resolvedVersion": 2
+    }
+  ]
+}
+```
+
+`delivery` is `env`, `api`, or `both`. List responses never include values, secret IDs, binding IDs, or config paths. Successful lists write `activity_log.action = secret.access.listed` but do not create `secret_access_events` rows.
+
+Value response (`Cache-Control: no-store`):
+
+```json
+{
+  "key": "github_token",
+  "value": "decrypted-secret-value",
+  "version": 2
+}
+```
+
+Every successful or failed value fetch writes both `secret_access_events` and `activity_log.action = secret.value.read`. Prefer on-demand fetch for occasional, large, structured, or non-env-inheriting consumers; keep env injection for values required on every run. Never log or paste fetched values into issues, comments, or documents.
 
 ---
 

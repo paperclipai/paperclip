@@ -267,8 +267,8 @@ function PluginSdkIssuesList({
     enabled: !!companyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId ?? "__no-company__"),
-    queryFn: () => projectsApi.list(companyId!),
+    queryKey: queryKeys.projects.list(companyId ?? "__no-company__", { includeArchived: true }),
+    queryFn: () => projectsApi.list(companyId!, { includeArchived: true }),
     enabled: !!companyId,
   });
   const liveRunsQueryKey = queryKeys.liveRuns(companyId ?? "__no-company__");
@@ -277,7 +277,8 @@ function PluginSdkIssuesList({
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!companyId,
-    refetchInterval: 5000,
+    // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+    refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
@@ -463,8 +464,8 @@ function PluginSdkProjectPicker({
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(resolvedCompanyId ?? "__no-company__"),
-    queryFn: () => projectsApi.list(resolvedCompanyId!),
+    queryKey: queryKeys.projects.list(resolvedCompanyId ?? "__no-company__", { includeArchived }),
+    queryFn: () => projectsApi.list(resolvedCompanyId!, { includeArchived }),
     enabled: !!resolvedCompanyId,
   });
   const visibleProjects = useMemo(

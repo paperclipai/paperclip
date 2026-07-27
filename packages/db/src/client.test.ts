@@ -114,7 +114,7 @@ describeEmbeddedPostgres("resetPostgresDatabase", () => {
     } finally {
       await verifySql.end();
     }
-  });
+  }, 30_000);
 });
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {

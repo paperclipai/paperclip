@@ -10,6 +10,22 @@ const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const MANAGED_MCP_BLOCK_START = "# BEGIN PAPERCLIP MANAGED MCP";
 const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
 
+/**
+ * The allowlist of managed `CODEX_HOME` entries that the codex-local adapter
+ * stages into the sandbox `home` asset (see {@link stageCodexHomeForSync}).
+ * Derived from the seeding constants so it can never drift from what the adapter
+ * actually writes into the home: the copied static config files, the symlinked
+ * credential file, and the injected `skills/` directory. Everything else the
+ * stock upstream `codex` binary writes at runtime (`*.sqlite`, `*-wal`,
+ * `plugins/`, `cache/`, `sessions/`, `shell_snapshots/`, …) is intentionally
+ * excluded — it is large host-local runtime state the sandbox run never needs.
+ */
+export const CODEX_SYNC_ALLOWLIST = [
+  ...COPIED_SHARED_FILES,
+  ...SYMLINKED_SHARED_FILES,
+  "skills",
+] as const;
+
 export type ManagedCodexMcpGateway = {
   name: string;
   endpointPath: string;
@@ -319,6 +335,236 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   const target = path.join(home, "auth.json");
   await fs.rm(target, { force: true });
   await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+}
+
+export interface StageCodexHomeForSyncOptions {
+  /** Run id, used only to make the staged temp-dir name traceable in logs. */
+  runId?: string;
+}
+
+/**
+ * True when `candidate` is `root` itself or a descendant of it. Both arguments
+ * must be absolute, already-resolved (symlink-free) paths — callers pass
+ * `fs.realpath` output — so `path.relative` is a reliable containment test that
+ * is not fooled by `..` segments or a trailing-separator prefix collision
+ * (`/a/skills` vs `/a/skills-evil`).
+ */
+function isResolvedPathInside(candidate: string, root: string): boolean {
+  if (candidate === root) return true;
+  const rel = path.relative(root, candidate);
+  return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/**
+ * Recursively copies one skill subtree — rooted at its real directory
+ * `containmentRoot` — into `targetDir`, dereferencing symlinks to bytes (so the
+ * sandbox receives real file content, not host-relative links) and normalizing
+ * every copied regular file to mode `0600`. Created directories get mode `0700`.
+ *
+ * Two containment guards protect the staged upload:
+ *
+ * - **Allowlist escape (finding 2).** After dereferencing, a symlink whose real
+ *   target falls *outside* `containmentRoot` is skipped. A malformed or
+ *   compromised skill could otherwise smuggle host files that are not in
+ *   `CODEX_SYNC_ALLOWLIST` (e.g. `~/.ssh/id_rsa`) into the upload by pointing a
+ *   nested link at them. The skill's own top-level link into the shared skill
+ *   store is still honoured — it is what establishes `containmentRoot` in
+ *   {@link stageDirectorySecure}; only links that escape *that* root are cut.
+ * - **Directory cycles (finding 1).** A directory symlink such as `back -> .` or
+ *   `back -> ..` resolves to an ancestor directory instead of raising `ELOOP`;
+ *   recursing into it would traverse the same tree forever until disk/memory is
+ *   exhausted. A resolved directory already on the active traversal path
+ *   (`activePath`) is therefore skipped.
+ *
+ * Dangling symlinks (`ENOENT`) and self-referential links that do trip `ELOOP`
+ * are silently skipped, as are non-file/dir entries (sockets, devices).
+ */
+async function stageContainedSubtree(
+  sourceDir: string,
+  targetDir: string,
+  containmentRoot: string,
+  activePath: Set<string>,
+): Promise<void> {
+  await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const entrySource = path.join(sourceDir, entry.name);
+    const entryTarget = path.join(targetDir, entry.name);
+    // Resolve the real path; dangling or self-referential (`ELOOP`) links skip.
+    const resolved = await fs.realpath(entrySource).catch((error) => {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ELOOP") return null;
+      throw error;
+    });
+    if (!resolved) continue;
+    // Allowlist containment: never dereference a link that escapes this skill's
+    // real root (host files outside CODEX_SYNC_ALLOWLIST) into the upload.
+    if (!isResolvedPathInside(resolved, containmentRoot)) continue;
+    const entryStat = await fs.stat(resolved).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!entryStat) continue;
+    if (entryStat.isDirectory()) {
+      // Cycle guard: a directory already open on the active path (reached via a
+      // `back -> .`-style link) would otherwise recurse forever.
+      if (activePath.has(resolved)) continue;
+      activePath.add(resolved);
+      await stageContainedSubtree(resolved, entryTarget, containmentRoot, activePath);
+      activePath.delete(resolved);
+    } else if (entryStat.isFile()) {
+      const bytes = await fs.readFile(resolved);
+      await fs.writeFile(entryTarget, bytes, { mode: 0o600 });
+      await fs.chmod(entryTarget, 0o600);
+    }
+    // Other types (sockets, devices) are silently skipped.
+  }
+}
+
+/**
+ * Recursively copies `sourceDir` (a directory allowlist entry — currently only
+ * `skills/`) into `targetDir`, dereferencing symlinks to bytes and normalizing
+ * every copied regular file to mode `0600`. Created directories get mode `0700`.
+ *
+ * This replaces `fs.cp({ dereference: true })` which preserves source file modes,
+ * leaving `0644` documents and `0755` scripts group/other-readable in the staged
+ * asset; here all regular files are normalized to `0600` regardless of source mode.
+ *
+ * `sourceDir`'s *direct* children are the Paperclip-injected skill symlinks that
+ * intentionally point into a shared skill store *outside* `CODEX_HOME/skills/`,
+ * so each child is allowed to resolve anywhere — and when it resolves to a
+ * directory it becomes the containment root for its own subtree. Everything
+ * *below* that root is copied via {@link stageContainedSubtree}, which refuses to
+ * follow a nested symlink out of the skill (finding 2) and detects directory
+ * cycles (finding 1). A direct child that resolves to `sourceDir` itself or to
+ * an ancestor of it (a degenerate `-> .` / `-> ..` link at the top level) is
+ * skipped rather than used as a root, so it can never drag the wider home into
+ * the staged skills asset. The `0700` staged directory and per-file `0600` mode
+ * together ensure even externally-sourced skill content is not group/world-readable.
+ */
+async function stageDirectorySecure(
+  sourceDir: string,
+  targetDir: string,
+): Promise<void> {
+  await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
+  const realSourceDir = await fs.realpath(sourceDir);
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const entrySource = path.join(sourceDir, entry.name);
+    const entryTarget = path.join(targetDir, entry.name);
+    // Resolve the real path; dangling or self-referential (`ELOOP`) links skip.
+    const resolved = await fs.realpath(entrySource).catch((error) => {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ELOOP") return null;
+      throw error;
+    });
+    if (!resolved) continue;
+    // A top-level child that resolves to the skills dir itself or an ancestor
+    // of it (`back -> .` / `back -> ..`) is degenerate: using it as a root would
+    // re-stage the whole home under `skills/`. Skip it.
+    if (isResolvedPathInside(realSourceDir, resolved)) continue;
+    const entryStat = await fs.stat(resolved).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!entryStat) continue;
+    if (entryStat.isDirectory()) {
+      // This child skill establishes its own containment root: nested links may
+      // not escape it, and the root seeds the cycle-detection active path.
+      await stageContainedSubtree(resolved, entryTarget, resolved, new Set([resolved]));
+    } else if (entryStat.isFile()) {
+      const bytes = await fs.readFile(resolved);
+      await fs.writeFile(entryTarget, bytes, { mode: 0o600 });
+      await fs.chmod(entryTarget, 0o600);
+    }
+    // Other types (sockets, devices) are silently skipped.
+  }
+}
+
+/**
+ * Copies a single allowlist entry from the managed home into the staged dir,
+ * dereferencing symlinks to bytes. Missing entries are skipped (keyring mode has
+ * no `auth.json`; some homes have no `config.json`). Every staged regular file is
+ * written `0600` (least privilege). Any non-`ENOENT` error propagates to the caller.
+ */
+async function stageCodexHomeEntry(
+  sourceHome: string,
+  stagedHome: string,
+  entry: string,
+): Promise<void> {
+  const source = path.join(sourceHome, entry);
+  // `fs.stat` follows symlinks, so a dangling link (e.g. a removed auth source)
+  // reports ENOENT and is skipped exactly like a genuinely absent file.
+  const stat = await fs.stat(source).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat) return;
+
+  const target = path.join(stagedHome, entry);
+  if (stat.isDirectory()) {
+    // Recursively copy with mode normalization — nested regular files land
+    // `0600` and dangling/circular symlinks are skipped.
+    await stageDirectorySecure(source, target);
+    return;
+  }
+
+  // `fs.readFile` follows the symlink into the shared source and returns the
+  // resolved bytes (the live single-use auth token), which we write as a plain
+  // regular file so copy-back and in-sandbox auth read real bytes.
+  const bytes = await fs.readFile(source);
+  // Stage every regular file `0600`, not just `auth.json`. The staged dir is a
+  // 0700 mkdtemp and each file is read back only by the owner (Codex in-sandbox +
+  // copy-back), so nothing needs group/other read. This is least privilege and,
+  // critically, keeps secret-bearing entries protected: `config.toml` embeds the
+  // managed MCP `Authorization = "Bearer …"` header (and the source writer
+  // persists it 0600), so a per-file credential allowlist would silently
+  // downgrade it to 0644 in a world-readable tmpdir.
+  await fs.writeFile(target, bytes, { mode: 0o600 });
+  // Explicit chmod so the mode is 0600 regardless of the process umask.
+  await fs.chmod(target, 0o600);
+}
+
+/**
+ * Stages exactly {@link CODEX_SYNC_ALLOWLIST} from `effectiveCodexHome` into a
+ * fresh private temp dir and returns its path, for registration as the sandbox
+ * `home` asset. This replaces syncing the whole managed home + a name denylist:
+ * only the files Codex actually needs are uploaded, so oversized runtime state
+ * (`sessions/`, `*.sqlite`, `plugins/`, …) never reaches the sandbox.
+ *
+ * - **Symlinks are dereferenced to bytes** — the single-use `auth.json`
+ *   credential (a symlink into the shared source home) and each `skills/` entry
+ *   land as real files, never dangling links.
+ * - **Missing-but-optional entries are skipped** — no `auth.json` in
+ *   keyring-credential mode, or no `config.json`, is not an error.
+ * - **`mkdtemp` guarantees the staged dir is `0700`** on POSIX, and every staged
+ *   regular file is written `0600` (least privilege), so staged credentials —
+ *   `auth.json` (OAuth token) and `config.toml` (managed MCP bearer header) —
+ *   are never group/other-readable.
+ * - **Fail-closed** — any *unexpected* I/O error removes the partial temp dir
+ *   and re-throws, so a run never proceeds with a partial or empty home.
+ *
+ * The caller owns removing the returned dir on run teardown.
+ */
+export async function stageCodexHomeForSync(
+  effectiveCodexHome: string,
+  options: StageCodexHomeForSyncOptions = {},
+): Promise<string> {
+  const runIdPart = nonEmpty(options.runId ?? undefined);
+  const stagedHome = await fs.mkdtemp(
+    path.join(os.tmpdir(), `paperclip-codex-home-sync-${runIdPart ? `${runIdPart}-` : ""}`),
+  );
+  try {
+    for (const entry of CODEX_SYNC_ALLOWLIST) {
+      await stageCodexHomeEntry(effectiveCodexHome, stagedHome, entry);
+    }
+    return stagedHome;
+  } catch (error) {
+    // Fail-closed: never hand back a partial home. Remove the temp dir we
+    // created before propagating the failure.
+    await fs.rm(stagedHome, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 /**

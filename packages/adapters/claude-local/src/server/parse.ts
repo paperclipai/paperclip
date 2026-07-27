@@ -13,6 +13,8 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
+const CLAUDE_MODEL_NOT_FOUND_RE =
+  /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
@@ -194,6 +196,23 @@ export function describeClaudeFailure(parsed: Record<string, unknown>): string |
   if (subtype) parts.push(`subtype=${subtype}`);
   if (detail) parts.push(detail);
   return parts.length > 1 ? parts.join(": ") : null;
+}
+
+export function isClaudeModelNotFoundError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const parsed = input.parsed ?? null;
+  const messages = [
+    input.errorMessage ?? "",
+    input.stdout ?? "",
+    input.stderr ?? "",
+    parsed ? asString(parsed.result, "") : "",
+    ...(parsed ? extractClaudeErrorMessages(parsed) : []),
+  ];
+  return messages.some((message) => CLAUDE_MODEL_NOT_FOUND_RE.test(message));
 }
 
 export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {

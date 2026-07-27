@@ -506,7 +506,7 @@ describe("InviteLandingPage", () => {
     });
   });
 
-  it("shows the pending approval page with the company icon and linked access instructions", async () => {
+  it("shows the pending approval page with the company icon and non-clickable access instructions", async () => {
     acceptInviteMock.mockResolvedValue({
       id: "join-1",
       companyId: "company-1",
@@ -553,14 +553,18 @@ describe("InviteLandingPage", () => {
     expect(container.querySelector('img[alt="Acme Robotics logo"]')).not.toBeNull();
     expect(container.textContent).not.toContain("http://localhost/company/settings/members");
 
-    const approvalLinks = Array.from(container.querySelectorAll("a")).filter(
+    // The "Company Settings → Members" guidance addresses the company admin,
+    // not the requester. It must render as plain text so the requester cannot
+    // navigate themselves to /company/settings/members — a route they have no
+    // permission to view, which renders a misleading "No company access"
+    // panel and makes the invite flow look broken. See #6784.
+    const approvalAnchors = Array.from(container.querySelectorAll("a")).filter(
       (link) => link.textContent === "Company Settings → Members",
     );
-    expect(approvalLinks).toHaveLength(2);
-    const expectedApprovalUrl = `${window.location.origin}/company/settings/members`;
-    for (const link of approvalLinks) {
-      expect(link.getAttribute("href")).toBe(expectedApprovalUrl);
-    }
+    expect(approvalAnchors).toHaveLength(0);
+    const approvalMentions =
+      container.textContent?.match(/Company Settings → Members/g) ?? [];
+    expect(approvalMentions).toHaveLength(2);
 
     await act(async () => {
       root.unmount();

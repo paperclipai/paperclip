@@ -6,13 +6,13 @@ import { randomUUID } from "node:crypto";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
+  type CommandManagedRuntimeAsset,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
 import {
   buildRemoteExecutionSessionIdentity,
   prepareRemoteManagedRuntime,
   remoteExecutionSessionMatches,
-  type RemoteManagedRuntimeAsset,
 } from "./remote-managed-runtime.js";
 import {
   createCommandManagedSandboxCallbackBridgeQueueClient,
@@ -42,13 +42,31 @@ import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
-export interface AdapterLocalExecutionTarget {
+export type AdapterWorkspaceRealizationMode = "copy" | "in_place";
+
+export interface AdapterWorkspacePathAlias {
+  path: string;
+  target: string;
+}
+
+export interface AdapterWorkspaceRealization {
+  mode: AdapterWorkspaceRealizationMode;
+  authoritativeRoot: string;
+  pathAliases: AdapterWorkspacePathAlias[];
+  outboundRestorePaths: string[];
+}
+
+interface AdapterExecutionTargetWorkspaceMetadata {
+  workspaceRealization?: AdapterWorkspaceRealization | null;
+}
+
+export interface AdapterLocalExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "local";
   environmentId?: string | null;
   leaseId?: string | null;
 }
 
-export interface AdapterSshExecutionTarget {
+export interface AdapterSshExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "remote";
   transport: "ssh";
   environmentId?: string | null;
@@ -57,7 +75,7 @@ export interface AdapterSshExecutionTarget {
   spec: SshRemoteExecutionSpec;
 }
 
-export interface AdapterSandboxExecutionTarget {
+export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
@@ -83,7 +101,12 @@ export type AdapterExecutionTarget =
 
 export type AdapterRemoteExecutionSpec = SshRemoteExecutionSpec;
 
-export type AdapterManagedRuntimeAsset = RemoteManagedRuntimeAsset;
+// The adapter-facing managed-runtime asset type. Aliased to the sandbox/command
+// asset descriptor so the per-asset lifecycle contributions (`provision` /
+// `restore`) declared on the sandbox core are load-bearing all the way from the
+// adapter call site through to the sandbox runtime. The SSH transport consumes
+// the subset of fields it understands and ignores the rest.
+export type AdapterManagedRuntimeAsset = CommandManagedRuntimeAsset;
 
 export interface PreparedAdapterExecutionTargetRuntime {
   target: AdapterExecutionTarget;
@@ -1079,6 +1102,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceLocalDir: string;
   timeoutSec?: number;
   workspaceRemoteDir?: string;
+  syncWorkspace?: boolean;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
@@ -1110,6 +1134,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
+      syncWorkspace: input.syncWorkspace,
       assets: input.assets,
       onProgress: input.onProgress,
     });
@@ -1137,6 +1162,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
+    syncWorkspace: input.syncWorkspace,
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,

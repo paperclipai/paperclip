@@ -90,7 +90,43 @@ export function IssueRow({
 }: IssueRowProps) {
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
+  // A row participates in the unread system whenever `unreadState` is supplied
+  // (inbox rows). It then reserves a fixed leading dot slot on all rows — read
+  // and unread alike — so the mark-read dot sits in the far-left gutter without
+  // shifting content, matching the sibling non-issue inbox rows.
+  const showUnreadSlot = unreadState != null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
+  const unreadDotButton = (
+    <button
+      type="button"
+      data-slot="icon-button"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onMarkRead?.();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          event.stopPropagation();
+          onMarkRead?.();
+        }
+      }}
+      className={cn(
+        "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
+        selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20",
+      )}
+      aria-label="Mark as read"
+    >
+      <span
+        className={cn(
+          "block h-2 w-2 rounded-full transition-opacity duration-300",
+          selected ? "bg-muted-foreground/70" : "bg-blue-600 dark:bg-blue-400",
+          unreadState === "fading" ? "opacity-0" : "opacity-100",
+        )}
+      />
+    </button>
+  );
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
   const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
   const productivityReview = issue.productivityReview ?? null;
@@ -140,7 +176,7 @@ export function IssueRow({
         // No color transition on the row band: hover/selection must snap
         // instantly. A fade (transition-colors) leaves a trail of fading bands
         // when scrubbing the mouse fast across the list.
-        "group flex items-start gap-2 rounded-lg py-2.5 pl-2 pr-3 text-sm no-underline text-inherit sm:items-center sm:py-2 sm:pl-1",
+        "group relative flex items-start gap-2 rounded-lg py-2.5 pl-2 pr-3 text-sm no-underline text-inherit sm:items-center sm:py-2 sm:pl-1",
         !hideDivider && "border-b border-border last:border-b-0",
         selected ? "hover:bg-transparent" : "hover:bg-accent/50",
         checklistCurrentStep ? "bg-primary/5" : null,
@@ -163,6 +199,19 @@ export function IssueRow({
           </span>
         ) : null}
         <span className="flex items-center gap-2 self-stretch sm:order-1 sm:shrink-0">
+          {showUnreadSlot ? (
+            // Reserved leftmost dot gutter (desktop). Present on read and unread
+            // rows so the mark-read dot lives to the LEFT of any leading control
+            // (a parent's collapse caret, a tree guide) without indenting the row
+            // relative to its siblings, and aligns with the non-issue inbox rows
+            // that reserve the same w-4 slot.
+            <span
+              data-testid="issue-row-unread-slot"
+              className="hidden h-4 w-4 shrink-0 items-center justify-center self-center sm:inline-flex"
+            >
+              {showUnreadDot ? unreadDotButton : null}
+            </span>
+          ) : null}
           {treeGuides > 0
             ? Array.from({ length: treeGuides }, (_, level) => {
               // The innermost guide lands on THIS row's own chevron column; if
@@ -260,39 +309,11 @@ export function IssueRow({
         </span>
       ) : null}
       {showUnreadDot ? (
-        // Only unread rows reserve this leading mark-read column; read rows
-        // omit it entirely so their content lines up with the tasks list
-        // (which has no such column). Archive lives on the right now.
-        <span className="order-first inline-flex h-4 w-4 shrink-0 items-center justify-center self-center">
-          <button
-            type="button"
-            data-slot="icon-button"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onMarkRead?.();
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                event.stopPropagation();
-                onMarkRead?.();
-              }
-            }}
-            className={cn(
-              "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
-              selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20",
-            )}
-            aria-label="Mark as read"
-          >
-            <span
-              className={cn(
-                "block h-2 w-2 rounded-full transition-opacity duration-300",
-                selected ? "bg-muted-foreground/70" : "bg-blue-600 dark:bg-blue-400",
-                unreadState === "fading" ? "opacity-0" : "opacity-100",
-              )}
-            />
-          </button>
+        // Mobile keeps the dot in flow as the leading item (mobile has no
+        // reserved desktop dot gutter). Desktop renders the dot in the reserved
+        // leading slot above instead, so this is mobile-only.
+        <span className="order-first inline-flex h-4 w-4 shrink-0 items-center justify-center self-center sm:hidden">
+          {unreadDotButton}
         </span>
       ) : null}
     </Link>

@@ -78,6 +78,7 @@ function item(
     detail: null,
     dismissal: null,
     ...overrides,
+    trainingExampleId: overrides.trainingExampleId ?? null,
   };
 }
 
@@ -279,6 +280,38 @@ const SHOWCASE: AttentionItem[] = [
   },
 ];
 
+// Image variations (PAP-13544): a row with images can be expanded by clicking
+// its thumbnails; when expanded it shows the first three larger plus an
+// "n more" link to the issue. These rows exercise every image count boundary.
+const IMAGE_ROWS: AttentionItem[] = [
+  {
+    ...item("img-review", "review", "medium", "PR ready for review: attention feed endpoint", "In-review issue is waiting on a human reviewer.", {
+      inlineResolvable: false,
+      project: { id: "proj-beta", name: "Beta", urlKey: "beta", color: "#7c3aed", icon: "layers" },
+    }),
+    activityAt: new Date(NOW - 30 * 60 * 1000).toISOString(),
+    detail: { kind: "generic", summaryExcerpt: "5 files changed · +212 / −41", images: [IMAGES[0], IMAGES[1], IMAGES[2], IMAGES[3], IMAGES[0]] },
+  },
+  {
+    ...item("img-questions", "issue_thread_interaction", "medium", "Answer 2 questions on rollout", "Questions need answers.", {
+      inlineResolvable: true,
+      subject: { kind: "interaction", id: "intx-img", companyId, title: "Answer 2 questions on rollout", identifier: null, status: "pending", href: "/PAP/issues/PAP-1000#qs", metadata: { kind: "ask_user_questions", issueId: "issue-1000" } },
+      decisionVerbs: [{ id: "respond", label: "Answer", description: null }],
+      project: { id: "proj-alpha", name: "Alpha", urlKey: "alpha", color: "#0f766e", icon: "rocket" },
+    }),
+    activityAt: new Date(NOW - 90 * 60 * 1000).toISOString(),
+    detail: { kind: "questions", questionCount: 2, firstQuestionText: "Which auth provider should we standardize on?", images: [IMAGES[0], IMAGES[2], IMAGES[3]] },
+  },
+  {
+    ...item("img-failed", "failed_run", "high", "Deploy pipeline failed after 3 retries", "Retries exhausted.", {
+      inlineResolvable: false,
+      relatedIssue: null,
+    }),
+    activityAt: new Date(NOW - 3 * HOUR).toISOString(),
+    detail: { kind: "failed_run", agentName: "Deployer", failureReasonExcerpt: "exit code 1 running migrate", images: [IMAGES[3]] },
+  },
+];
+
 const SNOOZED: AttentionItem[] = [
   {
     ...item("snz-1", "review", "medium", "Design review: settings redesign", "Snoozed until this afternoon."),
@@ -314,6 +347,7 @@ function Queue({
   snoozed = [],
   dismissed = [],
   openCurtains = false,
+  initialExpandedId,
 }: {
   items: AttentionItem[];
   groupBy?: AttentionGroupBy;
@@ -321,9 +355,11 @@ function Queue({
   snoozed?: AttentionItem[];
   dismissed?: AttentionItem[];
   openCurtains?: boolean;
+  /** Pre-expand a specific row (e.g. to show the larger image gallery). */
+  initialExpandedId?: string;
 }) {
   const firstInline = items.find((i) => i.inlineResolvable && (i.sourceKind === "approval" || i.sourceKind === "join_request"));
-  const [expandedId, setExpandedId] = useState<string | null>(firstInline?.id ?? null);
+  const [expandedId, setExpandedId] = useState<string | null>(initialExpandedId ?? firstInline?.id ?? null);
   const [cleared, setCleared] = useState<Set<string>>(new Set());
   const visible = items.filter((i) => !cleared.has(i.id));
 
@@ -470,6 +506,25 @@ export const WithCurtains: Story = {
 
 export const TypeColorsAndDetail: Story = {
   args: { items: SHOWCASE, groupBy: "type" },
+};
+
+/**
+ * Collapsed image rows (PAP-13544). Each row shows up to three small
+ * thumbnails plus a "+n" chip; clicking the thumbnails expands the row. Covers
+ * a 5-image review row, a 3-image (no "+n") questions row, and a single-image
+ * failed-run row.
+ */
+export const ImageThumbnails: Story = {
+  args: { items: IMAGE_ROWS },
+};
+
+/**
+ * An expanded image row (PAP-13544). The 5-image review row is pre-expanded so
+ * the first three screenshots render larger with a "2 more" tile that links to
+ * the issue.
+ */
+export const ImageGalleryExpanded: Story = {
+  args: { items: IMAGE_ROWS, initialExpandedId: "img-review" },
 };
 
 /** The ~8s undo toast shown after dismissing a row (plan §6). */

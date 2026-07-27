@@ -50,6 +50,7 @@ import { logActivity } from "./activity-log.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService } from "./authorization.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import {
   formatPipelineCaseOutputContextMarkdown,
   pipelineCaseOutputsService,
@@ -1174,6 +1175,8 @@ function routineRevisionSnapshotRoutine(routine: typeof routines.$inferSelect): 
     status: routine.status as RoutineRevisionSnapshotV1["routine"]["status"],
     concurrencyPolicy: routine.concurrencyPolicy as RoutineRevisionSnapshotV1["routine"]["concurrencyPolicy"],
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
+    activityGatePolicy: routine.activityGatePolicy as RoutineRevisionSnapshotV1["routine"]["activityGatePolicy"],
+    activityGateScope: routine.activityGateScope as RoutineRevisionSnapshotV1["routine"]["activityGateScope"],
     originKind: routine.originKind,
     originId: routine.originId,
     variables: routine.variables ?? [],
@@ -4610,14 +4613,27 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           ? effects.linkedAutomationIssueIds
           : [];
         if (issueIdsToCancel.length > 0) {
-          await tx
+          const cancelledIssues = await tx
             .update(issues)
             .set({ status: "cancelled", updatedAt: now })
             .where(and(
               eq(issues.companyId, input.companyId),
               inArray(issues.id, issueIdsToCancel),
               ne(issues.status, "done"),
-            ));
+            ))
+            .returning({
+              id: issues.id,
+              companyId: issues.companyId,
+              identifier: issues.identifier,
+              title: issues.title,
+              status: issues.status,
+            });
+          for (const issue of cancelledIssues) {
+            await finalizeSummarySlotsForTerminalIssue(tx, {
+              ...issue,
+              status: "cancelled",
+            });
+          }
           await tx
             .update(pipelineCaseIssueLinks)
             .set({
