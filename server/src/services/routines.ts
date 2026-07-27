@@ -99,13 +99,21 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Sat: 6,
 };
 
+/** System marker used by built-in bundle seeding — not a real user account. */
+const BUILT_IN_BUNDLES_ACTOR = "built-in-bundles";
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
 async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string) {
   const company = await db
     .select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
     .from(companies)
     .where(eq(companies.id, companyId))
     .then((rows) => rows[0] ?? null);
-  if (company?.defaultResponsibleUserId) return company.defaultResponsibleUserId;
+  const explicitDefault = readNonEmptyString(company?.defaultResponsibleUserId);
+  if (explicitDefault) return explicitDefault;
 
   const owner = await db
     .select({ userId: companyMemberships.principalId })
@@ -121,11 +129,31 @@ async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string)
     .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
     .limit(1)
     .then((rows) => rows[0] ?? null);
-  return owner?.userId ?? null;
+  if (owner?.userId) return owner.userId;
+
+  const firstUser = await db
+    .select({ userId: companyMemberships.principalId })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.status, "active"),
+      ),
+    )
+    .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return firstUser?.userId ?? null;
 }
 
 async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorUserId: string | null | undefined, parentIssueId?: string | null) {
-  if (actorUserId) return actorUserId;
+  const candidateUserId = readNonEmptyString(actorUserId);
+  // Keep any real candidate (including users who left the company). Only reject the
+  // system marker so it cannot become responsibleUserId on routines/tasks.
+  if (candidateUserId && candidateUserId !== BUILT_IN_BUNDLES_ACTOR) {
+    return candidateUserId;
+  }
   if (parentIssueId) {
     const parent = await db
       .select({ responsibleUserId: issues.responsibleUserId, createdByUserId: issues.createdByUserId })
@@ -135,7 +163,17 @@ async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorU
     if (parent?.responsibleUserId) return parent.responsibleUserId;
     if (parent?.createdByUserId) return parent.createdByUserId;
   }
-  return resolveCompanyDefaultResponsibleUserId(db, companyId);
+  const resolved = await resolveCompanyDefaultResponsibleUserId(db, companyId);
+  if (resolved) return resolved;
+  // Soft degrade: if the actor is the system marker and no real user exists yet
+  // (fresh company during autoProvisionBundledAgents — no default, owner, or active
+  // member), keep the marker so routine creation still succeeds. Upstream used the
+  // marker in that case; returning null here would trip "Routine requires a
+  // responsible user" and block company init. Only substitute when we have a real user.
+  if (candidateUserId === BUILT_IN_BUNDLES_ACTOR) {
+    return candidateUserId;
+  }
+  return null;
 }
 
 type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };

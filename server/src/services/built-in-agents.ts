@@ -1286,6 +1286,11 @@ export function builtInAgentService(db: Db) {
 
   async function createOrResetRoutine(agent: Agent, definition: BuiltInAgentDefinition, existing: Routine | null, mode: "reconcile" | "reset") {
     const routine = definition.bundle!.routine;
+    // Pass the system marker as actor userId. resolveRoutineResponsibleUserId
+    // substitutes a real company user when one exists; if the company is still
+    // empty (fresh autoProvisionBundledAgents), it soft-degrades back to the
+    // marker so routine creation can succeed — same as upstream. Leaving
+    // userId null instead would trip "Routine requires a responsible user".
     const actor = { agentId: null, userId: "built-in-bundles" };
     const nextRoutine = existing
       ? await routineSvc.update(existing.id, {
