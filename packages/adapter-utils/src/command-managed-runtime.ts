@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -153,6 +154,9 @@ function buildSyncInRenameCommand(input: { sourcePath: string; targetPath: strin
   return "mv -f " + shellQuote(input.sourcePath) + " " + shellQuote(input.targetPath);
 }
 
+function buildUniqueStagingPath(input: { targetPath: string; suffix: string }): string {
+  return `${input.targetPath}${input.suffix}.${randomUUID()}`;
+}
 
 /**
  * Host-side confinement guard for a sync operation's post-upload command `cwd`
@@ -221,7 +225,7 @@ export function createCommandManagedRuntimeClient(input: {
       const total = buffer.byteLength;
       const encodedLength = base64EncodedLength(total);
       const remoteDir = path.posix.dirname(remotePath);
-      const remoteTempPath = `${remotePath}.paperclip-upload`;
+      const remoteTempPath = buildUniqueStagingPath({ targetPath: remotePath, suffix: ".paperclip-upload" });
       const canUseSingleStreamProgressPath = input.runner.supportsSingleStreamStdinProgress === true;
 
       // Primary path: a single round-trip. Stream the entire base64 body to one
@@ -359,7 +363,10 @@ export function createCommandManagedRuntimeClient(input: {
               followSymlinks: mapping.followSymlinks,
             });
             const tarBytes = await fs.readFile(archivePath);
-            const remoteTarPath = `${mapping.targetPath}.paperclip-syncin.tar`;
+            const remoteTarPath = buildUniqueStagingPath({
+              targetPath: mapping.targetPath,
+              suffix: ".paperclip-syncin.tar",
+            });
             await client.writeFile(remoteTarPath, bufferToArrayBuffer(tarBytes));
             await client.run(
               buildSyncInExtractDirectoryCommand({ remoteTarPath, targetDir: mapping.targetPath }),
@@ -368,7 +375,9 @@ export function createCommandManagedRuntimeClient(input: {
             bytesTransferred += tarBytes.byteLength;
           } else {
             const fileBytes = await fs.readFile(mapping.sourcePath);
-            const targetPathForWrite = mapping.mode != null ? mapping.targetPath + ".paperclip-syncin" : mapping.targetPath;
+            const targetPathForWrite = mapping.mode != null
+              ? buildUniqueStagingPath({ targetPath: mapping.targetPath, suffix: ".paperclip-syncin" })
+              : mapping.targetPath;
             await client.writeFile(targetPathForWrite, bufferToArrayBuffer(fileBytes));
             if (mapping.mode != null) {
               await client.run(

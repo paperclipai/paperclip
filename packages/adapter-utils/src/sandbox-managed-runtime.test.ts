@@ -99,7 +99,7 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(targetPath, "utf8")).resolves.toBe("#!/bin/sh\necho hello\n");
     expect(chmodMock).toHaveBeenCalledTimes(1);
     expect(renameMock).toHaveBeenCalledTimes(1);
-    expect(chmodMock.mock.calls[0]?.[0]).toContain(".paperclip-copy");
+    expect(chmodMock.mock.calls[0]?.[0]).toContain(".paperclip-copy.");
     expect(chmodMock.mock.calls[0]?.[0]).not.toBe(targetPath);
     expect(chmodMock.mock.invocationCallOrder[0]).toBeLessThan(renameMock.mock.invocationCallOrder[0]);
   });

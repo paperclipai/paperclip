@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -280,6 +281,10 @@ function buildDefaultExtractRuntimeAssetCommand(input: {
     `rm -f ${shellQuote(input.remoteAssetTar)}`;
 }
 
+function buildUniqueStagingPath(input: { targetPath: string; suffix: string }): string {
+  return `${input.targetPath}${input.suffix}.${randomUUID()}`;
+}
+
 export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteExecutionSpec | null {
   const parsed = asObject(value);
   const transport = asString(parsed.transport).trim();
@@ -433,7 +438,7 @@ async function copyWorkspaceEntry(sourceRoot: string, targetRoot: string, relati
     return;
   }
 
-  const stagedTargetPath = `${targetPath}.paperclip-copy`;
+  const stagedTargetPath = buildUniqueStagingPath({ targetPath, suffix: ".paperclip-copy" });
   await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
   await fs.copyFile(sourcePath, stagedTargetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
     await fs.copyFile(sourcePath, stagedTargetPath);

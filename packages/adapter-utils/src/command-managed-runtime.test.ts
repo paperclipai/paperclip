@@ -529,11 +529,12 @@ describe("command managed runtime", () => {
     expect(await readFile(targetFile, "utf8")).toBe("payload\n");
     const scripts = calls.map((call) => (call.args ?? []).join(" "));
     expect(scripts).toHaveLength(3);
-    expect(scripts[0]).toContain(targetFile + ".paperclip-syncin.paperclip-upload");
+    expect(scripts[0]).toContain(targetFile + ".paperclip-syncin.");
+    expect(scripts[0]).toContain(".paperclip-upload.");
     expect(scripts[1]).toContain("chmod 640");
-    expect(scripts[1]).toContain(targetFile + ".paperclip-syncin");
+    expect(scripts[1]).toContain(targetFile + ".paperclip-syncin.");
     expect(scripts[2]).toContain("mv -f");
-    expect(scripts[2]).toContain(targetFile + ".paperclip-syncin");
+    expect(scripts[2]).toContain(targetFile + ".paperclip-syncin.");
     expect(scripts[2]).toContain(targetFile);
   });
 
