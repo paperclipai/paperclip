@@ -575,6 +575,84 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("allows a creator agent to cancel its own pending request_confirmation", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Creator agent cancellation");
+    const creatorAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "none",
+      payload: {
+        version: 1,
+        prompt: "Approve old plan?",
+      },
+    }, {
+      agentId: creatorAgentId,
+    });
+
+    await expect(interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Superseded by policy routing",
+    }, {
+      agentId: otherAgentId,
+    })).rejects.toMatchObject({
+      status: 403,
+      message: "Only the creating agent can cancel a request_confirmation interaction",
+    });
+
+    const cancelled = await interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Superseded by policy routing",
+    }, {
+      agentId: creatorAgentId,
+    });
+
+    expect(cancelled).toMatchObject({
+      kind: "request_confirmation",
+      status: "cancelled",
+      result: {
+        version: 1,
+        outcome: "cancelled",
+        reason: "Superseded by policy routing",
+      },
+      resolvedByAgentId: creatorAgentId,
+      resolvedByUserId: null,
+    });
+  });
+
   it("expires ask_user_questions interactions by default when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Question supersede");
     const commentId = randomUUID();

@@ -5798,7 +5798,7 @@ registerCurrentRoute({
   method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/cancel",
   tags: ["issues"],
-  summary: "Cancel an issue question interaction",
+  summary: "Cancel an issue question interaction or an agent-owned request confirmation",
   body: cancelIssueThreadInteractionSchema,
 });
 

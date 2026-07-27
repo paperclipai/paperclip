@@ -47,7 +47,7 @@ import {
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
 } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 
@@ -1905,7 +1905,7 @@ export function issueThreadInteractionService(db: Db) {
       return answered;
     },
 
-    cancelQuestions: async (
+    cancelInteraction: async (
       issue: { id: string; companyId: string },
       interactionId: string,
       input: CancelIssueThreadInteraction,
@@ -1922,25 +1922,35 @@ export function issueThreadInteractionService(db: Db) {
       if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
         throw notFound("Interaction not found");
       }
-      if (current.kind !== "ask_user_questions") {
-        throw unprocessable("Only ask_user_questions interactions can be cancelled");
+      if (current.kind !== "ask_user_questions" && current.kind !== "request_confirmation") {
+        throw unprocessable("Only ask_user_questions and request_confirmation interactions can be cancelled");
       }
       if (current.status !== "pending") {
         throw conflict("Interaction has already been resolved");
       }
+      if (current.kind === "request_confirmation" && current.createdByAgentId !== actor.agentId) {
+        throw forbidden("Only the creating agent can cancel a request_confirmation interaction");
+      }
 
       const reason = data.reason?.trim() || null;
+      const result = current.kind === "ask_user_questions"
+        ? {
+          version: 1,
+          answers: [],
+          cancelled: true,
+          cancellationReason: reason,
+          summaryMarkdown: null,
+        } as const
+        : {
+          version: 1,
+          outcome: "cancelled",
+          reason,
+        } as const;
       const [updated] = await db
         .update(issueThreadInteractions)
         .set({
           status: "cancelled",
-          result: {
-            version: 1,
-            answers: [],
-            cancelled: true,
-            cancellationReason: reason,
-            summaryMarkdown: null,
-          },
+          result,
           resolvedByAgentId: actor.agentId ?? null,
           resolvedByUserId: actor.userId ?? null,
           resolvedAt: new Date(),
@@ -1960,6 +1970,15 @@ export function issueThreadInteractionService(db: Db) {
       const cancelled = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, cancelled);
       return cancelled;
+    },
+
+    cancelQuestions: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      input: CancelIssueThreadInteraction,
+      actor: InteractionActor,
+    ) => {
+      return issueThreadInteractionService(db).cancelInteraction(issue, interactionId, input, actor);
     },
   };
 }
