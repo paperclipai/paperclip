@@ -48,6 +48,7 @@ import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { stopRuntimeServicesForCompany } from "./workspace-runtime.js";
 
 export interface CompanyActivityActor {
   actorType: "user" | "agent" | "system" | "plugin";
@@ -439,8 +440,11 @@ export function companyService(db: Db) {
       return result.company;
     },
 
-    remove: (id: string) =>
-      db.transaction(async (tx) => {
+    remove: async (id: string) => {
+      // Kill live managed runtime processes before their rows disappear, so
+      // the hard delete cannot leave orphaned processes behind.
+      await stopRuntimeServicesForCompany({ companyId: id });
+      return db.transaction(async (tx) => {
         // Delete from child tables in dependency order: tables whose FKs have
         // no ON DELETE action must be emptied before the rows they reference.
         const companyRunIds = await tx
@@ -512,7 +516,8 @@ export function companyService(db: Db) {
           .where(eq(companies.id, id))
           .returning();
         return rows[0] ?? null;
-      }),
+      });
+    },
 
     stats: () =>
       Promise.all([

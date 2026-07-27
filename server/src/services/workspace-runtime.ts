@@ -4704,6 +4704,18 @@ export async function stopRuntimeServicesForProjectWorkspace(input: {
   }
 }
 
+// Terminates every live runtime service of a company. Callers that delete the
+// company afterwards drop the persisted rows themselves, so no db update here.
+export async function stopRuntimeServicesForCompany(input: { companyId: string }) {
+  const matchingServiceIds = Array.from(runtimeServicesById.values())
+    .filter((record) => record.companyId === input.companyId)
+    .map((record) => record.id);
+
+  for (const serviceId of matchingServiceIds) {
+    await stopRuntimeService(serviceId);
+  }
+}
+
 export async function listWorkspaceRuntimeServicesForProjectWorkspaces(
   db: Db,
   companyId: string,
