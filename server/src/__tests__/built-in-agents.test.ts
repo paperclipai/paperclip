@@ -1014,6 +1014,38 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(grantKeys).not.toContain("skills:create");
   });
 
+  it("does not restore a user-locked bundled skill during repeated reconciliation", async () => {
+    const companyId = await seedCompany();
+    await agentService(db).create(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const initial = await builtInAgentService(db).ensure(companyId, "reflection-coach");
+    const userConfig = {
+      ...initial.agent!.adapterConfig,
+      model: "gpt-5.6",
+      env: { SAFE_FLAG: "unchanged" },
+      paperclipSkillSync: { desiredSkills: [] },
+      _userLocked: ["model", "paperclipSkillSync.desiredSkills"],
+    };
+    await agentService(db).update(initial.agentId!, { adapterConfig: userConfig });
+    const expected = await agentService(db).getById(initial.agentId!);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await builtInAgentService(db).ensure(companyId, "reflection-coach");
+    }
+
+    const persisted = await agentService(db).getById(initial.agentId!);
+    expect(persisted?.adapterConfig).toEqual(expected?.adapterConfig);
+    expect(readPaperclipSkillSyncPreference(persisted!.adapterConfig).desiredSkills).toEqual([]);
+  });
+
   it("materializes the Summarizer bundle paused on Claude Haiku with a disabled routine", async () => {
     const companyId = await seedCompany();
     const root = await agentService(db).create(companyId, {
