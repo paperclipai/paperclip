@@ -21,7 +21,8 @@ Implements event-driven Agent Manager supervision per approved tech design ([LAB
 - [x] `agentManagerService` orchestration + activity log actions
 - [x] Heartbeat hooks on terminal runs
 - [x] Unit + integration tests
-- [ ] PR opened on `paperclipai/paperclip`
+- [x] PR opened on `paperclipai/paperclip` ([#10319](https://github.com/paperclipai/paperclip/pull/10319))
+- [x] QA round 1: fixed typecheck (`contextSnapshot` → `payload` in integration test insert)
 
 ## Verification
 
