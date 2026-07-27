@@ -1747,10 +1747,19 @@ export function routineService(
   async function validateApprovalClosureCandidates(
     txDb: Db,
     companyId: string,
+    binding: RoutineExceptionEvaluatorBinding,
     result: RoutineExceptionEvaluationResultV1,
   ) {
     const approvalCandidates = result.closureCandidates
       .filter((candidate) => candidate.artifactType === "approval");
+    if (
+      binding.evaluatorContractVersion === "pol.approval-release.v1" &&
+      result.outcome === "PASS" &&
+      result.recoveredFingerprints.length > 0 &&
+      approvalCandidates.length === 0
+    ) {
+      return "APPROVAL_CANDIDATE_MISSING";
+    }
     if (approvalCandidates.length === 0) return null;
     const evidence = new Map(
       result.evidence
@@ -1818,7 +1827,7 @@ export function routineService(
     actor?: Actor;
     nextRunAt?: Date;
     skipBeforeHook?: boolean;
-    openExceptionFingerprints?: readonly string[];
+    openExceptions?: RoutineExceptionEvaluationInputV1["openExceptions"];
   }) {
     if (!input.skipBeforeHook) await deps.beforeExceptionReconcile?.();
     return db.transaction(async (tx) => {
@@ -1836,6 +1845,7 @@ export function routineService(
       const approvalFailure = await validateApprovalClosureCandidates(
         txDb,
         input.routine.companyId,
+        input.binding,
         evaluation.result,
       );
       if (approvalFailure) {
@@ -1896,9 +1906,16 @@ export function routineService(
       };
 
       if (result.outcome === "PASS") {
-        const openFingerprints = new Set(input.openExceptionFingerprints ?? []);
+        const recoverableFingerprints = new Set(
+          (input.openExceptions ?? [])
+            .filter((exception) =>
+              exception.affectedResource === result.affectedResource &&
+              exception.evaluatorContractVersion === input.binding.evaluatorContractVersion
+            )
+            .map((exception) => exception.fingerprint),
+        );
         const recoveredFingerprints = [...new Set(result.recoveredFingerprints)]
-          .filter((candidate) => openFingerprints.has(candidate));
+          .filter((candidate) => recoverableFingerprints.has(candidate));
         const incidentIds = recoveredFingerprints.length === 0
           ? []
           : await txDb
@@ -2130,7 +2147,7 @@ export function routineService(
         evaluation,
         actor: input.actor,
         nextRunAt: input.nextRunAt,
-        openExceptionFingerprints: openExceptions.map((exception) => exception.fingerprint),
+        openExceptions,
       });
       if (run.status === "issue_created" && run.linkedIssueId) {
         const incident = await db
@@ -2172,7 +2189,7 @@ export function routineService(
           actor: input.actor,
           nextRunAt: input.nextRunAt,
           skipBeforeHook: true,
-          openExceptionFingerprints: openExceptions.map((exception) => exception.fingerprint),
+          openExceptions,
         });
         if (fallbackRun.status === "issue_created" && fallbackRun.linkedIssueId) {
           const incident = await db

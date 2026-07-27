@@ -217,7 +217,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const exceptionEvaluatorRegistry = createRoutineExceptionEvaluatorRegistry({
       serverCommit: "test-commit",
       capabilityBroker: {
-        invoke: async (capabilityId) => capabilityId === "process.exec:runtime-watchdog-classifier"
+        invoke: async (capabilityId) => [
+          "process.exec:runtime-watchdog-classifier",
+          "process.exec:approval-release-reconciler",
+        ].includes(capabilityId)
           ? queuedResults.shift() ?? {
               schemaVersion: 1,
               outcome: "PASS",
@@ -247,7 +250,29 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
-  async function enableExceptionLedPilot(companyId: string, routineId: string, routineRevisionId: string) {
+  async function enableExceptionLedPilot(
+    companyId: string,
+    routineId: string,
+    routineRevisionId: string,
+    evaluatorId: "pol.runtime-source-of-truth.v1" | "pol.approval-release.v1" =
+      "pol.runtime-source-of-truth.v1",
+  ) {
+    const allowedCapabilityIds = evaluatorId === "pol.approval-release.v1"
+      ? [
+          "git.fetch:polymarket-bot-main",
+          "git.worktree:detached-temp",
+          "process.exec:approval-release-pytest",
+          "process.exec:approval-release-reconciler",
+          "github.read:pull-request",
+          "http.get:pol-runtime",
+          "paperclip.read:approval-release-links",
+        ]
+      : [
+          "service-config.read:pol-runtime-binding",
+          "http.get:pol-runtime",
+          "sqlite.readonly:pol-runtime-db",
+          "process.exec:runtime-watchdog-classifier",
+        ];
     await instanceSettingsService(db).updateExperimental({
       routineExceptionEvaluators: {
         enabled: true,
@@ -256,16 +281,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           companyId,
           routineId,
           routineRevisionId,
-          evaluatorId: "pol.runtime-source-of-truth.v1",
-          evaluatorContractVersion: "pol.runtime-source-of-truth.v1",
+          evaluatorId,
+          evaluatorContractVersion: evaluatorId,
           inputSchemaVersion: 1,
           typedConfig: {},
-          allowedCapabilityIds: [
-            "service-config.read:pol-runtime-binding",
-            "http.get:pol-runtime",
-            "sqlite.readonly:pol-runtime-db",
-            "process.exec:runtime-watchdog-classifier",
-          ],
+          allowedCapabilityIds,
         }],
       },
     });
@@ -471,6 +491,41 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(recoveries).toHaveLength(1);
   });
 
+  it("does not recover an incident for a different affected resource", async () => {
+    const exceptionResults = [exceptionResult("HEARTBEAT_STALE")];
+    const { companyId, routine, svc } = await seedFixture({ exceptionResults });
+    await enableExceptionLedPilot(companyId, routine.id, routine.latestRevisionId!);
+    const failure = await svc.runRoutine(routine.id, { source: "api" });
+    exceptionResults.push({
+      schemaVersion: 1,
+      outcome: "PASS",
+      severity: null,
+      rootCauseCode: null,
+      affectedResource: "pol-runtime:other",
+      summary: "different resource is healthy",
+      evidence: [{
+        key: "runtime",
+        source: "fixture",
+        observedAt: new Date().toISOString(),
+        valueDigest: "e".repeat(64),
+      }],
+      recoveredFingerprints: [failure.exceptionFingerprint!],
+      closureCandidates: [],
+      retryClass: "NONE",
+    });
+
+    const green = await svc.runRoutine(routine.id, { source: "api" });
+    const [incidentAfter] = await db.select().from(issues).where(eq(issues.id, failure.linkedIssueId!));
+    const recoveries = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "routine.exception_recovered"));
+
+    expect(green.evaluationOutcome).toBe("PASS");
+    expect(incidentAfter?.status).toBe("todo");
+    expect(recoveries).toHaveLength(0);
+  });
+
   it("fails closed to an UNVERIFIABLE incident when evidence persistence fails", async () => {
     const runtimeEnv: Record<string, string | undefined> = {};
     const { companyId, routine, svc } = await seedFixture({
@@ -547,6 +602,46 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("issue_created");
     expect(run.evaluationOutcome).toBe("UNVERIFIABLE");
     expect(run.evaluationResult?.rootCauseCode).toBe("APPROVAL_NON_TERMINAL");
+  });
+
+  it("fails approval-release recovery closed when the approval candidate is omitted", async () => {
+    const exceptionResults = [{
+      ...exceptionResult("APPROVAL_PENDING"),
+      affectedResource: "approval-release:test",
+    }];
+    const { companyId, routine, svc } = await seedFixture({ exceptionResults });
+    await enableExceptionLedPilot(
+      companyId,
+      routine.id,
+      routine.latestRevisionId!,
+      "pol.approval-release.v1",
+    );
+    const failure = await svc.runRoutine(routine.id, { source: "api" });
+    exceptionResults.push({
+      schemaVersion: 1,
+      outcome: "PASS",
+      severity: null,
+      rootCauseCode: null,
+      affectedResource: "approval-release:test",
+      summary: "recommend closure without approval candidate",
+      evidence: [{
+        key: "approval.status",
+        source: "fixture",
+        observedAt: new Date().toISOString(),
+        valueDigest: "f".repeat(64),
+        safeValue: "approved",
+      }],
+      recoveredFingerprints: [failure.exceptionFingerprint!],
+      closureCandidates: [],
+      retryClass: "NONE",
+    });
+
+    const recovery = await svc.runRoutine(routine.id, { source: "api" });
+    const [incidentAfter] = await db.select().from(issues).where(eq(issues.id, failure.linkedIssueId!));
+
+    expect(recovery.evaluationOutcome).toBe("UNVERIFIABLE");
+    expect(recovery.evaluationResult?.rootCauseCode).toBe("APPROVAL_CANDIDATE_MISSING");
+    expect(incidentAfter?.status).toBe("todo");
   });
 
   async function armWorktreeExecution(cutoff: Date, instanceId = "worktree-routines-test") {
