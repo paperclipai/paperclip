@@ -76,6 +76,36 @@ describe("cloud image bundled plugins", () => {
     expect(workflow).toMatch(/^\s*target: production$/m);
   });
 
+  it("publishes the cloud image in its own job with no needs coupling", () => {
+    // The cloud publish runs as its own top-level job so the stock/production
+    // publish can never gate, delay, or skip it. Both jobs share only the
+    // single top-level concurrency slot; there is deliberately no `needs:`
+    // between them, so a failure in one is never coupled to the other.
+    const jobsSection = workflow.slice(workflow.indexOf("\njobs:\n"));
+    const headers = [...jobsSection.matchAll(/^ {2}([\w-]+):[^\n]*$/gm)];
+    expect(
+      headers.length,
+      "docker.yml must declare at least two jobs under jobs:",
+    ).toBeGreaterThanOrEqual(2);
+
+    // Locate the job block that carries the cloud build (target: cloud) and
+    // assert it declares no `needs:` — coupling it to another job would
+    // reintroduce the shared failure the split job exists to remove.
+    const cloudHeaderIdx = headers.findIndex((header, i) => {
+      const start = header.index ?? 0;
+      const end = headers[i + 1]?.index ?? jobsSection.length;
+      return jobsSection.slice(start, end).includes("target: cloud");
+    });
+    expect(cloudHeaderIdx, "one job must build the cloud target").toBeGreaterThanOrEqual(0);
+    const start = headers[cloudHeaderIdx].index ?? 0;
+    const end = headers[cloudHeaderIdx + 1]?.index ?? jobsSection.length;
+    const cloudJobBlock = jobsSection.slice(start, end);
+    expect(
+      cloudJobBlock,
+      "the cloud job must not couple to another job via needs:",
+    ).not.toMatch(/^\s*needs:/m);
+  });
+
   it("throttles the docker workflow with cancel-in-progress: false", () => {
     // Concurrency is declared at the workflow (top) level so a single group
     // spans the whole run, and cancel-in-progress is false so an in-flight
