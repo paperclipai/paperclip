@@ -5203,10 +5203,48 @@ describeEmbeddedPostgres("resolveRunReferencedProjects", () => {
     );
 
     expect(result.additional.map((entry) => entry.projectId)).toEqual(mentionedProjectIds.slice(0, 2));
-    // The capped project is never hydrated or authorized.
+    // The cap counts admitted projects, so the third project is never authorized once two are admitted.
     expect(decidedProjectIds).toEqual(mentionedProjectIds.slice(0, 2));
     expect(result.warnings.some((warning) => warning.includes("Only the first 2"))).toBe(true);
     expect(MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS).toBeGreaterThan(0);
+  });
+
+  it("does not let an unauthorized mention consume an additional-project cap slot", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorProjectId = randomUUID();
+    const deniedProjectId = randomUUID();
+    const allowedProjectIds = [randomUUID(), randomUUID()];
+    // Mention order: the denied project comes first, ahead of two authorized projects.
+    const mentionedProjectIds = [deniedProjectId, ...allowedProjectIds];
+
+    await seedCompany(companyId);
+    await db.insert(projects).values([
+      { id: anchorProjectId, companyId, name: "Anchor", status: "in_progress" },
+      { id: deniedProjectId, companyId, name: "Denied", status: "in_progress" },
+      ...allowedProjectIds.map((id, index) => ({
+        id,
+        companyId,
+        name: `Allowed ${index}`,
+        status: "in_progress" as const,
+      })),
+    ]);
+    await seedIssueWithMentions({ companyId, issueId, anchorProjectId, mentionedProjectIds });
+
+    const { access } = recordingAccess((projectId) => decision(projectId !== deniedProjectId));
+    const result = await resolveRunReferencedProjects(
+      issueId,
+      anchorProjectId,
+      baseOpts(companyId, access, { maxAdditionalProjects: 2 }),
+    );
+
+    // The denied mention is dropped without using a cap slot, so both authorized projects still fit.
+    expect(result.additional.map((entry) => entry.projectId)).toEqual(allowedProjectIds);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain(deniedProjectId);
+    expect(result.warnings[0]).toContain("not authorized");
+    // The cap was satisfied by admitted projects, so no overflow warning is emitted.
+    expect(result.warnings.some((warning) => warning.includes("Only the first"))).toBe(false);
   });
 });
 

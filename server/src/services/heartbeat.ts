@@ -2204,18 +2204,11 @@ export async function resolveRunReferencedProjects(
     candidateIds.push(projectId);
   }
 
-  // Bound the number of additional projects a single run may materialize.
-  let boundedCandidateIds = candidateIds;
-  if (boundedCandidateIds.length > cap) {
-    const droppedCount = boundedCandidateIds.length - cap;
-    boundedCandidateIds = boundedCandidateIds.slice(0, cap);
-    warnings.push(
-      `Only the first ${cap} referenced project(s) will be synced for this run; ${droppedCount} additional referenced project(s) were skipped.`,
-    );
-  }
-
-  // Hydrate the anchor plus every candidate in a single company-scoped batch.
-  const hydrateIds = anchorProjectId ? [anchorProjectId, ...boundedCandidateIds] : boundedCandidateIds;
+  // Hydrate the anchor plus every candidate in a single company-scoped batch. Every candidate is
+  // hydrated (not just the first `cap`) so the cap can be enforced against *admitted* projects
+  // below — a mention that is dropped for a company mismatch or a failed authorization must never
+  // consume a cap slot and displace a later valid, authorized reference.
+  const hydrateIds = anchorProjectId ? [anchorProjectId, ...candidateIds] : candidateIds;
   const hydrated = await projects.listByIds(companyId, hydrateIds);
   const byId = new Map(hydrated.map((project) => [project.id, project]));
 
@@ -2223,8 +2216,18 @@ export async function resolveRunReferencedProjects(
   const anchor: RunReferencedProject | null =
     anchorRecord && anchorProjectId ? { projectId: anchorProjectId, project: anchorRecord } : null;
 
+  // Admit candidates in mention order until the cap of successfully-authorized projects is reached.
+  // The cap bounds how many additional projects a run *materializes*, so it is counted against
+  // admitted projects only; dropped mentions never use a slot.
   const additional: RunReferencedProject[] = [];
-  for (const projectId of boundedCandidateIds) {
+  let capReachedAtIndex: number | null = null;
+  for (let index = 0; index < candidateIds.length; index++) {
+    if (additional.length >= cap) {
+      capReachedAtIndex = index;
+      break;
+    }
+
+    const projectId = candidateIds[index]!;
     const project = byId.get(projectId);
     // Fail-closed: a mention that did not resolve inside this company (foreign-company, deleted, or
     // malformed id) is dropped before authorization is ever consulted.
@@ -2253,6 +2256,14 @@ export async function resolveRunReferencedProjects(
     }
 
     additional.push({ projectId, project });
+  }
+
+  // Warn once if the cap stopped us before every remaining candidate was considered.
+  if (capReachedAtIndex !== null) {
+    const skipped = candidateIds.length - capReachedAtIndex;
+    warnings.push(
+      `Only the first ${cap} referenced project(s) will be synced for this run; ${skipped} additional referenced project(s) were skipped.`,
+    );
   }
 
   return { anchor, additional, warnings };
