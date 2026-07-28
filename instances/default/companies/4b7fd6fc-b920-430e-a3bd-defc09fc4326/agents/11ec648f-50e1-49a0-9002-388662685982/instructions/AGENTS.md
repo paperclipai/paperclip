@@ -7,7 +7,7 @@ To change a rule, edit ../shared/GENESIS-WEBSITE-GUARDRAILS.md — DO NOT edit t
 
 **Status:** CANONICAL — every Genesis-touching Paperclip agent MUST read this file at the start of every run. The file lives in the company-wide `shared/` directory. Each agent's `AGENTS.md` also inlines the full body of this file at the top so the rules are physically present in the agent's prompt even if the agent didn't read the canonical path on disk.
 
-**Last updated:** 2026-07-28 (full-site repair, sitemap/media hygiene, paginated archives, fail-closed writes)
+**Last updated:** 2026-07-29 (Headroom logo parity, visible GEO-bar standardisation, machine-readable GEO preservation)
 
 This document is intentionally one file so rules do not drift between `AGENTS.md`, `HEARTBEAT.md`, and per-role workflow docs. If a rule contradicts this file, **this file wins**. If you need to change a rule here, edit THIS file — do NOT edit the inlined copy in each agent's `AGENTS.md`. The inlined copy is generated from this canonical source.
 
@@ -341,11 +341,13 @@ For header, cursor, menu, preloader or Jarallax defects:
 1. Capture computed rectangles/transforms and a millisecond animation timeline before changing code. Do not edit Stukram theme files; correct races in a narrowly scoped mu-plugin.
 2. Never let a safety fallback classify a normal in-progress GSAP animation as failed after an arbitrary short delay such as 80 ms. First check that the theme claimed the interaction, then use a later bounded health watchdog.
 3. Use generation tokens and cancelled timers so rapid open/close/open interactions cannot leave stale fallback callbacks. Prime hidden menu-link transforms before exposing the nav layer, so text cannot flash before its background.
-4. Make header/logo boxes explicit and verify the logo rectangle remains inside normal and sticky headers at desktop and mobile breakpoints.
+4. Make header/logo boxes explicit and verify the logo rectangle remains inside normal and sticky headers at desktop and mobile breakpoints. The logo and hamburger must share Headroom's header translation: never separately hide `.header__logo` with opacity/visibility in the unpinned state; measure equal travel on scroll-down and full return on scroll-up.
 5. Prevent first-paint text FOUC with a fail-safe dark boot shield emitted inline before asynchronous LiteSpeed CSS. Verify source order on every HTML template after all cache layers are purged.
 6. A Stukram custom-cursor wrapper can be zero-sized while the visible follower is 24 px. Verify the follower child's centre equals the pointer coordinates and avoid competing transform writers.
 7. Scope Jarallax overrides to the verified section/asset; require the image rectangle to match its container with `transform:none` and a healthy background URL.
-8. A visible “GEO section” is not required when pages remain indexable, semantically complete, represented by sitemap/canonical/hreflang, carry valid FAQ/Organisation schema, and relevant AI retrieval robots are allowed. Never add hidden or duplicate GEO copy.
+8. Machine-readable GEO—not generic UI callouts—is the default contract: pages must remain indexable and semantically complete, appear in sitemap/canonical/hreflang, carry valid FAQ/Organisation/LocalBusiness schema where applicable, and explicitly allow relevant AI retrieval robots.
+9. Do not append, retain or merely CSS-hide generic founder/reviewer rows, trophy/“Award-Winning Animation Studio” bars, hidden GEO copy or duplicate GEO prose. When standardising, remove the exact bounded structural callout and preserve genuine authored editorial references even when wording overlaps.
+10. Distinguish UI from schema during audit: strip `head`, `script`, `style`, `noscript` and `template` before visible-text matching, then validate JSON-LD separately. Any corpus removal requires frozen source bytes/hashes, exact occurrence counts, a single locked transaction, mode-`0600` lossless backup, compare-and-swap rollback, cache purges and a fresh sitemap-plus-pagination live scan with zero visible callout hits.
 
 ### 9.6 Founder portrait and credential artefacts
 

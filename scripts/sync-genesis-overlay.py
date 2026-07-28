@@ -83,7 +83,7 @@ def validate_canonical_semantics(body: str) -> list[str]:
         "generation tokens and cancelled timers",
         "visible follower is 24 px",
         "Scope Jarallax overrides",
-        "visible “GEO section” is not required",
+        "Machine-readable GEO—not generic UI callouts—is the default contract",
         "Never strip the letter `t` globally",
         "Compare deployed mu-plugin SHA-256 values",
         "scripts/sync-genesis-overlay.py --apply",
