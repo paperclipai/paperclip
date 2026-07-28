@@ -686,6 +686,22 @@ export async function prepareSandboxManagedRuntime(input: {
   // Opaque, ordered, non-sensitive operation tokens — never a caller/asset id.
   const nextSyncOperationId = () => `sync-op-${++syncOperationSeq}`;
 
+  // Every delegated post-upload command (extract/wipe/remove-deleted/asset merge)
+  // must run under the run-specific timeout (`spec.timeoutMs`), not the provider
+  // sync client's default timeout — the two can differ, and before staging was
+  // routed through `syncIn` each of these ran via
+  // `client.run(cmd, { timeoutMs: spec.timeoutMs })`. When they mismatch, a
+  // command left without a `timeoutMs` outlives (or is killed under) the wrong
+  // limit. Stamp the run timeout onto every delegated command, preserving any
+  // command that already carries its own explicit timeout.
+  const withRunTimeout = (
+    commands: SandboxPostUploadCommand[],
+  ): SandboxPostUploadCommand[] =>
+    commands.map((command) => ({
+      ...command,
+      timeoutMs: command.timeoutMs ?? input.spec.timeoutMs,
+    }));
+
   await withTempDir("paperclip-sandbox-sync-", async (tempDir) => {
     const preservedNames = new Set([
       ".paperclip-runtime",
@@ -708,7 +724,7 @@ export async function prepareSandboxManagedRuntime(input: {
       const operations: SandboxSyncOperation[] = [{
         operationId: nextSyncOperationId(),
         files: [{ sourcePath: input2.tarPath, targetPath: input2.remoteTar, kind: "file" }],
-        postUploadCommands: input2.postUploadCommands,
+        postUploadCommands: withRunTimeout(input2.postUploadCommands),
       }];
       assertSyncOperationsConfined(operations, {
         sourceRoots: [tempDir],
@@ -847,7 +863,7 @@ export async function prepareSandboxManagedRuntime(input: {
       const operations: SandboxSyncOperation[] = [{
         operationId: nextSyncOperationId(),
         files,
-        postUploadCommands: [{ command: postUploadCommand }],
+        postUploadCommands: withRunTimeout([{ command: postUploadCommand }]),
       }];
       assertSyncOperationsConfined(operations, {
         sourceRoots: [tempDir],

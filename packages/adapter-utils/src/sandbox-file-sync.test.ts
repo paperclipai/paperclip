@@ -145,6 +145,53 @@ describe("sandbox native file sync", () => {
     expect(await readFile(path.join(localWorkspaceDir, "new.txt"), "utf8")).toBe("added\n");
   });
 
+  it("stamps the run-specific timeout onto every delegated post-upload command", async () => {
+    // The extract/wipe/merge commands are delegated to the provider through
+    // `syncIn` as `postUploadCommands`. They MUST carry the run-specific timeout
+    // (`spec.timeoutMs`) — the same limit the pre-syncIn code passed to
+    // `client.run` — not the provider sync client's own default. When the two
+    // differ, a command left without a `timeoutMs` outlives (or is killed under)
+    // the wrong limit; here a distinctive `spec.timeoutMs` proves propagation.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-timeout-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const defaultAssetDir = path.join(rootDir, "default-asset");
+    const customAssetDir = path.join(rootDir, "custom-asset");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(defaultAssetDir, { recursive: true });
+    await mkdir(customAssetDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "ws\n", "utf8");
+    await writeFile(path.join(defaultAssetDir, "skill.md"), "skill\n", "utf8");
+    await writeFile(path.join(customAssetDir, "cred.txt"), "secret\n", "utf8");
+
+    const runTimeoutMs = 7_000;
+    const { client, syncInOps } = makeNativeClient();
+    await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "s1", remoteCwd: remoteWorkspaceDir, timeoutMs: runTimeoutMs, apiKey: null },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [
+        { key: "skills", localDir: defaultAssetDir },
+        {
+          key: "creds",
+          localDir: customAssetDir,
+          provision: { postUploadCommand: ({ assetTarPath, assetDir }) =>
+            `rm -rf ${assetDir} && mkdir -p ${assetDir} && tar -xf ${assetTarPath} -C ${assetDir} && rm -f ${assetTarPath}` },
+        },
+      ],
+    });
+
+    // Workspace extract + default-asset extract + custom-provision merge — every
+    // delegated command across every operation carries the run timeout.
+    const commands = syncInOps.flat().flatMap((op) => op.postUploadCommands ?? []);
+    expect(commands.length).toBeGreaterThanOrEqual(3);
+    for (const command of commands) {
+      expect(command.timeoutMs).toBe(runTimeoutMs);
+    }
+  });
+
   it("routes a custom-provision asset through syncIn with its bespoke post-upload command (native)", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-custom-"));
     cleanupDirs.push(rootDir);

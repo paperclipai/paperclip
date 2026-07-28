@@ -599,6 +599,39 @@ describe("command managed runtime", () => {
     expect(calls[cmd2Idx]?.noProfile).not.toBe(true);
   });
 
+  it("fallback syncIn runs a post-upload command under its own timeout, not the sync-client default", async () => {
+    // The run-specific timeout (`spec.timeoutMs`, stamped onto each delegated
+    // post-upload command) can differ from the sync client's own default. The
+    // fallback must honor the per-command `timeoutMs` so the delegated
+    // extract/cleanup/merge runs under the run limit — not the sync default.
+    const syncClientTimeoutMs = 30_000;
+    const runTimeoutMs = 7_000;
+    const execTimeouts: Array<number | undefined> = [];
+    const runner: CommandManagedRuntimeRunner = {
+      execute: async (input) => {
+        execTimeouts.push(input.timeoutMs);
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: "" };
+      },
+    };
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: syncClientTimeoutMs });
+
+    await client.syncIn!([
+      {
+        operationId: "op-timeout",
+        files: [],
+        postUploadCommands: [
+          { command: "echo carries-run-timeout", timeoutMs: runTimeoutMs },
+          { command: "echo defaults-to-sync-timeout" },
+        ],
+      },
+    ]);
+
+    // First command carries the run timeout; a command with no explicit timeout
+    // still falls back to the sync-client default (matched by the stamping in
+    // prepareSandboxManagedRuntime, which never leaves a delegated command bare).
+    expect(execTimeouts).toEqual([runTimeoutMs, syncClientTimeoutMs]);
+  });
+
   it("fallback syncIn stages mode-constrained files before chmod and rename", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-mode-"));
     cleanupDirs.push(rootDir);
