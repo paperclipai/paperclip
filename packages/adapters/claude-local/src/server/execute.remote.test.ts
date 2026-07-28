@@ -14,7 +14,7 @@ const {
 } = vi.hoisted(() => ({
   runChildProcess: vi.fn(async () => ({
     exitCode: 0,
-    signal: null,
+    signal: null as string | null,
     timedOut: false,
     stdout: [
       JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }),
