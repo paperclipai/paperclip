@@ -2277,6 +2277,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       env: { FOO: "bar" },
       stdin: "",
       timeoutMs: 1000,
+      noProfile: true,
     });
     const destroyed = await runtimeWithPlugin.destroyRunLease({
       environment,
@@ -2331,6 +2332,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       args: ["ok"],
       cwd: "/workspace/project",
       env: { FOO: "bar" },
+      noProfile: true,
     }), 31000);
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", {
       driverKey: "fake-plugin",

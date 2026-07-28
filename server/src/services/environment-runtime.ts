@@ -188,6 +188,11 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  /**
+   * Skip the Daytona login-shell profile sourcing for commands that already
+   * resolve on the sandbox default PATH.
+   */
+  noProfile?: boolean;
 }
 
 export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput {
