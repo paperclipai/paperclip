@@ -36,6 +36,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
+import { inheritCompanyCredentialEnv } from "../services/agent-credential-inheritance.js";
 import {
   agentService,
   agentInstructionsService,
@@ -2410,7 +2411,7 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
     const hiredAgentId = randomUUID();
-    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
+    let requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       hiredAgentId,
       hireInput.adapterType,
@@ -2418,6 +2419,12 @@ export function agentRoutes(
         hireInput.adapterType,
         rawHireAdapterConfig,
       ),
+    );
+    requestedAdapterConfig = await inheritCompanyCredentialEnv(
+      db,
+      companyId,
+      hireInput.adapterType,
+      requestedAdapterConfig,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -2605,7 +2612,7 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
     const agentId = randomUUID();
-    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
+    let requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       agentId,
       createInput.adapterType,
@@ -2613,6 +2620,12 @@ export function agentRoutes(
         createInput.adapterType,
         rawCreateAdapterConfig,
       ),
+    );
+    requestedAdapterConfig = await inheritCompanyCredentialEnv(
+      db,
+      companyId,
+      createInput.adapterType,
+      requestedAdapterConfig,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,

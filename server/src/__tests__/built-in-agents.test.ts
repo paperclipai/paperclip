@@ -13,6 +13,8 @@ import {
   builtInManagedResources,
   companies,
   companyMemberships,
+  companySecretBindings,
+  companySecrets,
   companySkillVersions,
   companySkills,
   createDb,
@@ -123,6 +125,8 @@ describeEmbeddedPostgres("built-in agents", () => {
     await db.delete(companySkills);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(companySecretBindings);
+    await db.delete(companySecrets);
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
     await db.delete(approvals);
@@ -244,6 +248,66 @@ describeEmbeddedPostgres("built-in agents", () => {
 
     const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(rows).toHaveLength(1);
+  });
+
+  async function seedDonorAgent(companyId: string) {
+    const secretId = randomUUID();
+    await db.insert(companySecrets).values({
+      id: secretId,
+      companyId,
+      key: "claude-oauth-token",
+      name: "Claude OAuth token",
+    });
+    await db.insert(agents).values({
+      id: randomUUID(),
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "claude_local",
+      adapterConfig: {
+        model: "claude-sonnet-4-5",
+        env: { CLAUDE_CODE_OAUTH_TOKEN: { type: "secret_ref", secretId } },
+      },
+      runtimeConfig: {},
+      permissions: {},
+      metadata: {},
+    });
+    return secretId;
+  }
+
+  it("inherits the company credential env from a same-adapter agent on provisioning", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const secretId = await seedDonorAgent(companyId);
+
+    const state = await builtInAgentService(db).ensure(companyId, "summarizer");
+
+    expect(state.agent?.adapterConfig).toMatchObject({
+      model: "claude-haiku-4-5",
+      env: { CLAUDE_CODE_OAUTH_TOKEN: { type: "secret_ref", secretId, version: "latest" } },
+    });
+  });
+
+  it("inherits the company credential env on the pending-approval provisioning path", async () => {
+    const companyId = await seedCompany();
+    const secretId = await seedDonorAgent(companyId);
+
+    const result = await builtInAgentService(db).provision(companyId, "summarizer");
+
+    expect(result.state.agent?.status).toBe("pending_approval");
+    expect(result.state.agent?.adapterConfig).toMatchObject({
+      model: "claude-haiku-4-5",
+      env: { CLAUDE_CODE_OAUTH_TOKEN: { type: "secret_ref", secretId, version: "latest" } },
+    });
+  });
+
+  it("provisions a built-in agent unchanged when no same-adapter donor has a credential", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+
+    const state = await builtInAgentService(db).ensure(companyId, "summarizer");
+
+    expect(state.agent?.adapterConfig).toMatchObject({ model: "claude-haiku-4-5" });
+    expect(state.agent?.adapterConfig).not.toHaveProperty("env");
   });
 
   it("routes policy-gated built-in provisioning through a pending hire approval", async () => {
