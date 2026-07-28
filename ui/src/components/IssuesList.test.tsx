@@ -6,7 +6,7 @@ import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssuesList } from "./IssuesList";
+import { IssuesList, issueAgeBucket, issueAgeSeparatorLabel } from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const companyState = vi.hoisted(() => ({
@@ -1957,5 +1957,79 @@ describe("IssuesList", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("draws day and week separators between recency-sorted rows", async () => {
+    const now = Date.now();
+    const hourAgo = new Date(now - 60 * 60 * 1000);
+    const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000);
+    const tenDaysAgo = new Date(now - 10 * 24 * 60 * 60 * 1000);
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-recent", identifier: "PAP-1", title: "Just updated", updatedAt: hourAgo }),
+          createIssue({ id: "issue-mid", identifier: "PAP-2", title: "A few days old", updatedAt: threeDaysAgo }),
+          createIssue({ id: "issue-old", identifier: "PAP-3", title: "Over a week old", updatedAt: tenDaysAgo }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const separators = Array.from(container.querySelectorAll("[data-issues-date-separator]"));
+      const labels = separators.map((el) => el.getAttribute("aria-label"));
+      expect(labels).toEqual(["Older than a day", "Older than a week"]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("omits date separators when all rows share a recency bucket", async () => {
+    const now = Date.now();
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-a", identifier: "PAP-1", title: "One", updatedAt: new Date(now - 60 * 60 * 1000) }),
+          createIssue({ id: "issue-b", identifier: "PAP-2", title: "Two", updatedAt: new Date(now - 2 * 60 * 60 * 1000) }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelector("[data-testid='issue-row']")).not.toBeNull();
+    });
+    expect(container.querySelectorAll("[data-issues-date-separator]").length).toBe(0);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+});
+
+describe("issueAgeBucket", () => {
+  const now = new Date("2026-04-10T12:00:00.000Z").getTime();
+
+  it("buckets by day and week boundaries", () => {
+    expect(issueAgeBucket(new Date(now - 60 * 60 * 1000), now)).toBe(0);
+    expect(issueAgeBucket(new Date(now - 3 * 24 * 60 * 60 * 1000), now)).toBe(1);
+    expect(issueAgeBucket(new Date(now - 10 * 24 * 60 * 60 * 1000), now)).toBe(2);
+  });
+
+  it("labels the day and week separators", () => {
+    expect(issueAgeSeparatorLabel(1)).toBe("Older than a day");
+    expect(issueAgeSeparatorLabel(2)).toBe("Older than a week");
   });
 });

@@ -1,4 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
+import type { ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { accessApi } from "../api/access";
@@ -301,6 +302,50 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
     }
   });
   return sorted;
+}
+
+const AGE_BUCKET_DAY_MS = 24 * 60 * 60 * 1000;
+const AGE_BUCKET_WEEK_MS = 7 * AGE_BUCKET_DAY_MS;
+
+// Recency buckets for the date separators shown in date-sorted lists:
+//   0 = within the last day, 1 = within the last week, 2 = older than a week.
+// A separator is drawn between rows whenever the bucket increases, so the
+// "1 day" and "1 week" boundaries appear as the list ages downward.
+export function issueAgeBucket(date: Date | string, now: number = Date.now()): 0 | 1 | 2 {
+  const age = now - new Date(date).getTime();
+  if (age < AGE_BUCKET_DAY_MS) return 0;
+  if (age < AGE_BUCKET_WEEK_MS) return 1;
+  return 2;
+}
+
+export function issueAgeSeparatorLabel(bucket: 1 | 2): string {
+  return bucket === 1 ? "Older than a day" : "Older than a week";
+}
+
+// Only recency sorts (newest first) get date separators — for any other
+// sort/direction the boundaries would be meaningless.
+function issueDateSeparatorField(state: IssueViewState): "createdAt" | "updatedAt" | null {
+  if (state.sortDir !== "desc") return null;
+  if (state.sortField === "created") return "createdAt";
+  if (state.sortField === "updated") return "updatedAt";
+  return null;
+}
+
+function IssueDateSeparator({ label }: { label: string }) {
+  return (
+    <div
+      className="flex items-center gap-2 px-3 py-1.5 sm:pl-0 sm:pr-4"
+      role="separator"
+      aria-label={label}
+      data-issues-date-separator=""
+    >
+      <div className="h-px flex-1 bg-border" />
+      <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground">
+        {label}
+      </span>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+  );
 }
 
 function issueMatchesLocalSearch(issue: Issue, normalizedSearch: string): boolean {
@@ -2259,7 +2304,29 @@ export function IssuesList({
                   );
                 };
 
-                return roots.map((issue) => renderIssueRow(issue, 0)).filter((node) => node !== null);
+                const separatorField = issueDateSeparatorField(viewState);
+                const nodes: ReactNode[] = [];
+                let prevBucket: 0 | 1 | 2 | null = null;
+                for (const issue of roots) {
+                  const node = renderIssueRow(issue, 0);
+                  // Skip rows the render budget dropped so separators never
+                  // dangle above an unrendered (or absent) row.
+                  if (node === null) continue;
+                  if (separatorField) {
+                    const bucket = issueAgeBucket(issue[separatorField]);
+                    if (prevBucket !== null && bucket > prevBucket) {
+                      nodes.push(
+                        <IssueDateSeparator
+                          key={`age-sep-${issue.id}`}
+                          label={issueAgeSeparatorLabel(bucket as 1 | 2)}
+                        />,
+                      );
+                    }
+                    prevBucket = bucket;
+                  }
+                  nodes.push(node);
+                }
+                return nodes;
               })()}
             </CollapsibleContent>
           </Collapsible>
