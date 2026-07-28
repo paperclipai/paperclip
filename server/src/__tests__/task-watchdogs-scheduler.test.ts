@@ -665,6 +665,34 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(revalidated.classification?.state).toBe("stopped");
   });
 
+  it("falls back to strict subtree equality for a non-leaf target so non-leaf freshness is not bypassed", async () => {
+    // A non-leaf issue's material state is not captured by the stop snapshot
+    // (only leaves are hashed), so the per-leaf freshness check cannot judge it.
+    // The watched root here is a non-leaf; once any leaf write has moved the
+    // subtree fingerprint, a mutation targeting the non-leaf root must fall back
+    // to strict whole-subtree equality and be rejected — not silently treated as
+    // unchanged.
+    const { companyId, service, watchdog, wakeFingerprint, leafAId } = await seedStoppedSubtreeWithTwoLeaves();
+
+    // Any leaf write moves the whole-subtree fingerprint.
+    await db
+      .update(issues)
+      .set({ status: "todo", updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(issues.id, leafAId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: watchdog.id,
+      companyId,
+      watchedIssueId: watchdog.issueId,
+      stopFingerprint: wakeFingerprint,
+    }, watchdog.issueId); // target the non-leaf watched root
+
+    expect(revalidated.allowed).toBe(false);
+    expect(revalidated.reason).toContain("stop fingerprint changed");
+    expect(revalidated.classification?.state).toBe("stopped");
+  });
+
   it("surfaces pending interaction kinds and approval ids in the wake and watchdog comment", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-WAITS", status: "in_review" });
