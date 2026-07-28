@@ -17,6 +17,7 @@ export interface HeartbeatRunRuntimeStatus {
   currentToolName: string | null;
   lastAssistantSnippet: string | null;
   lastEventAt: Date | null;
+  lastStreamEventAt: Date | null;
 }
 
 const runtimeStatusesByRunId = new Map<string, HeartbeatRunRuntimeStatus>();
@@ -26,6 +27,7 @@ function cloneStatus(status: HeartbeatRunRuntimeStatus): HeartbeatRunRuntimeStat
     ...status,
     updatedAt: new Date(status.updatedAt),
     lastEventAt: status.lastEventAt ? new Date(status.lastEventAt) : null,
+    lastStreamEventAt: status.lastStreamEventAt ? new Date(status.lastStreamEventAt) : null,
   };
 }
 
@@ -55,13 +57,14 @@ function isExpired(status: HeartbeatRunRuntimeStatus, now: Date, ttlMs: number) 
 export function setHeartbeatRunRuntimeStatus(
   input: Omit<
     HeartbeatRunRuntimeStatus,
-    "message" | "updatedAt" | "currentToolName" | "lastAssistantSnippet" | "lastEventAt"
+    "message" | "updatedAt" | "currentToolName" | "lastAssistantSnippet" | "lastEventAt" | "lastStreamEventAt"
   > & {
     message: string;
     updatedAt?: Date;
     currentToolName?: string | null;
     lastAssistantSnippet?: string | null;
     lastEventAt?: Date | null;
+    lastStreamEventAt?: Date | null;
   },
 ): HeartbeatRunRuntimeStatus | null {
   const message = sanitizeHeartbeatRunRuntimeStatusMessage(input.message);
@@ -85,6 +88,7 @@ export function setHeartbeatRunRuntimeStatus(
       ? sanitizeHeartbeatRunRuntimeAssistantSnippet(input.lastAssistantSnippet)
       : null,
     lastEventAt: input.lastEventAt ? new Date(input.lastEventAt) : null,
+    lastStreamEventAt: input.lastStreamEventAt ? new Date(input.lastStreamEventAt) : null,
   };
   runtimeStatusesByRunId.set(status.runId, status);
   return cloneStatus(status);
@@ -120,6 +124,9 @@ export function touchHeartbeatRunRuntimeStatus(input: {
     if (!existing.lastEventAt || at.getTime() > existing.lastEventAt.getTime()) {
       existing.lastEventAt = new Date(at);
     }
+    if (!existing.lastStreamEventAt || at.getTime() > existing.lastStreamEventAt.getTime()) {
+      existing.lastStreamEventAt = new Date(at);
+    }
     return cloneStatus(existing);
   }
   return setHeartbeatRunRuntimeStatus({
@@ -131,6 +138,7 @@ export function touchHeartbeatRunRuntimeStatus(input: {
     message: input.fallbackMessage ?? "Receiving agent output",
     updatedAt: at,
     lastEventAt: at,
+    lastStreamEventAt: at,
   });
 }
 

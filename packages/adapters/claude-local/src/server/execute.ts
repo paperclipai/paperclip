@@ -14,6 +14,7 @@ import {
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  preparePaperclipControlPlaneEnvForAdapterRun,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
@@ -726,6 +727,52 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         loggedEnv.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
       }
     }
+  }
+  const controlPlanePreflight = await preparePaperclipControlPlaneEnvForAdapterRun({
+    adapterLabel: "Claude issue",
+    runId,
+    target: runtimeExecutionTarget,
+    cwd,
+    env,
+    timeoutSec,
+    graceSec,
+    localProcessSandbox,
+    onLog,
+  });
+  if (!controlPlanePreflight.ok) {
+    const attemptSummary =
+      controlPlanePreflight.attempts.length > 0
+        ? controlPlanePreflight.attempts
+            .slice(0, 4)
+            .map((attempt) => {
+              if (typeof attempt.status === "number") {
+                const details = [attempt.contentType ?? null, attempt.location ?? null].filter(Boolean).join(", ");
+                return details.length > 0
+                  ? `${attempt.url} -> HTTP ${attempt.status} (${details})`
+                  : `${attempt.url} -> HTTP ${attempt.status}`;
+              }
+              return `${attempt.url} -> ${attempt.error ?? "unavailable"}`;
+            })
+            .join("; ")
+        : "no Paperclip API candidates were exported to the Claude issue run";
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage:
+        "Paperclip control-plane preflight failed for this Claude issue run. " +
+        `No reachable API URL worked from the execution environment. Tried: ${attemptSummary}`,
+      errorCode: "paperclip_control_plane_unreachable",
+      errorMeta: { attempts: controlPlanePreflight.attempts },
+      sessionId: null,
+      sessionParams: null,
+      sessionDisplayId: null,
+      provider: "anthropic",
+      model,
+      billingType,
+      costUsd: null,
+      resultJson: { paperclipControlPlanePreflight: controlPlanePreflight },
+    };
   }
   let effectiveEffort = configuredEffort;
   if (executionTargetIsSandbox && effectiveEffort) {

@@ -14,6 +14,7 @@ import {
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  preparePaperclipControlPlaneEnvForAdapterRun,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
@@ -160,190 +161,6 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
 }
 
-const PAPERCLIP_CONTROL_PLANE_PREFLIGHT_TIMEOUT_MS = 5_000;
-const PAPERCLIP_CONTROL_PLANE_PREFLIGHT_ENV = "PAPERCLIP_CONTROL_PLANE_CANDIDATES_JSON";
-
-type PaperclipControlPlaneProbeAttempt = {
-  url: string;
-  status: number | null;
-  location?: string | null;
-  error?: string | null;
-};
-
-type PaperclipControlPlaneProbeResult =
-  | { ok: true; url: string; status: number; attempts: PaperclipControlPlaneProbeAttempt[] }
-  | { ok: false; attempts: PaperclipControlPlaneProbeAttempt[] };
-
-function normalizePaperclipApiOrigin(raw: string | null | undefined): string | null {
-  const trimmed = typeof raw === "string" ? raw.trim() : "";
-  if (!trimmed) return null;
-  try {
-    return new URL(trimmed).origin;
-  } catch {
-    return null;
-  }
-}
-
-function listPaperclipControlPlaneCandidates(env: Record<string, string>): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  const push = (raw: string | null | undefined) => {
-    const origin = normalizePaperclipApiOrigin(raw);
-    if (!origin || seen.has(origin)) return;
-    seen.add(origin);
-    out.push(origin);
-  };
-
-  push(env.PAPERCLIP_API_URL);
-  push(process.env.PAPERCLIP_RUNTIME_API_URL);
-  const rawCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON?.trim();
-  if (rawCandidates) {
-    try {
-      const parsed = JSON.parse(rawCandidates);
-      if (Array.isArray(parsed)) {
-        for (const candidate of parsed) {
-          if (typeof candidate === "string") push(candidate);
-        }
-      }
-    } catch {
-      // Ignore malformed candidate lists and fall back to the primary env URL.
-    }
-  }
-
-  return out;
-}
-
-function evaluatePaperclipControlPlanePreflight(env: Record<string, string>): {
-  enabled: boolean;
-  reasons: string[];
-  candidateCount: number;
-} {
-  const reasons: string[] = [];
-  if (env.PAPERCLIP_API_BRIDGE_MODE === "queue_v1") reasons.push("bridge_mode=queue_v1");
-  if (!(typeof env.PAPERCLIP_TASK_ID === "string" && env.PAPERCLIP_TASK_ID.trim().length > 0)) {
-    reasons.push("missing_task_id");
-  }
-  if (env.PAPERCLIP_WORKSPACE_SOURCE !== "agent_home") {
-    reasons.push(`workspace_source=${env.PAPERCLIP_WORKSPACE_SOURCE || "missing"}`);
-  }
-  const candidateCount = listPaperclipControlPlaneCandidates(env).length;
-  if (candidateCount === 0) reasons.push("no_api_candidates");
-  return { enabled: reasons.length === 0, reasons, candidateCount };
-}
-
-function formatPaperclipControlPlaneAttemptSummary(attempt: PaperclipControlPlaneProbeAttempt): string {
-  if (typeof attempt.status === "number") {
-    if (attempt.location) return `${attempt.url} -> HTTP ${attempt.status} (${attempt.location})`;
-    return `${attempt.url} -> HTTP ${attempt.status}`;
-  }
-  if (attempt.error) return `${attempt.url} -> ${attempt.error}`;
-  return `${attempt.url} -> unavailable`;
-}
-
-async function preflightPaperclipControlPlaneReachability(input: {
-  runId: string;
-  target: ReturnType<typeof readAdapterExecutionTarget>;
-  cwd: string;
-  env: Record<string, string>;
-  timeoutSec: number;
-  graceSec: number;
-  localProcessSandbox: LocalProcessSandboxOptions | null;
-}): Promise<PaperclipControlPlaneProbeResult> {
-  const candidates = listPaperclipControlPlaneCandidates(input.env);
-  if (candidates.length === 0) {
-    return { ok: false, attempts: [] };
-  }
-
-  const probe = await runAdapterExecutionTargetProcess(
-    `${input.runId}:paperclip-preflight`,
-    input.target,
-    process.execPath,
-    [
-      "-e",
-      `
-const candidates = JSON.parse(process.env.${PAPERCLIP_CONTROL_PLANE_PREFLIGHT_ENV} || "[]");
-const auth = process.env.PAPERCLIP_API_KEY || "";
-const attempts = [];
-const timeoutMs = ${PAPERCLIP_CONTROL_PLANE_PREFLIGHT_TIMEOUT_MS};
-const normalize = (value) => String(value || "").replace(/\\/+$/, "");
-const run = async () => {
-  for (const rawCandidate of candidates) {
-    const candidate = normalize(rawCandidate);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(candidate + "/api/agents/me", {
-        method: "GET",
-        headers: auth ? { authorization: "Bearer " + auth, accept: "application/json" } : { accept: "application/json" },
-        redirect: "manual",
-        signal: controller.signal,
-      });
-      const location = response.headers.get("location");
-      attempts.push({ url: candidate, status: response.status, ...(location ? { location } : {}) });
-      if (response.ok) {
-        console.log(JSON.stringify({ ok: true, url: candidate, status: response.status, attempts }));
-        return;
-      }
-    } catch (error) {
-      attempts.push({
-        url: candidate,
-        status: null,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  console.log(JSON.stringify({ ok: false, attempts }));
-  process.exitCode = 19;
-};
-run().catch((error) => {
-  attempts.push({ url: "<probe>", status: null, error: error instanceof Error ? error.message : String(error) });
-  console.log(JSON.stringify({ ok: false, attempts }));
-  process.exitCode = 19;
-});
-      `.trim(),
-    ],
-    {
-      cwd: input.cwd,
-      env: {
-        ...input.env,
-        [PAPERCLIP_CONTROL_PLANE_PREFLIGHT_ENV]: JSON.stringify(candidates),
-      },
-      timeoutSec: Math.max(5, Math.min(input.timeoutSec, 15)),
-      graceSec: Math.max(1, Math.min(input.graceSec, 5)),
-      onLog: async () => {},
-      localProcessSandbox: input.localProcessSandbox,
-    },
-  );
-
-  const lines = `${probe.stdout}\n${probe.stderr}`
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const payload = lines.length > 0 ? lines[lines.length - 1] : "";
-  if (payload) {
-    try {
-      const parsed = JSON.parse(payload) as PaperclipControlPlaneProbeResult;
-      if (parsed && typeof parsed === "object" && Array.isArray(parsed.attempts) && typeof parsed.ok === "boolean") {
-        return parsed;
-      }
-    } catch {
-      // Fall through to a synthesized failure below.
-    }
-  }
-
-  return {
-    ok: false,
-    attempts: [
-      {
-        url: candidates[0] ?? "<unknown>",
-        status: typeof probe.exitCode === "number" ? probe.exitCode : null,
-        error: firstNonEmptyLine(probe.stderr) || firstNonEmptyLine(probe.stdout) || "preflight probe failed",
-      },
-    ],
-  };
-}
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
   const [hasWorkspace, hasPackageJson, hasServerDir, hasAdapterUtilsDir] = await Promise.all([
@@ -1005,37 +822,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Confining Codex with ${scopes} scope.\n`,
       );
     }
-    const controlPlanePreflightDecision = !executionTargetIsRemote
-      ? evaluatePaperclipControlPlanePreflight(env)
-      : null;
-    if (controlPlanePreflightDecision?.enabled) {
-      await onLog(
-        "stdout",
-        `[paperclip] Control-plane preflight engaged for this Codex issue run. ` +
-          `workspace_source=${env.PAPERCLIP_WORKSPACE_SOURCE}; candidates=${controlPlanePreflightDecision.candidateCount}.\n`,
-      );
-    } else if (controlPlanePreflightDecision) {
-      await onLog(
-        "stdout",
-        `[paperclip] Control-plane preflight skipped for this Codex issue run: ${controlPlanePreflightDecision.reasons.join(", ")}.\n`,
-      );
-    }
-    const controlPlanePreflight =
-      controlPlanePreflightDecision?.enabled
-        ? await preflightPaperclipControlPlaneReachability({
-            runId,
-            target: runtimeExecutionTarget,
-            cwd,
-            env,
-            timeoutSec,
-            graceSec,
-            localProcessSandbox,
-          })
-        : null;
-    if (controlPlanePreflight && !controlPlanePreflight.ok) {
+    const controlPlanePreflight = await preparePaperclipControlPlaneEnvForAdapterRun({
+      adapterLabel: "Codex issue",
+      runId,
+      target: runtimeExecutionTarget,
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      localProcessSandbox,
+      onLog,
+    });
+    if (!controlPlanePreflight.ok) {
       const attemptSummary =
         controlPlanePreflight.attempts.length > 0
-          ? controlPlanePreflight.attempts.slice(0, 4).map(formatPaperclipControlPlaneAttemptSummary).join("; ")
+          ? controlPlanePreflight.attempts
+              .slice(0, 4)
+              .map((attempt) => {
+                if (typeof attempt.status === "number") {
+                  const details = [attempt.contentType ?? null, attempt.location ?? null].filter(Boolean).join(", ");
+                  return details.length > 0
+                    ? `${attempt.url} -> HTTP ${attempt.status} (${details})`
+                    : `${attempt.url} -> HTTP ${attempt.status}`;
+                }
+                return `${attempt.url} -> ${attempt.error ?? "unavailable"}`;
+              })
+              .join("; ")
           : "no Paperclip API candidates were exported to the Codex issue run";
       await onLog(
         "stdout",
@@ -1061,20 +873,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: { paperclipControlPlanePreflight: controlPlanePreflight },
       };
     }
-    if (controlPlanePreflight?.ok) {
-      if (controlPlanePreflight.url !== env.PAPERCLIP_API_URL) {
-        env.PAPERCLIP_API_URL = controlPlanePreflight.url;
-        effectiveEnv.PAPERCLIP_API_URL = controlPlanePreflight.url;
-        await onLog(
-          "stdout",
-          `[paperclip] Selected reachable Paperclip API URL ${controlPlanePreflight.url} for this Codex issue run.\n`,
-        );
-      } else {
-        await onLog(
-          "stdout",
-          `[paperclip] Control-plane preflight confirmed ${controlPlanePreflight.url} is reachable for this Codex issue run.\n`,
-        );
-      }
+    if (controlPlanePreflight.url) {
+      effectiveEnv.PAPERCLIP_API_URL = controlPlanePreflight.url;
       if (managedMcpGateways.length > 0) {
         const refreshedManagedMcp = await writeManagedCodexMcpConfig({
           codexHome: effectiveCodexHome,

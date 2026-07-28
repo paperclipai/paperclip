@@ -19,6 +19,9 @@ import { heartbeatService } from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
+const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -66,6 +69,9 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   let previousAgentJwtSecret: string | undefined;
 
   beforeAll(async () => {
+    delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
+    delete process.env.PAPERCLIP_API_URL;
     previousAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "heartbeat-local-environment-test-secret";
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-local-environment-");
@@ -91,6 +97,21 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON === undefined) {
+      delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    } else {
+      process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    }
+    if (ORIGINAL_PAPERCLIP_RUNTIME_API_URL === undefined) {
+      delete process.env.PAPERCLIP_RUNTIME_API_URL;
+    } else {
+      process.env.PAPERCLIP_RUNTIME_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_API_URL;
+    }
+    if (ORIGINAL_PAPERCLIP_API_URL === undefined) {
+      delete process.env.PAPERCLIP_API_URL;
+    } else {
+      process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
+    }
     if (previousAgentJwtSecret === undefined) {
       delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     } else {

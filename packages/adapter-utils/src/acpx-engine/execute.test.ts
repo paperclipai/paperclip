@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
 import type { AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
+import type { RuntimeStatusUpdate } from "../runtime-progress.js";
 import { DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC } from "@paperclipai/adapter-utils/execution-target";
 import {
   createAcpxEngineExecutor,
@@ -19,6 +20,9 @@ import {
 import { runChildProcess } from "../server-utils.js";
 
 const execFileAsync = promisify(execFile);
+const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
+const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 
 const tempRoots: string[] = [];
 
@@ -29,6 +33,12 @@ async function makeTempRoot() {
 }
 
 afterEach(async () => {
+  if (ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  if (ORIGINAL_PAPERCLIP_RUNTIME_API_URL === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+  else process.env.PAPERCLIP_RUNTIME_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_API_URL;
+  if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
+  else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -121,6 +131,9 @@ async function runExecutor(
     createRuntime?: (options: Record<string, unknown>) => unknown;
   } = {},
 ) {
+  delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  delete process.env.PAPERCLIP_RUNTIME_API_URL;
+  delete process.env.PAPERCLIP_API_URL;
   const runtimeOptions: Record<string, unknown>[] = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
@@ -186,7 +199,11 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).toContain("Paperclip API access note:");
     expect(prompt).toContain('PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"');
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/agents/me");
+    expect(prompt).toContain("text/html response body means the write was discarded");
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID");
+    expect(prompt).toContain("-w '%{http_code}'");
+    expect(prompt).toContain("$PAPERCLIP_TMPDIR/paperclip-write.json");
+    expect(prompt).toContain("jq -e '.comment.id'");
     expect(prompt).toContain("X-Paperclip-Run-Id");
     expect(prompt).not.toContain("$PAPERCLIP_API_URL/api/");
     expect(prompt).not.toContain("/api/issues/{id}");
@@ -1027,8 +1044,14 @@ describe("shared ACPX engine runtime behavior", () => {
     });
 
     const previousApiKey = process.env.PAPERCLIP_API_KEY;
+    const previousRuntimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    const previousRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
     try {
       delete process.env.PAPERCLIP_API_KEY;
+      delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      delete process.env.PAPERCLIP_API_URL;
       const result = await execute({
         runId: "run-1",
         agent: {
@@ -1048,6 +1071,12 @@ describe("shared ACPX engine runtime behavior", () => {
     } finally {
       if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
       else process.env.PAPERCLIP_API_KEY = previousApiKey;
+      if (previousRuntimeApiCandidates === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousRuntimeApiCandidates;
+      if (previousRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = previousRuntimeApiUrl;
+      if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
     }
   });
 
@@ -1779,6 +1808,189 @@ describe("summarizeAcpxTurnUsage", () => {
     });
     expect(summary.usage).toBeNull();
     expect(summary.costUsd).toBeNull();
+  });
+});
+
+describe("shared ACP engine stream-idle retries", () => {
+  it("keeps a healthy turn alive when stream events arrive before the idle threshold", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const progressUpdates: Array<Record<string, unknown>> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "text_delta", text: "tick-1", stream: "output", tag: "agent_message_chunk" };
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            yield { type: "text_delta", text: "tick-2", stream: "output", tag: "agent_message_chunk" };
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-stream-idle-healthy",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        streamIdleTimeoutMs: 40,
+        streamIdleMaxRetries: 1,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onRuntimeProgress: async (update: RuntimeStatusUpdate) => {
+        progressUpdates.push(update as unknown as Record<string, unknown>);
+      },
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeNull();
+    expect(progressUpdates.some((update) => typeof update.lastStreamEventAt === "object")).toBe(true);
+  });
+
+  it("retries a turn once after the stream stays silent past the idle threshold", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    let startTurnCalls = 0;
+    let releaseFirstTurn: (() => void) | null = null;
+
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: `backend-session-${startTurnCalls + 1}`,
+          agentSessionId: `agent-session-${startTurnCalls + 1}`,
+          runtimeSessionName: `runtime-session-${startTurnCalls + 1}`,
+        }),
+        startTurn: () => {
+          startTurnCalls += 1;
+          if (startTurnCalls === 1) {
+            const cancelled = new Promise<void>((resolve) => {
+              releaseFirstTurn = resolve;
+            });
+            return {
+              events: (async function* () {
+                yield { type: "text_delta", text: "warmup", stream: "output", tag: "agent_message_chunk" };
+                await cancelled;
+              })(),
+              result: cancelled.then(() => ({ status: "cancelled", stopReason: "cancelled" })),
+              cancel: async () => {
+                releaseFirstTurn?.();
+              },
+            };
+          }
+          return {
+            events: (async function* () {
+              yield { type: "text_delta", text: "recovered", stream: "output", tag: "agent_message_chunk" };
+              yield { type: "done", stopReason: "end_turn" };
+            })(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          };
+        },
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-stream-idle-retry",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        streamIdleTimeoutMs: 40,
+        streamIdleMaxRetries: 1,
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson).toMatchObject({ streamIdleRetryCount: 1 });
+    expect(startTurnCalls).toBe(2);
+    expect(logs.some((entry) => entry.text.includes("retrying ACPX turn with a fresh session"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("\"type\":\"acpx.session_retry\""))).toBe(true);
+  });
+
+  it("fails after the retry path also stalls past the idle threshold", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    let releaseTurn: (() => void) | null = null;
+    let startTurnCalls = 0;
+
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: `backend-session-${startTurnCalls + 1}`,
+          agentSessionId: `agent-session-${startTurnCalls + 1}`,
+          runtimeSessionName: `runtime-session-${startTurnCalls + 1}`,
+        }),
+        startTurn: () => {
+          startTurnCalls += 1;
+          const cancelled = new Promise<void>((resolve) => {
+            releaseTurn = resolve;
+          });
+          return {
+            events: (async function* () {
+              yield { type: "text_delta", text: `warmup-${startTurnCalls}`, stream: "output", tag: "agent_message_chunk" };
+              await cancelled;
+            })(),
+            result: cancelled.then(() => ({ status: "cancelled", stopReason: "cancelled" })),
+            cancel: async () => {
+              releaseTurn?.();
+            },
+          };
+        },
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-stream-idle-fail",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        streamIdleTimeoutMs: 40,
+        streamIdleMaxRetries: 1,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_stream_idle_timeout");
+    expect(result.clearSession).toBe(true);
+    expect(result.resultJson).toMatchObject({
+      phase: "turn",
+      streamIdleTimeout: {
+        timeoutMs: 40,
+        retryCount: 1,
+      },
+    });
+    expect(startTurnCalls).toBe(2);
   });
 });
 

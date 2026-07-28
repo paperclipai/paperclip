@@ -27,7 +27,8 @@ export type RuntimeStatusPhase =
   | "adapter_startup"
   | "restore"
   | "export"
-  | "finalize";
+  | "finalize"
+  | "run_activity";
 
 export interface RuntimeStatusUpdate {
   phase: RuntimeStatusPhase;
@@ -35,6 +36,7 @@ export interface RuntimeStatusUpdate {
   currentToolName?: string | null;
   lastAssistantSnippet?: string | null;
   lastEventAt?: Date | string | null;
+  lastStreamEventAt?: Date | string | null;
 }
 
 export type RuntimeStatusSink = (update: RuntimeStatusUpdate) => void | Promise<void>;

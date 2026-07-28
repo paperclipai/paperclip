@@ -1,9 +1,14 @@
+import fs from "node:fs/promises";
+import { createServer } from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import * as serverUtils from "./server-utils.js";
 import {
   adapterExecutionTargetUsesManagedHome,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  preparePaperclipControlPlaneEnvForAdapterRun,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
@@ -279,6 +284,162 @@ describe("runAdapterExecutionTargetProcess", () => {
         },
       }),
     );
+  });
+});
+
+describe("preparePaperclipControlPlaneEnvForAdapterRun", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it(
+    "keeps the probe alive long enough to reach a later candidate when earlier candidates consume the old 5s budget",
+    async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-preflight-budget-"));
+    const delayedServers = Array.from({ length: 2 }, () =>
+      createServer((req, res) => {
+        if (req.url === "/api/agents/me") {
+          setTimeout(() => {
+            if (!res.writableEnded) {
+              res.writeHead(504, { "content-type": "application/json" });
+              res.end(JSON.stringify({ error: "late_timeout" }));
+            }
+          }, 10_000);
+          return;
+        }
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "not_found" }));
+      }),
+    );
+    const reachableServer = createServer((req, res) => {
+      if (req.url === "/api/agents/me") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "agent-1" }));
+        return;
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not_found" }));
+    });
+
+    await Promise.all(
+      delayedServers.map(
+        (server) => new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve())),
+      ),
+    );
+    await new Promise<void>((resolve) => reachableServer.listen(0, "127.0.0.1", () => resolve()));
+
+    const delayedCandidates = delayedServers.map((server) => {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected delayed probe server to expose a TCP port");
+      return `http://127.0.0.1:${address.port}`;
+    });
+    const reachableAddress = reachableServer.address();
+    if (!reachableAddress || typeof reachableAddress === "string") {
+      throw new Error("Expected reachable probe server to expose a TCP port");
+    }
+    const reachableUrl = `http://127.0.0.1:${reachableAddress.port}`;
+
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", delayedCandidates[0]);
+    vi.stubEnv(
+      "PAPERCLIP_RUNTIME_API_CANDIDATES_JSON",
+      JSON.stringify([...delayedCandidates, reachableUrl]),
+    );
+
+    const runChildProcessSpy = vi.spyOn(serverUtils, "runChildProcess");
+    const env: Record<string, string> = {
+      PAPERCLIP_API_KEY: "run-jwt-token",
+      PAPERCLIP_API_URL: delayedCandidates[0]!,
+    };
+
+    try {
+      const result = await preparePaperclipControlPlaneEnvForAdapterRun({
+        adapterLabel: "codex",
+        runId: "run-preflight-time-budget",
+        target: null,
+        cwd,
+        env,
+        timeoutSec: 0,
+        graceSec: 2,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        skipped: false,
+        changed: true,
+        url: reachableUrl,
+      });
+      expect(env.PAPERCLIP_API_URL).toBe(reachableUrl);
+      expect(result.attempts).toHaveLength(3);
+      expect(result.attempts.at(-1)).toMatchObject({
+        url: reachableUrl,
+        status: 200,
+      });
+      expect(runChildProcessSpy).toHaveBeenCalledWith(
+        expect.any(String),
+        process.execPath,
+        expect.any(Array),
+        expect.objectContaining({
+          timeoutSec: 16,
+        }),
+      );
+    } finally {
+      await Promise.all(
+        delayedServers.map(
+          (server) => new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
+        ),
+      );
+      await new Promise<void>((resolve, reject) => reachableServer.close((error) => (error ? reject(error) : resolve())));
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+    },
+    20_000,
+  );
+
+  it("prefers a private runtime candidate when the probe process dies before producing a verdict", async () => {
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", "https://gated.example.test");
+    vi.stubEnv(
+      "PAPERCLIP_RUNTIME_API_CANDIDATES_JSON",
+      JSON.stringify(["https://gated.example.test", "http://127.0.0.1:3100"]),
+    );
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: null,
+      startedAt: new Date().toISOString(),
+    });
+
+    const env: Record<string, string> = {
+      PAPERCLIP_API_KEY: "run-jwt-token",
+      PAPERCLIP_API_URL: "https://gated.example.test",
+    };
+    const logs: string[] = [];
+
+    const result = await preparePaperclipControlPlaneEnvForAdapterRun({
+      adapterLabel: "claude ACPX",
+      runId: "run-preflight-fail-open",
+      target: null,
+      cwd: process.cwd(),
+      env,
+      timeoutSec: 0,
+      graceSec: 2,
+      onLog: async (_stream, chunk) => {
+        logs.push(chunk);
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      skipped: true,
+      changed: true,
+      url: "http://127.0.0.1:3100",
+      reasons: ["probe_infra_failure"],
+    });
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+    expect(logs.join("")).toContain("fail-open -> http://127.0.0.1:3100 instead of https://gated.example.test");
   });
 });
 

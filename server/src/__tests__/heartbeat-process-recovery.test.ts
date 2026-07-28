@@ -104,6 +104,10 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
 import {
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "../services/issue-execution-policy.ts";
+import {
   readHotRestartIntent,
   resolveHotRestartReportPath,
   writeHotRestartIntent,
@@ -131,6 +135,40 @@ function spawnAliveProcess() {
   return spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     stdio: "ignore",
   });
+}
+
+function buildTriggeredMonitorExecutionState(input?: {
+  kind?: "external_service" | null;
+  lastTriggeredAt?: string;
+}) {
+  return {
+    status: "idle",
+    currentStageId: null,
+    currentStageIndex: null,
+    currentStageType: null,
+    currentParticipant: null,
+    returnAssignee: null,
+    reviewRequest: null,
+    completedStageIds: [],
+    lastDecisionId: null,
+    lastDecisionOutcome: null,
+    monitor: {
+      status: "triggered",
+      nextCheckAt: null,
+      lastTriggeredAt: input?.lastTriggeredAt ?? "2026-03-19T00:00:00.000Z",
+      attemptCount: 1,
+      notes: "Check deploy",
+      scheduledBy: "assignee",
+      kind: input?.kind ?? null,
+      serviceName: input?.kind === "external_service" ? "launchd" : null,
+      externalRef: null,
+      timeoutAt: null,
+      maxAttempts: null,
+      recoveryPolicy: null,
+      clearedAt: null,
+      clearReason: null,
+    },
+  };
 }
 
 function isPidAlive(pid: number | null | undefined) {
@@ -1412,6 +1450,148 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
     expect(retries).toHaveLength(0);
+  });
+
+  it("re-arms an unbounded in-progress monitor after a lost monitor dispatch", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+        nextCheckAt: "2026-03-19T00:00:00.000Z",
+      },
+    });
+    await db
+      .update(issues)
+      .set({
+        executionPolicy: null,
+        executionState: buildTriggeredMonitorExecutionState(),
+        monitorNextCheckAt: null,
+        monitorLastTriggeredAt: new Date("2026-03-19T00:00:00.000Z"),
+        monitorAttemptCount: 1,
+        monitorNotes: "Check deploy",
+        monitorScheduledBy: "assignee",
+      })
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.monitorNextCheckAt ? row : null;
+      }),
+    );
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.monitorNextCheckAt?.getTime()).toBeGreaterThan(new Date("2026-03-19T00:00:00.000Z").getTime());
+    expect(issue?.monitorAttemptCount).toBe(0);
+    expect(normalizeIssueExecutionPolicy(issue?.executionPolicy ?? null)?.monitor?.nextCheckAt).toBe(
+      issue?.monitorNextCheckAt?.toISOString(),
+    );
+    expect(parseIssueExecutionState(issue?.executionState ?? null)?.monitor).toMatchObject({
+      status: "scheduled",
+      attemptCount: 0,
+      nextCheckAt: issue?.monitorNextCheckAt?.toISOString(),
+    });
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).toMatchObject({
+      agentId,
+      processLossRetryCount: 1,
+    });
+  });
+
+  it("re-arms an unbounded in-review monitor after a lost monitor dispatch", async () => {
+    const { companyId, runId, issueId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+        nextCheckAt: "2026-03-19T00:00:00.000Z",
+      },
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        executionPolicy: null,
+        executionState: buildTriggeredMonitorExecutionState(),
+        monitorNextCheckAt: null,
+        monitorLastTriggeredAt: new Date("2026-03-19T00:00:00.000Z"),
+        monitorAttemptCount: 1,
+        monitorNotes: "Check deploy",
+        monitorScheduledBy: "assignee",
+      })
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.monitorNextCheckAt ? row : null;
+      }),
+    );
+    expect(issue?.status).toBe("in_review");
+    expect(issue?.monitorAttemptCount).toBe(0);
+    expect(parseIssueExecutionState(issue?.executionState ?? null)?.monitor).toMatchObject({
+      status: "scheduled",
+      attemptCount: 0,
+    });
+  });
+
+  it("does not re-arm explicit external-service monitors after a lost dispatch", async () => {
+    const { companyId, runId, issueId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+        nextCheckAt: "2026-03-19T00:00:00.000Z",
+      },
+    });
+    await db
+      .update(issues)
+      .set({
+        executionPolicy: null,
+        executionState: buildTriggeredMonitorExecutionState({ kind: "external_service" }),
+        monitorNextCheckAt: null,
+        monitorLastTriggeredAt: new Date("2026-03-19T00:00:00.000Z"),
+        monitorAttemptCount: 1,
+        monitorNotes: "Check deploy",
+        monitorScheduledBy: "assignee",
+      })
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.monitorNextCheckAt).toBeNull();
+    expect(issue?.monitorAttemptCount).toBe(1);
+    expect(normalizeIssueExecutionPolicy(issue?.executionPolicy ?? null)?.monitor ?? null).toBeNull();
+    expect(parseIssueExecutionState(issue?.executionState ?? null)?.monitor).toMatchObject({
+      status: "triggered",
+      kind: "external_service",
+      attemptCount: 1,
+    });
   });
 
   async function withTempPaperclipHome<T>(fn: (home: string) => Promise<T>): Promise<T> {

@@ -372,6 +372,7 @@ interface RunLiveStatusPatch {
   currentToolName?: string | null;
   lastAssistantSnippet?: string | null;
   lastEventAt?: string | null;
+  lastStreamEventAt?: string | null;
 }
 
 function hasPatchKey<K extends keyof RunLiveStatusPatch>(
@@ -402,6 +403,9 @@ function applyRunLiveStatusPatch<T extends ActiveRunForIssue | LiveRunForIssue>(
       : {}),
     ...(hasPatchKey(patch, "lastEventAt")
       ? { lastEventAt: patch.lastEventAt }
+      : {}),
+    ...(hasPatchKey(patch, "lastStreamEventAt")
+      ? { lastStreamEventAt: patch.lastStreamEventAt }
       : {}),
   };
 }
@@ -440,11 +444,13 @@ function readRunLiveStatusPatchFromPayload(
     patch.currentToolName = readString(payload.currentToolName);
     patch.lastAssistantSnippet = readString(payload.lastAssistantSnippet);
     patch.lastEventAt = readString(payload.lastEventAt) ?? patch.updatedAt;
+    patch.lastStreamEventAt = readString(payload.lastStreamEventAt) ?? patch.lastEventAt;
     return patch;
   }
 
   if (eventType === "heartbeat.run.log") {
     patch.lastEventAt = readString(payload.ts) ?? eventCreatedAt;
+    patch.lastStreamEventAt = readString(payload.lastStreamEventAt) ?? patch.lastEventAt;
     return patch;
   }
 
@@ -457,6 +463,7 @@ function readRunLiveStatusPatchFromPayload(
     const lastAssistantSnippet = readString(payload.lastAssistantSnippet);
     if (lastAssistantSnippet) patch.lastAssistantSnippet = lastAssistantSnippet;
     patch.lastEventAt = readString(payload.lastEventAt) ?? eventCreatedAt;
+    patch.lastStreamEventAt = readString(payload.lastStreamEventAt) ?? patch.lastEventAt;
     return patch;
   }
 

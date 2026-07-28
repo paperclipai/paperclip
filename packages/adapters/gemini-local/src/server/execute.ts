@@ -119,10 +119,13 @@ function renderApiAccessNote(env: Record<string, string>): string {
   return [
     "Paperclip API access note:",
     "Use run_shell_command with curl to make Paperclip API requests.",
+    "Normalize the base URL before adding API paths:",
+    `  PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"`,
     "GET example:",
-    `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
+    `  run_shell_command({ command: "curl -sS -D - -o - -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_BASE/api/agents/me\\"" })`,
     "POST/PATCH example:",
-    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d '{...}' \\"$PAPERCLIP_API_URL/api/issues/{id}/checkout\\"" })`,
+    `  run_shell_command({ command: "HTTP_CODE=$(curl -sS -o \\"$PAPERCLIP_TMPDIR/paperclip-write.json\\" -w '%{http_code}' -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d '{...}' \\"$PAPERCLIP_API_BASE/api/issues/{id}/checkout\\"); [ \\"$HTTP_CODE\\" = \\"200\\" ] && jq -e '.id // .comment.id' \\"$PAPERCLIP_TMPDIR/paperclip-write.json\\" >/dev/null" })`,
+    "A text/html response body means the write was discarded, usually by a login page or gateway.",
     "",
     "",
   ].join("\n");

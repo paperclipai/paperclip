@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createServer } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,25 @@ import {
   execute,
   resetClaudeCliCapabilitiesCacheForTests,
 } from "@paperclipai/adapter-claude-local/server";
+
+const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
+const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
+
+beforeEach(() => {
+  delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  delete process.env.PAPERCLIP_RUNTIME_API_URL;
+  delete process.env.PAPERCLIP_API_URL;
+});
+
+afterEach(() => {
+  if (ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  if (ORIGINAL_PAPERCLIP_RUNTIME_API_URL === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+  else process.env.PAPERCLIP_RUNTIME_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_API_URL;
+  if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
+  else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
+});
 
 async function writeFailingClaudeCommand(
   commandPath: string,
@@ -820,6 +840,239 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("selects a reachable Paperclip API URL for Claude issue runs even when the first candidate is Cloudflare-gated", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-preflight-"));
+    const workspace = path.join(root, "workspace");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "claude");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeClaudeCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPaperclipRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const previousPaperclipRuntimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+
+    const gatedServer = createServer((_req, res) => {
+      res.writeHead(302, {
+        location: "https://quote-to-invoice.cloudflareaccess.com/cdn-cgi/access/login/paperclip",
+        "content-type": "text/html",
+      });
+      res.end("<html>login</html>");
+    });
+    const reachableServer = createServer((req, res) => {
+      if (req.url === "/api/agents/me") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "agent-1" }));
+        return;
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not_found" }));
+    });
+    await new Promise<void>((resolve) => gatedServer.listen(0, "127.0.0.1", () => resolve()));
+    await new Promise<void>((resolve) => reachableServer.listen(0, "127.0.0.1", () => resolve()));
+    const gatedAddress = gatedServer.address();
+    const reachableAddress = reachableServer.address();
+    if (!gatedAddress || typeof gatedAddress === "string" || !reachableAddress || typeof reachableAddress === "string") {
+      throw new Error("Expected preflight test servers to expose TCP ports");
+    }
+    const gatedApiUrl = `http://127.0.0.1:${gatedAddress.port}`;
+    const reachableApiUrl = `http://127.0.0.1:${reachableAddress.port}`;
+    process.env.PAPERCLIP_API_URL = gatedApiUrl;
+    process.env.PAPERCLIP_RUNTIME_API_URL = gatedApiUrl;
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([gatedApiUrl, reachableApiUrl]);
+
+    try {
+      const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+      const result = await execute({
+        runId: "run-paperclip-preflight-claude",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: "claude",
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          taskId: "issue-1",
+          paperclipWorkspace: {
+            source: "project_primary",
+            cwd: workspace,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorCode).toBeNull();
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipApiUrl).toBe(reachableApiUrl);
+      expect(capture.paperclipApiUrl).not.toBe(gatedApiUrl);
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("Control-plane preflight engaged"),
+        }),
+      );
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining(`Selected reachable Paperclip API URL ${reachableApiUrl}`),
+        }),
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) => gatedServer.close((error) => (error ? reject(error) : resolve())));
+      await new Promise<void>((resolve, reject) => reachableServer.close((error) => (error ? reject(error) : resolve())));
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
+      if (previousPaperclipRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
+      if (previousPaperclipRuntimeApiCandidates === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousPaperclipRuntimeApiCandidates;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))(
+    "fails Claude issue-run preflight inside the sandbox when only the blocked loopback origin is exported",
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-preflight-sandbox-"));
+      const workspace = path.join(root, "workspace");
+      const binDir = path.join(root, "bin");
+      const commandPath = path.join(binDir, "claude");
+      const capturePath = path.join(root, "capture.json");
+      await fs.mkdir(workspace, { recursive: true });
+      await fs.mkdir(binDir, { recursive: true });
+      await writeFakeClaudeCommand(commandPath);
+
+      const previousHome = process.env.HOME;
+      const previousPath = process.env.PATH;
+      const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
+      const previousPaperclipRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+      const previousPaperclipRuntimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      process.env.HOME = root;
+      process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+
+      const loopbackServer = createServer((req, res) => {
+        if (req.url === "/api/agents/me") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ id: "agent-1" }));
+          return;
+        }
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "not_found" }));
+      });
+      await new Promise<void>((resolve) => loopbackServer.listen(0, "127.0.0.1", () => resolve()));
+      const loopbackAddress = loopbackServer.address();
+      if (!loopbackAddress || typeof loopbackAddress === "string") {
+        throw new Error("Expected sandbox preflight test server to expose a TCP port");
+      }
+      const blockedLoopbackApiUrl = `http://127.0.0.1:${loopbackAddress.port}`;
+      process.env.PAPERCLIP_API_URL = blockedLoopbackApiUrl;
+      process.env.PAPERCLIP_RUNTIME_API_URL = blockedLoopbackApiUrl;
+      process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([blockedLoopbackApiUrl]);
+
+      try {
+        const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+        const result = await execute({
+          runId: "run-paperclip-preflight-claude-sandboxed",
+          agent: {
+            id: "agent-1",
+            companyId: "company-1",
+            name: "Claude Coder",
+            adapterType: "claude_local",
+            adapterConfig: { engine: "cli" },
+          },
+          runtime: {
+            sessionId: null,
+            sessionParams: null,
+            sessionDisplayId: null,
+            taskKey: null,
+          },
+          config: {
+            engine: "cli",
+            command: "claude",
+            cwd: workspace,
+            env: {
+              PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            },
+            networkScope: "deny",
+            filesystemSandboxCommand: process.env.PAPERCLIP_TEST_BWRAP,
+            promptTemplate: "Follow the paperclip heartbeat.",
+          },
+          context: {
+            taskId: "issue-1",
+            paperclipWorkspace: {
+              source: "project_primary",
+              cwd: workspace,
+            },
+          },
+          authToken: "run-jwt-token",
+          onLog: async (stream, chunk) => {
+            logs.push({ stream, chunk });
+          },
+        });
+
+        expect(result.exitCode).toBe(1);
+        expect(result.errorCode).toBe("paperclip_control_plane_unreachable");
+        expect(result.errorMessage).toContain("Paperclip control-plane preflight failed");
+        await expect(fs.readFile(capturePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+        expect(logs).toContainEqual(
+          expect.objectContaining({
+            stream: "stdout",
+            chunk: expect.stringContaining("Control-plane preflight failed"),
+          }),
+        );
+        expect(logs).toContainEqual(
+          expect.objectContaining({
+            stream: "stdout",
+            chunk: expect.stringContaining(blockedLoopbackApiUrl),
+          }),
+        );
+      } finally {
+        await new Promise<void>((resolve, reject) => loopbackServer.close((error) => (error ? reject(error) : resolve())));
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+        else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
+        if (previousPaperclipRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+        else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
+        if (previousPaperclipRuntimeApiCandidates === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+        else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousPaperclipRuntimeApiCandidates;
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("injects bridge env into sandbox-managed remote runs", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-sandbox-"));

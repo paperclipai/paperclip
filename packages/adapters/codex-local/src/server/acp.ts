@@ -23,6 +23,8 @@ import {
   DEFAULT_ACP_ENGINE_MODE,
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
+  DEFAULT_ACP_ENGINE_STREAM_IDLE_MAX_RETRIES,
+  DEFAULT_ACP_ENGINE_STREAM_IDLE_TIMEOUT_MS,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
 import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
@@ -36,6 +38,8 @@ import { classifyCodexAuthRefreshFailure } from "./parse.js";
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
 const MIN_ACP_NODE_VERSION = "22.13.0";
+const DEFAULT_CODEX_ACP_STREAM_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
+const DEFAULT_CODEX_ACP_STREAM_IDLE_MAX_RETRIES = 1;
 
 export type CodexExecutionEngine = "cli" | "acp";
 
@@ -119,6 +123,18 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     config.warmHandleIdleMs ??
     config.acpWarmHandleIdleMs ??
     DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS;
+  const streamIdleTimeoutMs =
+    config.streamIdleTimeoutMs ??
+    config.acpStreamIdleTimeoutMs ??
+    (DEFAULT_ACP_ENGINE_STREAM_IDLE_TIMEOUT_MS > 0
+      ? DEFAULT_ACP_ENGINE_STREAM_IDLE_TIMEOUT_MS
+      : DEFAULT_CODEX_ACP_STREAM_IDLE_TIMEOUT_MS);
+  const streamIdleMaxRetries =
+    config.streamIdleMaxRetries ??
+    config.acpStreamIdleMaxRetries ??
+    (DEFAULT_ACP_ENGINE_STREAM_IDLE_MAX_RETRIES > 0
+      ? DEFAULT_ACP_ENGINE_STREAM_IDLE_MAX_RETRIES
+      : DEFAULT_CODEX_ACP_STREAM_IDLE_MAX_RETRIES);
 
   return {
     ...config,
@@ -127,6 +143,8 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     permissionMode,
     nonInteractivePermissions,
     warmHandleIdleMs,
+    streamIdleTimeoutMs,
+    streamIdleMaxRetries,
     ...(agentCommand ? { agentCommand } : {}),
     ...(stateDir ? { stateDir } : {}),
   };

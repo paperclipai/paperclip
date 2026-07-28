@@ -6449,7 +6449,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   function rearmUndeliveredIssueMonitorPatch(input: {
-    issue: IssueMonitorDispatchRow;
+    issue: typeof issues.$inferSelect;
     now: Date;
     nextCheckAt: string | null | undefined;
     deliveredAttemptCount: number | null | undefined;
@@ -15057,21 +15057,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
-      const findExistingExecutionPath = (agentId?: string | null) =>
-        tx
+      const findExistingExecutionPath = (agentId?: string | null) => {
+        const currentIssue = issue;
+        if (!currentIssue) return Promise.resolve(null);
+        return tx
           .select({ id: heartbeatRuns.id })
           .from(heartbeatRuns)
           .where(
             and(
-              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.companyId, currentIssue.companyId),
               inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${currentIssue.id}`,
               sql`${heartbeatRuns.id} <> ${run.id}`,
               agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
             ),
           )
           .limit(1)
           .then((rows) => rows[0] ?? null);
+      };
 
       const terminalMonitorRearmPatch = buildTerminalIssueMonitorRearmPatch({
         issue,
