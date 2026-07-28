@@ -8000,10 +8000,6 @@ export function issueRoutes(
         if (!target) {
           throw unprocessable("Unblock owner agent must belong to the issue company");
         }
-        const targetEligibility = getAgentWorkEligibility({ agent: target, agents: companyAgents });
-        if (!targetEligibility.invokable) {
-          throw unprocessable("Unblock owner agent must be invokable with a healthy reporting chain");
-        }
         if (req.actor.type === "agent" && req.actor.agentId !== owner.agentId) {
           const targetIsReportingLineManager = req.actor.agentId
             ? isInvokableReportingLineManager(companyAgents, owner.agentId, req.actor.agentId)
