@@ -15,14 +15,20 @@ import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService, heartbeatService, instanceSettingsService, issueService, logActivity, statusCardService } from "../services/index.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
-export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
+export function statusCardRoutes(
+  db: Db,
+  opts: { heartbeat?: IssueAssignmentWakeupDeps; pluginWorkerManager?: PluginWorkerManager } = {},
+) {
   const router = Router();
   const access = accessService(db);
   const settings = instanceSettingsService(db);
   const service = statusCardService(db);
   const issueSvc = issueService(db);
-  const heartbeat = opts.heartbeat ?? heartbeatService(db);
+  const heartbeat = opts.heartbeat ?? heartbeatService(db, {
+    pluginWorkerManager: opts.pluginWorkerManager,
+  });
 
   async function assertStatusCardsEnabled() {
     const experimental = await settings.getExperimental();

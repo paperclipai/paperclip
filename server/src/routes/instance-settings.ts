@@ -13,6 +13,7 @@ import { heartbeatService, instanceSettingsService, logActivity } from "../servi
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 function assertCanManageInstanceSettings(req: Request) {
   if (req.actor.type !== "board") {
@@ -24,11 +25,16 @@ function assertCanManageInstanceSettings(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
-export function instanceSettingsRoutes(db: Db) {
+export function instanceSettingsRoutes(
+  db: Db,
+  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
 
   router.get("/instance/settings", async (req, res) => {
     assertBoardOrgAccess(req);

@@ -7,6 +7,7 @@ import { accessService, heartbeatService, instanceSettingsService, logActivity }
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { summarySlotService } from "../services/summary-slots.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 function readScopeId(req: Request): string | null {
   const raw = req.query.scopeId;
@@ -23,12 +24,17 @@ export function summarySlotSessionTaskKey(input: {
   return `summary-slot:${input.companyId}:${input.scopeKind}:${input.scopeId ?? "company"}:${input.slotKey}`;
 }
 
-export function summarySlotRoutes(db: Db) {
+export function summarySlotRoutes(
+  db: Db,
+  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+) {
   const router = Router();
   const access = accessService(db);
   const settings = instanceSettingsService(db);
   const svc = summarySlotService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
 
   async function assertSummariesEnabled() {
     const experimental = await settings.getExperimental();

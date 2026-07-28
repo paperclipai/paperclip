@@ -1871,6 +1871,43 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
+  it("reports a missing plugin worker manager as a wiring failure, not a stopped worker", async () => {
+    const { companyId, environment, runId } = await seedReusablePluginSandboxLease();
+    const runtimeWithoutWorkerManager = environmentRuntimeService(db);
+
+    await expect(
+      runtimeWithoutWorkerManager.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      }),
+    ).rejects.toThrow(/sandbox plugin workers are unavailable in this server process/);
+  });
+
+  it("still reports a stopped worker as a stopped worker when the manager is wired", async () => {
+    const { companyId, environment, runId } = await seedReusablePluginSandboxLease();
+    const offlineWorkerManager = {
+      isRunning: vi.fn(() => false),
+      call: vi.fn(),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithOfflineWorker = environmentRuntimeService(db, {
+      pluginWorkerManager: offlineWorkerManager,
+      pluginWorkerReadyTimeoutMs: 0,
+    });
+
+    await expect(
+      runtimeWithOfflineWorker.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      }),
+    ).rejects.toThrow(/its worker is not running/);
+  });
+
   it("releases a sandbox run lease from metadata after the environment config changes", async () => {
     const { companyId, environment, runId } = await seedEnvironment({
       driver: "sandbox",

@@ -256,18 +256,18 @@ export async function createApp(
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
-  api.use(companySkillRoutes(db));
+  api.use(companySkillRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(companySkillPolicyRoutes(db));
   api.use(inboxAgentPolicyRoutes(db));
-  api.use(builtInAgentRoutes(db));
-  api.use(summarySlotRoutes(db));
-  api.use(statusCardRoutes(db));
+  api.use(builtInAgentRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(summarySlotRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(statusCardRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
-  api.use(issueTreeControlRoutes(db));
+  api.use(issueTreeControlRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(pipelineRoutes(db));
@@ -282,7 +282,7 @@ export async function createApp(
     ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
     ?? null;
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(activityRoutes(db));
+  api.use(activityRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(dashboardRoutes(db));
   api.use(attentionRoutes(db));
   api.use(decisionTrainingRoutes(db));
@@ -291,7 +291,7 @@ export async function createApp(
   api.use(sidebarPreferenceRoutes(db));
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
-  api.use(instanceSettingsRoutes(db));
+  api.use(instanceSettingsRoutes(db, { pluginWorkerManager: workerManager }));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
