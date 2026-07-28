@@ -85,7 +85,7 @@
       "rollup": ">=4.59.0",
       "react": "^19.2.7",
       "react-dom": "^19.2.7",
-      "lexical": "0.46.0",
+      "lexical": "0.48.0",
       "@lexical/clipboard": "0.46.0",
       "@lexical/link": "0.46.0",
       "@lexical/list": "0.46.0",
