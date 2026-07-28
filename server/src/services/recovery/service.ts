@@ -176,6 +176,7 @@ type StrandedRecoveryCause =
   | "stranded_assigned_issue"
   | "process_lost"
   | "provider_quota"
+  | "detached_execution_required"
   | "codex_output_inactivity_monitor"
   | "workspace_validation_failed"
   | "configuration_incomplete"
@@ -341,6 +342,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 // than escalating it as stranded.
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on_review";
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
+const CONTINUATION_NO_PROGRESS_MAX_ATTEMPTS = 3;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
@@ -490,6 +492,10 @@ export function classifyContinuationFailure(latestRun: LatestIssueRun): Continua
     baseBackoffMs: 0,
     errorCode,
   };
+}
+
+function isDetachedExecutionRequiredRun(latestRun: LatestIssueRun) {
+  return readNonEmptyString(latestRun?.errorCode) === "max_turns_exhausted";
 }
 
 function successfulRunHandoffRecoveryEvidence(latestRun: LatestIssueRun): SuccessfulRunHandoffRecoveryEvidence | null {
@@ -3380,6 +3386,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ? "Retry the original assignee from durable progress without redoing completed steps."
         : recoveryCause === "provider_quota"
           ? "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
+        : recoveryCause === "detached_execution_required"
+          ? "Relaunch the long-running job detached (`nohup … &`) with a durable result path, then resume from the recorded artifact instead of another synchronous heartbeat."
         : recoveryCause === "codex_output_inactivity_monitor"
           ? "Retry the same agent from durable progress after the output-inactivity termination."
         : recoveryCause === "workspace_validation_failed"
@@ -3455,6 +3463,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (!action || action.kind !== "missing_disposition") return false;
 
     if (input.issue.status !== "in_progress") {
+      if (input.issue.status === "blocked") {
+        // Missing-disposition recovery itself commonly parks the source issue in
+        // `blocked` while assigning a recovery owner. That self-created wait is
+        // not independent evidence that the issue has a valid next action, so
+        // keep the recovery action active instead of silently folding it away.
+        return true;
+      }
       await foldActiveRecoveryAction({
         companyId: input.issue.companyId,
         sourceIssueId: input.issue.id,
@@ -3498,6 +3513,158 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return false;
   }
 
+  type RecentNoProgressContinuationSummary = {
+    consecutive: number;
+    runIds: string[];
+    latestFinishedAt: Date | null;
+    latestStopReason: string | null;
+  };
+
+  async function summarizeRecentNoProgressContinuationRuns(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    since: Date | null = null,
+  ): Promise<RecentNoProgressContinuationSummary> {
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        livenessState: heartbeatRuns.livenessState,
+        livenessReason: heartbeatRuns.livenessReason,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ...(since ? [or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since))] : []),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(10);
+
+    const runIds: string[] = [];
+    let consecutive = 0;
+    let latestFinishedAt: Date | null = null;
+    let latestStopReason: string | null = null;
+    for (const row of rows) {
+      const context = parseObject(row.contextSnapshot);
+      if (readNonEmptyString(context.retryReason) !== "issue_continuation_needed") break;
+      if (
+        row.status !== "succeeded" &&
+        !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+          row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+        )
+      ) {
+        break;
+      }
+
+      consecutive += 1;
+      runIds.push(row.id);
+      if (latestFinishedAt === null) latestFinishedAt = row.finishedAt ?? null;
+      if (latestStopReason === null) {
+        latestStopReason =
+          readNonEmptyString(row.errorCode) ??
+          readNonEmptyString(row.livenessReason) ??
+          row.status;
+      }
+    }
+
+    return { consecutive, runIds, latestFinishedAt, latestStopReason };
+  }
+
+  async function escalateDetachedExecutionManagerReview(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: StrandedPreviousStatus;
+    latestRun: LatestIssueRun;
+    commentLead: string;
+    recoveryCause?: StrandedRecoveryCause;
+    runIds?: string[];
+  }) {
+    const recoveryCause = input.recoveryCause ?? "detached_execution_required";
+    const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
+      issue: input.issue,
+      latestRun: input.latestRun,
+      previousStatus: input.previousStatus,
+      recoveryCause,
+    });
+    if (!recoveryAction.ownerAgentId) {
+      return escalateStrandedAssignedIssue({
+        issue: input.issue,
+        previousStatus: input.previousStatus,
+        latestRun: input.latestRun,
+        comment: input.commentLead,
+        recoveryCause,
+      });
+    }
+
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "in_review",
+      assigneeAgentId: recoveryAction.ownerAgentId,
+    });
+    if (!updated) return null;
+
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    const recoveryOwner = await getAgent(recoveryAction.ownerAgentId);
+    const runLinks = (input.runIds ?? [])
+      .map((runId) => input.latestRun?.agentId ? runUiLink({ id: runId, agentId: input.latestRun.agentId }, prefix) : `\`${runId}\``)
+      .join(", ");
+
+    await issuesSvc.addComment(
+      input.issue.id,
+      [
+        input.commentLead,
+        "",
+        `- Review owner: ${agentUiLink(recoveryOwner, prefix)}`,
+        `- Recovery action: \`${recoveryAction.id}\``,
+        `- Required disposition: \`detached_execution_required\``,
+        `- Stop reason: \`${readNonEmptyString(input.latestRun?.errorCode) ?? "no_progress_continuation"}\``,
+        ...(runLinks ? [`- Runs: ${runLinks}`] : []),
+        "- Next action: relaunch the long-running job detached (`nohup … &`) with a durable result path, then resume from the artifact instead of another synchronous heartbeat.",
+      ].join("\n"),
+      {},
+      { authorType: "system" },
+    );
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: "in_review",
+        previousStatus: input.previousStatus,
+        source: "recovery.detached_execution_manager_review",
+        recoveryCause,
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+        latestRunErrorCode: input.latestRun?.errorCode ?? null,
+        recoveryActionId: recoveryAction.id,
+        recoveryOwnerAgentId: recoveryAction.ownerAgentId,
+        continuationRunIds: input.runIds ?? [],
+      },
+    });
+
+    await enqueueSourceScopedStrandedRecoveryWake({
+      action: recoveryAction,
+      issue: input.issue,
+      latestRun: input.latestRun,
+      recoveryCause,
+    });
+
+    return updated;
+  }
+
   async function sweepStaleRecoveryActions() {
     const recoveryIssue = alias(issues, "stale_recovery_issue");
     const candidates = await db
@@ -3532,7 +3699,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             or ${recoveryIssue.status} in ('done', 'cancelled')
             or (
               ${issueRecoveryActions.kind} = 'missing_disposition'
-              and ${issues.status} <> 'in_progress'
+              and ${issues.status} in ('todo', 'in_review', 'done', 'cancelled')
             )
           )`,
         ),
@@ -3933,6 +4100,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryOwnerAgentId: input.recoveryOwnerAgentId,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
+
+    // Restore call to ensure the visible stranded-recovery card (lost during source-scoped refactor).
+    // This was the sole creator of originKind=STRANDED_ISSUE_RECOVERY_ORIGIN_KIND cards.
+    await ensureStrandedIssueRecoveryIssue({
+      issue: input.issue,
+      latestRun: input.latestRun,
+      previousStatus: input.previousStatus,
+      recoveryCause,
+      successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+    });
+
     const isProviderQuotaWait = recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
       Boolean(recoveryAction.returnOwnerAgentId);

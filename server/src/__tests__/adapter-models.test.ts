@@ -55,7 +55,7 @@ describe("adapter model listing", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("returns claude fallback models including Sonnet 5 when no Anthropic key is available", async () => {
+  it("returns claude fallback models including Opus 5 when no Anthropic key is available", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const models = await listAdapterModels("claude_local");
 
@@ -63,6 +63,7 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "claude-opus-4-8")).toBe(true);
     // Newer flagship models are offered, but Opus 4.8 stays the default (first) option.
     expect(models[0]?.id).toBe("claude-opus-4-8");
+    expect(models.some((model) => model.id === "claude-opus-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-fable-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-sonnet-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-mythos-5")).toBe(true);

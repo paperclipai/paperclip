@@ -3386,6 +3386,14 @@ function staleIssueStateBoardActionReason(interaction: { result: unknown }) {
   return typeof result.reason === "string" && result.reason.trim().length > 0 ? result.reason.trim() : null;
 }
 
+function isResolvedNonStaleBoardActionInteraction(input: {
+  interaction: { kind: string; result: unknown };
+  issue: { assigneeUserId?: string | null };
+}) {
+  return isBoardActionInteraction(input.interaction, input.issue)
+    && !isStaleIssueStateBoardActionInteraction(input);
+}
+
 async function listIssueBoardActionRequirementMap(
   dbOrTx: any,
   companyId: string,
@@ -3395,7 +3403,13 @@ async function listIssueBoardActionRequirementMap(
   const issueIds = [...new Set(issueRows.map((row) => row.id))];
   if (issueIds.length === 0) return result;
   const issueById = new Map(issueRows.map((row) => [row.id, row]));
-  const [pendingInteractions, pendingApprovals, latestUserCommentRows, staleIssueStateInteractions] = await Promise.all([
+  const [
+    pendingInteractions,
+    pendingApprovals,
+    latestUserCommentRows,
+    staleIssueStateInteractions,
+    resolvedBoardInteractions,
+  ] = await Promise.all([
     dbOrTx
       .select({
         id: issueThreadInteractions.id,
@@ -3456,6 +3470,22 @@ async function listIssueBoardActionRequirementMap(
       .where(and(
         eq(issueThreadInteractions.companyId, companyId),
         inArray(issueThreadInteractions.status, ["expired", "cancelled"]),
+        inArray(issueThreadInteractions.issueId, issueIds),
+      ))
+      .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt)),
+    dbOrTx
+      .select({
+        id: issueThreadInteractions.id,
+        issueId: issueThreadInteractions.issueId,
+        kind: issueThreadInteractions.kind,
+        result: issueThreadInteractions.result,
+        createdAt: issueThreadInteractions.createdAt,
+        resolvedAt: issueThreadInteractions.resolvedAt,
+      })
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        inArray(issueThreadInteractions.status, ["accepted", "rejected", "answered", "cancelled", "expired"]),
         inArray(issueThreadInteractions.issueId, issueIds),
       ))
       .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt)),
@@ -3577,6 +3607,19 @@ async function listIssueBoardActionRequirementMap(
     });
   }
 
+  const latestResolvedNonStaleBoardInteractionAtByIssue = new Map<string, Date>();
+  for (const interaction of resolvedBoardInteractions) {
+    const issue = issueById.get(interaction.issueId);
+    if (!issue || !isResolvedNonStaleBoardActionInteraction({ interaction, issue })) {
+      continue;
+    }
+    const markerAt = interaction.resolvedAt ?? interaction.createdAt;
+    const existing = latestResolvedNonStaleBoardInteractionAtByIssue.get(interaction.issueId);
+    if (!existing || markerAt > existing) {
+      latestResolvedNonStaleBoardInteractionAtByIssue.set(interaction.issueId, markerAt);
+    }
+  }
+
   for (const interaction of staleIssueStateInteractions) {
     const issue = issueById.get(interaction.issueId);
     if (
@@ -3584,6 +3627,11 @@ async function listIssueBoardActionRequirementMap(
       || result.has(interaction.issueId)
       || !isStaleIssueStateBoardActionInteraction({ interaction, issue })
     ) {
+      continue;
+    }
+    const latestResolvedNonStaleAt = latestResolvedNonStaleBoardInteractionAtByIssue.get(interaction.issueId);
+    const staleMarkerAt = interaction.resolvedAt ?? interaction.createdAt;
+    if (latestResolvedNonStaleAt && latestResolvedNonStaleAt >= staleMarkerAt) {
       continue;
     }
 

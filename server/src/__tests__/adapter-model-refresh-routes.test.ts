@@ -235,7 +235,7 @@ describe("adapter model refresh route", () => {
     ]);
   });
 
-  it("serves the Claude fallback catalog with Sonnet 5 through the HTTP route", async () => {
+  it("serves the Claude fallback catalog with Opus 5 through the HTTP route", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl).get("/api/companies/company-1/adapters/claude_local/models"),
@@ -244,6 +244,7 @@ describe("adapter model refresh route", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual([
       { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+      { id: "claude-opus-5", label: "Claude Opus 5" },
       { id: "claude-fable-5", label: "Claude Fable 5" },
       { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
       { id: "claude-mythos-5", label: "Claude Mythos 5" },
