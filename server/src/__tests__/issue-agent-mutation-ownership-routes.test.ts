@@ -1449,7 +1449,13 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
     );
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
-    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", { title: "Updated product" });
+    expect(mockWorkProductService.update).toHaveBeenCalledWith(
+      "product-1",
+      { title: "Updated product" },
+      // The route now hands the service a callback that writes the transition audit row inside the
+      // update transaction, so the status change and its audit entry commit together.
+      expect.objectContaining({ recordTransition: expect.any(Function) }),
+    );
   });
 
   it("preserves board mutations on active checkouts", async () => {
