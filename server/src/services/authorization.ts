@@ -20,7 +20,12 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  extractAgentMentionIds,
+  issueUnblockDescriptorSchema,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -223,10 +228,9 @@ function readBoolean(value: unknown): boolean | null {
 }
 
 function issueUnblockOwnerAgentId(value: unknown) {
-  if (!isPlainRecord(value)) return null;
-  const owner = value.owner;
-  if (!isPlainRecord(owner)) return null;
-  return readString(owner.agentId);
+  const parsed = issueUnblockDescriptorSchema.safeParse(value);
+  if (!parsed.success || typeof parsed.data.owner !== "object" || !("agentId" in parsed.data.owner)) return null;
+  return parsed.data.owner.agentId;
 }
 
 type AssignmentPolicyEffect =
@@ -1941,6 +1945,7 @@ export function authorizationService(db: Db) {
       input.action === "issue:comment" ||
       (input.action === "issue:mutate" && scopeBoolean(input.scope, "allowIssueUnblockOwner"));
     if (
+      trustResolution.kind === "standard" &&
       issueUnblockOwnerAction &&
       input.resource.type === "issue" &&
       input.resource.issueId

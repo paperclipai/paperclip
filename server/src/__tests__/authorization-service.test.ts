@@ -1575,6 +1575,78 @@ describeEmbeddedPostgres("authorization service", () => {
       resource,
       scope: { allowIssueUnblockOwner: true },
     })).resolves.toMatchObject({ allowed: false });
+
+    const malformedDescriptors = [
+      { owner: { agentId: unblockOwnerAgent.id } },
+      { owner: { agentId: unblockOwnerAgent.id, userId: "mixed-owner" }, action: "Review" },
+      { owner: { agentId: "not-a-uuid" }, action: "Review" },
+      { owner: { agentId: unblockOwnerAgent.id }, action: "Review", extra: true },
+    ];
+    for (const unblockDescriptor of malformedDescriptors) {
+      await db.update(issues).set({
+        status: "blocked",
+        unblockDescriptor: unblockDescriptor as never,
+      }).where(eq(issues.id, issue.id));
+      await expect(authorization.decide({
+        actor: {
+          type: "agent",
+          agentId: unblockOwnerAgent.id,
+          companyId: company.id,
+          source: "agent_key",
+        },
+        action: "issue:mutate",
+        resource,
+        scope: { allowIssueUnblockOwner: true },
+      })).resolves.toMatchObject({ allowed: false });
+    }
+  });
+
+  it("does not let a low-trust unblock owner cross the assignee mutation boundary", async () => {
+    const company = await createCompany(db, "LowTrustIssueUnblockOwner");
+    const project = await createProject(db, company.id, "AllowedProject");
+    const assigneeAgent = await createAgent(db, company.id, { role: "engineer" });
+    const lowTrustOwner = await createAgent(db, company.id, {
+      role: "reviewer",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [project.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Blocked issue with low-trust owner",
+      projectId: project.id,
+      status: "blocked",
+      assigneeAgentId: assigneeAgent.id,
+      unblockDescriptor: {
+        owner: { agentId: lowTrustOwner.id },
+        action: "Choose the remediation path",
+      },
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: lowTrustOwner.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        assigneeAgentId: issue.assigneeAgentId,
+        status: issue.status,
+      },
+      scope: { allowIssueUnblockOwner: true },
+    })).resolves.toMatchObject({ allowed: false });
   });
 
   it("allows mentioned agents to read and comment on assigned issues without granting issue mutation", async () => {
