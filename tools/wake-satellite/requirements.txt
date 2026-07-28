@@ -1,0 +1,5 @@
+numpy>=1.26
+sounddevice>=0.4.6
+openwakeword>=0.6.0
+# tflite-Backend: auf macOS über tensorflow (tflite-runtime hat dort keine Wheels).
+tensorflow>=2.16 ; sys_platform == "darwin"
