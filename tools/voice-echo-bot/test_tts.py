@@ -66,6 +66,46 @@ class TestSynthesize(unittest.TestCase):
             with self.assertRaises(tts.TtsError):
                 tts.synthesize("hi", "xi-secret", self._dest())
 
+    def test_synthesize_uses_output_format_in_url(self):
+        captured = {}
+
+        class FakeResp:
+            def read(self):
+                return b"AUDIO"
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=0):
+            captured["url"] = req.full_url
+            return FakeResp()
+
+        dest = self._dest()
+        with mock.patch("tts.urllib.request.urlopen", side_effect=fake_urlopen):
+            tts.synthesize("hallo", "key", dest, output_format="mp3_44100_128")
+        self.assertIn("output_format=mp3_44100_128", captured["url"])
+
+    def test_synthesize_defaults_to_opus(self):
+        captured = {}
+
+        class FakeResp:
+            def read(self):
+                return b"AUDIO"
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=0):
+            captured["url"] = req.full_url
+            return FakeResp()
+
+        dest = self._dest()
+        with mock.patch("tts.urllib.request.urlopen", side_effect=fake_urlopen):
+            tts.synthesize("hallo", "key", dest)
+        self.assertIn("output_format=opus_48000_64", captured["url"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
-"""Text -> Sprachnachricht (OGG/Opus) via ElevenLabs (stdlib only)."""
+"""Text -> Sprachnachricht (OGG/Opus oder mp3) via ElevenLabs (stdlib only)."""
 import json
 import urllib.error
 import urllib.request
@@ -10,9 +10,10 @@ class TtsError(Exception):
     pass
 
 
-def synthesize(text, api_key, dest):
-    """Synthetisiert `text` via ElevenLabs und schreibt OGG/Opus nach `dest`.
+def synthesize(text, api_key, dest, output_format=None):
+    """Synthetisiert `text` via ElevenLabs und schreibt Audio nach `dest`.
 
+    Das Format (OGG/Opus oder mp3 je nach output_format) wird von ElevenLabs bestimmt.
     Gibt `dest` zurück. Wirft TtsError bei leerem Text, fehlendem Key oder
     jedem HTTP-/Netzwerk-/IO-Fehler (analog transcribe.TranscriptionError).
     """
@@ -22,10 +23,12 @@ def synthesize(text, api_key, dest):
     if not api_key:
         raise TtsError("missing ElevenLabs API key")
 
+    fmt = output_format or config.ELEVEN_OUTPUT_FORMAT_DEFAULT
+    url = config.ELEVEN_TTS_BASE + "?output_format=" + fmt
     body = json.dumps({"text": text, "model_id": config.ELEVEN_MODEL,
                        "language_code": config.ELEVEN_LANGUAGE}).encode("utf-8")
     req = urllib.request.Request(
-        config.ELEVEN_TTS_URL,
+        url,
         data=body,
         headers={"xi-api-key": api_key, "Content-Type": "application/json"},
     )

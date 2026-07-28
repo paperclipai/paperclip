@@ -44,8 +44,9 @@ REPLY_MODE_PATH = os.path.expanduser("~/.paperclip/voice-echo-reply-mode.json")
 ELEVEN_VOICE_ID = "VBhW9TV6mNHCxbcqSl17"
 ELEVEN_MODEL = "eleven_turbo_v2_5"
 ELEVEN_LANGUAGE = "de"  # feste Sprache — verhindert Auto-Sprachwechsel bei Namen/Zahlen
-ELEVEN_TTS_URL = (
-    "https://api.elevenlabs.io/v1/text-to-speech/"
-    + ELEVEN_VOICE_ID
-    + "?output_format=opus_48000_64"
+ELEVEN_TTS_BASE = (
+    "https://api.elevenlabs.io/v1/text-to-speech/" + ELEVEN_VOICE_ID
 )
+ELEVEN_OUTPUT_FORMAT_DEFAULT = "opus_48000_64"
+# Rückwärtskompatibel: bestehender Voll-URL-Name bleibt erhalten.
+ELEVEN_TTS_URL = ELEVEN_TTS_BASE + "?output_format=" + ELEVEN_OUTPUT_FORMAT_DEFAULT
