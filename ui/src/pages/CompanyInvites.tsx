@@ -51,6 +51,7 @@ export function CompanyInvites() {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [humanRole, setHumanRole] = useState<"owner" | "admin" | "operator" | "viewer">("operator");
+  const [inviteEmail, setInviteEmail] = useState("");
   const [latestInviteUrl, setLatestInviteUrl] = useState<string | null>(null);
   const [latestInviteCopied, setLatestInviteCopied] = useState(false);
   const latestInviteInputRef = useRef<HTMLInputElement | null>(null);
@@ -151,10 +152,12 @@ export function CompanyInvites() {
         allowedJoinTypes: "human",
         humanRole,
         agentMessage: null,
+        email: inviteEmail.trim() ? inviteEmail.trim() : null,
       }),
     onSuccess: async (invite) => {
       setLatestInviteUrl(invite.inviteUrl);
       setLatestInviteCopied(false);
+      setInviteEmail("");
       const copied = await copyText(invite.inviteUrl, "Copy the invite URL manually from the field below.");
 
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
@@ -225,6 +228,21 @@ export function CompanyInvites() {
             Generate a human invite link and choose the default access it should request.
           </p>
         </div>
+
+        <label className="block space-y-1">
+          <span className="text-sm font-medium">Email (optional)</span>
+          <input
+            type="email"
+            value={inviteEmail}
+            onChange={(event) => setInviteEmail(event.target.value)}
+            placeholder="teammate@company.com"
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-ring"
+            aria-label="Invitee email"
+          />
+          <span className="block text-xs text-muted-foreground">
+            Add an email and we send the invite for you. Leave it blank to copy a link instead.
+          </span>
+        </label>
 
         <fieldset className="space-y-3">
           <legend className="text-sm font-medium">Choose a role</legend>
