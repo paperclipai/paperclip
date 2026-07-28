@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   assets,
   companies,
   createDb,
@@ -142,6 +143,7 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
     await db.delete(issueAttachments);
     await db.delete(assets);
     await db.delete(issues);
+    await db.delete(activityLog);
     await db.delete(companies);
   });
 
