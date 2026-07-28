@@ -1436,6 +1436,44 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
     });
 
+    it("blocks a late execute from reacquiring while release teardown is in flight", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let stopStarted = false;
+      let resolveRelease!: () => void;
+      const releaseGate = new Promise<void>((resolve) => {
+        resolveRelease = resolve;
+      });
+      sandbox.stop.mockImplementation(() => {
+        stopStarted = true;
+        return releaseGate;
+      });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      const releasePromise = plugin.definition.onEnvironmentReleaseLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: true },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(stopStarted).toBe(true);
+
+      const overlappingExec = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
+
+      resolveRelease();
+      await Promise.all([releasePromise, overlappingExec]);
+
+      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+    });
+
     it("waits for an in-flight execute before teardown cleanup starts", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });
@@ -1522,7 +1560,7 @@ describe("Daytona sandbox provider plugin", () => {
 
       const overlappingExec = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
       await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(mockGet).toHaveBeenCalledTimes(3);
+      expect(mockGet).toHaveBeenCalledTimes(2);
 
       resolveStop();
       await Promise.all([releasePromise, overlappingExec]);
@@ -1699,12 +1737,13 @@ describe("Daytona sandbox provider plugin", () => {
       const queuedExecutePromise = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
       await new Promise((resolve) => setTimeout(resolve, 0));
 
-      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(mockGet).toHaveBeenCalledTimes(1);
       expect(sandbox.delete).not.toHaveBeenCalled();
 
       resolveFirstExecute();
       await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(sandbox.delete).not.toHaveBeenCalled();
+      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(sandbox.delete).toHaveBeenCalledTimes(1);
 
       resolveSecondExecute();
       await Promise.all([firstExecutePromise, queuedExecutePromise, cancelPromise]);

@@ -941,6 +941,32 @@ const sandboxHandleActivityGates = (() => {
   return { begin, waitForIdle, end, reset };
 })();
 
+async function withSandboxActivityGate<T>(
+  scope: SandboxScope,
+  fn: () => Promise<T>,
+): Promise<T> {
+  while (true) {
+    const teardownGate = sandboxHandleTeardownGates.current(scope);
+    if (teardownGate) {
+      await teardownGate.promise;
+      continue;
+    }
+
+    const activityGate = await sandboxHandleActivityGates.begin(scope);
+    try {
+      // A teardown can still begin between the initial check above and the
+      // activity-gate admission. If that happens, back out and wait for the
+      // teardown to finish instead of proceeding into a race with cleanup.
+      if (sandboxHandleTeardownGates.current(scope)) {
+        continue;
+      }
+      return await fn();
+    } finally {
+      sandboxHandleActivityGates.end(scope, activityGate);
+    }
+  }
+}
+
 const sandboxHandleCache = (() => {
   const entries = new Map<string, SandboxHandleCacheEntry>();
 
@@ -1284,9 +1310,8 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
-    const activityGate = await sandboxHandleActivityGates.begin(scope);
-    try {
-      const sandbox = await getSandboxOrNull(scope);
+    return await withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) {
         return { providerLeaseId: null, metadata: { expired: true } };
       }
@@ -1326,9 +1351,7 @@ const plugin = definePlugin({
         await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
         throw error;
       }
-    } finally {
-      sandboxHandleActivityGates.end(scope, activityGate);
-    }
+    });
   },
 
   async onEnvironmentReleaseLease(
@@ -1440,14 +1463,11 @@ const plugin = definePlugin({
         providerLeaseId: params.lease.providerLeaseId,
         config,
       };
-      const activityGate = await sandboxHandleActivityGates.begin(scope);
-      try {
-        const sandbox = await getSandbox(scope);
+      await withSandboxActivityGate(scope, async () => {
+        const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
         await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
         await sandbox.fs.createFolder(remoteCwd, "755");
-      } finally {
-        sandboxHandleActivityGates.end(scope, activityGate);
-      }
+      });
     }
 
     return {
@@ -1514,9 +1534,8 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
-    const activityGate = await sandboxHandleActivityGates.begin(scope);
-    try {
-      const sandbox = await getSandboxOrNull(scope);
+    return await withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) {
         return {
           providerLeaseId: null,
@@ -1560,9 +1579,7 @@ const plugin = definePlugin({
           remoteCwd,
         }),
       };
-    } finally {
-      sandboxHandleActivityGates.end(scope, activityGate);
-    }
+    });
   },
 
   async onEnvironmentCaptureTemplate(
@@ -1579,9 +1596,8 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
-    const activityGate = await sandboxHandleActivityGates.begin(scope);
-    try {
-      const sandbox = await getSandbox(scope);
+    return await withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
     const createSnapshot = (sandbox as DaytonaInteractiveSandbox)._experimental_createSnapshot;
     if (typeof createSnapshot !== "function") {
       throw new Error(
@@ -1610,9 +1626,7 @@ const plugin = definePlugin({
           timeoutMs,
         },
       };
-    } finally {
-      sandboxHandleActivityGates.end(scope, activityGate);
-    }
+    });
   },
 
   async onEnvironmentCancelInteractiveSetup(
@@ -1707,14 +1721,14 @@ const plugin = definePlugin({
     }
 
     const config = parseDriverConfig(params.config);
-    const activityGate = await sandboxHandleActivityGates.begin({
+    const providerLeaseId = params.lease.providerLeaseId;
+    return await withSandboxActivityGate({
       driverKey: params.driverKey,
       companyId: params.companyId,
       environmentId: params.environmentId,
-      providerLeaseId: params.lease.providerLeaseId,
+      providerLeaseId,
       config,
-    });
-    try {
+    }, async () => {
       // Time the sandbox handle lookup (Open Q1) separately from the
       // `executeCommand` round-trip so telemetry can split the per-call get cost
       // from the exec cost. With the per-lease handle cache this collapses to ~0
@@ -1728,7 +1742,7 @@ const plugin = definePlugin({
         driverKey: params.driverKey,
         companyId: params.companyId,
         environmentId: params.environmentId,
-        providerLeaseId: params.lease.providerLeaseId,
+        providerLeaseId,
         config,
       }, { bypassTeardownGate: true });
       const getDurationMs = timingNow() - getStart;
@@ -1739,7 +1753,7 @@ const plugin = definePlugin({
           driverKey: params.driverKey,
           companyId: params.companyId,
           environmentId: params.environmentId,
-          providerLeaseId: params.lease.providerLeaseId,
+          providerLeaseId,
           config,
         });
       }
@@ -1747,15 +1761,7 @@ const plugin = definePlugin({
         ...result,
         metadata: { ...(result.metadata ?? {}), getDurationMs },
       };
-    } finally {
-      sandboxHandleActivityGates.end({
-        driverKey: params.driverKey,
-        companyId: params.companyId,
-        environmentId: params.environmentId,
-        providerLeaseId: params.lease.providerLeaseId,
-        config,
-      }, activityGate);
-    }
+    });
   },
 
   // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)
@@ -1780,8 +1786,7 @@ const plugin = definePlugin({
       providerLeaseId: params.lease.providerLeaseId,
       config,
     };
-    const activityGate = await sandboxHandleActivityGates.begin(scope);
-    try {
+    return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
       await ensureSandboxStarted(sandbox, timeoutSeconds);
       const result = await performSyncIn({
@@ -1792,9 +1797,7 @@ const plugin = definePlugin({
       });
       sandboxHandleCache.markFresh(scope);
       return result;
-    } finally {
-      sandboxHandleActivityGates.end(scope, activityGate);
-    }
+    });
   },
 
   // Opt-in native outbound transfer. See onEnvironmentSyncIn.
@@ -1814,8 +1817,7 @@ const plugin = definePlugin({
       providerLeaseId: params.lease.providerLeaseId,
       config,
     };
-    const activityGate = await sandboxHandleActivityGates.begin(scope);
-    try {
+    return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
       await ensureSandboxStarted(sandbox, timeoutSeconds);
       const result = await performSyncOut({
@@ -1826,9 +1828,7 @@ const plugin = definePlugin({
       });
       sandboxHandleCache.markFresh(scope);
       return result;
-    } finally {
-      sandboxHandleActivityGates.end(scope, activityGate);
-    }
+    });
   },
 });
 
