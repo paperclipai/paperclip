@@ -2154,6 +2154,7 @@ describe("daytona native file-sync hooks", () => {
     const secretTemp = permPath;
     const mvCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("mv -f"));
     expect(mvCall).toBeDefined();
+    expect(mvCall?.[4]).toEqual({ noProfile: true });
     const mvCommand = String(mvCall?.[0]);
     // TOCTOU-hardened rename: each promotion re-canonicalizes the target's parent
     // dir, confirms it is still confined, OPENS that dir as fd 8, re-verifies the
@@ -2238,14 +2239,17 @@ describe("daytona native file-sync hooks", () => {
         !String(cmd).includes("tar -xf"),
     );
     expect(mkdirCall).toBeDefined();
+    expect(mkdirCall?.[4]).toEqual({ noProfile: true });
     // The realpath symlink-escape guard runs on the target before extraction.
     const inboundGuardCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) =>
       String(cmd).includes("_pc_resolve"),
     );
     expect(inboundGuardCall).toBeDefined();
+    expect(inboundGuardCall?.[4]).toEqual({ noProfile: true });
 
     const extractCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("tar -xf"));
     expect(extractCall).toBeDefined();
+    expect(extractCall?.[4]).toEqual({ noProfile: true });
     const extractCommand = String(extractCall?.[0]);
     // The extract binds validation and extraction into one sandbox invocation: it
     // re-canonicalizes the target, opens the resolved dir as fd 9, re-verifies the
