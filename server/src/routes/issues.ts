@@ -66,6 +66,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isAgentStatusInvokable,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompactIssue,
@@ -155,6 +156,11 @@ import {
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWake,
 } from "../services/issue-dependency-wakeups.js";
+import {
+  ISSUE_MANAGER_HANDOFF_WAKE_REASON,
+  buildIssueManagerHandoffWakeIdempotencyKey,
+  findExistingIssueManagerHandoffWake,
+} from "../services/issue-manager-handoff.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { decisionTrainingService } from "../services/decision-training.js";
@@ -9046,6 +9052,140 @@ export function issueRoutes(
 
     await queueTaskWatchdogEvaluation(existing, actor.runId);
     res.json(issue);
+  });
+
+  router.post("/issues/:id/manager-handoff", async (req, res) => {
+    const id = req.params.id as string;
+    if (req.actor.type !== "agent" || req.actor.source !== "agent_key" || !req.actor.agentId) {
+      res.status(403).json({ error: "Agent manager authentication required" });
+      return;
+    }
+    const initiatingRunId = requireAgentRunId(req, res);
+    if (!initiatingRunId) return;
+
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
+    if (issue.status !== "backlog" && issue.status !== "todo") {
+      res.status(409).json({ error: "Manager handoff only supports backlog or todo issues" });
+      return;
+    }
+    if (!issue.assigneeAgentId || issue.assigneeUserId) {
+      res.status(403).json({ error: "Manager handoff requires an existing agent assignee" });
+      return;
+    }
+
+    const managerAgentId = req.actor.agentId;
+    const [manager, targetAgent] = await Promise.all([
+      agentsSvc.getById(managerAgentId),
+      agentsSvc.getById(issue.assigneeAgentId),
+    ]);
+    const healthyDirectReport =
+      manager?.companyId === issue.companyId &&
+      targetAgent?.companyId === issue.companyId &&
+      isAgentStatusInvokable(manager.status) &&
+      isAgentStatusInvokable(targetAgent.status) &&
+      manager.orgChainHealth?.status === "healthy" &&
+      targetAgent.orgChainHealth?.status === "healthy" &&
+      targetAgent.reportsTo === managerAgentId;
+    if (!healthyDirectReport) {
+      res.status(403).json({ error: "Manager handoff is limited to healthy direct reports in the same company" });
+      return;
+    }
+
+    const idempotencyKey = buildIssueManagerHandoffWakeIdempotencyKey({ initiatingRunId, issueId: issue.id });
+    const existingWake = await findExistingIssueManagerHandoffWake(db, {
+      companyId: issue.companyId,
+      targetAgentId: issue.assigneeAgentId,
+      idempotencyKey,
+    });
+    if (existingWake) {
+      res.json({
+        issue,
+        handoff: {
+          initiatingRunId,
+          managerAgentId,
+          targetAgentId: issue.assigneeAgentId,
+          targetIssueId: issue.id,
+          idempotencyKey,
+          wakeRequestId: existingWake.id,
+          wakeupRunId: existingWake.runId,
+          idempotentReplay: true,
+        },
+      });
+      return;
+    }
+
+    const activatedIssue = await svc.update(issue.id, {
+      status: "todo",
+      actorAgentId: managerAgentId,
+      expectedStatus: issue.status,
+      expectedAssigneeAgentId: issue.assigneeAgentId,
+    });
+    if (!activatedIssue) {
+      res.status(409).json({ error: "Issue status or assignee changed during manager handoff" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const wakeRun = await heartbeat.wakeup(issue.assigneeAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: ISSUE_MANAGER_HANDOFF_WAKE_REASON,
+      idempotencyKey,
+      payload: {
+        issueId: issue.id,
+        mutation: issue.status === "backlog" ? "backlog_to_todo" : "assignment_wake",
+        managerAgentId,
+        initiatingRunId,
+      },
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+      contextSnapshot: {
+        issueId: issue.id,
+        taskId: issue.id,
+        source: "issue.manager_handoff",
+        wakeReason: ISSUE_MANAGER_HANDOFF_WAKE_REASON,
+        managerAgentId,
+        initiatingRunId,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: initiatingRunId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.manager_handoff_requested",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        managerAgentId,
+        targetAgentId: issue.assigneeAgentId,
+        targetIssueId: issue.id,
+        initiatingRunId,
+        previousStatus: issue.status,
+        resultingStatus: activatedIssue.status,
+        idempotencyKey,
+        wakeRequestId: wakeRun?.wakeupRequestId ?? null,
+        wakeupRunId: wakeRun?.id ?? null,
+      },
+    });
+
+    res.json({
+      issue: activatedIssue,
+      handoff: {
+        initiatingRunId,
+        managerAgentId,
+        targetAgentId: issue.assigneeAgentId,
+        targetIssueId: issue.id,
+        idempotencyKey,
+        wakeRequestId: wakeRun?.wakeupRequestId ?? null,
+        wakeupRunId: wakeRun?.id ?? null,
+        idempotentReplay: false,
+      },
+    });
   });
 
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {

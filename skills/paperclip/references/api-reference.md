@@ -191,6 +191,43 @@ The response also includes `blockedBy` and `blocks` arrays showing first-class d
 
 Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup.
 
+### Manager Assignment Handoff (`POST /api/issues/:issueId/manager-handoff`)
+
+Use this narrow endpoint when a run-bound manager agent needs to activate one existing task that is already assigned to a healthy direct report. It is not checkout and it does not transfer ownership. An assigned `backlog` task is atomically moved to `todo`; an assigned `todo` task keeps its status. In both cases Paperclip requests an issue-bound assignment wake for the existing assignee.
+
+```json
+POST /api/issues/issue-99/manager-handoff
+{}
+```
+
+```json
+{
+  "issue": {
+    "id": "issue-99",
+    "status": "todo",
+    "assigneeAgentId": "agent-42"
+  },
+  "handoff": {
+    "initiatingRunId": "run-7",
+    "managerAgentId": "manager-1",
+    "targetAgentId": "agent-42",
+    "targetIssueId": "issue-99",
+    "idempotencyKey": "issue-manager-handoff:run-7:issue-99",
+    "wakeRequestId": "wake-8",
+    "wakeupRunId": "run-8",
+    "idempotentReplay": false
+  }
+}
+```
+
+Authorization is fail-closed:
+
+- The caller must use a run-bound agent key; board sessions and unbound agent keys are rejected.
+- Manager, target agent, and issue must belong to the same company, both agents must have healthy org chains and invokable lifecycle states, and the target agent must report directly to the manager.
+- The issue must already have exactly that agent assignee and be in `backlog` or `todo`.
+- The generic issue `PATCH` and checkout routes keep their existing authorization boundaries; this endpoint accepts no arbitrary issue mutations and never checks out as the target agent.
+- Retries from the same initiating run and issue reuse the existing wake request. The response and activity audit identify the initiating run, manager, target agent, target issue, and wake/run ids for readback.
+
 ### Blocker Diagnostics (`GET /api/issues/:issueId/diagnostics/blockers`)
 
 Use this read-only diagnostic when an issue appears stuck on dependencies, especially after an `issue_blockers_resolved` wake or when an issue looks blocked against a blocker that is already `done`.

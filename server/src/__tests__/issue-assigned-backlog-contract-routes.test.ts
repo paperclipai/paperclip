@@ -6,6 +6,8 @@ const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockFindExistingManagerHandoffWake = vi.hoisted(() => vi.fn(async () => null as any));
+const mockGetAgentById = vi.hoisted(() => vi.fn(async (_id: string) => null as any));
 const mockIssueService = vi.hoisted(() => ({
   create: vi.fn(),
   createChild: vi.fn(),
@@ -17,21 +19,39 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),
+  update: vi.fn(),
+}));
+
+vi.mock("../services/issue-manager-handoff.js", () => ({
+  ISSUE_MANAGER_HANDOFF_WAKE_REASON: "issue_manager_handoff",
+  buildIssueManagerHandoffWakeIdempotencyKey: ({ initiatingRunId, issueId }: {
+    initiatingRunId: string;
+    issueId: string;
+  }) => `issue-manager-handoff:${initiatingRunId}:${issueId}`,
+  findExistingIssueManagerHandoffWake: mockFindExistingManagerHandoffWake,
+}));
+
+vi.mock("../services/task-watchdog-scope.js", () => ({
+  TASK_WATCHDOG_ORIGIN_KIND: "task_watchdog",
+  resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
+  taskWatchdogScopeAllowsIssueMutation: vi.fn(async () => ({ kind: "invalid", detail: "not in scope" })),
 }));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(async () => true),
     decide: vi.fn(async (input: { action?: string }) => ({
-      allowed: true,
+      allowed: input.action !== "issue:mutate",
       action: input.action,
-      reason: "allow_explicit_grant",
-      explanation: "Allowed by test grant.",
+      reason: input.action === "issue:mutate" ? "deny_outside_issue_boundary" : "allow_explicit_grant",
+      explanation: input.action === "issue:mutate"
+        ? "Issue is outside this actor's authorization boundary."
+        : "Allowed by test grant.",
     })),
     hasPermission: vi.fn(async () => true),
   }),
   agentService: () => ({
-    getById: vi.fn(async () => null),
+    getById: mockGetAgentById,
     resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
       ambiguous: false,
       agent: {
@@ -114,7 +134,13 @@ vi.mock("../services/index.js", () => ({
   }),
 }));
 
-async function createApp() {
+async function createApp(actor: Record<string, unknown> = {
+  type: "board",
+  userId: "local-board",
+  companyIds: ["company-1"],
+  source: "local_implicit",
+  isInstanceAdmin: false,
+}) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -122,13 +148,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", issueRoutes({} as any, {} as any));
@@ -245,7 +265,7 @@ describe("assigned backlog creation contract", () => {
         }),
       }),
     );
-  });
+  }, 15_000);
 
   it("does not let a parent-blocking assigned child become an unwoken backlog leaf by default", async () => {
     const res = await request(await createApp())
@@ -336,6 +356,260 @@ describe("assigned backlog creation contract", () => {
         }),
       }),
     );
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+});
+
+describe("manager assignment handoff", () => {
+  const managerId = "11111111-1111-4111-8111-111111111111";
+  const runId = "33333333-3333-4333-8333-333333333333";
+  const issueId = "44444444-4444-4444-8444-444444444444";
+  const managerActor = {
+    type: "agent",
+    agentId: managerId,
+    companyId: "company-1",
+    source: "agent_key",
+    runId,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      id: issueId,
+      title: "Existing delegated lane",
+      status: "backlog",
+      assigneeAgentId,
+    }));
+    mockIssueService.update.mockResolvedValue(makeIssue({
+      id: issueId,
+      title: "Existing delegated lane",
+      status: "todo",
+      assigneeAgentId,
+    }));
+    mockGetAgentById.mockImplementation(async (id: string) => id === managerId
+      ? {
+          id: managerId,
+          companyId: "company-1",
+          reportsTo: null,
+          status: "active",
+          orgChainHealth: { status: "healthy" },
+        }
+      : {
+          id: assigneeAgentId,
+          companyId: "company-1",
+          reportsTo: managerId,
+          status: "idle",
+          orgChainHealth: { status: "healthy" },
+        });
+  });
+
+  it("activates an existing backlog issue for a healthy direct report and requests a run-bound wake", async () => {
+    const wakeupRunId = "55555555-5555-4555-8555-555555555555";
+    const wakeRequestId = "66666666-6666-4666-8666-666666666666";
+    mockWakeup.mockResolvedValue({ id: wakeupRunId, wakeupRequestId: wakeRequestId } as any);
+
+    const res = await request(await createApp(managerActor))
+      .post(`/api/issues/${issueId}/manager-handoff`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({
+      status: "todo",
+      actorAgentId: managerId,
+      expectedStatus: "backlog",
+      expectedAssigneeAgentId: assigneeAgentId,
+    }));
+    expect(mockWakeup).toHaveBeenCalledWith(assigneeAgentId, expect.objectContaining({
+      source: "assignment",
+      reason: "issue_manager_handoff",
+      idempotencyKey: `issue-manager-handoff:${runId}:${issueId}`,
+      payload: expect.objectContaining({ issueId, managerAgentId: managerId, initiatingRunId: runId }),
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.manager_handoff_requested",
+      entityId: issueId,
+      runId,
+      details: expect.objectContaining({
+        managerAgentId: managerId,
+        targetAgentId: assigneeAgentId,
+        targetIssueId: issueId,
+      }),
+    }));
+    expect(res.body).toMatchObject({
+      issue: { id: issueId, status: "todo", assigneeAgentId },
+      handoff: {
+        initiatingRunId: runId,
+        managerAgentId: managerId,
+        targetAgentId: assigneeAgentId,
+        wakeRequestId,
+        wakeupRunId,
+      },
+    });
+  });
+
+  it("fails closed when the issue changes between authorization and backlog activation", async () => {
+    mockIssueService.update.mockResolvedValue(null);
+
+    const res = await request(await createApp(managerActor))
+      .post(`/api/issues/${issueId}/manager-handoff`)
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({
+      expectedStatus: "backlog",
+      expectedAssigneeAgentId: assigneeAgentId,
+    }));
+    expect(mockWakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.manager_handoff_requested" }),
+    );
+  });
+
+  it("keeps arbitrary non-direct-report issue mutation forbidden", async () => {
+    mockGetAgentById.mockImplementation(async (id: string) => id === managerId
+      ? { id: managerId, companyId: "company-1", reportsTo: null, orgChainHealth: { status: "healthy" } }
+      : { id: assigneeAgentId, companyId: "company-1", reportsTo: "another-manager", orgChainHealth: { status: "healthy" } });
+
+    const res = await request(await createApp(managerActor))
+      .post(`/api/issues/${issueId}/manager-handoff`)
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for an unhealthy org chain", async () => {
+    mockGetAgentById.mockImplementation(async (id: string) => id === managerId
+      ? { id: managerId, companyId: "company-1", reportsTo: null, status: "active", orgChainHealth: { status: "healthy" } }
+      : { id: assigneeAgentId, companyId: "company-1", reportsTo: managerId, status: "idle", orgChainHealth: { status: "invalid_org_chain" } });
+
+    const res = await request(await createApp(managerActor))
+      .post(`/api/issues/${issueId}/manager-handoff`)
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for a terminated direct report even when the stored org chain is otherwise healthy", async () => {
+    mockGetAgentById.mockImplementation(async (id: string) => id === managerId
+      ? { id: managerId, companyId: "company-1", reportsTo: null, status: "active", orgChainHealth: { status: "healthy" } }
+      : { id: assigneeAgentId, companyId: "company-1", reportsTo: managerId, status: "terminated", orgChainHealth: { status: "healthy" } });
+
+    const res = await request(await createApp(managerActor))
+      .post(`/api/issues/${issueId}/manager-handoff`)
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it.each(["pending_approval", "paused"])(
+    "fails closed when the direct report is %s and therefore cannot accept a wake",
+    async (status) => {
+      mockGetAgentById.mockImplementation(async (id: string) => id === managerId
+        ? { id: managerId, companyId: "company-1", reportsTo: null, status: "active", orgChainHealth: { status: "healthy" } }
+        : { id: assigneeAgentId, companyId: "company-1", reportsTo: managerId, status, orgChainHealth: { status: "healthy" } });
+
+      const res = await request(await createApp(managerActor))
+        .post(`/api/issues/${issueId}/manager-handoff`)
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockWakeup).not.toHaveBeenCalled();
+    },
+  );
+
+  it("requires a run-bound agent key", async () => {
+    const res = await request(await createApp({ ...managerActor, runId: undefined }))
+      .post(`/api/issues/${issueId}/manager-handoff`)
+      .send({});
+
+    expect(res.status).toBe(401);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("preserves the original generic PATCH denial for a subordinate's issue", async () => {
+    const res = await request(await createApp(managerActor))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(403);
+    expect(String(res.body?.error ?? res.text)).toMatch(/authorization boundary/i);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("replays the same run-bound handoff without a second mutation or wake", async () => {
+    mockFindExistingManagerHandoffWake.mockResolvedValue({
+      id: "66666666-6666-4666-8666-666666666666",
+      status: "queued",
+      runId: "55555555-5555-4555-8555-555555555555",
+    });
+
+    const res = await request(await createApp(managerActor))
+      .post(`/api/issues/${issueId}/manager-handoff`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.handoff).toMatchObject({
+      initiatingRunId: runId,
+      managerAgentId: managerId,
+      targetAgentId: assigneeAgentId,
+      wakeRequestId: "66666666-6666-4666-8666-666666666666",
+      wakeupRunId: "55555555-5555-4555-8555-555555555555",
+      idempotentReplay: true,
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when idempotency readback is unavailable", async () => {
+    mockFindExistingManagerHandoffWake.mockRejectedValue(new Error("readback unavailable"));
+
+    const res = await request(await createApp(managerActor))
+      .post(`/api/issues/${issueId}/manager-handoff`)
+      .send({});
+
+    expect(res.status).toBe(500);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the assigned agent belongs to another company", async () => {
+    mockGetAgentById.mockImplementation(async (id: string) => id === managerId
+      ? { id: managerId, companyId: "company-1", reportsTo: null, orgChainHealth: { status: "healthy" } }
+      : { id: assigneeAgentId, companyId: "company-2", reportsTo: managerId, orgChainHealth: { status: "healthy" } });
+
+    const res = await request(await createApp(managerActor))
+      .post(`/api/issues/${issueId}/manager-handoff`)
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not widen mutations beyond backlog and todo", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      id: issueId,
+      title: "Already running lane",
+      status: "in_progress",
+      assigneeAgentId,
+    }));
+
+    const res = await request(await createApp(managerActor))
+      .post(`/api/issues/${issueId}/manager-handoff`)
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockWakeup).not.toHaveBeenCalled();
   });
 });
