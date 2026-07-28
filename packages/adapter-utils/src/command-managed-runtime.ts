@@ -517,7 +517,6 @@ export async function prepareCommandManagedRuntime(input: {
         args: shellCommandArgs(`command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`),
         cwd: commandCwd,
         timeoutMs,
-        noProfile: true,
       });
       if (!probe.timedOut && (probe.exitCode ?? 1) === 0) {
         return await prepareSandboxManagedRuntime({

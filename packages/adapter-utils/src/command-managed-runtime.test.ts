@@ -308,6 +308,33 @@ describe("command managed runtime", () => {
     );
   });
 
+  it("keeps adapter detection on the profile-backed shell path", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-detect-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+
+    const { runner, calls } = makeSpawnRunner();
+    await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "claude",
+      workspaceLocalDir: localWorkspaceDir,
+      installCommand: "echo install",
+      detectCommand: "sh",
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.noProfile).not.toBe(true);
+    expect(calls[0]?.args?.join(" ")).toContain("command -v sh");
+  });
+
   it("runs setup commands from a stable root cwd when staging into a nested remote workspace dir", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-nested-"));
     cleanupDirs.push(rootDir);
