@@ -1598,6 +1598,79 @@ describe("environment routes", () => {
     );
   });
 
+  it("persists a picker-submitted secret_ref binding object as the bare secret id", async () => {
+    const secretId = "11111111-1111-1111-1111-111111111111";
+    const environment = {
+      ...createEnvironment(),
+      id: "env-sandbox-secure-plugin",
+      name: "Secure Sandbox",
+      driver: "sandbox" as const,
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: secretId,
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+    };
+    mockEnvironmentService.create.mockResolvedValue(environment);
+    mockValidatePluginSandboxProviderConfig.mockImplementation(async ({ config }: { config: Record<string, unknown> }) => ({
+      normalizedConfig: { ...config },
+      pluginId: "plugin-secure",
+      pluginKey: "acme.secure-sandbox-provider",
+      driver: {
+        driverKey: "secure-plugin",
+        kind: "sandbox_provider",
+        displayName: "Secure Sandbox",
+        configSchema: {
+          type: "object",
+          properties: {
+            template: { type: "string" },
+            apiKey: { type: "string", format: "secret-ref" },
+            timeoutMs: { type: "number" },
+            reuseLease: { type: "boolean" },
+          },
+        },
+      },
+    }));
+    const pluginWorkerManager = {};
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    }, { pluginWorkerManager });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/environments")
+      .send({
+        name: "Secure Sandbox",
+        driver: "sandbox",
+        config: {
+          provider: "secure-plugin",
+          template: "base",
+          apiKey: { type: "secret_ref", secretId, version: "latest" },
+          timeoutMs: 450000,
+          reuseLease: true,
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockEnvironmentService.create).toHaveBeenCalledWith({
+      name: "Secure Sandbox",
+      driver: "sandbox",
+      status: "active",
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: secretId,
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+      envVars: {},
+    });
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+  });
+
   it("uses the configured provider for schema-driven sandbox secret fields", async () => {
     process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
     const environment = {

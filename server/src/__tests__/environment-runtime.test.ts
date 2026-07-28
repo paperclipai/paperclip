@@ -27,6 +27,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { resolveEnvironmentDriverConfigForRuntime } from "../services/environment-config.ts";
 import { environmentRuntimeService, findReusableSandboxLeaseId } from "../services/environment-runtime.ts";
 import { environmentService } from "../services/environments.ts";
 import { secretService } from "../services/secrets.ts";
@@ -847,6 +848,88 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         apiKey: "resolved-provider-key",
       }),
     }), 31234);
+  });
+
+  it("resolves persisted secret_ref binding objects in sandbox provider config at runtime", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment } = await seedEnvironment();
+    const apiSecret = await secretService(db).create(companyId, {
+      name: `secure-plugin-api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "resolved-provider-key",
+    });
+    const providerConfig = {
+      provider: "secure-plugin",
+      template: "base",
+      apiKey: { type: "secret_ref", secretId: apiSecret.id, version: "latest" },
+      timeoutMs: 1234,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Secure Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await secretService(db).createBinding({
+      companyId,
+      secretId: apiSecret.id,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.secure-sandbox-provider",
+      packageName: "@acme/secure-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.secure-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Secure Sandbox Provider",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "secure-plugin",
+            kind: "sandbox_provider",
+            displayName: "Secure Sandbox",
+            configSchema: {
+              type: "object",
+              properties: {
+                template: { type: "string" },
+                apiKey: { type: "string", format: "secret-ref" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    const resolved = await resolveEnvironmentDriverConfigForRuntime(db, companyId, environment);
+
+    expect(resolved.driver).toBe("sandbox");
+    expect(resolved.config).toMatchObject({
+      provider: "secure-plugin",
+      template: "base",
+      apiKey: "resolved-provider-key",
+    });
   });
 
   it("waits briefly for a ready sandbox provider plugin worker to come online", async () => {

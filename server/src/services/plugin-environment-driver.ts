@@ -21,6 +21,12 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
 } from "@paperclipai/plugin-sdk";
 import { unprocessable } from "../errors.js";
+import {
+  collectSecretRefPaths,
+  parseSecretRefBindingObject,
+  readConfigValueAtPath,
+  writeConfigValueAtPath,
+} from "./json-schema-secret-refs.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
@@ -135,9 +141,29 @@ export async function validatePluginSandboxProviderConfig(input: {
     throw unprocessable(`Sandbox provider "${input.provider}" is not installed or its plugin worker is not running.`);
   }
 
+  // Secret pickers submit `{ type: "secret_ref", secretId, version }` binding
+  // objects for `format: "secret-ref"` fields. Plugins only understand string
+  // config values, so canonicalize bindings to the bare secret id (the
+  // persisted shape) before the plugin validates.
+  const configSchema =
+    resolved.driver.configSchema && typeof resolved.driver.configSchema === "object" && !Array.isArray(resolved.driver.configSchema)
+      ? resolved.driver.configSchema as Record<string, unknown>
+      : null;
+  let config = input.config;
+  for (const path of collectSecretRefPaths(configSchema)) {
+    const binding = parseSecretRefBindingObject(readConfigValueAtPath(config, path));
+    if (!binding) continue;
+    if (binding.version !== "latest") {
+      throw unprocessable(
+        `Secret binding at ${path} pins version ${binding.version}; sandbox provider secret references always resolve the latest version.`,
+      );
+    }
+    config = writeConfigValueAtPath(config, path, binding.secretId);
+  }
+
   const result = await input.workerManager.call(resolved.plugin.id, "environmentValidateConfig", {
     driverKey: input.provider,
-    config: input.config,
+    config,
   });
 
   if (!result.ok) {
@@ -151,7 +177,7 @@ export async function validatePluginSandboxProviderConfig(input: {
   }
 
   return {
-    normalizedConfig: result.normalizedConfig ?? input.config,
+    normalizedConfig: result.normalizedConfig ?? config,
     pluginId: resolved.plugin.id,
     pluginKey: resolved.plugin.pluginKey,
     driver: resolved.driver,
