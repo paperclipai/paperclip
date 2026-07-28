@@ -23,6 +23,12 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
 
+const mockLogActivity = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: mockLogActivity,
+}));
+
 vi.mock("../services/activity.js", () => ({
   activityService: () => mockActivityService,
   normalizeActivityLimit: (limit: number | undefined) => {
@@ -104,6 +110,49 @@ describe.sequential("activity routes", () => {
       reason: "allow_test",
       explanation: "Allowed by test mock.",
     });
+    mockLogActivity.mockReset();
+    mockLogActivity.mockImplementation(async (_db: unknown, entry: Record<string, unknown>) => ({
+      id: "activity-row-1",
+      ...entry,
+    }));
+  });
+
+  it("stamps the authenticated caller and ignores body-supplied actor fields when creating activity (P6)", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "real-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/activity")
+      .send({
+        // Spoof attempt — none of these actor fields must survive.
+        actorType: "agent",
+        actorId: "spoofed-agent",
+        agentId: "00000000-0000-0000-0000-000000000000",
+        action: "custom.event",
+        entityType: "issue",
+        entityId: "issue-1",
+        details: { note: "hi" },
+      }));
+
+    expect(res.status).toBe(201);
+    // The body's actor was discarded; the durable insert uses the caller.
+    expect(mockActivityService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+    const [, entry] = mockLogActivity.mock.calls[0];
+    expect(entry.actorType).toBe("user");
+    expect(entry.actorId).toBe("real-user");
+    expect(entry.actorId).not.toBe("spoofed-agent");
+    expect(entry.agentId).toBeNull();
+    expect(entry.action).toBe("custom.event");
+    expect(entry.entityType).toBe("issue");
+    expect(res.body.actorId).toBe("real-user");
+    expect(res.body.actorType).toBe("user");
+    // The inserted row (with its id) is returned, preserving the API contract.
+    expect(res.body.id).toBe("activity-row-1");
   });
 
   it("limits company activity lists by default", async () => {

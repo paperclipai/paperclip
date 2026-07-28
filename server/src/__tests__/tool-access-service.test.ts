@@ -962,6 +962,83 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(disabled.body).toMatchObject({ templateId: "local.echo-admin", status: "disabled" });
   });
 
+  it("gates the policy simulator on tools:admin and stamps the authenticated tester server-side (P6)", async () => {
+    const company = await createCompany(db);
+    const userId = `policy-tester-${randomUUID()}`;
+    const actor: Express.Request["actor"] = {
+      type: "board",
+      userId,
+      userName: "Policy Tester",
+      userEmail: null,
+      isInstanceAdmin: false,
+      source: "session",
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "operator", status: "active" }],
+    };
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    const app = createRouteApp(db, actor);
+    // The simulated subject must be a real agent — the shared audit writer
+    // persists a tool_call_event keyed on the agent FK.
+    const simulatedAgent = await createAgent(db, company.id);
+
+    const testBody = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: simulatedAgent.id, agentId: simulatedAgent.id },
+      runContext: {},
+      request: { toolName: "kv_set" },
+      writeAuditEvent: true,
+    };
+
+    // Without tools:admin the diagnostic is refused and nothing is persisted.
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/policy/test`)
+      .send(testBody)
+      .expect(403);
+    const beforeGrant = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, company.id),
+      eq(activityLog.action, "tool_access.policy_tested"),
+    ));
+    expect(beforeGrant).toHaveLength(0);
+
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      permissionKey: "tools:admin",
+      scope: null,
+      grantedByUserId: "owner",
+    });
+
+    // With tools:admin the simulation runs and records the *caller* — not the
+    // body-supplied simulated subject — in the durable activity_log row.
+    const allowed = await request(app)
+      .post(`/api/companies/${company.id}/tools/policy/test`)
+      .send(testBody)
+      .expect(200);
+    expect(allowed.body).toHaveProperty("decision");
+
+    const [event] = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, company.id),
+      eq(activityLog.action, "tool_access.policy_tested"),
+    ));
+    expect(event).toBeDefined();
+    expect(event.actorType).toBe("user");
+    expect(event.actorId).toBe(userId);
+    expect(event.responsibleUserId).toBe(userId);
+    expect(event.details).toMatchObject({
+      simulatedActorType: "agent",
+      simulatedActorId: simulatedAgent.id,
+      simulatedAgentId: simulatedAgent.id,
+      testedByUserId: userId,
+    });
+  });
+
   it("launches local stdio slots only through active admin-defined templates", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);

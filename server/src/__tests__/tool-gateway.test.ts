@@ -655,6 +655,70 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("attributes generic gateway-client token audits to the token, with the human resolvable via mint-time provenance (P10)", async () => {
+    const company = await createCompany(db);
+    await createRemoteMcpTool(db, company.id, {
+      applicationKey: "p10-app",
+      toolName: "read_note",
+      title: "Read note",
+      url: "http://127.0.0.1:9/mcp",
+      riskLevel: "read",
+    });
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `p10-${randomUUID()}`,
+      name: `P10 ${randomUUID()}`,
+      defaultAction: "allow",
+    }).returning();
+    const gateway = createTestToolGatewayService(db);
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "P10 gateway", profileId: profile.id },
+      actor: { userId: "gateway-owner" },
+    });
+    const ownerUserId = `mint-owner-${randomUUID()}`;
+    const token = await gateway.createNamedGatewayToken({
+      companyId: company.id,
+      gatewayId: created.id,
+      body: { name: "cursor", clientLabel: "Cursor", ownerNote: "P10 fixture" },
+      actor: { userId: ownerUserId },
+    });
+
+    // Design decision (P10): a generic gateway_client token carries no run or
+    // agent identity, so the token→human mapping lives ONLY on the token record
+    // (`createdByUserId`, captured at mint time) and is mirrored into the audit
+    // spine by the `token_minted` event.
+    const [tokenRow] = await db.select().from(toolMcpGatewayTokens)
+      .where(eq(toolMcpGatewayTokens.id, token.id));
+    expect(tokenRow.createdByUserId).toBe(ownerUserId);
+    expect(tokenRow.subjectType).toBe("gateway_client");
+    const [mintEvent] = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, company.id),
+      eq(activityLog.action, "tool_gateway.token_minted"),
+    ));
+    expect(mintEvent.entityId).toBe(token.id);
+    expect(mintEvent.details).toMatchObject({ mintedByUserId: ownerUserId, subjectType: "gateway_client" });
+
+    // At call time the audit attributes to the token subject — not a human or
+    // agent — because a generic client carries no run/agent identity.
+    const app = createGatewayRouteApp(db, gateway);
+    await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+      .expect(200);
+    const [discovery] = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, company.id),
+      eq(activityLog.action, "tool_gateway.discovery"),
+    ));
+    expect(discovery).toBeDefined();
+    expect(discovery.agentId).toBeNull();
+    expect(discovery.actorType).not.toBe("user");
+    const auditRows = await db.select().from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.companyId, company.id));
+    expect(auditRows.some((row) => row.gatewayTokenId === token.id)).toBe(true);
+  });
+
   it("omits archived gateways from listNamedGateways", async () => {
     const company = await createCompany(db);
     const [profile] = await db.insert(toolProfiles).values({
@@ -686,6 +750,73 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     });
     listed = await gateway.listNamedGateways(company.id);
     expect(listed.map((g) => g.id)).toEqual([kept.id]);
+  });
+
+  it("audits gateway reconfiguration, token mint, and token revocation with the responsible human (G15/P15)", async () => {
+    const company = await createCompany(db);
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `admin-audit-${randomUUID()}`,
+      name: `Admin audit ${randomUUID()}`,
+      defaultAction: "deny",
+    }).returning();
+    const gateway = createTestToolGatewayService(db);
+    const userId = `board-${randomUUID()}`;
+    const actor = { userId };
+
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Audited gateway", profileId: profile.id },
+      actor,
+    });
+
+    // P15 — token mint emits a durable audit event attributed to the minter.
+    const token = await gateway.createNamedGatewayToken({
+      companyId: company.id,
+      gatewayId: created.id,
+      body: { name: "client-token", clientLabel: "ci client", ownerNote: "ci fixture" },
+      actor,
+    });
+
+    // G15 — reconfiguring the gateway auth policy is now traced.
+    await gateway.updateNamedGateway({
+      companyId: company.id,
+      gatewayId: created.id,
+      body: { defaultProfileMode: "gateway_then_context" },
+      actor,
+    });
+
+    // G15 — revocation records who revoked the credential.
+    await gateway.revokeNamedGatewayToken({
+      companyId: company.id,
+      tokenId: token.id,
+      actor,
+    });
+
+    const events = await db.select().from(activityLog).where(eq(activityLog.companyId, company.id));
+    const byAction = new Map(events.map((event) => [event.action, event]));
+
+    const mint = byAction.get("tool_gateway.token_minted");
+    expect(mint).toBeDefined();
+    expect(mint!.actorType).toBe("user");
+    expect(mint!.actorId).toBe(userId);
+    expect(mint!.responsibleUserId).toBe(userId);
+    expect(mint!.entityId).toBe(token.id);
+    expect((mint!.details as Record<string, unknown>).mintedByUserId).toBe(userId);
+    expect((mint!.details as Record<string, unknown>).gatewayId).toBe(created.id);
+
+    const reconfig = byAction.get("tool_gateway.gateway_reconfigured");
+    expect(reconfig).toBeDefined();
+    expect(reconfig!.responsibleUserId).toBe(userId);
+    expect(reconfig!.entityId).toBe(created.id);
+    expect((reconfig!.details as Record<string, unknown>).changedFields).toContain("defaultProfileMode");
+    expect((reconfig!.details as Record<string, unknown>).policySurfaceChanged).toBe(true);
+
+    const revoke = byAction.get("tool_gateway.token_revoked");
+    expect(revoke).toBeDefined();
+    expect(revoke!.responsibleUserId).toBe(userId);
+    expect(revoke!.entityId).toBe(token.id);
+    expect((revoke!.details as Record<string, unknown>).revokedByUserId).toBe(userId);
   });
 
   it("throttles named gateway bearer auth failures without leaking bearer material", async () => {
@@ -1542,6 +1673,19 @@ rl.on("line", (line) => {
         summary: expect.stringContaining("\"saved\":true"),
       });
 
+      // P9: the tool_connection secret access is attributed to the initiating
+      // agent + run + issue, not the anonymous `system` consumer.
+      const connectionAccessEvents = (await db.select().from(secretAccessEvents)
+        .where(eq(secretAccessEvents.companyId, company.id)))
+        .filter((event) => event.consumerType === "tool_connection");
+      expect(connectionAccessEvents.length).toBeGreaterThan(0);
+      for (const event of connectionAccessEvents) {
+        expect(event.actorType).toBe("agent");
+        expect(event.actorId).toBe(agent.id);
+        expect(event.heartbeatRunId).toBe(run.id);
+        expect(event.issueId).toBe(issue.id);
+      }
+
       const callEvents = await db.select().from(toolCallEvents);
       expect(callEvents).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -2301,6 +2445,26 @@ rl.on("line", (line) => {
         actionRequestId: rejectedRequest.id,
         actor: { agentId: agent.id },
       });
+      // P4: the decline is now visible in the activity_log spine and mirrored
+      // into the tool-call event stream (previously it produced neither).
+      const declineActivity = (await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "tool_gateway.approval_resolved")))
+        .find((event) => event.details?.actionRequestId === rejectedRequest.id);
+      expect(declineActivity).toBeDefined();
+      expect(declineActivity!.actorType).toBe("agent");
+      expect(declineActivity!.details).toMatchObject({
+        decision: "declined",
+        decidedByAgentId: agent.id,
+      });
+      const declineCallEvent = (await db
+        .select()
+        .from(toolCallEvents)
+        .where(eq(toolCallEvents.actionRequestId, rejectedRequest.id)))
+        .find((event) => event.eventType === "approval_resolved");
+      expect(declineCallEvent).toBeDefined();
+      expect(declineCallEvent!.outcome).toBe("denied");
       await gateway.executeTool({
         sessionToken: session.token,
         tool: rejectedToolName,
@@ -3086,6 +3250,23 @@ rl.on("line", (line) => {
       .send({ companyId: company.id });
     expect(restart.status).toBe(200);
     expect(restart.body).toMatchObject({ id: slotId, status: "running" });
+
+    // P5: the human operator behind a manual stop/restart is now attributed in
+    // the activity_log spine (previously only the system `.stopped` row existed).
+    const operatorEvents = (await db.select().from(activityLog).where(eq(activityLog.companyId, company.id)))
+      .filter((event) => event.action === "tool_runtime_slot.operator_stopped"
+        || event.action === "tool_runtime_slot.operator_restarted");
+    expect(operatorEvents.map((event) => event.action).sort()).toEqual([
+      "tool_runtime_slot.operator_restarted",
+      "tool_runtime_slot.operator_stopped",
+    ]);
+    for (const event of operatorEvents) {
+      expect(event.actorType).toBe("user");
+      expect(event.actorId).toBe(userId);
+      expect(event.responsibleUserId).toBe(userId);
+      expect(event.entityId).toBe(slotId);
+      expect((event.details as Record<string, unknown>).operatorUserId).toBe(userId);
+    }
 
     const audit = await request(app)
       .get("/api/tool-gateway/audit")

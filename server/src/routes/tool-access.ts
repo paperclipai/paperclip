@@ -1258,14 +1258,43 @@ export function toolAccessRoutes(
   });
 
   router.post("/companies/:companyId/tools/policy/test", validate(toolPolicyTestRequestSchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    // P6: gate the diagnostic on tools:admin (previously any board principal
+    // could probe/persist), and stamp the authenticated caller so a persisted
+    // simulation can never be forged as another actor.
+    await assertToolsAdmin(req, companyId);
     const input = { ...req.body, companyId };
     const decision = await policySvc.decide(input);
     let auditEvent = null;
     if (input.writeAuditEvent === true) {
       auditEvent = await policySvc.writeAudit(input, decision);
+      const actor = getActorInfo(req);
+      // The tool-audit stream row is attributed to the *simulated* subject
+      // (`input.actor`); record who actually ran the test in the activity_log
+      // spine, attributed server-side to the authenticated caller.
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        action: "tool_access.policy_tested",
+        entityType: "tool_policy",
+        entityId: input.request?.connectionId ?? input.request?.applicationId ?? companyId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        details: {
+          decision: decision.decision,
+          reasonCode: decision.reasonCode,
+          toolName: input.request?.toolName ?? null,
+          connectionId: input.request?.connectionId ?? null,
+          applicationId: input.request?.applicationId ?? null,
+          simulatedActorType: input.actor?.actorType ?? null,
+          simulatedActorId: input.actor?.actorId ?? null,
+          simulatedAgentId: input.actor?.agentId ?? null,
+          testedByAgentId: actor.agentId,
+          testedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      });
     }
     res.json({ decision, auditEvent });
   });

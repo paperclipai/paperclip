@@ -1194,6 +1194,81 @@ export function createToolGatewayService(
     });
   }
 
+  /**
+   * Resolve the authenticated actor for gateway admin / credential-lifecycle
+   * activity_log events. The caller passes only agentId/userId/runId that were
+   * derived server-side from the request (never trusted from the body); this
+   * derives the actorType/actorId columns and preserves the human decider so
+   * `resolveResponsibleUserIdForActivity` can map the event back to a person.
+   */
+  function resolveAdminActor(
+    actor: { agentId?: string | null; userId?: string | null; runId?: string | null } | undefined,
+    companyId: string,
+  ): { actorType: LogActivityInput["actorType"]; actorId: string; agentId: string | null; userId: string | null; runId: string | null } {
+    const agentId = actor?.agentId ?? null;
+    const userId = actor?.userId ?? null;
+    const actorType: LogActivityInput["actorType"] = agentId ? "agent" : userId ? "user" : "system";
+    const actorId = agentId ?? userId ?? companyId;
+    return { actorType, actorId, agentId, userId, runId: actor?.runId ?? null };
+  }
+
+  /**
+   * P5: the runtime supervisor logs the raw `tool_runtime_slot.stopped/started`
+   * transition (actor = agent/system), but the human operator who triggered a
+   * manual stop/restart from the gateway was dropped. Mirror the tool-access
+   * route and emit an `operator_*` activity attributed to that operator.
+   */
+  async function recordRuntimeSlotOperatorAction(
+    companyId: string,
+    slotId: string,
+    action: "stopped" | "restarted",
+    actor: { agentId?: string | null; userId?: string | null; runId?: string | null } | undefined,
+    slot: { runtimeKind?: string | null; status?: string | null; slotKey?: string | null } | null,
+  ) {
+    const operator = resolveAdminActor(actor, companyId);
+    await logActivity(db, {
+      companyId,
+      actorType: operator.actorType,
+      actorId: operator.actorId,
+      action: action === "stopped" ? "tool_runtime_slot.operator_stopped" : "tool_runtime_slot.operator_restarted",
+      entityType: "tool_runtime_slot",
+      entityId: slotId,
+      agentId: operator.agentId,
+      runId: operator.runId,
+      details: {
+        runtimeKind: slot?.runtimeKind ?? null,
+        status: slot?.status ?? null,
+        slotKey: slot?.slotKey ?? null,
+        operatorAgentId: operator.agentId,
+        operatorUserId: operator.userId,
+      },
+    });
+  }
+
+  /**
+   * P9: derive the initiating-actor slice of a secret access context from the
+   * live gateway session so `secret_access_events` records which agent / run /
+   * issue triggered a tool_connection credential resolution instead of the
+   * anonymous `system` consumer. Falls back to `system` when no session is
+   * available (e.g. background health checks).
+   */
+  function secretInitiatorContext(session: ToolGatewaySession | null | undefined): {
+    actorType: "agent" | "user" | "system" | "plugin";
+    actorId: string | null;
+    issueId: string | null;
+    heartbeatRunId: string | null;
+  } {
+    if (!session) {
+      return { actorType: "system", actorId: null, issueId: null, heartbeatRunId: null };
+    }
+    return {
+      actorType: session.actorType ?? (session.agentId ? "agent" : "system"),
+      actorId: session.actorId ?? session.agentId ?? session.gatewayTokenId ?? null,
+      issueId: session.issueId ?? null,
+      heartbeatRunId: session.runId ?? null,
+    };
+  }
+
   async function writeSessionAuthFailure(
     row: typeof toolGatewaySessions.$inferSelect,
     reasonCode: string,
@@ -1381,6 +1456,76 @@ export function createToolGatewayService(
             ...(input.metadata ?? {}),
           }
         : null,
+    });
+  }
+
+  /**
+   * Record a human approve/decline of a tool action-request. The natural
+   * `tool_action_requests` row already stores `decidedBy*`, but P4 of the audit
+   * matrix requires the decision to be visible in the activity_log spine (with
+   * the responsible human resolvable) and mirrored into the tool-call event
+   * stream — declines previously produced neither.
+   */
+  async function recordApprovalResolved(input: {
+    actionRequest: typeof toolActionRequests.$inferSelect;
+    invocation: typeof toolInvocations.$inferSelect;
+    decision: "approved" | "declined";
+    actor: { agentId?: string | null; userId?: string | null };
+  }) {
+    const { actionRequest, invocation, decision } = input;
+    const decidedBy = resolveAdminActor(input.actor, invocation.companyId);
+    await logActivity(db, {
+      companyId: invocation.companyId,
+      actorType: decidedBy.actorType,
+      actorId: decidedBy.actorId,
+      action: "tool_gateway.approval_resolved",
+      entityType: "tool_action_request",
+      entityId: actionRequest.id,
+      agentId: decidedBy.agentId,
+      runId: decidedBy.runId,
+      issueId: invocation.issueId,
+      details: {
+        actionRequestId: actionRequest.id,
+        invocationId: invocation.id,
+        decision,
+        toolName: invocation.toolName,
+        connectionId: invocation.connectionId,
+        catalogEntryId: invocation.catalogEntryId,
+        applicationId: invocation.applicationId,
+        decidedByAgentId: decidedBy.agentId,
+        decidedByUserId: decidedBy.userId,
+        requestedByAgentId: invocation.agentId,
+        requestedByRunId: invocation.runId,
+      },
+    });
+    // The event's actor is the human decider; it stays linked to the requesting
+    // agent's invocation/run so the timeline can join both sides.
+    const decisionSession: ToolGatewaySession = {
+      id: `action-request:${actionRequest.id}`,
+      token: "",
+      companyId: invocation.companyId,
+      agentId: invocation.agentId,
+      runId: invocation.runId,
+      issueId: invocation.issueId,
+      projectId: null,
+      actorType: decidedBy.actorType,
+      actorId: decidedBy.actorId,
+      createdAt: new Date(),
+      expiresAt: new Date(),
+    };
+    await writeToolCallEvent({
+      invocationId: invocation.id,
+      actionRequestId: actionRequest.id,
+      session: decisionSession,
+      eventType: "approval_resolved",
+      outcome: decision === "approved" ? "success" : "denied",
+      toolName: invocation.toolName,
+      policyDecision: decision === "approved" ? "allow" : "deny",
+      reasonCode: decision === "approved" ? "human_approved" : "human_declined",
+      metadata: {
+        decidedByAgentId: decidedBy.agentId,
+        decidedByUserId: decidedBy.userId,
+      },
     });
   }
 
@@ -2338,8 +2483,12 @@ export function createToolGatewayService(
       .where(eq(toolConnections.id, connection.id));
   }
 
-  async function resolveCredentialHeaders(connection: typeof toolConnections.$inferSelect): Promise<Record<string, string>> {
+  async function resolveCredentialHeaders(
+    connection: typeof toolConnections.$inferSelect,
+    session?: ToolGatewaySession | null,
+  ): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
+    const initiator = secretInitiatorContext(session);
     for (const ref of connection.credentialRefs ?? []) {
       if (ref.placement !== "header") continue;
       try {
@@ -2347,7 +2496,7 @@ export function createToolGatewayService(
           consumerType: "tool_connection",
           consumerId: connection.id,
           configPath: `credentials.${ref.name}`,
-          actorType: "system",
+          ...initiator,
         });
         headers[ref.key] = `${ref.prefix ?? ""}${value}`;
       } catch {
@@ -2376,6 +2525,7 @@ export function createToolGatewayService(
       refHash: string;
       requireResolved: boolean;
     },
+    session?: ToolGatewaySession | null,
   ): Promise<ConnectedCredentialVersionSnapshot> {
     const versionSelector = input.versionSelector ?? "latest";
     try {
@@ -2383,7 +2533,7 @@ export function createToolGatewayService(
         consumerType: "tool_connection",
         consumerId: connection.id,
         configPath: input.configPath,
-        actorType: "system",
+        ...secretInitiatorContext(session),
       });
       return {
         refHash: input.refHash,
@@ -2411,6 +2561,7 @@ export function createToolGatewayService(
   async function connectedCredentialVersionSnapshots(
     connection: typeof toolConnections.$inferSelect,
     options: { requireResolved: boolean },
+    session?: ToolGatewaySession | null,
   ): Promise<{
     headerCredentialVersions: ConnectedCredentialVersionSnapshot[];
     credentialSecretVersions: ConnectedCredentialVersionSnapshot[];
@@ -2436,7 +2587,7 @@ export function createToolGatewayService(
           configPath,
         }),
         requireResolved: options.requireResolved,
-      }));
+      }, session));
     }
 
     for (const ref of connection.credentialSecretRefs ?? []) {
@@ -2453,7 +2604,7 @@ export function createToolGatewayService(
           label: typedRef.label ?? null,
         }),
         requireResolved: options.requireResolved,
-      }));
+      }, session));
     }
 
     return { headerCredentialVersions, credentialSecretVersions };
@@ -2752,7 +2903,7 @@ export function createToolGatewayService(
     if (!row) return null;
     const credentialVersions = await connectedCredentialVersionSnapshots(row.connection, {
       requireResolved: options.requireResolvedCredentials === true,
-    });
+    }, session);
     return {
       applicationId: row.application.id,
       applicationKey: row.application.applicationKey ?? null,
@@ -3008,7 +3159,7 @@ export function createToolGatewayService(
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(session, tool);
     const endpoint = await assertRemoteEndpointAllowed(connection.config ?? {});
-    const credentialHeaders = await resolveCredentialHeaders(connection);
+    const credentialHeaders = await resolveCredentialHeaders(connection, session);
     const { headers, summary: headerSummary } = buildRemoteHeaders({
       session,
       connection,
@@ -4583,6 +4734,7 @@ export function createToolGatewayService(
       companyId: string;
       gatewayId: string;
       body: UpdateToolMcpGateway;
+      actor?: { agentId?: string | null; userId?: string | null; runId?: string | null };
     }): Promise<ToolMcpGatewayWithTokens> {
       const [existing] = await db
         .select()
@@ -4635,6 +4787,32 @@ export function createToolGatewayService(
           })
           .onConflictDoNothing();
       }
+      const changedFields = (Object.keys(input.body) as Array<keyof UpdateToolMcpGateway>)
+        .filter((key) => input.body[key] !== undefined)
+        .map((key) => String(key));
+      // Policy / credential-surface changes are the highest-signal reconfig;
+      // flag them so audit consumers can prioritize security-relevant edits.
+      // (Key is deliberately not "auth*" — activity_log redacts such values.)
+      const policySurfaceFields = ["authConfig", "headerPolicy", "metadataPolicy", "profileId", "defaultProfileMode", "status", "onDemandToolsConfig"];
+      const actorFields = resolveAdminActor(input.actor, input.companyId);
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: actorFields.actorType,
+        actorId: actorFields.actorId,
+        action: "tool_gateway.gateway_reconfigured",
+        entityType: "tool_mcp_gateway",
+        entityId: input.gatewayId,
+        agentId: actorFields.agentId,
+        runId: actorFields.runId,
+        details: {
+          gatewayId: input.gatewayId,
+          gatewayName: updated.name,
+          changedFields,
+          policySurfaceChanged: policySurfaceFields.some((field) => changedFields.includes(field)),
+          reconfiguredByAgentId: actorFields.agentId,
+          reconfiguredByUserId: actorFields.userId,
+        },
+      });
       return getGatewayWithTokens(input.companyId, updated.id);
     },
 
@@ -4679,10 +4857,40 @@ export function createToolGatewayService(
           updatedAt: now,
         })
         .returning();
+      const mintedBy = resolveAdminActor(input.actor, input.companyId);
+      // The token row id is the audited entity so it survives detail redaction
+      // (activity_log redacts any `token*` detail key). The raw secret is never
+      // logged — only its id/prefix.
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: mintedBy.actorType,
+        actorId: mintedBy.actorId,
+        action: "tool_gateway.token_minted",
+        entityType: "tool_mcp_gateway_token",
+        entityId: tokenId,
+        agentId: mintedBy.agentId,
+        runId: mintedBy.runId,
+        details: {
+          gatewayId: input.gatewayId,
+          gatewayName: gateway.name,
+          tokenPrefix,
+          subjectType: row.subjectType,
+          subjectId: row.subjectId,
+          allowedActions: row.allowedActions,
+          expiresAt: row.expiresAt?.toISOString() ?? null,
+          mintedByAgentId: mintedBy.agentId,
+          mintedByUserId: mintedBy.userId,
+        },
+      });
       return { ...toGatewayToken(row), token };
     },
 
-    async revokeNamedGatewayToken(input: { companyId: string; tokenId: string; revokedAt?: Date }): Promise<ToolMcpGatewayToken> {
+    async revokeNamedGatewayToken(input: {
+      companyId: string;
+      tokenId: string;
+      revokedAt?: Date;
+      actor?: { agentId?: string | null; userId?: string | null; runId?: string | null };
+    }): Promise<ToolMcpGatewayToken> {
       const now = input.revokedAt ?? new Date();
       const [row] = await db
         .update(toolMcpGatewayTokens)
@@ -4690,6 +4898,28 @@ export function createToolGatewayService(
         .where(and(eq(toolMcpGatewayTokens.companyId, input.companyId), eq(toolMcpGatewayTokens.id, input.tokenId)))
         .returning();
       if (!row) throw new ToolGatewayHttpError(404, "MCP gateway token not found", "gateway_token_not_found");
+      const revokedBy = resolveAdminActor(input.actor, input.companyId);
+      // The token row id is the audited entity so revocation stays attributable
+      // even though `token*` detail keys are redacted in activity_log.
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: revokedBy.actorType,
+        actorId: revokedBy.actorId,
+        action: "tool_gateway.token_revoked",
+        entityType: "tool_mcp_gateway_token",
+        entityId: row.id,
+        agentId: revokedBy.agentId,
+        runId: revokedBy.runId,
+        details: {
+          gatewayId: row.gatewayId,
+          tokenPrefix: row.tokenPrefix,
+          subjectType: row.subjectType,
+          subjectId: row.subjectId,
+          revokedAt: now.toISOString(),
+          revokedByAgentId: revokedBy.agentId,
+          revokedByUserId: revokedBy.userId,
+        },
+      });
       return toGatewayToken(row);
     },
 
@@ -5220,6 +5450,12 @@ export function createToolGatewayService(
         .set({ approvalState: "approved", updatedAt: now })
         .where(eq(toolInvocations.id, invocation.id));
       await reflectToolActionInteractionLifecycle({ actionRequestId: updated.id, status: "approved" });
+      await recordApprovalResolved({
+        actionRequest: updated,
+        invocation,
+        decision: "approved",
+        actor: input.actor,
+      });
       // A test-tab ask-first request has no agent run to carry out the parked
       // call, so approving it is what runs it. Execute against the signed
       // arguments and record the result on the invocation for the live panel.
@@ -5290,6 +5526,12 @@ export function createToolGatewayService(
         .update(toolInvocations)
         .set({ approvalState: "rejected", updatedAt: now })
         .where(eq(toolInvocations.id, invocation.id));
+      await recordApprovalResolved({
+        actionRequest: updated,
+        invocation,
+        decision: "declined",
+        actor: input.actor,
+      });
       return updated;
     },
 
@@ -6226,15 +6468,17 @@ export function createToolGatewayService(
     async stopRuntimeSlot(input: {
       companyId: string;
       slotId: string;
-      actor?: { agentId?: string | null; runId?: string | null };
+      actor?: { agentId?: string | null; userId?: string | null; runId?: string | null };
     }) {
       try {
-        return await runtimeSupervisor.stopSlot({
+        const slot = await runtimeSupervisor.stopSlot({
           companyId: input.companyId,
           slotId: input.slotId,
           agentId: input.actor?.agentId ?? null,
           runId: input.actor?.runId ?? null,
         });
+        await recordRuntimeSlotOperatorAction(input.companyId, input.slotId, "stopped", input.actor, slot);
+        return slot;
       } catch (err) {
         if (err instanceof ToolRuntimeSupervisorError) {
           throw new ToolGatewayHttpError(err.status, err.message, err.reasonCode, err.details);
@@ -6246,15 +6490,17 @@ export function createToolGatewayService(
     async restartRuntimeSlot(input: {
       companyId: string;
       slotId: string;
-      actor?: { agentId?: string | null; runId?: string | null };
+      actor?: { agentId?: string | null; userId?: string | null; runId?: string | null };
     }) {
       try {
-        return await runtimeSupervisor.restartSlot({
+        const slot = await runtimeSupervisor.restartSlot({
           companyId: input.companyId,
           slotId: input.slotId,
           agentId: input.actor?.agentId ?? null,
           runId: input.actor?.runId ?? null,
         });
+        await recordRuntimeSlotOperatorAction(input.companyId, input.slotId, "restarted", input.actor, slot);
+        return slot;
       } catch (err) {
         if (err instanceof ToolRuntimeSupervisorError) {
           throw new ToolGatewayHttpError(err.status, err.message, err.reasonCode, err.details);
