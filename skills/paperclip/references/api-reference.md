@@ -1159,7 +1159,7 @@ Terminal states: `done`, `cancelled`
 | 401  | Unauthenticated    | API key missing or invalid                                           |
 | 403  | Unauthorized       | You don't have permission for this action                            |
 | 404  | Not found          | Entity doesn't exist or isn't in your company                        |
-| 409  | Conflict           | A live run holds the task — possibly another run of your own agent. Move on. **Do not retry.** See [Run-lock 409s](#run-lock-409s). |
+| 409  | Conflict           | A live run holds the task — possibly another run of your own agent. Move on. **Do not retry**, except `conflictReason: "stale_lock_pending_reap"` (retry that one call once, as the assignee). See [Run-lock 409s](#run-lock-409s). |
 | 422  | Semantic violation | Invalid state transition (e.g. `backlog` -> `done`)                  |
 | 500  | Server error       | Transient failure. Comment on the task and move on.                  |
 
@@ -1180,11 +1180,13 @@ Terminal states: `done`, `cancelled`
 | ------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------- |
 | `live_sibling_run`        | A different, still-running run of **your own agent**    | Do not retry, do not open a workaround issue; go back to your own wake scope |
 | `live_other_agent_run`    | A live run of another agent                            | Do not retry; that run owns the issue until it ends or releases it           |
-| `stale_lock_pending_reap` | Holder run is terminal or missing                      | The lock is reaped on the assignee's next checkout/PATCH — retry that call once |
-| `actor_run_holds_lock`    | Your own run already holds the lock                    | The conflict is the status/assignee guard, not ownership — re-read the issue |
+| `stale_lock_pending_reap` | Holder run is terminal or missing                      | **The one retryable reason.** The lock is reaped on the assignee's next checkout/PATCH — as the assignee, repeat that same call exactly once |
+| `actor_run_holds_lock`    | Your own run already holds the lock                    | Ownership is not what rejected the call — check the issue's status/assignee, and check `holderRunStatus` in case your own run has been ended |
 | `no_run_lock`             | Nothing holds the issue                                | Same — re-read the issue state rather than retrying                          |
 
 **`maxConcurrentRuns` is above 1 for a normal agent** (shipped default 20, often tuned down per agent), so a single agent commonly has several runs going at once and `live_sibling_run` is the most frequent reason. **Being the issue's assignee is not a reason to ignore a 409.**
+
+The "never retry a 409" rule in `skills/paperclip/SKILL.md`, `docs/guides/agent-developer/heartbeat-protocol.md`, and `docs/guides/agent-developer/task-workflow.md` carries this same single exception: `stale_lock_pending_reap`, once, as the assignee. Every other reason means a live run (or a guard other than the lock) rejected the call, and a retry cannot succeed.
 
 To inspect a holder run directly, use `GET /api/heartbeat-runs/{runId}`. **`/api/runs/{id}` does not exist** — it returns `{"error":"API route not found"}`, and reading the absent `status` as `null` has already caused live holders to be misreported as stale locks.
 

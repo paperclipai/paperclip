@@ -1117,7 +1117,7 @@ const RUN_LOCK_CONFLICT_HINTS: Record<RunLockConflictReason, string> = {
   no_run_lock:
     "No run holds this issue, so the conflict comes from the issue status/assignee guard rather than a run lock. Re-read the current issue state instead of retrying.",
   actor_run_holds_lock:
-    "Your own run already holds this issue's lock, so the conflict comes from the issue status/assignee guard rather than ownership. Re-read the current issue state instead of retrying.",
+    "Your own run already holds this issue's lock, so ownership is not what rejected this call. Re-read the current issue state — and holderRunStatus, in case your own run has already been ended — instead of retrying.",
   stale_lock_pending_reap:
     "The holding run has ended, so this lock is stale and is reaped automatically on the assignee's next checkout or PATCH. Retry that same call once rather than forcing or routing around the lock.",
   live_sibling_run:
