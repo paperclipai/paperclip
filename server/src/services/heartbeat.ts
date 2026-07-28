@@ -133,6 +133,8 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { projectService } from "./projects.js";
+import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -2118,6 +2120,142 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   const preferredIndex = rows.findIndex((row) => row.id === preferredWorkspaceId);
   if (preferredIndex <= 0) return rows;
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
+}
+
+/**
+ * Environment flag (kill-switch, default OFF) that gates whether run preparation
+ * consumes the multi-project referenced-project set produced by
+ * {@link resolveRunReferencedProjects}. While unset/off, a run materializes only the
+ * anchor project's workspace exactly as before — the referenced set is inert.
+ */
+export const MULTI_PROJECT_WORKSPACE_SYNC_ENV = "PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC";
+
+export function isMultiProjectWorkspaceSyncEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return isTruthyRuntimeEnvValue(env[MULTI_PROJECT_WORKSPACE_SYNC_ENV]);
+}
+
+/**
+ * Upper bound on how many additional (mentioned) projects a single run may materialize
+ * beyond the anchor. Bounds the fan-out of per-project authorization and workspace prep.
+ */
+export const MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS = 10;
+
+type RunReferencedProjectRecord = Awaited<
+  ReturnType<ReturnType<typeof projectService>["listByIds"]>
+>[number];
+
+export interface RunReferencedProject {
+  projectId: string;
+  project: RunReferencedProjectRecord;
+}
+
+export interface ResolvedRunReferencedProjects {
+  /** The anchor (primary) project — retains the existing git-worktree run path; never re-authorized here. */
+  anchor: RunReferencedProject | null;
+  /** Additional read-only referenced projects that each passed per-project `project:read` authorization. */
+  additional: RunReferencedProject[];
+  /** Human-readable warnings for every referenced project that was dropped (unavailable, unauthorized, or capped). */
+  warnings: string[];
+}
+
+export interface ResolveRunReferencedProjectsOptions {
+  companyId: string;
+  /** The run actor; every additional project is authorized against this actor. */
+  actor: AuthorizationActor;
+  issues: Pick<ReturnType<typeof issueService>, "findMentionedProjectIds">;
+  projects: Pick<ReturnType<typeof projectService>, "listByIds">;
+  access: Pick<ReturnType<typeof authorizationService>, "decide">;
+  /** Override the additional-project cap (defaults to {@link MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS}). */
+  maxAdditionalProjects?: number;
+}
+
+/**
+ * Produce the deduped, company-scoped, per-project-authorized referenced-project set
+ * `[anchor, ...additional]` for a run.
+ *
+ * The anchor keeps its existing issue/run authorization path and is never re-authorized or
+ * inherited by the additional projects. Every additional (mentioned) project must independently
+ * pass a fail-closed `project:read` authorization check against the run actor before it is
+ * admitted — any non-`allowed` decision, company mismatch, missing/unknown project, or thrown
+ * authorization error drops the project and appends a warning (the run always continues).
+ */
+export async function resolveRunReferencedProjects(
+  issueId: string,
+  anchorProjectId: string | null,
+  opts: ResolveRunReferencedProjectsOptions,
+): Promise<ResolvedRunReferencedProjects> {
+  const { companyId, actor, issues, projects, access } = opts;
+  const warnings: string[] = [];
+  const cap = Math.max(0, opts.maxAdditionalProjects ?? MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS);
+
+  // Company-scoped, deduped, order-preserving mention set (title + description + comment bodies).
+  // Run prep counts mentions in comments, so comment bodies are always included.
+  const mentionedIds = await issues.findMentionedProjectIds(issueId, { includeCommentBodies: true });
+
+  // Anchor wins: it keeps the full git-worktree path and is never re-authorized here, so drop it
+  // from the mention set. Preserve mention order while deduping the remaining candidates.
+  const candidateIds: string[] = [];
+  const seen = new Set<string>(anchorProjectId ? [anchorProjectId] : []);
+  for (const projectId of mentionedIds) {
+    if (seen.has(projectId)) continue;
+    seen.add(projectId);
+    candidateIds.push(projectId);
+  }
+
+  // Bound the number of additional projects a single run may materialize.
+  let boundedCandidateIds = candidateIds;
+  if (boundedCandidateIds.length > cap) {
+    const droppedCount = boundedCandidateIds.length - cap;
+    boundedCandidateIds = boundedCandidateIds.slice(0, cap);
+    warnings.push(
+      `Only the first ${cap} referenced project(s) will be synced for this run; ${droppedCount} additional referenced project(s) were skipped.`,
+    );
+  }
+
+  // Hydrate the anchor plus every candidate in a single company-scoped batch.
+  const hydrateIds = anchorProjectId ? [anchorProjectId, ...boundedCandidateIds] : boundedCandidateIds;
+  const hydrated = await projects.listByIds(companyId, hydrateIds);
+  const byId = new Map(hydrated.map((project) => [project.id, project]));
+
+  const anchorRecord = anchorProjectId ? byId.get(anchorProjectId) ?? null : null;
+  const anchor: RunReferencedProject | null =
+    anchorRecord && anchorProjectId ? { projectId: anchorProjectId, project: anchorRecord } : null;
+
+  const additional: RunReferencedProject[] = [];
+  for (const projectId of boundedCandidateIds) {
+    const project = byId.get(projectId);
+    // Fail-closed: a mention that did not resolve inside this company (foreign-company, deleted, or
+    // malformed id) is dropped before authorization is ever consulted.
+    if (!project || project.companyId !== companyId) {
+      warnings.push(`Referenced project ${projectId} was skipped because it is not available in this company.`);
+      continue;
+    }
+
+    let allowed = false;
+    try {
+      const decision = await access.decide({
+        actor,
+        action: "project:read",
+        resource: { type: "project", companyId, projectId },
+        scope: { projectId },
+      });
+      allowed = decision.allowed === true;
+    } catch {
+      // Fail-closed: an authorization error never admits a project.
+      allowed = false;
+    }
+
+    if (!allowed) {
+      warnings.push(`Referenced project ${projectId} was skipped because it is not authorized for this run.`);
+      continue;
+    }
+
+    additional.push({ projectId, project });
+  }
+
+  return { anchor, additional, warnings };
 }
 
 function readNonEmptyString(value: unknown): string | null {

@@ -41,6 +41,15 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../services/execution-workspace-policy.ts";
+import { projectService } from "../services/projects.ts";
+import {
+  isMultiProjectWorkspaceSyncEnabled,
+  MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS,
+  MULTI_PROJECT_WORKSPACE_SYNC_ENV,
+  resolveRunReferencedProjects,
+  type ResolveRunReferencedProjectsOptions,
+} from "../services/heartbeat.ts";
+import type { AuthorizationActor, AuthorizationDecision } from "../services/authorization.ts";
 import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, type IssueWorkMode } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -4842,6 +4851,362 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
       titleProjectId,
       commentProjectId,
     ]);
+  });
+
+  it("returns multiple same-company mentions in order, deduped", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstProjectId = randomUUID();
+    const secondProjectId = randomUUID();
+    const thirdProjectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values([
+      { id: firstProjectId, companyId, name: "First project", status: "in_progress" },
+      { id: secondProjectId, companyId, name: "Second project", status: "in_progress" },
+      { id: thirdProjectId, companyId, name: "Third project", status: "in_progress" },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title:
+        `See [First](${buildProjectMentionHref(firstProjectId)}) and ` +
+        `[Second](${buildProjectMentionHref(secondProjectId)})`,
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      // Repeats the first mention (deduped) and introduces a third.
+      body:
+        `Also [First again](${buildProjectMentionHref(firstProjectId)}) and ` +
+        `[Third](${buildProjectMentionHref(thirdProjectId)})`,
+    });
+
+    expect(await svc.findMentionedProjectIds(issueId)).toEqual([
+      firstProjectId,
+      secondProjectId,
+      thirdProjectId,
+    ]);
+  });
+
+  it("filters out a mention from another company", async () => {
+    const companyId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const issueId = randomUUID();
+    const sameCompanyProjectId = randomUUID();
+    const foreignProjectId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: foreignCompanyId,
+        name: "Other company",
+        issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(projects).values([
+      { id: sameCompanyProjectId, companyId, name: "Same-company project", status: "in_progress" },
+      { id: foreignProjectId, companyId: foreignCompanyId, name: "Foreign project", status: "in_progress" },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title:
+        `Ours [Same](${buildProjectMentionHref(sameCompanyProjectId)}) and ` +
+        `theirs [Foreign](${buildProjectMentionHref(foreignProjectId)})`,
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(await svc.findMentionedProjectIds(issueId)).toEqual([sameCompanyProjectId]);
+  });
+});
+
+describe("multi-project workspace sync kill-switch", () => {
+  it("is OFF by default and enabled only by truthy env values", () => {
+    expect(isMultiProjectWorkspaceSyncEnabled({})).toBe(false);
+    expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "" })).toBe(false);
+    expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "false" })).toBe(false);
+    expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "0" })).toBe(false);
+    expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "true" })).toBe(true);
+    expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "1" })).toBe(true);
+    expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "on" })).toBe(true);
+  });
+});
+
+describeEmbeddedPostgres("resolveRunReferencedProjects", () => {
+  let db!: ReturnType<typeof createDb>;
+  let issuesSvc!: ReturnType<typeof issueService>;
+  let projectsSvc!: ReturnType<typeof projectService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-referenced-projects-");
+    db = createDb(tempDb.connectionString);
+    issuesSvc = issueService(db);
+    projectsSvc = projectService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  const buildActor = (companyId: string): AuthorizationActor => ({
+    type: "agent",
+    agentId: randomUUID(),
+    companyId,
+    source: "agent_key",
+  });
+
+  const decision = (allowed: boolean): AuthorizationDecision => ({
+    allowed,
+    action: "project:read",
+    reason: allowed ? "allow_company_agent" : "deny_company_boundary",
+    explanation: "test decision",
+  });
+
+  // Records every project:read authorization call and answers via the supplied resolver.
+  const recordingAccess = (
+    resolve: (projectId: string) => AuthorizationDecision | Promise<AuthorizationDecision>,
+  ) => {
+    const decidedProjectIds: string[] = [];
+    const access: ResolveRunReferencedProjectsOptions["access"] = {
+      decide: async (input) => {
+        const resource = input.resource;
+        const projectId = resource.type === "project" ? resource.projectId ?? "" : "";
+        decidedProjectIds.push(projectId);
+        return resolve(projectId);
+      },
+    };
+    return { decidedProjectIds, access };
+  };
+
+  const seedCompany = async (companyId: string) => {
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+  };
+
+  const seedIssueWithMentions = async (input: {
+    companyId: string;
+    issueId: string;
+    anchorProjectId: string | null;
+    mentionedProjectIds: string[];
+  }) => {
+    const mentionMarkup = input.mentionedProjectIds
+      .map((projectId, index) => `[Ref${index}](${buildProjectMentionHref(projectId)})`)
+      .join(" ");
+    await db.insert(issues).values({
+      id: input.issueId,
+      companyId: input.companyId,
+      projectId: input.anchorProjectId,
+      title: `Referencing ${mentionMarkup}`,
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+  };
+
+  const baseOpts = (
+    companyId: string,
+    access: ResolveRunReferencedProjectsOptions["access"],
+    overrides?: Partial<ResolveRunReferencedProjectsOptions>,
+  ): ResolveRunReferencedProjectsOptions => ({
+    companyId,
+    actor: buildActor(companyId),
+    issues: issuesSvc,
+    projects: projectsSvc,
+    access,
+    ...overrides,
+  });
+
+  it("admits a same-company project that passes project:read", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorProjectId = randomUUID();
+    const mentionedProjectId = randomUUID();
+
+    await seedCompany(companyId);
+    await db.insert(projects).values([
+      { id: anchorProjectId, companyId, name: "Anchor", status: "in_progress" },
+      { id: mentionedProjectId, companyId, name: "Mentioned", status: "in_progress" },
+    ]);
+    await seedIssueWithMentions({ companyId, issueId, anchorProjectId, mentionedProjectIds: [mentionedProjectId] });
+
+    const { decidedProjectIds, access } = recordingAccess(() => decision(true));
+    const result = await resolveRunReferencedProjects(issueId, anchorProjectId, baseOpts(companyId, access));
+
+    expect(result.anchor?.projectId).toBe(anchorProjectId);
+    expect(result.additional.map((entry) => entry.projectId)).toEqual([mentionedProjectId]);
+    expect(result.warnings).toEqual([]);
+    // The anchor is never re-authorized; only the additional project is checked.
+    expect(decidedProjectIds).toEqual([mentionedProjectId]);
+  });
+
+  it("dedupes the anchor against the mentioned set (anchor wins)", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorProjectId = randomUUID();
+    const mentionedProjectId = randomUUID();
+
+    await seedCompany(companyId);
+    await db.insert(projects).values([
+      { id: anchorProjectId, companyId, name: "Anchor", status: "in_progress" },
+      { id: mentionedProjectId, companyId, name: "Mentioned", status: "in_progress" },
+    ]);
+    // The anchor is also @-mentioned in the body; it must not appear in `additional`.
+    await seedIssueWithMentions({
+      companyId,
+      issueId,
+      anchorProjectId,
+      mentionedProjectIds: [anchorProjectId, mentionedProjectId],
+    });
+
+    const { decidedProjectIds, access } = recordingAccess(() => decision(true));
+    const result = await resolveRunReferencedProjects(issueId, anchorProjectId, baseOpts(companyId, access));
+
+    expect(result.anchor?.projectId).toBe(anchorProjectId);
+    expect(result.additional.map((entry) => entry.projectId)).toEqual([mentionedProjectId]);
+    expect(decidedProjectIds).not.toContain(anchorProjectId);
+  });
+
+  it("drops a foreign-company project before authorization", async () => {
+    const companyId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorProjectId = randomUUID();
+    const foreignProjectId = randomUUID();
+
+    await seedCompany(companyId);
+    await seedCompany(foreignCompanyId);
+    await db.insert(projects).values([
+      { id: anchorProjectId, companyId, name: "Anchor", status: "in_progress" },
+      { id: foreignProjectId, companyId: foreignCompanyId, name: "Foreign", status: "in_progress" },
+    ]);
+    await seedIssueWithMentions({ companyId, issueId, anchorProjectId, mentionedProjectIds: [foreignProjectId] });
+
+    const { decidedProjectIds, access } = recordingAccess(() => decision(true));
+    const result = await resolveRunReferencedProjects(issueId, anchorProjectId, baseOpts(companyId, access));
+
+    expect(result.additional).toEqual([]);
+    // Company scoping drops the foreign project before any authorization call is made.
+    expect(decidedProjectIds).toEqual([]);
+  });
+
+  it("drops and warns on a project that fails per-project authorization", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorProjectId = randomUUID();
+    const deniedProjectId = randomUUID();
+
+    await seedCompany(companyId);
+    await db.insert(projects).values([
+      { id: anchorProjectId, companyId, name: "Anchor", status: "in_progress" },
+      { id: deniedProjectId, companyId, name: "Denied", status: "in_progress" },
+    ]);
+    await seedIssueWithMentions({ companyId, issueId, anchorProjectId, mentionedProjectIds: [deniedProjectId] });
+
+    const { access } = recordingAccess((projectId) => decision(projectId !== deniedProjectId));
+    const result = await resolveRunReferencedProjects(issueId, anchorProjectId, baseOpts(companyId, access));
+
+    expect(result.additional).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain(deniedProjectId);
+    expect(result.warnings[0]).toContain("not authorized");
+  });
+
+  it("fail-closed drops a project when the authorization service throws", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorProjectId = randomUUID();
+    const explodingProjectId = randomUUID();
+
+    await seedCompany(companyId);
+    await db.insert(projects).values([
+      { id: anchorProjectId, companyId, name: "Anchor", status: "in_progress" },
+      { id: explodingProjectId, companyId, name: "Exploding", status: "in_progress" },
+    ]);
+    await seedIssueWithMentions({ companyId, issueId, anchorProjectId, mentionedProjectIds: [explodingProjectId] });
+
+    const access: ResolveRunReferencedProjectsOptions["access"] = {
+      decide: async () => {
+        throw new Error("authorization backend unavailable");
+      },
+    };
+    const result = await resolveRunReferencedProjects(issueId, anchorProjectId, baseOpts(companyId, access));
+
+    // The run continues; the un-authorizable project is dropped with a warning rather than throwing.
+    expect(result.anchor?.projectId).toBe(anchorProjectId);
+    expect(result.additional).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain(explodingProjectId);
+    expect(result.warnings[0]).toContain("not authorized");
+  });
+
+  it("caps the number of additional projects and warns about the overflow", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorProjectId = randomUUID();
+    const mentionedProjectIds = [randomUUID(), randomUUID(), randomUUID()];
+
+    await seedCompany(companyId);
+    await db.insert(projects).values([
+      { id: anchorProjectId, companyId, name: "Anchor", status: "in_progress" },
+      ...mentionedProjectIds.map((id, index) => ({
+        id,
+        companyId,
+        name: `Mentioned ${index}`,
+        status: "in_progress" as const,
+      })),
+    ]);
+    await seedIssueWithMentions({ companyId, issueId, anchorProjectId, mentionedProjectIds });
+
+    const { decidedProjectIds, access } = recordingAccess(() => decision(true));
+    const result = await resolveRunReferencedProjects(
+      issueId,
+      anchorProjectId,
+      baseOpts(companyId, access, { maxAdditionalProjects: 2 }),
+    );
+
+    expect(result.additional.map((entry) => entry.projectId)).toEqual(mentionedProjectIds.slice(0, 2));
+    // The capped project is never hydrated or authorized.
+    expect(decidedProjectIds).toEqual(mentionedProjectIds.slice(0, 2));
+    expect(result.warnings.some((warning) => warning.includes("Only the first 2"))).toBe(true);
+    expect(MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS).toBeGreaterThan(0);
   });
 });
 
