@@ -279,7 +279,8 @@ async function runScenarioWithBrowserRetry(baseURL: string, seedData: Seed, prof
     try {
       return await runScenario(sampleBrowser, baseURL, seedData, profile, scenario, run);
     } catch (error) {
-      const browserClosed = error instanceof Error && /Target page, context or browser has been closed/.test(error.message);
+      const browserClosed = error instanceof Error
+        && (/Target page, context or browser has been closed/.test(error.message) || /Channel closed/.test(error.message));
       if (!browserClosed || attempt === 2) throw error;
     } finally {
       await sampleBrowser.close().catch(() => undefined);
