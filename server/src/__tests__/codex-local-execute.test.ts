@@ -39,6 +39,7 @@ const payload = {
     : null,
   paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
+  paperclipRuntimeApiUrl: process.env.PAPERCLIP_RUNTIME_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
   paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
   paperclipEnvKeys: Object.keys(process.env)
@@ -72,6 +73,7 @@ type CapturePayload = {
   codexConfigContents?: string | null;
   paperclipWakePayloadJson: string | null;
   paperclipApiUrl?: string | null;
+  paperclipRuntimeApiUrl?: string | null;
   paperclipApiKey?: string | null;
   paperclipApiBridgeMode?: string | null;
   paperclipEnvKeys: string[];
@@ -869,7 +871,7 @@ describe("codex execute", () => {
     }
   });
 
-  it("rejects a Cloudflare-style 302 candidate and exports a different JSON Paperclip API URL", async () => {
+  it("rejects a Cloudflare-style 302 candidate and exports a different JSON Paperclip API URL from fallback workspace runs", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-preflight-redirect-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
@@ -941,7 +943,7 @@ describe("codex execute", () => {
         context: {
           taskId: "issue-1",
           paperclipWorkspace: {
-            source: "project_primary",
+            source: "heartbeat.claude_codex_fallback",
             cwd: workspace,
           },
         },
@@ -954,7 +956,9 @@ describe("codex execute", () => {
       expect(result.exitCode).toBe(0);
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.paperclipApiUrl).toBe(reachableApiUrl);
+      expect(capture.paperclipRuntimeApiUrl).toBe(reachableApiUrl);
       expect(capture.paperclipApiUrl).not.toBe(gatedApiUrl);
+      expect(capture.paperclipRuntimeApiUrl).not.toBe(gatedApiUrl);
       expect(logs).toContainEqual(
         expect.objectContaining({
           stream: "stdout",

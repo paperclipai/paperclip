@@ -165,6 +165,13 @@ export interface PreparePaperclipControlPlaneEnvResult {
   reasons: string[];
 }
 
+function applySelectedPaperclipApiUrl(env: Record<string, string>, url: string | null | undefined) {
+  const selectedUrl = normalizePaperclipApiOrigin(url) ?? url?.trim() ?? "";
+  if (!selectedUrl) return;
+  env.PAPERCLIP_API_URL = selectedUrl;
+  env.PAPERCLIP_RUNTIME_API_URL = selectedUrl;
+}
+
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 
 // 4-hour wall-clock backstop for sandbox-backed adapter runs. This is a
@@ -500,7 +507,7 @@ export async function preparePaperclipControlPlaneEnvForAdapterRun(input: {
       const failOpenUrl = selectFailOpenPaperclipApiUrl(input.env);
       const changed = failOpenUrl !== previousUrl;
       if (failOpenUrl) {
-        input.env.PAPERCLIP_API_URL = failOpenUrl;
+        applySelectedPaperclipApiUrl(input.env, failOpenUrl);
       }
       await onLog(
         "stdout",
@@ -541,7 +548,7 @@ export async function preparePaperclipControlPlaneEnvForAdapterRun(input: {
 
   const previousUrl = input.env.PAPERCLIP_API_URL ?? null;
   const changed = preflight.url !== previousUrl;
-  input.env.PAPERCLIP_API_URL = preflight.url;
+  applySelectedPaperclipApiUrl(input.env, preflight.url);
   await onLog(
     "stdout",
     changed
