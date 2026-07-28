@@ -163,13 +163,16 @@ function readDateMs(value: unknown): number | null {
   return Number.isNaN(time) ? null : time;
 }
 
-function monitorFromIssue(issue: IssueLivenessIssueInput) {
+function monitorFromIssue(issue: Pick<IssueLivenessIssueInput, "executionPolicy" | "executionState">) {
   const policyMonitor = readRecord(readRecord(issue.executionPolicy)?.monitor);
   const stateMonitor = readRecord(readRecord(issue.executionState)?.monitor);
   return { policyMonitor, stateMonitor };
 }
 
-function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+export function hasScheduledMonitor(
+  issue: Pick<IssueLivenessIssueInput, "executionPolicy" | "executionState" | "monitorNextCheckAt" | "monitorAttemptCount">,
+  nowMs: number,
+) {
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 

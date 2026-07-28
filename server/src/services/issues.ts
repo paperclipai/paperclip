@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -105,7 +105,11 @@ import {
   parseIssueGraphLivenessIncidentKey,
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
-import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import {
+  classifyIssueGraphLiveness,
+  hasScheduledMonitor,
+  type IssueLivenessFinding,
+} from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
@@ -2324,7 +2328,38 @@ async function listIssueBlockerAttentionMap(
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
   if (explicitWaitCandidateIds.length > 0) {
+    // A scheduled monitor is a wake path the harness owns: the issue re-enters
+    // its assignee's queue at monitorNextCheckAt without any human action. The
+    // recovery liveness classifier already counts it (hasScheduledMonitor), so
+    // blocker attention has to agree or it flags actively monitored blockers.
+    const monitorNowMs = Date.now();
     for (const chunk of chunkList(explicitWaitCandidateIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      const monitorRows: Array<{
+        id: string;
+        executionPolicy: Record<string, unknown> | null;
+        executionState: Record<string, unknown> | null;
+        monitorNextCheckAt: Date | null;
+        monitorAttemptCount: number | null;
+      }> = await dbOrTx
+        .select({
+          id: issues.id,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.id, chunk),
+            isNotNull(issues.monitorNextCheckAt),
+          ),
+        );
+      for (const row of monitorRows) {
+        if (hasScheduledMonitor(row, monitorNowMs)) explicitWaitingIssueIds.add(row.id);
+      }
+
       const interactionRows: Array<{ issueId: string }> = await dbOrTx
         .select({ issueId: issueThreadInteractions.issueId })
         .from(issueThreadInteractions)
