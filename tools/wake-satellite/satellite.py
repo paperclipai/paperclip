@@ -74,7 +74,8 @@ def handle_interaction(frames, deps, tenant=None, history=None):
             break
         text = _transcribe(recorded, deps)
         result = jarvis_brain.respond(text, tenant, _resolve_token(deps),
-                                      deps["chat_model"], history=history)
+                                      deps["chat_model"], history=history,
+                                      source="per Sprache")
         answer = result["answer"]
         if result["kind"] in ("chat", "lookup", "issue"):
             history = _remember(history, text, answer)

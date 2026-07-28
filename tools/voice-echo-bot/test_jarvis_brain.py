@@ -63,3 +63,31 @@ def test_llm_down_and_issue_fails(monkeypatch):
     r = jarvis_brain.respond("mach xyz", TENANT, "tok", "m")
     assert r["kind"] == "unparsed_fail"
     assert "NICHT angekommen" in r["answer"]
+
+
+def test_unparsed_default_source_is_telegram(monkeypatch):
+    """Ohne explizites `source` (Telegram-Bot-Aufrufweg) muss der alte
+    Wortlaut exakt erhalten bleiben."""
+    def boom(msgs, model=None): raise llm.LlmError("weg")
+    monkeypatch.setattr(jarvis_brain.llm, "chat", boom)
+    captured = {}
+    def fake_create(token, company, agent, title, description):
+        captured["description"] = description
+        return {"identifier": "WHI-10"}
+    monkeypatch.setattr(jarvis_brain, "create_issue", fake_create)
+    jarvis_brain.respond("mach xyz", TENANT, "tok", "m")
+    assert captured["description"].startswith("Von Walter per Telegram diktiert")
+
+
+def test_unparsed_source_per_sprache(monkeypatch):
+    """Der Wake-Satellit übergibt source='per Sprache' und muss das auch im
+    Beschreibungstext wiederfinden."""
+    def boom(msgs, model=None): raise llm.LlmError("weg")
+    monkeypatch.setattr(jarvis_brain.llm, "chat", boom)
+    captured = {}
+    def fake_create(token, company, agent, title, description):
+        captured["description"] = description
+        return {"identifier": "WHI-11"}
+    monkeypatch.setattr(jarvis_brain, "create_issue", fake_create)
+    jarvis_brain.respond("mach xyz", TENANT, "tok", "m", source="per Sprache")
+    assert captured["description"].startswith("Von Walter per Sprache diktiert")

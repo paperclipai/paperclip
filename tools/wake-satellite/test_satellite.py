@@ -16,7 +16,7 @@ def test_single_turn_speaks_answer(monkeypatch):
     spoken = []
     monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "Wie spät?")
     monkeypatch.setattr(satellite.jarvis_brain, "respond",
-                        lambda text, tenant, token, model, history=None: {"kind": "chat", "answer": "Kurz nach drei."})
+                        lambda text, tenant, token, model, history=None, source=None: {"kind": "chat", "answer": "Kurz nach drei."})
     monkeypatch.setattr(satellite, "_speak", lambda text, deps: spoken.append(text))
     # 1 Runde Sprache, dann Nachfrage-Fenster leer -> Ende
     frames = iter([loud(), loud(), quiet(), quiet(), quiet(), quiet(), quiet(),
@@ -82,7 +82,7 @@ def test_token_callable_is_resolved(monkeypatch):
     seen = {}
     monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "hi")
     monkeypatch.setattr(satellite.jarvis_brain, "respond",
-                        lambda text, tenant, token, model, history=None: seen.update(token=token) or {"kind": "chat", "answer": "ok"})
+                        lambda text, tenant, token, model, history=None, source=None: seen.update(token=token) or {"kind": "chat", "answer": "ok"})
     monkeypatch.setattr(satellite, "_speak", lambda text, deps: None)
     deps = _deps()
     deps["token"] = lambda: "AUFGELÖST"

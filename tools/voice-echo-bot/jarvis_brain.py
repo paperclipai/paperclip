@@ -61,7 +61,7 @@ def parse_control(raw):
     return {"kind": "chat", "text": text}
 
 
-def respond(text, tenant, token, chat_model, history=None):
+def respond(text, tenant, token, chat_model, history=None, source="per Telegram"):
     text = (text or "").strip()
     if not text:
         return {"kind": "empty", "answer": "Nichts erkannt, bitte erneut."}
@@ -72,7 +72,7 @@ def respond(text, tenant, token, chat_model, history=None):
         raw = llm.chat(messages, model=chat_model)
     except llm.LlmError:
         traceback.print_exc()
-        return _unparsed(text, tenant, token)
+        return _unparsed(text, tenant, token, source)
     action = parse_control(raw)
     if action["kind"] == "lookup":
         return {"kind": "lookup",
@@ -122,12 +122,12 @@ def _do_issue(title, description, tenant, token):
     return "✅ Task angelegt: {}".format(label)
 
 
-def _unparsed(text, tenant, token):
+def _unparsed(text, tenant, token, source="per Telegram"):
     description = (
-        "Von Walter per Sprache diktiert. Das Sprachmodell war nicht "
+        "Von Walter {source} diktiert. Das Sprachmodell war nicht "
         "erreichbar, der Text ist daher UNAUSGEWERTET durchgereicht — "
         "bitte selbst interpretieren und, falls es keine Aufgabe ist, "
-        "schliessen.\n\nWortlaut:\n{}".format(text)
+        "schliessen.\n\nWortlaut:\n{text}".format(source=source, text=text)
     )
     try:
         issue = create_issue(token, tenant["company_id"], tenant["ceo_agent_id"],
