@@ -666,6 +666,7 @@ function buildLoginShellScript(input: {
   cwd?: string;
   env?: Record<string, string>;
   stdinPath?: string;
+  noProfile?: boolean;
 }): string {
   const callerEnv = input.env ?? {};
   for (const key of Object.keys(callerEnv)) {
@@ -689,15 +690,20 @@ function buildLoginShellScript(input: {
   const finalLine = envArgs.length > 0
     ? `env ${envArgs.join(" ")} ${redirectedCommand}`
     : redirectedCommand;
+  const profileSourcingLines = input.noProfile === true
+    ? []
+    : [
+        'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+        'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+        // .bash_profile typically sources .bashrc itself; only source .bashrc
+        // directly when no .bash_profile exists to avoid double-running setup.
+        'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+        'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+        'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
+        '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
+      ];
   const lines = [
-    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-    // .bash_profile typically sources .bashrc itself; only source .bashrc
-    // directly when no .bash_profile exists to avoid double-running setup.
-    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
-    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
+    ...profileSourcingLines,
   ];
   if (input.cwd) {
     lines.push(`cd ${shellQuote(input.cwd)}`);
@@ -1152,6 +1158,7 @@ async function executeOneShot(
       cwd: params.cwd,
       env: params.env,
       stdinPath: stdinPath ?? undefined,
+      noProfile: params.noProfile === true,
     });
 
     // Pass cwd undefined: `buildLoginShellScript` already injects `cd` after
