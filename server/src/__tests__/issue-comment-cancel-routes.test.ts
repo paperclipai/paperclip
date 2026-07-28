@@ -5,13 +5,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  assertCheckoutOwnerInTransaction: vi.fn(),
   getComment: vi.fn(),
   removeComment: vi.fn(),
+  removeCommentVersioned: vi.fn(),
   tombstoneComment: vi.fn(),
+  tombstoneCommentVersioned: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
@@ -117,6 +121,12 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
   }));
 
+  vi.doMock("../services/task-watchdog-scope.js", () => ({
+    TASK_WATCHDOG_ORIGIN_KIND: "task_watchdog",
+    resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
+    taskWatchdogScopeAllowsIssueMutation: vi.fn(async () => ({ kind: "allowed" })),
+  }));
+
   vi.doMock("../services/external-objects.js", () => ({
     externalObjectService: () => mockExternalObjectService,
   }));
@@ -158,7 +168,7 @@ function createApp() {
   return app;
 }
 
-async function installActor(app: express.Express, actor?: Record<string, unknown>) {
+async function installActor(app: express.Express, actor?: Record<string, unknown>, db: Record<string, unknown> = {}) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
@@ -174,7 +184,7 @@ async function installActor(app: express.Express, actor?: Record<string, unknown
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -187,6 +197,7 @@ function makeIssue() {
     assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     assigneeUserId: null,
     executionRunId: "run-1",
+    version: 1,
     identifier: "PAP-1353",
     title: "Queued cancel",
   };
@@ -220,6 +231,7 @@ describe.sequential("issue comment cancel routes", () => {
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../services/instance-settings.js");
     vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/task-watchdog-scope.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
@@ -227,8 +239,13 @@ describe.sequential("issue comment cancel routes", () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.assertCheckoutOwnerInTransaction.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getComment.mockResolvedValue(makeComment());
     mockIssueService.removeComment.mockResolvedValue(makeComment());
+    mockIssueService.removeCommentVersioned.mockResolvedValue({
+      comment: makeComment(),
+      issue: { ...makeIssue(), version: 2 },
+    });
     mockIssueService.tombstoneComment.mockImplementation(async (_commentId, _actor, options) => {
       const deleted = makeComment({
         body: "",
@@ -242,7 +259,31 @@ describe.sequential("issue comment cancel routes", () => {
       await options?.afterTombstone?.(deleted, "tx");
       return deleted;
     });
+    mockIssueService.tombstoneCommentVersioned.mockImplementation(
+      async (_commentId, _actor, options) => {
+        const deleted = makeComment({
+          body: "",
+          metadata: null,
+          deletedAt: new Date("2026-04-11T15:05:00.000Z"),
+          deletedByType: "user",
+          deletedByAgentId: null,
+          deletedByUserId: "local-board",
+          deletedByRunId: null,
+        });
+        await options?.afterTombstone?.(deleted, "tx");
+        return {
+          comment: deleted,
+          issue: { ...makeIssue(), version: 2 },
+        };
+      },
+    );
     mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:mutate",
+      reason: "allow_assignee",
+      explanation: "Allowed for the assigned agent.",
+    });
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
     mockFeedbackService.saveIssueVote.mockResolvedValue({
@@ -283,14 +324,17 @@ describe.sequential("issue comment cancel routes", () => {
 
     expect(res.status, JSON.stringify({
       body: res.body,
-      tombstoneCalls: mockIssueService.tombstoneComment.mock.calls,
+      tombstoneCalls: mockIssueService.tombstoneCommentVersioned.mock.calls,
       activityCalls: mockLogActivity.mock.calls,
     })).toBe(200);
     expect(res.body).toMatchObject({
       id: "comment-1",
       body: "Queued follow-up",
     });
-    expect(mockIssueService.removeComment).toHaveBeenCalledWith("comment-1");
+    expect(mockIssueService.removeCommentVersioned).toHaveBeenCalledWith(
+      "comment-1",
+      { expectedVersion: undefined },
+    );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -312,8 +356,8 @@ describe.sequential("issue comment cancel routes", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("Queued comment can no longer be canceled");
-    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
-    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
+    expect(mockIssueService.removeCommentVersioned).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneCommentVersioned).not.toHaveBeenCalled();
   });
 
   it("rejects canceling comments that are no longer queued", async () => {
@@ -329,8 +373,8 @@ describe.sequential("issue comment cancel routes", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("Only queued comments can be canceled");
-    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
-    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
+    expect(mockIssueService.removeCommentVersioned).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneCommentVersioned).not.toHaveBeenCalled();
   });
 
   it("rejects canceling another actor's queued comment", async () => {
@@ -345,7 +389,7 @@ describe.sequential("issue comment cancel routes", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Only the comment author can cancel queued comments");
-    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+    expect(mockIssueService.removeCommentVersioned).not.toHaveBeenCalled();
   });
 
   it("deletes a normal authored comment as a tombstone without returning the original body", async () => {
@@ -375,8 +419,8 @@ describe.sequential("issue comment cancel routes", () => {
     });
     expect(JSON.stringify(res.body)).not.toContain("Sensitive original comment body");
     expect(JSON.stringify(res.body)).not.toContain("Sensitive metadata copy");
-    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
-    expect(mockIssueService.tombstoneComment).toHaveBeenCalledWith(
+    expect(mockIssueService.removeCommentVersioned).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneCommentVersioned).toHaveBeenCalledWith(
       "comment-1",
       {
         actorType: "user",
@@ -384,7 +428,10 @@ describe.sequential("issue comment cancel routes", () => {
         userId: "local-board",
         runId: null,
       },
-      expect.objectContaining({ afterTombstone: expect.any(Function) }),
+      expect.objectContaining({
+        expectedVersion: undefined,
+        afterTombstone: expect.any(Function),
+      }),
     );
     expect(mockIssueReferenceService.syncComment).toHaveBeenCalledWith("comment-1", "tx");
     expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("comment-1", "tx");
@@ -420,6 +467,46 @@ describe.sequential("issue comment cancel routes", () => {
     expect(JSON.stringify(deletedActivity?.details ?? {})).not.toContain("Sensitive metadata copy");
   });
 
+  it("joins checkout normalization to a current conditional comment deletion", async () => {
+    const tx = { rollback: vi.fn() };
+    const db = {
+      transaction: vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => callback(tx)),
+    };
+    const actor = {
+      type: "agent",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    };
+    mockIssueService.getComment.mockResolvedValue(makeComment({
+      authorAgentId: actor.agentId,
+      authorUserId: null,
+      createdAt: new Date("2026-04-11T14:58:00.000Z"),
+      updatedAt: new Date("2026-04-11T14:58:00.000Z"),
+    }));
+
+    const res = await request(await installActor(createApp(), actor, db))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1")
+      .set("If-Match", "\"issue-v1\"");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.headers.etag).toBe("\"issue-v2\"");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.assertCheckoutOwnerInTransaction).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      actor.agentId,
+      actor.runId,
+      1,
+      tx,
+    );
+    expect(mockIssueService.tombstoneCommentVersioned).toHaveBeenCalledWith(
+      "comment-1",
+      expect.objectContaining({ actorType: "agent", agentId: actor.agentId, runId: actor.runId }),
+      expect.objectContaining({ expectedVersion: 1, dbOrTx: tx }),
+    );
+  });
+
   it("rejects deleting another actor's normal comment", async () => {
     mockIssueService.getComment.mockResolvedValue(
       makeComment({
@@ -434,7 +521,7 @@ describe.sequential("issue comment cancel routes", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Only the comment author can delete comments");
-    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
-    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
+    expect(mockIssueService.removeCommentVersioned).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneCommentVersioned).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { versionedIssuePatch } from "./issue-versioning.js";
 import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -1357,7 +1358,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       if (!shouldReopen && watchdogIssue.originFingerprint !== input.classification.stopFingerprint) {
         await db
           .update(issues)
-          .set({ originFingerprint: input.classification.stopFingerprint, updatedAt: new Date() })
+          .set(versionedIssuePatch({ originFingerprint: input.classification.stopFingerprint }, new Date()))
           .where(and(eq(issues.companyId, input.watchdog.companyId), eq(issues.id, watchdogIssue.id)));
         watchdogIssue.originFingerprint = input.classification.stopFingerprint;
       }

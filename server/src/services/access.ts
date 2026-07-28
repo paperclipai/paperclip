@@ -11,6 +11,7 @@ import { conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
+import { versionedIssuePatch } from "./issue-versioning.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -368,19 +369,19 @@ export function accessService(db: Db) {
       );
       const resetInProgress = await tx
         .update(issues)
-        .set({
+        .set(versionedIssuePatch({
           ...assignmentPatch,
           status: "todo",
           startedAt: null,
           checkoutRunId: null,
           executionRunId: null,
           executionLockedAt: null,
-        })
+        }))
         .where(and(assignedOpenIssueWhere, eq(issues.status, "in_progress")))
         .returning({ id: issues.id });
       const reassigned = await tx
         .update(issues)
-        .set(assignmentPatch)
+        .set(versionedIssuePatch(assignmentPatch))
         .where(and(assignedOpenIssueWhere, ne(issues.status, "in_progress")))
         .returning({ id: issues.id });
 

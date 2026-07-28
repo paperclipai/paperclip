@@ -24,6 +24,9 @@ export function buildIssueChanges(
   const changes: IssueChanges = {};
   const keys = new Set([...Object.keys(existing), ...Object.keys(updated)]);
   keys.delete("updatedAt");
+  // The CAS counter bumps on every versioned mutation, so diffing it would
+  // add a noise entry to every receipt, same as updatedAt.
+  keys.delete("version");
 
   for (const key of keys) {
     const from = existing[key];

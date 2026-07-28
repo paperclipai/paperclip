@@ -495,6 +495,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     // never pass through the HTTP routes, so the expiry must fire here.
     const updated = await svc.update(issue.id, { status: "cancelled", actorUserId: "local-board" });
     expect(updated?.status).toBe("cancelled");
+    expect(updated?.version).toBe(issue.version + 1);
 
     const interaction = await db
       .select()

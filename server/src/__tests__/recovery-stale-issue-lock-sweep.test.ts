@@ -126,11 +126,17 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
         executionLockedAt: issues.executionLockedAt,
+        version: issues.version,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
-    expect(row).toEqual({ checkoutRunId: null, executionRunId: null, executionLockedAt: null });
+    expect(row).toEqual({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+      version: 2,
+    });
 
     const audit = await db
       .select({ action: activityLog.action, details: activityLog.details })
@@ -166,11 +172,12 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .select({
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
+        version: issues.version,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
-    expect(row).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId });
+    expect(row).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId, version: 1 });
   });
 
   it("does not clear when checkoutRunId is terminal but executionRunId is still running", async () => {

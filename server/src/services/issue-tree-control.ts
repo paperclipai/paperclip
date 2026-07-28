@@ -1,4 +1,5 @@
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { versionedIssuePatch } from "./issue-versioning.js";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -873,16 +874,15 @@ export function issueTreeControlService(db: Db) {
     const updated = await db.transaction(async (tx) => {
       const rows = await tx
         .update(issues)
-        .set({
+        .set(versionedIssuePatch({
           status: "cancelled",
           cancelledAt: now,
           completedAt: null,
           checkoutRunId: null,
           executionRunId: null,
           executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: now,
-        })
+          executionLockedAt: null
+        }, now))
         .where(
           and(
             eq(issues.companyId, companyId),
@@ -976,16 +976,15 @@ export function issueTreeControlService(db: Db) {
         if (issueIdsForStatus.length === 0) continue;
         const rows = await tx
           .update(issues)
-          .set({
+          .set(versionedIssuePatch({
             status,
             cancelledAt: null,
             completedAt: null,
             checkoutRunId: null,
             executionRunId: null,
             executionAgentNameKey: null,
-            executionLockedAt: null,
-            updatedAt: now,
-          })
+            executionLockedAt: null
+          }, now))
           .where(
             and(
               eq(issues.companyId, companyId),

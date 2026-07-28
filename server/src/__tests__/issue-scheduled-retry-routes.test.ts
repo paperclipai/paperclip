@@ -97,6 +97,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     agentStatus?: "active" | "paused";
     retryStatus?: "scheduled_retry" | "queued" | "running";
     issueStatus?: "in_progress" | "todo" | "done" | "cancelled";
+    version?: number;
   } = {}) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -200,6 +201,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       executionLockedAt: now,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
+      version: input.version ?? 1,
     });
 
     return { companyId, agentId, issueId, sourceRunId, retryRunId, scheduledRetryAt };
@@ -221,6 +223,70 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       scheduledRetryReason: "transient_failure",
     });
     expect(res.body.scheduledRetry.scheduledRetryAt).toBe(scheduledRetryAt.toISOString());
+  });
+
+  it("does not cancel a scheduled retry for a stale comment precondition", async () => {
+    const { companyId, issueId, retryRunId } = await seedIssueWithRetry({ version: 2 });
+
+    const res = await request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/comments`)
+      .set("If-Match", "\"issue-v1\"")
+      .send({ body: "Stale follow-up" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(412);
+    expect(res.headers.etag).toBe("\"issue-v2\"");
+    expect(
+      await db
+        .select({
+          executionRunId: issues.executionRunId,
+          version: issues.version,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]),
+    ).toEqual({ executionRunId: retryRunId, version: 2 });
+    expect(
+      await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, retryRunId))
+        .then((rows) => rows[0]),
+    ).toEqual({ status: "scheduled_retry" });
+    expect(await db.select({ id: issueComments.id }).from(issueComments)).toEqual([]);
+  });
+
+  it.each([
+    { label: "current If-Match", ifMatch: "\"issue-v1\"" },
+    { label: "no precondition", ifMatch: null },
+  ])("cancels a scheduled retry and advances the comment mutation once with $label", async ({ ifMatch }) => {
+    const { companyId, issueId, retryRunId } = await seedIssueWithRetry();
+    let pendingRequest = request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/comments`);
+    if (ifMatch) pendingRequest = pendingRequest.set("If-Match", ifMatch);
+
+    const res = await pendingRequest.send({ body: "Please continue now" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.headers.etag).toBe("\"issue-v2\"");
+    expect(
+      await db
+        .select({
+          executionRunId: issues.executionRunId,
+          status: issues.status,
+          version: issues.version,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]),
+    ).toEqual({ executionRunId: null, status: "todo", version: 2 });
+    expect(
+      await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, retryRunId))
+        .then((rows) => rows[0]),
+    ).toEqual({ status: "cancelled" });
+    expect(await db.select({ id: issueComments.id }).from(issueComments)).toHaveLength(1);
   });
 
   it("promotes the existing scheduled retry and treats duplicate clicks as idempotent", async () => {

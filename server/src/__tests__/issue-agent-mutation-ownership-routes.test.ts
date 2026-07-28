@@ -13,6 +13,7 @@ const recoveryActionId = "77777777-7777-4777-8777-777777777777";
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  assertCheckoutOwnerInTransaction: vi.fn(),
   create: vi.fn(),
   createChild: vi.fn(),
   decomposeAcceptedPlan: vi.fn(),
@@ -30,6 +31,7 @@ const mockIssueService = vi.hoisted(() => ({
   remove: vi.fn(),
   removeAttachment: vi.fn(),
   update: vi.fn(),
+  updateWithInlineComment: vi.fn(),
   findMentionedAgents: vi.fn(),
 }));
 
@@ -244,6 +246,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     createdByUserId: "board-user",
     identifier: "PAP-1649",
     title: "Owned active issue",
+    version: 1,
     executionPolicy: null,
     executionState: null,
     hiddenAt: null,
@@ -413,6 +416,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockCompanyService.getById.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.assertCheckoutOwnerInTransaction.mockReset();
     mockIssueService.create.mockReset();
     mockIssueService.createChild.mockReset();
     mockIssueService.decomposeAcceptedPlan.mockReset();
@@ -509,6 +513,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.remove.mockReset();
     mockIssueService.removeAttachment.mockReset();
     mockIssueService.update.mockReset();
+    mockIssueService.updateWithInlineComment.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockLogActivity.mockClear();
     mockDocumentService.upsertIssueDocument.mockReset();
@@ -549,8 +554,28 @@ describe("agent issue mutation checkout ownership", () => {
       companyId,
       body: "Mentioned reply context.",
     });
+    mockIssueService.updateWithInlineComment.mockImplementation(
+      async (targetIssueId, issueData, commentData) => {
+        const meaningfulUpdate = Object.keys(issueData).some(
+          (key) => key !== "expectedVersion",
+        );
+        const issue = meaningfulUpdate
+          ? await mockIssueService.update(targetIssueId, issueData)
+          : await mockIssueService.getById(targetIssueId);
+        if (!issue) return null;
+        const comment = await mockIssueService.addComment(
+          targetIssueId,
+          commentData.body,
+          commentData.actor,
+          commentData.options,
+        );
+        await commentData.afterUpdate?.({}, issue, comment);
+        return { issue, comment };
+      },
+    );
     mockIssueService.list.mockResolvedValue([makeIssue()]);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.assertCheckoutOwnerInTransaction.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
       ...makeIssue({
         id: "88888888-8888-4888-8888-888888888888",
@@ -776,6 +801,53 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it("rejects stale agent PATCH before normalizing checkout ownership", async () => {
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .set("If-Match", "\"issue-v2\"")
+      .send({ title: "Stale update" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(412);
+    expect(res.headers.etag).toBe("\"issue-v1\"");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("joins checkout normalization to a current conditional PATCH", async () => {
+    const tx = { rollback: vi.fn() };
+    const routeDb = {
+      ...createRunContextDb(),
+      transaction: vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => callback(tx)),
+    };
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue(),
+      ...patch,
+      title: "Current update",
+      version: 2,
+    }));
+
+    const res = await request(await createApp(ownerActor(), routeDb))
+      .patch(`/api/issues/${issueId}`)
+      .set("If-Match", "\"issue-v1\"")
+      .send({ title: "Current update" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.headers.etag).toBe("\"issue-v2\"");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.assertCheckoutOwnerInTransaction).toHaveBeenCalledWith(
+      issueId,
+      ownerAgentId,
+      ownerRunId,
+      1,
+      tx,
+    );
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ expectedVersion: 1, title: "Current update" }),
+      tx,
+    );
   });
 
   it("allows mentioned peer agents to post comments without ownership of an active checkout", async () => {

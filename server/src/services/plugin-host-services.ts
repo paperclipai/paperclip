@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import { versionedIssuePatch } from "./issue-versioning.js";
 import {
   activityLog,
   agentTaskSessions as agentTaskSessionsTable,
@@ -2890,7 +2891,7 @@ export function buildHostServices(
           else delete executionPolicy.authorizationPolicy;
           await db
             .update(issuesTable)
-            .set({ executionPolicy, updatedAt: new Date() })
+            .set(versionedIssuePatch({ executionPolicy }, new Date()))
             .where(eq(issuesTable.id, issue.id));
         } else {
           const company = await companies.getById(params.resourceId);

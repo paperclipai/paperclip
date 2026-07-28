@@ -4,6 +4,7 @@ import { issueWorkProducts } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { insertRowsInChunks } from "./batch-insert.js";
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
+import { bumpIssueVersions } from "./issue-versioning.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 
@@ -67,7 +68,7 @@ export function workProductService(db: Db) {
               ),
             );
         }
-        return await tx
+        const created = await tx
           .insert(issueWorkProducts)
           .values({
             ...data,
@@ -76,6 +77,10 @@ export function workProductService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (created) {
+          await bumpIssueVersions(tx, [issueId]);
+        }
+        return created;
       });
       return row ? toIssueWorkProduct(row) : null;
     },
@@ -86,6 +91,7 @@ export function workProductService(db: Db) {
           .select()
           .from(issueWorkProducts)
           .where(eq(issueWorkProducts.id, id))
+          .for("update")
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
@@ -102,12 +108,16 @@ export function workProductService(db: Db) {
             );
         }
 
-        return await tx
+        const updated = await tx
           .update(issueWorkProducts)
           .set({ ...patch, updatedAt: new Date() })
           .where(eq(issueWorkProducts.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (updated) {
+          await bumpIssueVersions(tx, [existing.issueId]);
+        }
+        return updated;
       });
       return row ? toIssueWorkProduct(row) : null;
     },
@@ -159,11 +169,17 @@ export function workProductService(db: Db) {
     },
 
     remove: async (id: string) => {
-      const row = await db
-        .delete(issueWorkProducts)
-        .where(eq(issueWorkProducts.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const row = await db.transaction(async (tx) => {
+        const removed = await tx
+          .delete(issueWorkProducts)
+          .where(eq(issueWorkProducts.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (removed) {
+          await bumpIssueVersions(tx, [removed.issueId]);
+        }
+        return removed;
+      });
       return row ? toIssueWorkProduct(row) : null;
     },
   };

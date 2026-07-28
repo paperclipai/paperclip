@@ -172,6 +172,7 @@ describeEmbeddedPostgres("access service", () => {
       .then((rows) => rows[0]!);
     expect(reassignedIssue.assigneeUserId).toBe(owner.principalId);
     expect(reassignedIssue.status).toBe("todo");
+    expect(reassignedIssue.version).toBe(2);
 
     const historicalIssue = await db
       .select()
@@ -179,6 +180,7 @@ describeEmbeddedPostgres("access service", () => {
       .where(eq(issues.id, doneIssue.id))
       .then((rows) => rows[0]!);
     expect(historicalIssue.assigneeUserId).toBe(member.principalId);
+    expect(historicalIssue.version).toBe(1);
   });
 
   it("rejects instance-level company access removal for self and protected users", async () => {

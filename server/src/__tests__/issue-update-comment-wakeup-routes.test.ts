@@ -10,6 +10,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  updateWithInlineComment: vi.fn(),
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -212,6 +213,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     executionPolicy: null,
     executionState: null,
     hiddenAt: null,
+    version: 1,
     ...overrides,
   };
 }
@@ -229,6 +231,23 @@ describe("issue update comment wakeups", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.updateWithInlineComment.mockImplementation(
+      async (issueId, issueData, commentData) => {
+        const meaningfulUpdate = Object.keys(issueData).some(
+          (key) => key !== "expectedVersion",
+        );
+        const issue = meaningfulUpdate
+          ? await mockIssueService.update(issueId, issueData)
+          : await mockIssueService.getById(issueId);
+        const comment = await mockIssueService.addComment(
+          issueId,
+          commentData.body,
+          commentData.actor,
+          commentData.options,
+        );
+        return issue && comment ? { issue, comment } : null;
+      },
+    );
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
@@ -275,7 +294,7 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
-  });
+  }, 15_000);
 
   it("interrupts the active run and wakes the newly assigned agent with handoff context", async () => {
     const existing = makeIssue({
