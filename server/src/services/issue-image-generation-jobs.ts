@@ -516,7 +516,7 @@ export function createIssueImageGenerationJobService(
         attempt_count = jobs.attempt_count + 1,
         started_at = COALESCE(jobs.started_at, now()),
         claim_token = gen_random_uuid(),
-        lease_expires_at = ${new Date(Date.now() + leaseMs)},
+        lease_expires_at = ${new Date(Date.now() + leaseMs).toISOString()}::timestamptz,
         updated_at = now(),
         last_error = NULL
       FROM candidate
