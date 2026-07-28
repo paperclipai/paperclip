@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveLedgerCostStatus } from "../services/heartbeat.js";
+import {
+  resolveCacheAdjustedCostUsd,
+  resolveLedgerCostStatus,
+} from "../services/heartbeat.js";
 
 describe("heartbeat cost accounting", () => {
   it("marks token-bearing CLI usage without a reported cost as unpriced", () => {
@@ -18,5 +21,26 @@ describe("heartbeat cost accounting", () => {
       cachedInputTokens: 300_000,
       outputTokens: 77_000,
     })).toBe("reported");
+  });
+
+  it("uses an explicit cache-adjusted provider cost when available", () => {
+    expect(resolveCacheAdjustedCostUsd({
+      costUsd: 1.25,
+      cacheAdjustedCostUsd: 0.92,
+    })).toBe(0.92);
+  });
+
+  it("attributes provider-reported billed cost as cache-adjusted by default", () => {
+    expect(resolveCacheAdjustedCostUsd({
+      costUsd: 1.25,
+      cacheAdjustedCostUsd: null,
+    })).toBe(1.25);
+  });
+
+  it("does not attribute invalid or unavailable costs", () => {
+    expect(resolveCacheAdjustedCostUsd({
+      costUsd: null,
+      cacheAdjustedCostUsd: Number.NaN,
+    })).toBeNull();
   });
 });
