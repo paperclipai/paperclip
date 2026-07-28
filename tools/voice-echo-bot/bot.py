@@ -28,58 +28,13 @@ import vault_client
 from telegram_api import Telegram
 from paperclip_client import (create_issue, derive_title, add_comment,
                               find_issue_by_identifier, list_issues, resolve_label_id)
+import jarvis_brain
+from jarvis_brain import SYSTEM_PROMPT, LOOKUP_RE, ISSUE_RE, parse_control
 
 IDENT_RE = re.compile(r"([A-Z]{2,5}-\d+)")
 
-# Steuer-Token nur am Zeilenanfang, case-insensitive.
-LOOKUP_RE = re.compile(r"^\s*LOOKUP\s+(kontakt|termin|mail|wissen|dokument)\s*:\s*(.+)$",
-                       re.IGNORECASE)
-ISSUE_RE = re.compile(r"^\s*ISSUE\s*:\s*(.+)$", re.IGNORECASE)
-
 # Konversations-Historie pro Chat: max. 8 Turns (= 16 Messages) in-memory.
 MAX_HISTORY_MESSAGES = 16
-
-SYSTEM_PROMPT = (
-    "Du bist Jarvis, der persönliche CEO-Draht von {name}. Du bist ein ganz "
-    "normaler Chat-Assistent: antworte knapp, auf Deutsch, sprich {name} mit "
-    "Vornamen an, keine Meta-Sätze (\"Als KI …\"), keine Floskeln.\n\n"
-    "Du hast zwei Werkzeuge. Brauchst du eines, gib in der ERSTEN Zeile GENAU "
-    "EIN Steuer-Token aus (nichts davor, keine Anführungszeichen):\n\n"
-    "1. Vault nachschlagen — für echte Daten (Telefonnummer, Adresse, E-Mail "
-    "einer Person; Termine; frühere Mails; Wissens-/Business-Fragen):\n"
-    "   LOOKUP <modus>: <suchbegriff>\n"
-    "   modus = kontakt (Tel/Mail/Adresse einer Person) | termin (Kalender) | "
-    "mail (frühere E-Mails) | wissen (Wissens-/Business-Fragen) | dokument (Volltextsuche in ALLEN Dokumenten/Unterlagen des Vaults, z.B. Angebote, Verträge, Projekte).\n"
-    "   Beispiel: LOOKUP kontakt: Jana Kostbar\n\n"
-    "2. Aufgabe beim CEO anlegen — NUR wenn {name} dich ausdrücklich darum "
-    "bittet (\"leg an\", \"erstelle einen Task\", \"kümmer dich um\"):\n"
-    "   ISSUE: <titel> :: <beschreibung>\n"
-    "   Beispiel: ISSUE: DMARC einrichten :: DMARC für whitestag.ai konfigurieren.\n\n"
-    "Brauchst du KEIN Werkzeug, antworte einfach direkt als Chat-Text (kein "
-    "Token). Frag nicht um Erlaubnis, ein Werkzeug zu nutzen — nutze es einfach."
-)
-
-
-def parse_control(raw):
-    """Zerlegt die LLM-Antwort in eine Aktion.
-
-    Steuer-Token werden nur in der ersten nicht-leeren Zeile erkannt. Ohne
-    Token gilt der gesamte Text als normale Chat-Antwort.
-    """
-    text = (raw or "").strip()
-    lines = text.splitlines()
-    first = lines[0] if lines else ""
-    m = LOOKUP_RE.match(first)
-    if m:
-        return {"kind": "lookup", "mode": m.group(1).lower(),
-                "query": m.group(2).strip()}
-    m = ISSUE_RE.match(first)
-    if m:
-        title, sep, desc = m.group(1).partition("::")
-        title = title.strip()
-        desc = desc.strip() if sep else ""
-        return {"kind": "issue", "title": title, "description": desc or title}
-    return {"kind": "chat", "text": text}
 
 
 class BotApp:
@@ -201,13 +156,6 @@ class BotApp:
             self.tg.send_message(chat_id, "⚠️ Konnte die Antwort nicht senden, bitte erneut.")
 
     # ---- Chat-Agent (LLM + prompt-gesteuerte Werkzeuge) ----
-    @staticmethod
-    def _first_name(tenant):
-        name = (tenant.get("name") or "").strip()
-        # "Walter / WHITESTAG" -> "Walter", "Clara / Clara Sound" -> "Clara".
-        head = name.split("/")[0].strip()
-        return head.split()[0] if head else "Chef"
-
     def _remember(self, chat_id, user_text, assistant_text):
         hist = self.history.setdefault(chat_id, [])
         hist.append({"role": "user", "content": user_text})
@@ -218,95 +166,15 @@ class BotApp:
     def _handle_chat(self, tenant, msg, text):
         chat_id = msg["chat"]["id"]
         text = (text or "").strip()
-        if not text:
-            self.tg.send_message(chat_id, "Nichts erkannt, bitte erneut.")
-            return
         hist = self.history.get(chat_id, [])
-        messages = ([{"role": "system", "content": SYSTEM_PROMPT.format(name=self._first_name(tenant))}]
-                    + hist + [{"role": "user", "content": text}])
-        try:
-            raw = llm.chat(messages, model=self._chat_model())
-        except llm.LlmError:
-            traceback.print_exc()
-            self._file_unparsed(tenant, chat_id, text)
+        result = jarvis_brain.respond(text, tenant, self._token(),
+                                      self._chat_model(), history=hist)
+        kind, answer = result["kind"], result["answer"]
+        if kind in ("empty", "unparsed_ok", "unparsed_fail"):
+            self.tg.send_message(chat_id, answer)
             return
-        action = parse_control(raw)
-        if action["kind"] == "lookup":
-            answer = self._do_lookup(tenant, messages, action["mode"], action["query"])
-        elif action["kind"] == "issue":
-            answer = self._do_issue(tenant, action["title"], action["description"])
-        else:
-            answer = action["text"]
         self._remember(chat_id, text, answer)
         self._reply(chat_id, answer, reply_to_message_id=msg["message_id"])
-
-    def _file_unparsed(self, tenant, chat_id, text):
-        """Notfall-Zustellung, wenn das LLM den Text nicht auswerten konnte.
-
-        Lieber ein rohes Issue beim CEO als eine verlorene Nachricht: der
-        Wortlaut geht unverändert durch, der CEO liest am Hinweis, dass keine
-        Auswertung stattgefunden hat.
-        """
-        description = (
-            "Von Walter per Telegram diktiert. Das Sprachmodell war nicht "
-            "erreichbar, der Text ist daher UNAUSGEWERTET durchgereicht — "
-            "bitte selbst interpretieren und, falls es keine Aufgabe ist, "
-            "schliessen.\n\nWortlaut:\n{}".format(text)
-        )
-        try:
-            issue = create_issue(self._token(), tenant["company_id"], tenant["ceo_agent_id"],
-                                 derive_title(text), description)
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-            self.tg.send_message(
-                chat_id,
-                "⚠️ Mein Sprachmodell ist nicht erreichbar und ich konnte auch keine "
-                "Aufgabe anlegen — dein Auftrag ist NICHT angekommen. Bitte nochmal senden.")
-            return
-        label = issue.get("identifier") or issue.get("id", "?")
-        self.tg.send_message(
-            chat_id,
-            "⚠️ Mein Sprachmodell ist gerade nicht erreichbar — ich habe deinen Auftrag "
-            "unausgewertet an den CEO weitergegeben: {}".format(label))
-
-    def _do_lookup(self, tenant, messages, mode, query):
-        """Eine (und nur eine) Vault-Runde: Treffer holen, LLM final formulieren lassen."""
-        try:
-            result = vault_client.lookup(mode, query, vault=tenant.get("vault"))
-        except vault_client.VaultError:
-            traceback.print_exc()
-            result = {"mode": mode, "query": query, "treffer": [],
-                      "fehler": "Vault-Dienst nicht erreichbar"}
-        if result.get("vault_unknown"):
-            return ("⚠️ Ich kann darauf nicht zugreifen — der für diesen Chat "
-                    "hinterlegte Vault ist unbekannt oder falsch konfiguriert. "
-                    "Bitte an die Administration wenden.")
-        context = json.dumps(result, ensure_ascii=False)[:4000]
-        followup = messages + [
-            {"role": "assistant", "content": "LOOKUP {}: {}".format(mode, query)},
-            {"role": "user", "content":
-                ("Vault-Treffer (JSON):\n{}\n\nBeantworte meine letzte Frage knapp auf "
-                 "Deutsch mit diesen Daten. Ist nichts Passendes dabei, sag das ehrlich. "
-                 "Gib KEIN Steuer-Token mehr aus.").format(context)},
-        ]
-        try:
-            answer = llm.chat(followup, model=self._chat_model())
-        except llm.LlmError:
-            traceback.print_exc()
-            return "⚠️ Konnte die Vault-Daten nicht auswerten, bitte gleich nochmal."
-        # Kein Tool-Ping-Pong: ein etwaiges weiteres Token wird ignoriert.
-        follow_action = parse_control(answer)
-        return follow_action["text"] if follow_action["kind"] == "chat" else answer.strip()
-
-    def _do_issue(self, tenant, title, description):
-        try:
-            issue = create_issue(self._token(), tenant["company_id"], tenant["ceo_agent_id"],
-                                 derive_title(title), description)
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-            return "⚠️ Konnte die Aufgabe nicht anlegen, bitte gleich nochmal."
-        label = issue.get("identifier") or issue.get("id", "?")
-        return "✅ Task angelegt: {}".format(label)
 
     # ---- Rückkanal-Poll ----
     def _format_push(self, ev):

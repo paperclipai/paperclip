@@ -4,6 +4,9 @@ import tempfile
 import unittest
 from unittest import mock
 import bot
+# `create_issue` wird nach der jarvis_brain-Herauslösung ausschliesslich dort
+# aufgerufen (bot.py delegiert komplett) - Patches muessen daher auf
+# bot.jarvis_brain.create_issue zielen, nicht mehr auf bot.create_issue.
 
 TENANTS = {"8311805232": {"name": "Walter / WHITESTAG", "company_id": "comp-1", "ceo_agent_id": "ceo-1",
                           "vault": "whitestag"},
@@ -35,7 +38,7 @@ class TestTenantRouting(unittest.TestCase):
         # die LLM-Chat-Antwort zurückspiegeln.
         tg = mock.MagicMock(); app = make_app(tg)
         with mock.patch.object(bot.llm, "chat", return_value="Hallo Clara, wie kann ich helfen?") as lc, \
-             mock.patch.object(bot, "create_issue") as ci:
+             mock.patch.object(bot.jarvis_brain, "create_issue") as ci:
             app.handle_update(msg(1220010628, mid=5, text="Hi Jarvis"))
         lc.assert_called_once()
         ci.assert_not_called()
@@ -54,7 +57,7 @@ class TestTenantRouting(unittest.TestCase):
         tg = mock.MagicMock(); app = make_app(tg)
         with mock.patch.object(bot.llm, "chat",
                                return_value="ISSUE: Song mischen :: Bitte den Song final mischen."), \
-             mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}) as ci:
+             mock.patch.object(bot.jarvis_brain, "create_issue", return_value={"identifier": "CLR-1"}) as ci:
             app.handle_update(msg(1220010628, mid=5, text="Leg mir einen Task an: Song mischen"))
         ci.assert_called_once_with("tok", "comp-2", "ceo-2",
                                    bot.derive_title("Song mischen"), "Bitte den Song final mischen.")
@@ -71,7 +74,7 @@ class TestTenantRouting(unittest.TestCase):
              mock.patch.object(bot.vault_client, "lookup",
                                return_value={"mode": "kontakt", "query": "Jana Kostbar",
                                              "treffer": [{"inhalt": "Tel: 0170 1234567"}]}) as vl, \
-             mock.patch.object(bot, "create_issue") as ci:
+             mock.patch.object(bot.jarvis_brain, "create_issue") as ci:
             app.handle_update(msg(8311805232, mid=7, text="Was ist Janas Telefonnummer?"))
         vl.assert_called_once_with("kontakt", "Jana Kostbar", vault="whitestag")
         ci.assert_not_called()
@@ -85,7 +88,7 @@ class TestTenantRouting(unittest.TestCase):
                                side_effect=["LOOKUP kontakt: Max", "Antwort."]), \
              mock.patch.object(bot.vault_client, "lookup",
                                return_value={"mode": "kontakt", "query": "Max", "treffer": []}) as vl, \
-             mock.patch.object(bot, "create_issue"):
+             mock.patch.object(bot.jarvis_brain, "create_issue"):
             app.handle_update(msg(1220010628, mid=9, text="Nummer von Max?"))
         vl.assert_called_once_with("kontakt", "Max", vault="clara")
 
@@ -98,7 +101,7 @@ class TestReplyModeCommands(unittest.TestCase):
 
     def test_voice_command_sets_mode_and_confirms_no_issue(self):
         tg, app, p = self._app()
-        with mock.patch.object(bot, "create_issue") as ci, \
+        with mock.patch.object(bot.jarvis_brain, "create_issue") as ci, \
              mock.patch.object(bot.llm, "chat") as lc:
             app.handle_update(msg(8311805232, text="/voice"))
         ci.assert_not_called()
@@ -131,7 +134,7 @@ class TestReplyModeCommands(unittest.TestCase):
         tg, app, p = self._app()
         bot.reply_mode.set_mode(p, 1220010628, "voice")
         with mock.patch.object(bot.llm, "chat", return_value="ISSUE: Song :: Mische den Song"), \
-             mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}), \
+             mock.patch.object(bot.jarvis_brain, "create_issue", return_value={"identifier": "CLR-1"}), \
              mock.patch.object(bot.tts, "synthesize", return_value="/tmp/reply.ogg") as syn:
             app.handle_update(msg(1220010628, mid=5, text="Leg einen Task an: Song mischen"))
         syn.assert_called_once()
@@ -144,7 +147,7 @@ class TestReplyModeCommands(unittest.TestCase):
     def test_text_mode_ack_uses_send_message(self):
         tg, app, p = self._app()  # Default text
         with mock.patch.object(bot.llm, "chat", return_value="ISSUE: x :: x"), \
-             mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}):
+             mock.patch.object(bot.jarvis_brain, "create_issue", return_value={"identifier": "CLR-1"}):
             app.handle_update(msg(1220010628, mid=5, text="Leg einen Task an"))
         tg.send_voice.assert_not_called()
         acked = [c for c in tg.send_message.call_args_list if "Task angelegt" in c.args[1]]
@@ -154,7 +157,7 @@ class TestReplyModeCommands(unittest.TestCase):
         tg, app, p = self._app()
         bot.reply_mode.set_mode(p, 1220010628, "voice")
         with mock.patch.object(bot.llm, "chat", return_value="ISSUE: x :: x"), \
-             mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}), \
+             mock.patch.object(bot.jarvis_brain, "create_issue", return_value={"identifier": "CLR-1"}), \
              mock.patch.object(bot.tts, "synthesize", side_effect=bot.tts.TtsError("boom")):
             app.handle_update(msg(1220010628, mid=5, text="Leg einen Task an"))
         tg.send_voice.assert_not_called()
@@ -340,7 +343,7 @@ class TestChatFallback(unittest.TestCase):
         """Kein Auftragsverlust: fällt das LLM aus, geht der Rohtext trotzdem an den CEO."""
         tg = mock.MagicMock(); app = make_app(tg)
         with mock.patch.object(bot.llm, "chat", side_effect=bot.llm.LlmError("down")), \
-             mock.patch.object(bot, "create_issue", return_value={"identifier": "WHI-42"}) as ci:
+             mock.patch.object(bot.jarvis_brain, "create_issue", return_value={"identifier": "WHI-42"}) as ci:
             app.handle_update(msg(8311805232, mid=3,
                                   text="Such mir die Vergabenummer vom Lausitz Science Park raus."))
         ci.assert_called_once()
@@ -355,7 +358,7 @@ class TestChatFallback(unittest.TestCase):
         """Der CEO muss erkennen, dass der Text ungeprüft durchgereicht wurde."""
         tg = mock.MagicMock(); app = make_app(tg)
         with mock.patch.object(bot.llm, "chat", side_effect=bot.llm.LlmError("down")), \
-             mock.patch.object(bot, "create_issue", return_value={"identifier": "WHI-42"}) as ci:
+             mock.patch.object(bot.jarvis_brain, "create_issue", return_value={"identifier": "WHI-42"}) as ci:
             app.handle_update(msg(8311805232, mid=3, text="Bitte Angebot rausschicken"))
         self.assertIn("unausgewertet", ci.call_args.args[4].lower())
 
@@ -363,7 +366,7 @@ class TestChatFallback(unittest.TestCase):
         """Geht auch die Issue-Anlage nicht, muss der Nutzer das unmissverständlich hören."""
         tg = mock.MagicMock(); app = make_app(tg)
         with mock.patch.object(bot.llm, "chat", side_effect=bot.llm.LlmError("down")), \
-             mock.patch.object(bot, "create_issue", side_effect=RuntimeError("api tot")):
+             mock.patch.object(bot.jarvis_brain, "create_issue", side_effect=RuntimeError("api tot")):
             app.handle_update(msg(8311805232, mid=3, text="Wichtiger Auftrag"))
         texts = [c.args[1] for c in tg.send_message.call_args_list]
         self.assertTrue(any("nicht angekommen" in t.lower() for t in texts))
@@ -387,12 +390,15 @@ class TestChatFallback(unittest.TestCase):
 
 class TestDoLookupUnknownVault(unittest.TestCase):
     def test_do_lookup_refuses_unknown_vault(self):
+        # _do_lookup lebt jetzt in jarvis_brain (bot.py re-importiert das
+        # Modul als bot.jarvis_brain); Aufrufweg umgezogen, Assertions unveraendert.
         tg = mock.MagicMock(); app = make_app(tg)
         with mock.patch.object(bot.vault_client, "lookup",
                                return_value={"mode": "kontakt", "query": "x",
                                              "treffer": [], "vault_unknown": True}), \
              mock.patch.object(bot.llm, "chat") as lc:
-            out = app._do_lookup({"name": "X", "vault": "Clara"}, [], "kontakt", "x")
+            out = bot.jarvis_brain._do_lookup([], "kontakt", "x", {"name": "X", "vault": "Clara"},
+                                              app._chat_model())
         self.assertIn("nicht zugreifen", out)
         lc.assert_not_called()
 
