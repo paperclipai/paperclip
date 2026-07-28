@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
@@ -109,6 +110,7 @@ type ProductivityReviewEvidence = {
 type EnqueueWakeup = (
   agentId: string,
   opts?: {
+    idempotencyKey?: string | null;
     source?: "timer" | "assignment" | "on_demand" | "automation";
     triggerDetail?: "manual" | "ping" | "callback" | "system";
     reason?: string | null;
@@ -872,7 +874,7 @@ export function productivityReviewService(
    * touched and confirmed *after* the wake: a newest marker that is not `wakeDelivered` means the
    * reclassification is unfinished, whatever killed it.
    */
-  async function reclassificationWakeOutstanding(companyId: string, reviewIssueId: string) {
+  async function readOutstandingReclassification(companyId: string, reviewIssueId: string) {
     const marker = await db
       .select({ details: activityLog.details })
       .from(activityLog)
@@ -885,7 +887,13 @@ export function productivityReviewService(
       .orderBy(desc(activityLog.createdAt))
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    return Boolean(marker) && (marker!.details as Record<string, unknown>)?.wakeDelivered !== true;
+    if (!marker) return null;
+    const details = marker.details as Record<string, unknown>;
+    if (details?.wakeDelivered === true) return null;
+    // The cycle id makes the retry's wake carry the same idempotency key as the attempt that was
+    // interrupted, so a crash *after* a successful wake and before its confirmation cannot produce
+    // a second report-and-close run.
+    return { reclassificationId: typeof details?.reclassificationId === "string" ? details.reclassificationId : null };
   }
 
   /**
@@ -898,7 +906,11 @@ export function productivityReviewService(
     existing: IssueRow,
     evidence: ProductivityReviewEvidence,
     opts: { prefix: string; thresholds: ProductivityReviewThresholds },
+    resumeReclassificationId?: string | null,
   ) {
+    // One id per reclassification *cycle*, reused when an interrupted attempt is resumed, so the
+    // retry's wake carries the same idempotency key as the one that may already have landed.
+    const reclassificationId = resumeReclassificationId ?? randomUUID();
     const ownerAgentId = await resolveReviewOwnerAgentId(
       evidence.sourceIssue,
       evidence.sourceAgent,
@@ -906,8 +918,9 @@ export function productivityReviewService(
     );
     const sourceLabel = evidence.sourceIssue.identifier ?? evidence.sourceIssue.title;
     // Intent first, so a crash anywhere after this leaves a marker that says the reclassification
-    // never finished. `wakeDelivered: false` is what the retry above keys on.
-    await logActivity(db, {
+    // never finished. `wakeDelivered: false` is what the retry above keys on. A resumed cycle
+    // already has its marker; writing another would only bury it.
+    if (!resumeReclassificationId) await logActivity(db, {
       companyId: evidence.sourceIssue.companyId,
       actorType: "system",
       actorId: "system",
@@ -920,6 +933,7 @@ export function productivityReviewService(
         sourceIssueId: evidence.sourceIssue.id,
         classification: evidence.classification,
         reclassifiedFrom: "stall",
+        reclassificationId,
         wakeDelivered: false,
       },
     });
@@ -954,10 +968,14 @@ export function productivityReviewService(
     // reads as `unreported_completion`, so the retry condition above can never fire again and the
     // finished work would sit assigned to an agent nobody ever triggers. On failure the review is
     // therefore restored to the stall it was, and the next reconcile pass retries the whole thing.
-    let wakeFailed = false;
+    // No invokable owner means nobody can be told, so the reclassification cannot be completed:
+    // confirming delivery here would record a wake that never happened and close the retry path.
+    // Rolling back keeps the manager-owned review until a candidate becomes invokable again.
+    let wakeFailed = !ownerAgentId;
     if (ownerAgentId && deps?.enqueueWakeup) {
       try {
         wakeFailed = !(await deps.enqueueWakeup(ownerAgentId, {
+          idempotencyKey: `productivity-review-reclassify:${reclassificationId}`,
           source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -1037,7 +1055,7 @@ export function productivityReviewService(
       });
       return { kind: "existing" as const, reviewIssueId: existing.id };
     }
-    // Delivery confirmed. This row is what `reclassificationWakeOutstanding` reads: until it
+    // Delivery confirmed. This row is what `readOutstandingReclassification` reads: until it
     // exists, the intent row above still marks the reclassification unfinished.
     await logActivity(db, {
       companyId: evidence.sourceIssue.companyId,
@@ -1054,6 +1072,7 @@ export function productivityReviewService(
         classification: evidence.classification,
         reclassifiedFrom: "stall",
         previousAssigneeAgentId: existing.assigneeAgentId,
+        reclassificationId,
         wakeDelivered: true,
         workTraceCommitCount: evidence.workTrace.commits.length,
         workTraceArtifactCount: evidence.workTrace.artifacts.length,
@@ -1081,6 +1100,9 @@ export function productivityReviewService(
       // One direction only. Evidence disappearing (a rewritten branch, a deleted artifact) must
       // not silently hand a review back to a manager with the destructive actions re-enabled; that
       // call belongs to a human reading the refresh comment.
+      const outstandingReclassification = evidence.classification === "unreported_completion"
+        ? await readOutstandingReclassification(evidence.sourceIssue.companyId, existing.id)
+        : null;
       if (
         evidence.classification === "unreported_completion" &&
         (
@@ -1089,10 +1111,15 @@ export function productivityReviewService(
           // update and the wake leaves exactly this state, and the stall check alone would never
           // retry it. Re-running is idempotent: the review is rewritten to what it already says
           // and the assignee finally gets the trigger.
-          await reclassificationWakeOutstanding(evidence.sourceIssue.companyId, existing.id)
+          outstandingReclassification !== null
         )
       ) {
-        return await reclassifyReviewAsUnreportedCompletion(existing, evidence, opts);
+        return await reclassifyReviewAsUnreportedCompletion(
+          existing,
+          evidence,
+          opts,
+          outstandingReclassification?.reclassificationId ?? null,
+        );
       }
       const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
       const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;

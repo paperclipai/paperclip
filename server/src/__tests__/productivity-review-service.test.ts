@@ -1324,6 +1324,37 @@ describeEmbeddedPostgres("productivity review service", () => {
       expect(wakes).toEqual([seeded.coderId]);
     });
 
+    // Confirming delivery with no owner would record a wake that never happened and close the retry
+    // path for good, leaving finished work under an instruction nobody was given.
+    it("rolls back rather than confirming a reclassification with no invokable owner", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const emptyRepo = createEmptyRepoPath();
+      await productivityReviewService(db, { resolveAgentWorkspaceDir: () => emptyRepo })
+        .reconcileProductivityReviews({ now, companyId: seeded.companyId });
+      const [stallReview] = await listProductivityReviews(seeded.companyId);
+      expect(stallReview?.description).toContain("Classification: `stall`");
+
+      // No owner can be resolved: every candidate is gone.
+      await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, stallReview!.id));
+      await db.update(agents).set({ status: "terminated" }).where(eq(agents.companyId, seeded.companyId));
+
+      const { repoPath } = createRepoWithCommit({
+        subject: "feat(aur1370): deliverable landed",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+      await productivityReviewService(db, { resolveAgentWorkspaceDir: () => repoPath })
+        .reconcileProductivityReviews({ now: new Date(now.getTime() + 60_000), companyId: seeded.companyId });
+
+      const [after] = await listProductivityReviews(seeded.companyId);
+      expect(after?.title).toBe("Review productivity for AUR-1370");
+      expect(after?.description).toContain("Classification: `stall`");
+      const markers = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "issue.productivity_review_updated"));
+      expect(markers.every((row) => (row.details as Record<string, unknown>)?.wakeDelivered !== true)).toBe(true);
+    });
+
     // A crash between the review update and the wake cannot be caught, so it has to be recoverable:
     // the review already reads `unreported_completion`, and the stall check alone would never retry.
     it("re-wakes a reclassification whose wake was never confirmed", async () => {
@@ -1333,12 +1364,12 @@ describeEmbeddedPostgres("productivity review service", () => {
         subject: "feat(aur1370): deliverable landed",
         committedAt: "2026-07-26T07:31:26+02:00",
       });
-      const wakes: string[] = [];
+      const wakes: Array<{ agentId: string; idempotencyKey: unknown }> = [];
       const service = (dir: string) =>
         productivityReviewService(db, {
           resolveAgentWorkspaceDir: () => dir,
-          enqueueWakeup: (async (agentId: string) => {
-            wakes.push(agentId);
+          enqueueWakeup: (async (agentId: string, wakeOpts?: { idempotencyKey?: unknown }) => {
+            wakes.push({ agentId, idempotencyKey: wakeOpts?.idempotencyKey });
             return { id: "wake" };
           }) as never,
         });
@@ -1360,7 +1391,7 @@ describeEmbeddedPostgres("productivity review service", () => {
         action: "issue.productivity_review_updated",
         entityType: "issue",
         entityId: review!.id,
-        details: { reclassifiedFrom: "stall", wakeDelivered: false },
+        details: { reclassifiedFrom: "stall", reclassificationId: "cycle-1", wakeDelivered: false },
       });
       wakes.length = 0;
 
@@ -1369,7 +1400,11 @@ describeEmbeddedPostgres("productivity review service", () => {
         companyId: seeded.companyId,
       });
 
-      expect(wakes).toEqual([seeded.coderId]);
+      // The resumed cycle reuses the interrupted attempt's id, so a wake that already landed before
+      // the crash is deduplicated instead of producing a second report-and-close run.
+      expect(wakes).toEqual([
+        { agentId: seeded.coderId, idempotencyKey: "productivity-review-reclassify:cycle-1" },
+      ]);
       const [recovered] = await listProductivityReviews(seeded.companyId);
       expect(recovered?.description).toContain("Classification: `unreported_completion`");
       expect(recovered?.assigneeAgentId).toBe(seeded.coderId);
