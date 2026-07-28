@@ -24,7 +24,10 @@ const cheapProfile: AdapterModelProfileDefinition = {
 };
 
 describe("heartbeat model profile application", () => {
-  it("keeps Codex on its primary model when cheap has no explicit model override", async () => {
+  // Fork policy: the codex cheap profile pins the ChatGPT-auth-safe lane
+  // (model gpt-5.4, medium effort) instead of upstream's empty default, so
+  // requesting cheap DOES override the primary model.
+  it("applies the fork's pinned cheap model when the issue requests the cheap profile", async () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: await listAdapterModelProfiles("codex_local"),
       agentRuntimeConfig: {},
@@ -44,13 +47,12 @@ describe("heartbeat model profile application", () => {
       applied: "cheap",
       configSource: "adapter_default",
       fallbackReason: null,
-      adapterConfig: {},
       adapterConfig: {
         model: "gpt-5.4",
         modelReasoningEffort: "medium",
       },
     });
-    expect(merged).toEqual({ model: "primary" });
+    expect(merged).toEqual({ model: "gpt-5.4", modelReasoningEffort: "medium" });
   });
 
   it("applies cheap profile patches before explicit issue adapter config overrides", () => {

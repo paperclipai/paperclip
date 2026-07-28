@@ -482,8 +482,12 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
   it("suppresses a shrink-only stop after review when the snapshot round-trips through jsonb", async () => {
     const companyId = await seedCompany();
-    const sourceId = await seedIssue(companyId, { identifier: "WDOG-SHRINK", status: "in_review" });
-    const waitingLeafId = await seedIssue(companyId, { parentId: sourceId, status: "in_review" });
+    // Fork policy: in_review issues with pending interactions count as a live
+    // "waiting review path" and shield the subtree from watchdog triggers, so
+    // this scenario seeds in_progress leaves — the jsonb round-trip suppression
+    // under test is status-independent.
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-SHRINK", status: "in_progress" });
+    const waitingLeafId = await seedIssue(companyId, { parentId: sourceId, status: "in_progress" });
     const siblingLeafId = await seedIssue(companyId, { parentId: sourceId, status: "in_progress" });
     const agentId = await seedAgent(companyId);
     await db.insert(issueThreadInteractions).values({
@@ -630,7 +634,10 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
   it("surfaces pending interaction kinds and approval ids in the wake and watchdog comment", async () => {
     const companyId = await seedCompany();
-    const sourceId = await seedIssue(companyId, { identifier: "WDOG-WAITS", status: "in_review" });
+    // Fork policy shields in_review issues with pending asks from watchdog
+    // triggers; seed in_progress so the trigger fires and the surfacing
+    // behavior under test is exercised.
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-WAITS", status: "in_progress" });
     const agentId = await seedAgent(companyId);
     await seedWatchdog(companyId, sourceId, agentId);
     const interactionId = randomUUID();
