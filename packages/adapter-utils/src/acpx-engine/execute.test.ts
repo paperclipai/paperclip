@@ -200,10 +200,12 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).toContain('PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"');
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/agents/me");
     expect(prompt).toContain("text/html response body means the write was discarded");
+    expect(prompt).toContain("returns HTTP 200 with text/html, the write still failed");
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID");
     expect(prompt).toContain("-w '%{http_code}'");
     expect(prompt).toContain("$PAPERCLIP_TMPDIR/paperclip-write.json");
     expect(prompt).toContain("jq -e '.comment.id'");
+    expect(prompt).toContain("jq check is required");
     expect(prompt).toContain("X-Paperclip-Run-Id");
     expect(prompt).not.toContain("$PAPERCLIP_API_URL/api/");
     expect(prompt).not.toContain("/api/issues/{id}");

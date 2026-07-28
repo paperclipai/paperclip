@@ -1466,12 +1466,14 @@ function renderApiAccessNote(env: Record<string, string>): string {
     "GET example:",
     `  curl -sS -D - -o - -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_BASE/api/agents/me"`,
     "A text/html response body means the write was discarded, usually by a login page or gateway.",
+    "If a retried or redirected request returns HTTP 200 with text/html, the write still failed.",
   ];
   if (env.PAPERCLIP_TASK_ID) {
     lines.push(
       "Scoped issue comment example:",
       `  HTTP_CODE=$(curl -sS -o "$PAPERCLIP_TMPDIR/paperclip-write.json" -w '%{http_code}' -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{"body":"Status update from agent."}' "$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/comments")`,
       `  [ "$HTTP_CODE" = "200" ] && jq -e '.comment.id' "$PAPERCLIP_TMPDIR/paperclip-write.json" >/dev/null`,
+      "The jq check is required: it fails on HTML login pages even when curl reports HTTP 200.",
     );
   } else {
     lines.push("Use a real issue id from the current context before making issue write requests.");
