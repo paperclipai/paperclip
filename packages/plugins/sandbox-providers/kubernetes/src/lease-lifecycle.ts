@@ -31,11 +31,14 @@ export function isKubeNotFoundError(err: unknown): boolean {
   return code === 404;
 }
 
-async function ignoreNotFound(promise: Promise<unknown>): Promise<void> {
+async function attemptDelete(
+  errors: unknown[],
+  operation: () => Promise<unknown>,
+): Promise<void> {
   try {
-    await promise;
+    await operation();
   } catch (err) {
-    if (!isKubeNotFoundError(err)) throw err;
+    if (!isKubeNotFoundError(err)) errors.push(err);
   }
 }
 
@@ -169,25 +172,40 @@ export async function destroyLeaseResources(
   clients: KubeClients,
   input: DestroyLeaseInput,
 ): Promise<void> {
+  const errors: unknown[] = [];
   if (input.backend === "sandbox-cr") {
-    await ignoreNotFound(deleteSandboxCr(clients, input.namespace, input.name));
+    await attemptDelete(
+      errors,
+      () => deleteSandboxCr(clients, input.namespace, input.name),
+    );
   } else {
-    await ignoreNotFound(deleteJob(clients, input.namespace, input.name));
+    await attemptDelete(
+      errors,
+      () => deleteJob(clients, input.namespace, input.name),
+    );
   }
-  if (input.podName) {
-    await ignoreNotFound(
-      clients.core.deleteNamespacedPod({
+  const podName = input.podName;
+  if (podName) {
+    await attemptDelete(
+      errors,
+      () => clients.core.deleteNamespacedPod({
         namespace: input.namespace,
-        name: input.podName,
+        name: podName,
       }),
     );
   }
-  if (input.secretName) {
-    await ignoreNotFound(
-      clients.core.deleteNamespacedSecret({
+  const secretName = input.secretName;
+  if (secretName) {
+    await attemptDelete(
+      errors,
+      () => clients.core.deleteNamespacedSecret({
         namespace: input.namespace,
-        name: input.secretName,
+        name: secretName,
       }),
     );
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Failed to delete one or more Kubernetes lease resources");
   }
 }

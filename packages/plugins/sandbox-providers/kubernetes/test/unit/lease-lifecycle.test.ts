@@ -345,4 +345,36 @@ describe("destroyLeaseResources", () => {
       }),
     ).rejects.toThrow("forbidden");
   });
+
+  it("attempts pod and Secret deletion when workload deletion fails", async () => {
+    const workloadFailure = Object.assign(new Error("workload delete forbidden"), { code: 403 });
+    const clients = {
+      custom: {
+        deleteNamespacedCustomObject: vi.fn().mockRejectedValue(workloadFailure),
+      },
+      batch: { deleteNamespacedJob: vi.fn() },
+      core: {
+        deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+        deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+      },
+    };
+
+    await expect(
+      destroyLeaseResources(clients as never, {
+        namespace: "ns",
+        name: "pc-abc",
+        backend: "sandbox-cr",
+        podName: "pc-abc-pod",
+        secretName: "pc-abc-env",
+      }),
+    ).rejects.toBe(workloadFailure);
+    expect(clients.core.deleteNamespacedPod).toHaveBeenCalledWith({
+      namespace: "ns",
+      name: "pc-abc-pod",
+    });
+    expect(clients.core.deleteNamespacedSecret).toHaveBeenCalledWith({
+      namespace: "ns",
+      name: "pc-abc-env",
+    });
+  });
 });
