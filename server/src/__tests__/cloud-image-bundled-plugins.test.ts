@@ -82,6 +82,10 @@ describe("cloud image bundled plugins", () => {
     // image build always finishes — a newer push only supersedes the pending
     // slot instead of killing the build that is already publishing.
     expect(workflow).toMatch(/^concurrency:$/m);
+    // Pin the per-ref group key: without it the block could keep
+    // cancel-in-progress: false yet lose the group that scopes serialization
+    // to a single ref, silently changing which builds queue behind each other.
+    expect(workflow).toContain("group: docker-${{ github.ref }}");
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).not.toContain("cancel-in-progress: true");
   });
