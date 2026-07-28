@@ -61,6 +61,23 @@ def test_empty_transcript_ends_without_speaking(monkeypatch):
     assert responded == []       # respond gar nicht erst aufgerufen
 
 
+def test_non_remembered_kind_not_added_to_history(monkeypatch):
+    monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "mach xyz")
+    monkeypatch.setattr(satellite.jarvis_brain, "respond",
+                        lambda *a, **k: {"kind": "unparsed_ok",
+                                         "answer": "⚠️ …an den CEO weitergegeben: WHI-10"})
+    spoken = []
+    monkeypatch.setattr(satellite, "_speak", lambda text, deps: spoken.append(text))
+    # Runde 1 Sprache (hang=10), dann Nachfrage-Fenster leer -> Ende
+    frames = iter(
+        [loud(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet()]
+        + [quiet()] * sat_config.FOLLOWUP_WINDOW_FRAMES
+    )
+    hist = satellite.handle_interaction(frames, _deps())
+    assert hist == []
+    assert spoken == ["⚠️ …an den CEO weitergegeben: WHI-10"]
+
+
 def test_token_callable_is_resolved(monkeypatch):
     seen = {}
     monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "hi")

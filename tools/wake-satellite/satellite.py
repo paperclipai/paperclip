@@ -6,6 +6,7 @@ testbare Interaktion nach einem Wake-Treffer: aufnehmen -> transkribieren ->
 Jarvis-Gehirn -> sprechen -> 6-s-Nachfrage-Fenster. Ein Gehirn (jarvis_brain),
 geteilt mit dem Telegram-Bot."""
 import os
+import shutil
 import tempfile
 import time
 import traceback
@@ -44,18 +45,24 @@ def _transcribe(recorded, deps):
     except transcribe.TranscriptionError:
         traceback.print_exc()
         return ""
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _speak(text, deps):
     if not (text or "").strip():
         return
-    dest = os.path.join(tempfile.mkdtemp(), "reply.mp3")
+    workdir = tempfile.mkdtemp()
+    dest = os.path.join(workdir, "reply.mp3")
     try:
-        tts.synthesize(text, deps["eleven_key"], dest, output_format=sat_config.TTS_FORMAT)
-    except tts.TtsError:
-        traceback.print_exc()
-        return
-    playback.play(dest, device=sat_config.HOMEPOD_DEVICE)
+        try:
+            tts.synthesize(text, deps["eleven_key"], dest, output_format=sat_config.TTS_FORMAT)
+        except tts.TtsError:
+            traceback.print_exc()
+            return
+        playback.play(dest, device=sat_config.HOMEPOD_DEVICE)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def handle_interaction(frames, deps, tenant=None, history=None):
