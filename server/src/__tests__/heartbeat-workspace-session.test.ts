@@ -1802,6 +1802,10 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(true);
   });
 
+  it("preserves the executor task session when approved execution resumes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_resumed" })).toBe(false);
+  });
+
   it("preserves session context on timer heartbeats", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });

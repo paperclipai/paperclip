@@ -80,6 +80,7 @@ export function buildExecutionPolicy(input: {
   existingPolicy?: IssueExecutionPolicy | null;
   reviewerValues: string[];
   approverValues: string[];
+  reviewOnApprove?: "advance" | "return_to_executor";
 }): IssueExecutionPolicy | null {
   const mode = input.existingPolicy?.mode ?? "normal";
   const stages: IssueExecutionPolicy["stages"] = [];
@@ -91,6 +92,9 @@ export function buildExecutionPolicy(input: {
     stages.push({
       id: existingReviewStage?.id ?? newId(),
       type: "review" as const,
+      onApprove: input.approverValues.length > 0
+        ? (input.reviewOnApprove ?? existingReviewStage?.onApprove ?? "advance")
+        : "advance",
       approvalsNeeded: 1 as const,
       participants: reviewParticipants,
     });
@@ -102,6 +106,7 @@ export function buildExecutionPolicy(input: {
     stages.push({
       id: existingApprovalStage?.id ?? newId(),
       type: "approval" as const,
+      onApprove: existingApprovalStage?.onApprove ?? "advance",
       approvalsNeeded: 1 as const,
       participants: approvalParticipants,
     });
@@ -110,8 +115,9 @@ export function buildExecutionPolicy(input: {
   if (stages.length === 0 && !monitor) return null;
 
   return {
+    ...input.existingPolicy,
     mode,
-    commentRequired: true,
+    commentRequired: input.existingPolicy?.commentRequired ?? true,
     stages,
     ...(monitor ? { monitor } : {}),
   };
