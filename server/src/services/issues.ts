@@ -627,6 +627,10 @@ type IssueWakeDiagnosticsWakeRequestRow = {
   status: string;
   coalescedCount: number;
   runId: string | null;
+  requestedByAgentId: string | null;
+  requestedByUserId: string | null;
+  requestedByRunId: string | null;
+  responsibleUserId: string | null;
   requestedAt: Date;
   claimedAt: Date | null;
   finishedAt: Date | null;
@@ -5245,6 +5249,10 @@ export function issueService(db: Db) {
           status: agentWakeupRequests.status,
           coalescedCount: agentWakeupRequests.coalescedCount,
           runId: agentWakeupRequests.runId,
+          requestedByAgentId: agentWakeupRequests.requestedByAgentId,
+          requestedByUserId: agentWakeupRequests.requestedByUserId,
+          requestedByRunId: agentWakeupRequests.requestedByRunId,
+          responsibleUserId: agentWakeupRequests.responsibleUserId,
           requestedAt: agentWakeupRequests.requestedAt,
           claimedAt: agentWakeupRequests.claimedAt,
           finishedAt: agentWakeupRequests.finishedAt,
@@ -5496,6 +5504,10 @@ export function issueService(db: Db) {
               wake.status,
               wake.coalesced_count AS "coalescedCount",
               wake.run_id AS "runId",
+              wake.requested_by_agent_id AS "requestedByAgentId",
+              wake.requested_by_user_id AS "requestedByUserId",
+              wake.requested_by_run_id AS "requestedByRunId",
+              wake.responsible_user_id AS "responsibleUserId",
               wake.requested_at AS "requestedAt",
               wake.claimed_at AS "claimedAt",
               wake.finished_at AS "finishedAt",

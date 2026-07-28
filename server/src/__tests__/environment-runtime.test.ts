@@ -1915,6 +1915,19 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       },
     });
     const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "CodexReviewer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
     const executionWorkspaceId = randomUUID();
     const pluginId = randomUUID();
     const projectId = randomUUID();

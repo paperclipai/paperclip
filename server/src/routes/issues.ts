@@ -1029,6 +1029,10 @@ function projectIssueWakeRequest(row: {
   status: string;
   coalescedCount: number;
   runId: string | null;
+  requestedByAgentId?: string | null;
+  requestedByUserId?: string | null;
+  requestedByRunId?: string | null;
+  responsibleUserId?: string | null;
   requestedAt: Date | string;
   claimedAt: Date | string | null;
   finishedAt: Date | string | null;
@@ -1043,6 +1047,10 @@ function projectIssueWakeRequest(row: {
     status,
     coalescedCount: row.coalescedCount,
     runId: options.includeInternalIds ? row.runId : null,
+    requestedByAgentId: options.includeInternalIds ? row.requestedByAgentId ?? null : null,
+    requestedByUserId: options.includeInternalIds ? row.requestedByUserId ?? null : null,
+    requestedByRunId: options.includeInternalIds ? row.requestedByRunId ?? null : null,
+    responsibleUserId: options.includeInternalIds ? row.responsibleUserId ?? null : null,
     requestedAt: dateToIso(row.requestedAt)!,
     claimedAt: dateToIso(row.claimedAt),
     finishedAt: dateToIso(row.finishedAt),
@@ -1214,6 +1222,10 @@ function buildIssueWakeDiagnosticsResponse(input: {
     status: string;
     coalescedCount: number;
     runId: string | null;
+    requestedByAgentId?: string | null;
+    requestedByUserId?: string | null;
+    requestedByRunId?: string | null;
+    responsibleUserId?: string | null;
     requestedAt: Date | string;
     claimedAt: Date | string | null;
     finishedAt: Date | string | null;

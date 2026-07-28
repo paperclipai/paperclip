@@ -444,7 +444,23 @@ export function projectRoutes(db: Db) {
     }
 
     const actor = getActorInfo(req);
-    const recorder = workspaceOperations.createRecorder({ companyId: project.companyId });
+    const controlAttribution = {
+      actorAgentId: actor.agentId,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorRunId: actor.runId,
+      responsibleUserId: req.actor.type === "agent"
+        ? req.actor.onBehalfOfUserId?.trim() || null
+        : actor.actorType === "user"
+          ? actor.actorId
+          : null,
+    };
+    const recorder = workspaceOperations.createRecorder({
+      companyId: project.companyId,
+      actorAgentId: controlAttribution.actorAgentId,
+      actorUserId: controlAttribution.actorUserId,
+      actorRunId: controlAttribution.actorRunId,
+      responsibleUserId: controlAttribution.responsibleUserId,
+    });
     let runtimeServiceCount = workspace.runtimeServices?.length ?? 0;
     let stdout = "";
     let stderr = "";
@@ -518,6 +534,7 @@ export function projectRoutes(db: Db) {
             db,
             projectWorkspaceId: workspace.id,
             runtimeServiceId: selectedRuntimeServiceId,
+            controlAttribution,
           });
         }
 
@@ -548,6 +565,7 @@ export function projectRoutes(db: Db) {
             adapterEnv: {},
             onLog,
             serviceIndex: selectedServiceIndex,
+            controlAttribution,
           });
           runtimeServiceCount = startedServices.length;
         } else {

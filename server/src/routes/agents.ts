@@ -187,6 +187,11 @@ export function agentRoutes(
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  function routeResponsibleUserId(req: Request) {
+    if (req.actor.type === "agent") return req.actor.onBehalfOfUserId?.trim() || null;
+    if (req.actor.type === "board") return req.actor.userId?.trim() || null;
+    return null;
+  }
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -259,6 +264,10 @@ export function agentRoutes(
     companyId: string;
     adapterType: string;
     environmentId: string | null;
+    actorAgentId?: string | null;
+    actorUserId?: string | null;
+    actorRunId?: string | null;
+    responsibleUserId?: string | null;
   }): Promise<{
     executionTarget: AdapterExecutionTarget | null;
     environmentName: string | null;
@@ -386,6 +395,10 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
+        actorAgentId: input.actorAgentId ?? null,
+        actorUserId: input.actorUserId ?? null,
+        actorRunId: input.actorRunId ?? null,
+        responsibleUserId: input.responsibleUserId ?? null,
         // Apply the active custom-image template so the Test boots with the
         // operator's captured sandbox customizations and prepared image state,
         // matching what real agent runs use. Without this the test would
@@ -1776,11 +1789,16 @@ export function agentRoutes(
         { adapterType: type },
       );
 
+      const actor = getActorInfo(req);
       const { executionTarget, environmentName, fallbackChecks, sandboxIdentityCheck, release } =
         await resolveAdapterTestExecutionContext({
           companyId,
           adapterType: type,
           environmentId: requestedEnvironmentId,
+          actorAgentId: actor.agentId,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          actorRunId: actor.runId,
+          responsibleUserId: routeResponsibleUserId(req),
         });
 
       let releaseStatus: "released" | "failed" = "released";
@@ -3440,6 +3458,8 @@ export function agentRoutes(
       idempotencyKey: req.body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      requestedByRunId: req.actor.runId ?? null,
+      responsibleUserId: routeResponsibleUserId(req),
       contextSnapshot: {
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,

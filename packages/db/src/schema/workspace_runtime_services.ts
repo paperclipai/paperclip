@@ -38,6 +38,13 @@ export const workspaceRuntimeServices = pgTable(
     providerRef: text("provider_ref"),
     ownerAgentId: uuid("owner_agent_id").references(() => agents.id, { onDelete: "set null" }),
     startedByRunId: uuid("started_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    startedByAgentId: uuid("started_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    startedByUserId: text("started_by_user_id"),
+    responsibleUserId: text("responsible_user_id"),
+    lastControlledByAgentId: uuid("last_controlled_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    lastControlledByUserId: text("last_controlled_by_user_id"),
+    lastControlledByRunId: uuid("last_controlled_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    lastControlledAt: timestamp("last_controlled_at", { withTimezone: true }),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     stoppedAt: timestamp("stopped_at", { withTimezone: true }),
@@ -63,6 +70,19 @@ export const workspaceRuntimeServices = pgTable(
       table.status,
     ),
     runIdx: index("workspace_runtime_services_run_idx").on(table.startedByRunId),
+    companyStartedByAgentIdx: index("workspace_runtime_services_company_started_by_agent_idx").on(
+      table.companyId,
+      table.startedByAgentId,
+      table.startedAt,
+    ),
+    companyResponsibleUserIdx: index("workspace_runtime_services_company_responsible_user_idx").on(
+      table.companyId,
+      table.responsibleUserId,
+      table.startedAt,
+    ),
+    lastControlledByRunIdx: index("workspace_runtime_services_last_controlled_by_run_idx").on(
+      table.lastControlledByRunId,
+    ),
     companyUpdatedIdx: index("workspace_runtime_services_company_updated_idx").on(
       table.companyId,
       table.updatedAt,

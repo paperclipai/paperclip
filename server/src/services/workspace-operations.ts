@@ -16,6 +16,10 @@ function toWorkspaceOperation(row: WorkspaceOperationRow): WorkspaceOperation {
     companyId: row.companyId,
     executionWorkspaceId: row.executionWorkspaceId ?? null,
     heartbeatRunId: row.heartbeatRunId ?? null,
+    actorAgentId: row.actorAgentId ?? null,
+    actorUserId: row.actorUserId ?? null,
+    actorRunId: row.actorRunId ?? null,
+    responsibleUserId: row.responsibleUserId ?? null,
     issueId: row.issueId ?? null,
     phase: row.phase as WorkspaceOperationPhase,
     command: row.command ?? null,
@@ -50,6 +54,13 @@ function combineMetadata(
     ...(base ?? {}),
     ...(patch ?? {}),
   };
+}
+
+export interface WorkspaceOperationAttribution {
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+  actorRunId?: string | null;
+  responsibleUserId?: string | null;
 }
 
 export interface WorkspaceOperationRecorder {
@@ -91,7 +102,7 @@ export function workspaceOperationService(db: Db) {
       heartbeatRunId?: string | null;
       executionWorkspaceId?: string | null;
       issueId?: string | null;
-    }): WorkspaceOperationRecorder {
+    } & WorkspaceOperationAttribution): WorkspaceOperationRecorder {
       let executionWorkspaceId = input.executionWorkspaceId ?? null;
       const createdIds: string[] = [];
 
@@ -138,6 +149,10 @@ export function workspaceOperationService(db: Db) {
             companyId: input.companyId,
             executionWorkspaceId,
             heartbeatRunId: input.heartbeatRunId ?? null,
+            actorAgentId: input.actorAgentId ?? null,
+            actorUserId: input.actorUserId ?? null,
+            actorRunId: input.actorRunId ?? null,
+            responsibleUserId: input.responsibleUserId ?? null,
             issueId: input.issueId ?? null,
             phase: recordInput.phase,
             command: recordInput.command ?? null,

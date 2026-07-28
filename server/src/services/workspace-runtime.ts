@@ -110,12 +110,26 @@ export interface RuntimeServiceRef {
   providerRef: string | null;
   ownerAgentId: string | null;
   startedByRunId: string | null;
+  startedByAgentId: string | null;
+  startedByUserId: string | null;
+  responsibleUserId: string | null;
+  lastControlledByAgentId: string | null;
+  lastControlledByUserId: string | null;
+  lastControlledByRunId: string | null;
+  lastControlledAt: string | null;
   lastUsedAt: string;
   startedAt: string;
   stoppedAt: string | null;
   stopPolicy: Record<string, unknown> | null;
   healthStatus: "unknown" | "healthy" | "unhealthy";
   reused: boolean;
+}
+
+interface RuntimeServiceAttribution {
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+  actorRunId?: string | null;
+  responsibleUserId?: string | null;
 }
 
 interface RuntimeServiceRecord extends RuntimeServiceRef {
@@ -371,6 +385,13 @@ function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<R
     providerRef: record.providerRef,
     ownerAgentId: record.ownerAgentId,
     startedByRunId: record.startedByRunId,
+    startedByAgentId: record.startedByAgentId,
+    startedByUserId: record.startedByUserId,
+    responsibleUserId: record.responsibleUserId,
+    lastControlledByAgentId: record.lastControlledByAgentId,
+    lastControlledByUserId: record.lastControlledByUserId,
+    lastControlledByRunId: record.lastControlledByRunId,
+    lastControlledAt: record.lastControlledAt,
     lastUsedAt: record.lastUsedAt,
     startedAt: record.startedAt,
     stoppedAt: record.stoppedAt,
@@ -378,6 +399,45 @@ function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<R
     healthStatus: record.healthStatus,
     reused: record.reused,
     ...overrides,
+  };
+}
+
+function runtimeServiceAttributionFields(
+  attribution: RuntimeServiceAttribution | null | undefined,
+  fallback: { actorAgentId?: string | null; actorRunId?: string | null } = {},
+) {
+  return {
+    actorAgentId: attribution?.actorAgentId ?? fallback.actorAgentId ?? null,
+    actorUserId: attribution?.actorUserId ?? null,
+    actorRunId: attribution?.actorRunId ?? fallback.actorRunId ?? null,
+    responsibleUserId: attribution?.responsibleUserId ?? null,
+  };
+}
+
+function applyRuntimeServiceControlAttribution(
+  record: RuntimeServiceRecord,
+  attribution: RuntimeServiceAttribution | null | undefined,
+  controlledAt = new Date().toISOString(),
+) {
+  if (!attribution) return;
+  record.lastControlledByAgentId = attribution.actorAgentId ?? null;
+  record.lastControlledByUserId = attribution.actorUserId ?? null;
+  record.lastControlledByRunId = attribution.actorRunId ?? null;
+  record.lastControlledAt = controlledAt;
+  record.responsibleUserId = attribution.responsibleUserId ?? record.responsibleUserId;
+}
+
+function runtimeServiceControlUpdate(
+  attribution: RuntimeServiceAttribution | null | undefined,
+  controlledAt: Date,
+): Partial<typeof workspaceRuntimeServices.$inferInsert> {
+  if (!attribution) return {};
+  return {
+    lastControlledByAgentId: attribution.actorAgentId ?? null,
+    lastControlledByUserId: attribution.actorUserId ?? null,
+    lastControlledByRunId: attribution.actorRunId ?? null,
+    lastControlledAt: controlledAt,
+    ...(attribution.responsibleUserId ? { responsibleUserId: attribution.responsibleUserId } : {}),
   };
 }
 
@@ -3646,6 +3706,13 @@ function toPersistedWorkspaceRuntimeService(record: RuntimeServiceRecord): typeo
     providerRef: record.providerRef,
     ownerAgentId: record.ownerAgentId,
     startedByRunId: record.startedByRunId,
+    startedByAgentId: record.startedByAgentId,
+    startedByUserId: record.startedByUserId,
+    responsibleUserId: record.responsibleUserId,
+    lastControlledByAgentId: record.lastControlledByAgentId,
+    lastControlledByUserId: record.lastControlledByUserId,
+    lastControlledByRunId: record.lastControlledByRunId,
+    lastControlledAt: record.lastControlledAt ? new Date(record.lastControlledAt) : null,
     lastUsedAt: new Date(record.lastUsedAt),
     startedAt: new Date(record.startedAt),
     stoppedAt: record.stoppedAt ? new Date(record.stoppedAt) : null,
@@ -3682,6 +3749,13 @@ async function persistRuntimeServiceRecord(db: Db | undefined, record: RuntimeSe
         providerRef: values.providerRef,
         ownerAgentId: values.ownerAgentId,
         startedByRunId: values.startedByRunId,
+        startedByAgentId: values.startedByAgentId,
+        startedByUserId: values.startedByUserId,
+        responsibleUserId: values.responsibleUserId,
+        lastControlledByAgentId: values.lastControlledByAgentId,
+        lastControlledByUserId: values.lastControlledByUserId,
+        lastControlledByRunId: values.lastControlledByRunId,
+        lastControlledAt: values.lastControlledAt,
         lastUsedAt: values.lastUsedAt,
         startedAt: values.startedAt,
         stoppedAt: values.stoppedAt,
@@ -3765,6 +3839,7 @@ export function normalizeAdapterManagedRuntimeServices(input: {
   issue: ExecutionWorkspaceIssueRef | null;
   workspace: RealizedExecutionWorkspace;
   executionWorkspaceId?: string | null;
+  responsibleUserId?: string | null;
   reports: AdapterRuntimeServiceReport[];
   now?: Date;
 }): RuntimeServiceRef[] {
@@ -3817,6 +3892,13 @@ export function normalizeAdapterManagedRuntimeServices(input: {
       providerRef: report.providerRef ?? null,
       ownerAgentId: report.ownerAgentId ?? input.agent.id ?? null,
       startedByRunId: input.runId,
+      startedByAgentId: input.agent.id ?? null,
+      startedByUserId: null,
+      responsibleUserId: input.responsibleUserId ?? null,
+      lastControlledByAgentId: input.agent.id ?? null,
+      lastControlledByUserId: null,
+      lastControlledByRunId: input.runId,
+      lastControlledAt: nowIso,
       lastUsedAt: nowIso,
       startedAt: nowIso,
       stoppedAt: status === "running" || status === "starting" ? null : nowIso,
@@ -3832,6 +3914,7 @@ type StartLocalRuntimeServiceInput = {
   runId: string;
   leaseRunId?: string | null;
   startedByRunId?: string | null;
+  startAttribution?: RuntimeServiceAttribution | null;
   agent: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   workspace: RealizedExecutionWorkspace;
@@ -3847,6 +3930,10 @@ type StartLocalRuntimeServiceInput = {
 async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): Promise<LocalRuntimeServiceStart> {
   const leaseRunId = input.leaseRunId === undefined ? input.runId : input.leaseRunId;
   const startedByRunId = input.startedByRunId === undefined ? input.runId : input.startedByRunId;
+  const startAttribution = runtimeServiceAttributionFields(input.startAttribution, {
+    actorAgentId: input.agent.id ?? null,
+    actorRunId: startedByRunId ?? null,
+  });
   const identity = resolveRuntimeServiceReuseIdentity({
     service: input.service,
     workspace: input.workspace,
@@ -3971,6 +4058,13 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
           providerRef: String(adoptedRecord.pid),
           ownerAgentId: input.agent.id ?? null,
           startedByRunId,
+          startedByAgentId: startAttribution.actorAgentId,
+          startedByUserId: startAttribution.actorUserId,
+          responsibleUserId: startAttribution.responsibleUserId,
+          lastControlledByAgentId: startAttribution.actorAgentId,
+          lastControlledByUserId: startAttribution.actorUserId,
+          lastControlledByRunId: startAttribution.actorRunId,
+          lastControlledAt: new Date().toISOString(),
           lastUsedAt: new Date().toISOString(),
           startedAt: adoptedRecord.startedAt,
           stoppedAt: null,
@@ -4060,6 +4154,13 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     providerRef: child.pid ? String(child.pid) : null,
     ownerAgentId: input.agent.id ?? null,
     startedByRunId,
+    startedByAgentId: startAttribution.actorAgentId,
+    startedByUserId: startAttribution.actorUserId,
+    responsibleUserId: startAttribution.responsibleUserId,
+    lastControlledByAgentId: startAttribution.actorAgentId,
+    lastControlledByUserId: startAttribution.actorUserId,
+    lastControlledByRunId: startAttribution.actorRunId,
+    lastControlledAt: nowIso,
     lastUsedAt: nowIso,
     startedAt: nowIso,
     stoppedAt: null,
@@ -4148,7 +4249,7 @@ function scheduleIdleStop(record: RuntimeServiceRecord) {
   }, idleSeconds * 1000);
 }
 
-async function stopRuntimeService(serviceId: string) {
+async function stopRuntimeService(serviceId: string, controlAttribution?: RuntimeServiceAttribution | null) {
   const record = runtimeServicesById.get(serviceId);
   if (!record) return;
   clearIdleTimer(record);
@@ -4156,6 +4257,7 @@ async function stopRuntimeService(serviceId: string) {
   record.healthStatus = "unknown";
   record.lastUsedAt = new Date().toISOString();
   record.stoppedAt = new Date().toISOString();
+  applyRuntimeServiceControlAttribution(record, controlAttribution ?? null, record.stoppedAt);
   runtimeServicesById.delete(serviceId);
   if (record.reuseKey && runtimeServicesByReuseKey.get(record.reuseKey) === record.id) {
     runtimeServicesByReuseKey.delete(record.reuseKey);
@@ -4181,6 +4283,7 @@ async function stopRuntimeService(serviceId: string) {
 async function markPersistedRuntimeServicesStoppedForExecutionWorkspace(input: {
   db: Db;
   executionWorkspaceId: string;
+  controlAttribution?: RuntimeServiceAttribution | null;
 }) {
   const now = new Date();
   await input.db
@@ -4190,6 +4293,7 @@ async function markPersistedRuntimeServicesStoppedForExecutionWorkspace(input: {
       healthStatus: "unknown",
       stoppedAt: now,
       lastUsedAt: now,
+      ...runtimeServiceControlUpdate(input.controlAttribution ?? null, now),
       updatedAt: now,
     })
     .where(
@@ -4323,6 +4427,7 @@ export async function ensureRuntimeServicesForRun(input: {
   executionWorkspaceId?: string | null;
   config: Record<string, unknown>;
   adapterEnv: Record<string, string>;
+  responsibleUserId?: string | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }): Promise<RuntimeServiceRef[]> {
   const rawServices = selectRuntimeServiceEntries({
@@ -4361,6 +4466,7 @@ export async function ensureRuntimeServicesForRun(input: {
         if (existing && existing.status === "running") {
           existing.leaseRunIds.add(input.runId);
           existing.lastUsedAt = new Date().toISOString();
+          existing.responsibleUserId = existing.responsibleUserId ?? input.responsibleUserId ?? null;
           existing.stoppedAt = null;
           clearIdleTimer(existing);
           void touchLocalServiceRegistryRecord(existing.serviceKey, {
@@ -4384,6 +4490,12 @@ export async function ensureRuntimeServicesForRun(input: {
         adapterEnv: input.adapterEnv,
         service,
         onLog: input.onLog,
+        startAttribution: {
+          actorAgentId: input.agent.id ?? null,
+          actorUserId: null,
+          actorRunId: input.runId,
+          responsibleUserId: input.responsibleUserId ?? null,
+        },
         reuseKey,
         scopeType,
         scopeId,
@@ -4413,6 +4525,7 @@ type StartRuntimeServicesForWorkspaceControlInput = {
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   serviceIndex?: number | null;
   respectDesiredStates?: boolean;
+  controlAttribution?: RuntimeServiceAttribution | null;
 };
 
 type WorkspaceControlStartBatch = {
@@ -4457,6 +4570,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
       const existing = existingId ? runtimeServicesById.get(existingId) : null;
       if (existing && existing.status === "running") {
         existing.lastUsedAt = new Date().toISOString();
+        applyRuntimeServiceControlAttribution(existing, input.controlAttribution ?? null, existing.lastUsedAt);
         existing.stoppedAt = null;
         clearIdleTimer(existing);
         void touchLocalServiceRegistryRecord(existing.serviceKey, {
@@ -4474,6 +4588,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
       runId: invocationId,
       leaseRunId: null,
       startedByRunId: null,
+      startAttribution: input.controlAttribution ?? null,
       agent: input.actor,
       issue: input.issue,
       workspace: input.workspace,
@@ -4624,6 +4739,7 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
   executionWorkspaceId: string;
   workspaceCwd?: string | null;
   runtimeServiceId?: string | null;
+  controlAttribution?: RuntimeServiceAttribution | null;
 }) {
   const normalizedWorkspaceCwd = input.workspaceCwd ? path.resolve(input.workspaceCwd) : null;
   const matchingServiceIds = Array.from(runtimeServicesById.values())
@@ -4640,7 +4756,7 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
     .map((record) => record.id);
 
   for (const serviceId of matchingServiceIds) {
-    await stopRuntimeService(serviceId);
+    await stopRuntimeService(serviceId, input.controlAttribution ?? null);
   }
 
   if (input.db) {
@@ -4653,6 +4769,7 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
           healthStatus: "unknown",
           stoppedAt: now,
           lastUsedAt: now,
+          ...runtimeServiceControlUpdate(input.controlAttribution ?? null, now),
           updatedAt: now,
         })
         .where(eq(workspaceRuntimeServices.id, input.runtimeServiceId));
@@ -4660,6 +4777,7 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
       await markPersistedRuntimeServicesStoppedForExecutionWorkspace({
         db: input.db,
         executionWorkspaceId: input.executionWorkspaceId,
+        controlAttribution: input.controlAttribution ?? null,
       });
     }
   }
@@ -4669,6 +4787,7 @@ export async function stopRuntimeServicesForProjectWorkspace(input: {
   db?: Db;
   projectWorkspaceId: string;
   runtimeServiceId?: string | null;
+  controlAttribution?: RuntimeServiceAttribution | null;
 }) {
   const matchingServiceIds = Array.from(runtimeServicesById.values())
     .filter((record) => {
@@ -4678,7 +4797,7 @@ export async function stopRuntimeServicesForProjectWorkspace(input: {
     .map((record) => record.id);
 
   for (const serviceId of matchingServiceIds) {
-    await stopRuntimeService(serviceId);
+    await stopRuntimeService(serviceId, input.controlAttribution ?? null);
   }
 
   if (input.db) {
@@ -4690,6 +4809,7 @@ export async function stopRuntimeServicesForProjectWorkspace(input: {
         healthStatus: "unknown",
         stoppedAt: now,
         lastUsedAt: now,
+        ...runtimeServiceControlUpdate(input.controlAttribution ?? null, now),
         updatedAt: now,
       })
       .where(
@@ -4817,6 +4937,13 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
           providerRef: String(adoptedRecord.pid),
           ownerAgentId: row.ownerAgentId ?? null,
           startedByRunId: row.startedByRunId ?? null,
+          startedByAgentId: row.startedByAgentId ?? null,
+          startedByUserId: row.startedByUserId ?? null,
+          responsibleUserId: row.responsibleUserId ?? null,
+          lastControlledByAgentId: row.lastControlledByAgentId ?? null,
+          lastControlledByUserId: row.lastControlledByUserId ?? null,
+          lastControlledByRunId: row.lastControlledByRunId ?? null,
+          lastControlledAt: row.lastControlledAt?.toISOString() ?? null,
           lastUsedAt: new Date().toISOString(),
           startedAt: row.startedAt.toISOString(),
           stoppedAt: null,
@@ -4985,6 +5112,7 @@ export async function persistAdapterManagedRuntimeServices(input: {
   issue: ExecutionWorkspaceIssueRef | null;
   workspace: RealizedExecutionWorkspace;
   executionWorkspaceId?: string | null;
+  responsibleUserId?: string | null;
   reports: AdapterRuntimeServiceReport[];
 }) {
   const refs = normalizeAdapterManagedRuntimeServices(input);
@@ -5023,6 +5151,13 @@ export async function persistAdapterManagedRuntimeServices(input: {
         providerRef: ref.providerRef,
         ownerAgentId: ref.ownerAgentId,
         startedByRunId: ref.startedByRunId,
+        startedByAgentId: ref.startedByAgentId,
+        startedByUserId: ref.startedByUserId,
+        responsibleUserId: ref.responsibleUserId,
+        lastControlledByAgentId: ref.lastControlledByAgentId,
+        lastControlledByUserId: ref.lastControlledByUserId,
+        lastControlledByRunId: ref.lastControlledByRunId,
+        lastControlledAt: ref.lastControlledAt ? new Date(ref.lastControlledAt) : null,
         lastUsedAt: new Date(ref.lastUsedAt),
         startedAt,
         stoppedAt: ref.stoppedAt ? new Date(ref.stoppedAt) : null,
@@ -5052,6 +5187,13 @@ export async function persistAdapterManagedRuntimeServices(input: {
           providerRef: ref.providerRef,
           ownerAgentId: ref.ownerAgentId,
           startedByRunId: ref.startedByRunId,
+          startedByAgentId: ref.startedByAgentId,
+          startedByUserId: ref.startedByUserId,
+          responsibleUserId: ref.responsibleUserId,
+          lastControlledByAgentId: ref.lastControlledByAgentId,
+          lastControlledByUserId: ref.lastControlledByUserId,
+          lastControlledByRunId: ref.lastControlledByRunId,
+          lastControlledAt: ref.lastControlledAt ? new Date(ref.lastControlledAt) : null,
           lastUsedAt: new Date(ref.lastUsedAt),
           startedAt,
           stoppedAt: ref.stoppedAt ? new Date(ref.stoppedAt) : null,

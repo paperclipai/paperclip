@@ -13,6 +13,10 @@ export interface WorkspaceOperation {
   companyId: string;
   executionWorkspaceId: string | null;
   heartbeatRunId: string | null;
+  actorAgentId: string | null;
+  actorUserId: string | null;
+  actorRunId: string | null;
+  responsibleUserId: string | null;
   issueId: string | null;
   phase: WorkspaceOperationPhase;
   command: string | null;

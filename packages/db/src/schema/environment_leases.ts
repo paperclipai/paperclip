@@ -1,5 +1,6 @@
 import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
+import { agents } from "./agents.js";
 import { environments } from "./environments.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -14,6 +15,10 @@ export const environmentLeases = pgTable(
     executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorkspaces.id, { onDelete: "set null" }),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    actorAgentId: uuid("actor_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    actorUserId: text("actor_user_id"),
+    actorRunId: uuid("actor_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    responsibleUserId: text("responsible_user_id"),
     status: text("status").notNull().default("active"),
     leasePolicy: text("lease_policy").notNull().default("ephemeral"),
     provider: text("provider"),
@@ -42,5 +47,14 @@ export const environmentLeases = pgTable(
     heartbeatRunIdx: index("environment_leases_heartbeat_run_idx").on(table.heartbeatRunId),
     companyLastUsedIdx: index("environment_leases_company_last_used_idx").on(table.companyId, table.lastUsedAt),
     providerLeaseIdx: index("environment_leases_provider_lease_idx").on(table.providerLeaseId),
+    actorRunIdx: index("environment_leases_actor_run_idx").on(table.actorRunId),
+    companyActorAgentIdx: index("environment_leases_company_actor_agent_idx").on(
+      table.companyId,
+      table.actorAgentId,
+    ),
+    companyResponsibleUserIdx: index("environment_leases_company_responsible_user_idx").on(
+      table.companyId,
+      table.responsibleUserId,
+    ),
   }),
 );

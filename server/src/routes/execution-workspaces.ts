@@ -249,9 +249,23 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     }
 
     const actor = getActorInfo(req);
+    const controlAttribution = {
+      actorAgentId: actor.agentId,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorRunId: actor.runId,
+      responsibleUserId: req.actor.type === "agent"
+        ? req.actor.onBehalfOfUserId?.trim() || null
+        : actor.actorType === "user"
+          ? actor.actorId
+          : null,
+    };
     const recorder = workspaceOperationsSvc.createRecorder({
       companyId: existing.companyId,
       executionWorkspaceId: existing.id,
+      actorAgentId: controlAttribution.actorAgentId,
+      actorUserId: controlAttribution.actorUserId,
+      actorRunId: controlAttribution.actorRunId,
+      responsibleUserId: controlAttribution.responsibleUserId,
     });
     let runtimeServiceCount = existing.runtimeServices?.length ?? 0;
     let stdout = "";
@@ -366,6 +380,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             executionWorkspaceId: existing.id,
             workspaceCwd,
             runtimeServiceId: selectedRuntimeServiceId,
+            controlAttribution,
           });
         }
 
@@ -394,6 +409,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             adapterEnv: {},
             onLog,
             serviceIndex: selectedServiceIndex,
+            controlAttribution,
           });
           runtimeServiceCount = startedServices.length;
         } else {
@@ -551,6 +567,12 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         },
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
+        requestedByRunId: actor.runId,
+        responsibleUserId: req.actor.type === "agent"
+          ? req.actor.onBehalfOfUserId?.trim() || null
+          : actor.actorType === "user"
+            ? actor.actorId
+            : null,
         contextSnapshot: {
           issueId: result.restoredSourceIssue.id,
           taskId: result.restoredSourceIssue.id,
@@ -608,6 +630,17 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const configForCleanup = readExecutionWorkspaceConfig(
       ((patch.metadata as Record<string, unknown> | null | undefined) ?? (existing.metadata as Record<string, unknown> | null)) ?? null,
     );
+    const actor = getActorInfo(req);
+    const controlAttribution = {
+      actorAgentId: actor.agentId,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorRunId: actor.runId,
+      responsibleUserId: req.actor.type === "agent"
+        ? req.actor.onBehalfOfUserId?.trim() || null
+        : actor.actorType === "user"
+          ? actor.actorId
+          : null,
+    };
 
     if (req.body.status === "archived" && existing.status !== "archived") {
       const readiness = await svc.getCloseReadiness(existing.id);
@@ -663,6 +696,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           db,
           executionWorkspaceId: existing.id,
           workspaceCwd: existing.cwd,
+          controlAttribution,
         });
         const projectWorkspace = existing.projectWorkspaceId
           ? await db
@@ -696,6 +730,10 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           recorder: workspaceOperationsSvc.createRecorder({
             companyId: existing.companyId,
             executionWorkspaceId: existing.id,
+            actorAgentId: controlAttribution.actorAgentId,
+            actorUserId: controlAttribution.actorUserId,
+            actorRunId: controlAttribution.actorRunId,
+            responsibleUserId: controlAttribution.responsibleUserId,
           }),
         });
         cleanupWarnings = cleanupResult.warnings;
@@ -730,7 +768,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       }
       workspace = updatedWorkspace;
     }
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: existing.companyId,
       actorType: actor.actorType,

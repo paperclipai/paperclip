@@ -2027,6 +2027,8 @@ interface WakeupOptions {
   idempotencyKey?: string | null;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  requestedByRunId?: string | null;
+  responsibleUserId?: string | null;
   contextSnapshot?: Record<string, unknown>;
 }
 
@@ -6104,14 +6106,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     requestedByActorId?: string | null;
     source?: WakeupOptions["source"] | null;
     triggerDetail?: WakeupOptions["triggerDetail"] | null;
+    requestedByRunId?: string | null;
     existingRunResponsibleUserId?: string | null;
   }) {
     const contextResponsibleUserId = readNonEmptyString(input.contextSnapshot.responsibleUserId);
     const requestedUserId = input.requestedByActorType === "user"
       ? readNonEmptyString(input.requestedByActorId)
       : null;
+    const requesterRunResponsibleUserId = input.requestedByRunId && isUuidLike(input.requestedByRunId)
+      ? await db
+        .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, input.requestedByRunId), eq(heartbeatRuns.companyId, input.companyId)))
+        .then((rows) => readNonEmptyString(rows[0]?.responsibleUserId))
+      : null;
     if (contextResponsibleUserId) return contextResponsibleUserId;
     if (input.existingRunResponsibleUserId) return input.existingRunResponsibleUserId;
+    if (requesterRunResponsibleUserId) return requesterRunResponsibleUserId;
     if (input.routineEnvContext.responsibleUserId) return input.routineEnvContext.responsibleUserId;
     if (isManualUserRun(input) && requestedUserId) return requestedUserId;
     if (input.issueContext?.responsibleUserId) return input.issueContext.responsibleUserId;
@@ -12497,6 +12508,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,
+      actorAgentId: agent.id,
+      actorUserId: null,
+      actorRunId: run.id,
+      responsibleUserId: run.responsibleUserId ?? null,
       executionWorkspaceId: workspaceReuseProvisioningPolicy.shouldRestoreExistingWorkspace
         ? workspaceReuseRequest.requestedExecutionWorkspaceId
         : null,
@@ -12738,6 +12753,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       heartbeatRunId: run.id,
       agentId: agent.id,
       persistedExecutionWorkspace,
+      responsibleUserId: run.responsibleUserId ?? null,
     });
     const selectedEnvironment = acquiredEnvironment.environment;
     // Defense-in-depth: re-check the actually-acquired environment against the
@@ -13268,6 +13284,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
         config: hostExecutionWorkspaceConfig,
         adapterEnv,
+        responsibleUserId: run.responsibleUserId ?? null,
         onLog,
       });
       if (runtimeServices.length > 0) {
@@ -13635,6 +13652,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             },
             issue: issueRef,
             workspace: executionWorkspace,
+            responsibleUserId: run.responsibleUserId ?? null,
             reports: adapterResult.runtimeServices,
           })
         : [];
@@ -14672,7 +14690,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           requestedByActorId: deferred.requestedByActorId,
           source: promotedSource,
           triggerDetail: promotedTriggerDetail,
-          existingRunResponsibleUserId: run.responsibleUserId,
+          requestedByRunId: deferred.requestedByRunId,
+          existingRunResponsibleUserId: deferred.responsibleUserId ?? run.responsibleUserId,
         });
         if (!promotedResponsibleUserId) {
           throw new HttpError(422, "Unable to resolve responsible user for promoted heartbeat run", {
@@ -15120,6 +15139,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
 
+    const wakeupRequestAttribution = {
+      requestedByActorType: opts.requestedByActorType ?? null,
+      requestedByActorId: opts.requestedByActorId ?? null,
+      requestedByAgentId: opts.requestedByActorType === "agent" ? opts.requestedByActorId ?? null : null,
+      requestedByUserId: opts.requestedByActorType === "user" ? opts.requestedByActorId ?? null : null,
+      requestedByRunId: opts.requestedByRunId ?? null,
+      responsibleUserId: opts.responsibleUserId
+        ?? (opts.requestedByActorType === "user" ? opts.requestedByActorId ?? null : null),
+    };
+
     const writeSkippedRequest = async (
       skipReason: string,
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
@@ -15132,8 +15161,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         reason: skipReason,
         payload,
         status: "skipped",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
+        ...wakeupRequestAttribution,
         idempotencyKey: opts.idempotencyKey ?? null,
         finishedAt: new Date(),
         ...patch,
@@ -15267,10 +15295,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           contextSnapshot: enrichedContextSnapshot,
           issueContext: queuedIssueContext,
           routineEnvContext: queuedRoutineEnvContext,
-          requestedByActorType: opts.requestedByActorType ?? null,
-          requestedByActorId: opts.requestedByActorId ?? null,
+          ...wakeupRequestAttribution,
           source,
           triggerDetail,
+          existingRunResponsibleUserId: opts.responsibleUserId ?? null,
         });
         if (!queuedResponsibleUserId) {
           throw new HttpError(422, "Unable to resolve responsible user for heartbeat run dispatch", {
@@ -15348,8 +15376,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           issueId,
           agentId,
           contextSnapshot: enrichedContextSnapshot,
-          requestedByActorType: opts.requestedByActorType,
-          requestedByActorId: opts.requestedByActorId,
+          ...wakeupRequestAttribution,
         });
 
         if (!treeHoldInteractionWake) {
@@ -15427,8 +15454,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             reason: "issue_execution_issue_not_found",
             payload,
             status: "skipped",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
+            ...wakeupRequestAttribution,
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: new Date(),
           });
@@ -15451,8 +15477,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             },
             status: "skipped",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
+            ...wakeupRequestAttribution,
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: new Date(),
           });
@@ -15707,8 +15732,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
             },
             status: "skipped",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
+            ...wakeupRequestAttribution,
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: new Date(),
           });
@@ -15804,8 +15828,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 },
               },
               status: "skipped",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
+              ...wakeupRequestAttribution,
               idempotencyKey: opts.idempotencyKey ?? null,
               finishedAt: now,
             });
@@ -15888,8 +15911,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               payload,
               status: "coalesced",
               coalescedCount: 1,
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
+              ...wakeupRequestAttribution,
               idempotencyKey: opts.idempotencyKey ?? null,
               runId: mergedRun.id,
               finishedAt: new Date(),
@@ -15954,8 +15976,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               reason: "issue_execution_deferred",
               payload: deferredPayload,
               status: "deferred_issue_execution",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
+              ...wakeupRequestAttribution,
               idempotencyKey: opts.idempotencyKey ?? null,
             });
 
@@ -16060,8 +16081,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   },
                 },
                 status: "skipped",
-                requestedByActorType: opts.requestedByActorType ?? null,
-                requestedByActorId: opts.requestedByActorId ?? null,
+                ...wakeupRequestAttribution,
                 idempotencyKey: opts.idempotencyKey ?? null,
                 finishedAt: throttleNow,
               });
@@ -16088,8 +16108,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             },
             status: "skipped",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
+            ...wakeupRequestAttribution,
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: now,
           });
@@ -16115,8 +16134,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             reason,
             payload,
             status: "queued",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
+            ...wakeupRequestAttribution,
             idempotencyKey: opts.idempotencyKey ?? null,
           })
           .returning()
@@ -16143,6 +16161,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .update(agentWakeupRequests)
           .set({
             runId: newRun.id,
+            responsibleUserId: newRun.responsibleUserId,
             updatedAt: new Date(),
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
@@ -16230,8 +16249,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         payload,
         status: "coalesced",
         coalescedCount: 1,
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
+        ...wakeupRequestAttribution,
         idempotencyKey: opts.idempotencyKey ?? null,
         runId: mergedRun.id,
         finishedAt: new Date(),
@@ -16262,8 +16280,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             },
           },
           status: "skipped",
-          requestedByActorType: opts.requestedByActorType ?? null,
-          requestedByActorId: opts.requestedByActorId ?? null,
+          ...wakeupRequestAttribution,
           idempotencyKey: opts.idempotencyKey ?? null,
           finishedAt: now,
         });
@@ -16289,8 +16306,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           reason,
           payload,
           status: "queued",
-          requestedByActorType: opts.requestedByActorType ?? null,
-          requestedByActorId: opts.requestedByActorId ?? null,
+          ...wakeupRequestAttribution,
           idempotencyKey: opts.idempotencyKey ?? null,
         })
         .returning()
@@ -16317,6 +16333,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .update(agentWakeupRequests)
         .set({
           runId: newRun.id,
+          responsibleUserId: newRun.responsibleUserId,
           updatedAt: new Date(),
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));

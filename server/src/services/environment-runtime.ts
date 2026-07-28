@@ -135,6 +135,10 @@ export interface EnvironmentDriverAcquireInput {
    * of the base image, matching what real agent runs do.
    */
   applyCustomImageTemplate?: boolean;
+  actorAgentId?: string | null;
+  actorUserId?: string | null;
+  actorRunId?: string | null;
+  responsibleUserId?: string | null;
 }
 
 export interface EnvironmentDriverReleaseInput {
@@ -221,6 +225,10 @@ function toEnvironmentLeaseSnapshot(row: typeof environmentLeases.$inferSelect):
     executionWorkspaceId: row.executionWorkspaceId ?? null,
     issueId: row.issueId ?? null,
     heartbeatRunId: row.heartbeatRunId ?? null,
+    actorAgentId: row.actorAgentId ?? null,
+    actorUserId: row.actorUserId ?? null,
+    actorRunId: row.actorRunId ?? null,
+    responsibleUserId: row.responsibleUserId ?? null,
     status: row.status as EnvironmentLease["status"],
     leasePolicy: row.leasePolicy as EnvironmentLease["leasePolicy"],
     provider: row.provider ?? null,
@@ -513,6 +521,10 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         executionWorkspaceId: input.executionWorkspaceId,
         issueId: input.issueId,
         heartbeatRunId: input.heartbeatRunId,
+        actorAgentId: input.actorAgentId ?? input.agentId ?? null,
+        actorUserId: input.actorUserId ?? null,
+        actorRunId: input.actorRunId ?? input.heartbeatRunId ?? null,
+        responsibleUserId: input.responsibleUserId ?? null,
         leasePolicy: "ephemeral",
         provider: "local",
         metadata: {
@@ -567,6 +579,10 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         executionWorkspaceId: input.executionWorkspaceId,
         issueId: input.issueId,
         heartbeatRunId: input.heartbeatRunId,
+        actorAgentId: input.actorAgentId ?? input.agentId ?? null,
+        actorUserId: input.actorUserId ?? null,
+        actorRunId: input.actorRunId ?? input.heartbeatRunId ?? null,
+        responsibleUserId: input.responsibleUserId ?? null,
         leasePolicy: "ephemeral",
         provider: "ssh",
         providerLeaseId: `ssh://${parsed.config.username}@${parsed.config.host}:${parsed.config.port}${remoteCwd}`,
@@ -935,6 +951,10 @@ function createSandboxEnvironmentDriver(
           executionWorkspaceId: input.executionWorkspaceId,
           issueId: input.issueId,
           heartbeatRunId: input.heartbeatRunId,
+          actorAgentId: input.actorAgentId ?? input.agentId ?? null,
+          actorUserId: input.actorUserId ?? null,
+          actorRunId: input.actorRunId ?? input.heartbeatRunId ?? null,
+          responsibleUserId: input.responsibleUserId ?? null,
           leasePolicy: resolvedLeasePolicy,
           provider: parsed.config.provider,
           providerLeaseId: acquiredLease.providerLeaseId,
@@ -1082,6 +1102,10 @@ function createSandboxEnvironmentDriver(
         executionWorkspaceId: input.executionWorkspaceId,
         issueId: input.issueId,
         heartbeatRunId: input.heartbeatRunId,
+        actorAgentId: input.actorAgentId ?? input.agentId ?? null,
+        actorUserId: input.actorUserId ?? null,
+        actorRunId: input.actorRunId ?? input.heartbeatRunId ?? null,
+        responsibleUserId: input.responsibleUserId ?? null,
         leasePolicy: resolvedLeasePolicy,
         provider: parsed.config.provider,
         providerLeaseId: providerLease.providerLeaseId,
@@ -1509,6 +1533,10 @@ function createPluginEnvironmentDriver(
         executionWorkspaceId: input.executionWorkspaceId,
         issueId: input.issueId,
         heartbeatRunId: input.heartbeatRunId,
+        actorAgentId: input.actorAgentId ?? input.agentId ?? null,
+        actorUserId: input.actorUserId ?? null,
+        actorRunId: input.actorRunId ?? input.heartbeatRunId ?? null,
+        responsibleUserId: input.responsibleUserId ?? null,
         leasePolicy: "ephemeral",
         provider: `plugin:${parsed.config.pluginKey}:${parsed.config.driverKey}`,
         providerLeaseId: providerLease.providerLeaseId,
@@ -1728,6 +1756,10 @@ export function environmentRuntimeService(
        * lease uses the operator-prepared custom image.
        */
       applyCustomImageTemplate?: boolean;
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+      responsibleUserId?: string | null;
     }): Promise<EnvironmentRuntimeLeaseRecord> {
       if (input.environment.status !== "active") {
         throw new Error(`Environment "${input.environment.name}" is not active.`);
@@ -1747,6 +1779,10 @@ export function environmentRuntimeService(
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
         adapterType: input.adapterType ?? null,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
+        actorAgentId: input.actorAgentId ?? null,
+        actorUserId: input.actorUserId ?? null,
+        actorRunId: input.actorRunId ?? null,
+        responsibleUserId: input.responsibleUserId ?? null,
       });
 
       return {
