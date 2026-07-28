@@ -1,0 +1,114 @@
+# tools/wake-satellite/satellite.py
+"""Wake-Word-Satellit „Hey Jarvis": Schleife + Interaktion.
+
+`main` verdrahtet Mikrofon + Wake-Word (Hardware). `handle_interaction` ist die
+testbare Interaktion nach einem Wake-Treffer: aufnehmen -> transkribieren ->
+Jarvis-Gehirn -> sprechen -> 6-s-Nachfrage-Fenster. Ein Gehirn (jarvis_brain),
+geteilt mit dem Telegram-Bot."""
+import os
+import tempfile
+import time
+import traceback
+
+import config as vco_config          # voice-echo-bot: load_env, ENV_PATH, load_paperclip_token
+import jarvis_brain
+import transcribe
+import tts
+
+import sat_config
+import capture
+import earcon
+import playback
+import wake
+
+
+def _resolve_token(deps):
+    tok = deps["token"]
+    return tok() if callable(tok) else tok
+
+
+def _remember(history, user_text, assistant_text):
+    hist = list(history)
+    hist.append({"role": "user", "content": user_text})
+    hist.append({"role": "assistant", "content": assistant_text})
+    if len(hist) > sat_config.MAX_HISTORY_MESSAGES:
+        del hist[:len(hist) - sat_config.MAX_HISTORY_MESSAGES]
+    return hist
+
+
+def _transcribe(recorded, deps):
+    workdir = tempfile.mkdtemp()
+    wav = capture.frames_to_wav(recorded, os.path.join(workdir, "utt.wav"))
+    try:
+        return transcribe.transcribe(wav, deps["whisper_model"])
+    except transcribe.TranscriptionError:
+        traceback.print_exc()
+        return ""
+
+
+def _speak(text, deps):
+    if not (text or "").strip():
+        return
+    dest = os.path.join(tempfile.mkdtemp(), "reply.mp3")
+    try:
+        tts.synthesize(text, deps["eleven_key"], dest, output_format=sat_config.TTS_FORMAT)
+    except tts.TtsError:
+        traceback.print_exc()
+        return
+    playback.play(dest, device=sat_config.HOMEPOD_DEVICE)
+
+
+def handle_interaction(frames, deps, tenant=None, history=None):
+    tenant = tenant or sat_config.TENANT
+    history = list(history or [])
+    while True:
+        recorded = capture.record_until_silence(frames)
+        if not recorded:
+            break
+        text = _transcribe(recorded, deps)
+        result = jarvis_brain.respond(text, tenant, _resolve_token(deps),
+                                      deps["chat_model"], history=history)
+        answer = result["answer"]
+        if result["kind"] in ("chat", "lookup", "issue"):
+            history = _remember(history, text, answer)
+        _speak(answer, deps)
+        if not capture.wait_for_speech(frames, window_frames=sat_config.FOLLOWUP_WINDOW_FRAMES):
+            break
+    return history
+
+
+def build_deps():
+    env = vco_config.load_env(vco_config.ENV_PATH)
+    detector = wake.WakeDetector(sat_config.WAKE_MODELS, threshold=sat_config.WAKE_THRESHOLD)
+    return {
+        "detector": detector,
+        "whisper_model": os.path.expanduser(env["WHISPER_MODEL"]),
+        "eleven_key": env.get("ELEVENLABS_API_KEY"),
+        "chat_model": env.get("CHAT_MODEL") or jarvis_brain.llm.DEFAULT_MODEL,
+        "token": vco_config.load_paperclip_token,
+    }
+
+
+def main():  # pragma: no cover — Hardware
+    import sys
+    print("wake-satellit „Hey Jarvis“ startet…", file=sys.stderr)
+    deps = build_deps()
+    detector = deps["detector"]
+    mic = capture.MicStream()
+    frames = iter(mic)
+    while True:
+        try:
+            frame = next(frames)
+            if detector.process(frame) is None:
+                continue
+            earcon.beep()
+            handle_interaction(frames, deps)   # verbraucht denselben Stream
+            detector.reset()
+            time.sleep(sat_config.PLAYBACK_COOLDOWN_SEC)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()
