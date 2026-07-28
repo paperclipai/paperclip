@@ -283,11 +283,19 @@ function isCreatorHandoffOnResolveKind(kind: string, continuationPolicy: string,
 
 /**
  * A user-assigned issue is itself a live waiting path only while the user still
- * owes the answer. Once they have answered or accepted, the issue has to go back
- * to the agent that asked: `queueResolvedInteractionContinuationWakeup` drops the
- * continuation wakeup unless the issue carries an `assigneeAgentId`, and an issue
- * may only have one assignee, so this handoff cannot happen any earlier than
- * resolution time without taking the question away from the person answering it.
+ * owes the interaction a resolution. Once they have settled it — answered,
+ * accepted, declined or cancelled — the issue has to go back to the agent that
+ * asked: `queueResolvedInteractionContinuationWakeup` drops the continuation
+ * wakeup unless the issue carries an `assigneeAgentId`, and an issue may only
+ * have one assignee, so this handoff cannot happen any earlier than resolution
+ * time without taking the question away from the person resolving it.
+ *
+ * A refusal is as much a resolution as an acceptance: an agent whose proposal was
+ * declined has to revise it, and if the issue stays with the person who declined,
+ * nobody works it. Which refusals qualify is not decided here but by
+ * `wouldQueueResolvedContinuationWakeup` — a `wake_assignee_on_accept` rejection
+ * queues no wakeup, so handing the issue over would park it on an agent that is
+ * never woken.
  *
  * Deliberately narrow — it fires only when a *user* resolved the interaction, the
  * issue was assigned to that user side and to no agent, and the issue is still
@@ -1273,13 +1281,16 @@ export function issueThreadInteractionService(db: Db) {
     current: IssueThreadInteractionRow;
     input: RejectIssueThreadInteraction;
     actor: InteractionActor;
-  }): Promise<IssueThreadInteraction> {
+  }): Promise<{
+    interaction: IssueThreadInteraction;
+    continuationIssue: IssueWakeTarget | null;
+  }> {
     const expired = await expireStaleRequestConfirmationTarget(db, {
       row: args.current,
       actor: args.actor,
     });
     if (expired) {
-      return expired;
+      return { interaction: expired, continuationIssue: null };
     }
 
     const interaction = hydrateInteraction(args.current) as RequestConfirmationLikeInteraction;
@@ -1289,33 +1300,48 @@ export function issueThreadInteractionService(db: Db) {
     }
 
     const now = new Date();
-    const [updated] = await db
-      .update(issueThreadInteractions)
-      .set({
-        status: "rejected",
-        result: {
-          version: 1,
-          outcome: "rejected",
-          reason: reason || null,
-        },
-        resolvedByAgentId: args.actor.agentId ?? null,
-        resolvedByUserId: args.actor.userId ?? null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
-      .where(and(
-        eq(issueThreadInteractions.id, args.current.id),
-        eq(issueThreadInteractions.status, "pending"),
-      ))
-      .returning();
+    const result = await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(issueThreadInteractions)
+        .set({
+          status: "rejected",
+          result: {
+            version: 1,
+            outcome: "rejected",
+            reason: reason || null,
+          },
+          resolvedByAgentId: args.actor.agentId ?? null,
+          resolvedByUserId: args.actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, args.current.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
 
-    if (!updated) {
-      throw conflict("Interaction has already been resolved");
-    }
-    await touchIssue(db, args.issue.id);
-    const rejected = hydrateInteraction(updated);
-    await emitInteractionResolvedTelemetry(db, rejected);
-    return rejected;
+      if (!updated) {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      const continuationIssue = await returnResolvedIssueToCreatorAgent(tx as unknown as Db, {
+        issue: args.issue,
+        current: args.current,
+        actor: args.actor,
+        resolvedStatus: "rejected",
+      });
+      if (!continuationIssue) {
+        await touchIssue(tx, args.issue.id);
+      }
+
+      return {
+        interaction: hydrateInteraction(updated),
+        continuationIssue,
+      };
+    });
+    await emitInteractionResolvedTelemetry(db, result.interaction);
+    return result;
   }
 
   return {
@@ -1813,33 +1839,49 @@ export function issueThreadInteractionService(db: Db) {
         throw conflict("Interaction has already been resolved");
       }
 
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "rejected",
-          result: {
-            version: 1,
-            rejectionReason: input.reason?.trim() || null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
+      const now = new Date();
+      const result = await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "rejected",
+            result: {
+              version: 1,
+              rejectionReason: input.reason?.trim() || null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
 
-      if (!updated) {
-        throw conflict("Interaction has already been resolved");
-      }
+        if (!updated) {
+          throw conflict("Interaction has already been resolved");
+        }
 
-      await touchIssue(db, issue.id);
-      const rejected = hydrateInteraction(updated);
-      await emitInteractionResolvedTelemetry(db, rejected);
-      return rejected;
+        const continuationIssue = await returnResolvedIssueToCreatorAgent(tx as unknown as Db, {
+          issue,
+          current,
+          actor,
+          resolvedStatus: "rejected",
+        });
+        if (!continuationIssue) {
+          await touchIssue(tx, issue.id);
+        }
+
+        return {
+          interaction: hydrateInteraction(updated),
+          continuationIssue,
+        };
+      });
+
+      await emitInteractionResolvedTelemetry(db, result.interaction);
+      return result;
     },
 
     expireRequestConfirmationsSupersededByComment: async (
@@ -2349,36 +2391,52 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       const reason = data.reason?.trim() || null;
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "cancelled",
-          result: {
-            version: 1,
-            answers: [],
-            cancelled: true,
-            cancellationReason: reason,
-            summaryMarkdown: null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
+      const now = new Date();
+      const result = await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "cancelled",
+            result: {
+              version: 1,
+              answers: [],
+              cancelled: true,
+              cancellationReason: reason,
+              summaryMarkdown: null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
 
-      if (!updated) {
-        throw conflict("Interaction has already been resolved");
-      }
+        if (!updated) {
+          throw conflict("Interaction has already been resolved");
+        }
 
-      await touchIssue(db, issue.id);
-      const cancelled = hydrateInteraction(updated);
-      await emitInteractionResolvedTelemetry(db, cancelled);
-      return cancelled;
+        const continuationIssue = await returnResolvedIssueToCreatorAgent(tx as unknown as Db, {
+          issue,
+          current,
+          actor,
+          resolvedStatus: "cancelled",
+        });
+        if (!continuationIssue) {
+          await touchIssue(tx, issue.id);
+        }
+
+        return {
+          interaction: hydrateInteraction(updated),
+          continuationIssue,
+        };
+      });
+
+      await emitInteractionResolvedTelemetry(db, result.interaction);
+      return result;
     },
   };
 }
