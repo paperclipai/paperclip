@@ -1736,6 +1736,40 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("keeps self-owned unblock descriptors valid when the actor's reporting chain is unhealthy", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress" }),
+      ...patch,
+    }));
+    const db = createRunContextDb(
+      {},
+      ownerAgentId,
+      ownerRunId,
+      [makeAgent(ownerAgentId, { reportsTo: missingManagerAgentId })],
+    );
+
+    const res = await request(await createApp(ownerActor(), db)).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: { agentId: ownerAgentId },
+        action: "Investigate the blocker",
+      },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: { agentId: ownerAgentId },
+          action: "Investigate the blocker",
+        },
+      }),
+    );
+  });
+
   it.each([
     {
       label: "cyclic",
@@ -1743,7 +1777,8 @@ describe("agent issue mutation checkout ownership", () => {
         makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
         makeAgent(peerAgentId, { reportsTo: ownerAgentId }),
       ],
-      error: "Unblock owner agent must be invokable with a healthy reporting chain",
+      status: 403,
+      error: "Agents may only name themselves or a reporting-line manager as an unblock owner",
     },
     {
       label: "terminated",
@@ -1751,7 +1786,8 @@ describe("agent issue mutation checkout ownership", () => {
         makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
         makeAgent(peerAgentId, { status: "terminated" }),
       ],
-      error: "Unblock owner agent must be invokable with a healthy reporting chain",
+      status: 403,
+      error: "Agents may only name themselves or a reporting-line manager as an unblock owner",
     },
     {
       label: "paused",
@@ -1759,7 +1795,8 @@ describe("agent issue mutation checkout ownership", () => {
         makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
         makeAgent(peerAgentId, { status: "paused" }),
       ],
-      error: "Unblock owner agent must be invokable with a healthy reporting chain",
+      status: 403,
+      error: "Agents may only name themselves or a reporting-line manager as an unblock owner",
     },
     {
       label: "pending-approval",
@@ -1767,7 +1804,8 @@ describe("agent issue mutation checkout ownership", () => {
         makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
         makeAgent(peerAgentId, { status: "pending_approval" }),
       ],
-      error: "Unblock owner agent must be invokable with a healthy reporting chain",
+      status: 403,
+      error: "Agents may only name themselves or a reporting-line manager as an unblock owner",
     },
     {
       label: "missing-ancestor",
@@ -1775,14 +1813,16 @@ describe("agent issue mutation checkout ownership", () => {
         makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
         makeAgent(peerAgentId, { reportsTo: missingManagerAgentId }),
       ],
-      error: "Unblock owner agent must be invokable with a healthy reporting chain",
+      status: 403,
+      error: "Agents may only name themselves or a reporting-line manager as an unblock owner",
     },
     {
       label: "not-in-company-roster",
       rows: [makeAgent(ownerAgentId, { reportsTo: peerAgentId })],
+      status: 422,
       error: "Unblock owner agent must belong to the issue company",
     },
-  ])("rejects a $label reporting-line unblock owner before mutation", async ({ rows, error }) => {
+  ])("rejects a $label reporting-line unblock owner before mutation", async ({ rows, status, error }) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
     const db = createRunContextDb({}, ownerAgentId, ownerRunId, rows);
 
@@ -1794,7 +1834,7 @@ describe("agent issue mutation checkout ownership", () => {
       },
     });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.status, JSON.stringify(res.body)).toBe(status);
     expect(res.body.error).toBe(error);
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
