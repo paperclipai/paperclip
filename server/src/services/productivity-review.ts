@@ -21,6 +21,12 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import {
+  collectIssueWorkTrace,
+  hasWorkTrace,
+  type IssueWorkTrace,
+  toWorkTraceIssue,
+} from "./productivity-review-work-trace.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
@@ -35,6 +41,7 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 1;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS = 3;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
+const FAILED_RUN_STATUSES = ["failed", "timed_out", "interrupted", "cancelled"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
@@ -45,6 +52,12 @@ type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
+/**
+ * `stall` — no demonstrable work since the issue went `in_progress`.
+ * `unreported_completion` — work exists (commits carrying the issue key, or artifacts), only the
+ * report/close is missing. Reassign/decompose would rebuild finished work, so it is never advised.
+ */
+export type ProductivityReviewClassification = "stall" | "unreported_completion";
 
 type ProductivityReviewThresholds = {
   noCommentStreakRuns: number;
@@ -61,6 +74,9 @@ type ProductivityReviewThresholds = {
 
 type ProductivityReviewEvidence = {
   trigger: ProductivityReviewTrigger;
+  classification: ProductivityReviewClassification;
+  workTrace: IssueWorkTrace;
+  lastFailedRun: HeartbeatRunRow | null;
   triggerReasons: string[];
   sourceIssue: IssueRow;
   sourceAgent: AgentRow;
@@ -208,7 +224,14 @@ function formatTrigger(trigger: ProductivityReviewTrigger) {
   return "Long active duration";
 }
 
-export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
+export function productivityReviewService(
+  db: Db,
+  deps?: {
+    enqueueWakeup?: EnqueueWakeup;
+    /** Test seam: where the assignee's default agent workspace checkout lives. */
+    resolveAgentWorkspaceDir?: (agentId: string) => string | null;
+  },
+) {
   const issuesSvc = issueService(db);
   const budgets = budgetService(db);
 
@@ -542,6 +565,20 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
     if (!trigger) return null;
 
+    // Counter-check before anything is reported: liveness is measured on assignee comments, so a
+    // run that dies after committing looks stalled while the deliverable is already finished.
+    const workTrace = await collectIssueWorkTrace(db, {
+      issue: toWorkTraceIssue(sourceIssue),
+      agentId: sourceAgent.id,
+      resolveAgentWorkspaceDir: deps?.resolveAgentWorkspaceDir,
+    });
+    const classification: ProductivityReviewClassification = hasWorkTrace(workTrace)
+      ? "unreported_completion"
+      : "stall";
+    const lastFailedRun = latestRuns.find((run) =>
+      FAILED_RUN_STATUSES.includes(run.status as (typeof FAILED_RUN_STATUSES)[number]),
+    ) ?? null;
+
     const triggerReasons: string[] = [];
     if (noComment) triggerReasons.push(`${noCommentStreak} consecutive completed issue-linked runs had no run-created issue comment`);
     if (longActive) triggerReasons.push(`current active episode has lasted ${msToHuman(elapsedMs)}`);
@@ -551,8 +588,17 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       );
     }
 
+    if (classification === "unreported_completion") {
+      triggerReasons.push(
+        `work-trace counter-check found ${workTrace.commits.length} matching commit(s) and ${workTrace.artifacts.length} artifact(s) since ${workTrace.since.toISOString()} — the deliverable exists, only the report/close is missing`,
+      );
+    }
+
     return {
       trigger,
+      classification,
+      workTrace,
+      lastFailedRun,
       triggerReasons,
       sourceIssue,
       sourceAgent,
@@ -579,8 +625,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     };
   }
 
-  async function resolveReviewOwnerAgentId(sourceIssue: IssueRow, sourceAgent: AgentRow) {
+  async function resolveReviewOwnerAgentId(
+    sourceIssue: IssueRow,
+    sourceAgent: AgentRow,
+    classification: ProductivityReviewClassification = "stall",
+  ) {
     const candidateIds: string[] = [];
+    // An unreported completion is the assignee's own loose end: waking them to record and close is
+    // the correct action, and it keeps a manager from reassigning work that is already done.
+    if (classification === "unreported_completion") candidateIds.push(sourceAgent.id);
     if (sourceAgent.reportsTo) candidateIds.push(sourceAgent.reportsTo);
     if (sourceIssue.createdByAgentId) candidateIds.push(sourceIssue.createdByAgentId);
     if (sourceIssue.projectId) {
@@ -613,7 +666,86 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return null;
   }
 
+  function buildWorkTraceSection(evidence: ProductivityReviewEvidence) {
+    const trace = evidence.workTrace;
+    const lines: string[] = [
+      `- Counter-check window: work since \`in_progress\` at ${trace.since.toISOString()}`,
+      `- Commit key searched: ${trace.grepPattern ? `\`${trace.grepPattern}\`` : "not searched (issue has no `PREFIX-NUMBER` identifier)"}`,
+      `- Repos checked: ${trace.repoPathsChecked.length > 0 ? trace.repoPathsChecked.map((repoPath) => `\`${repoPath}\``).join(", ") : "none reachable"}`,
+    ];
+    if (trace.repoLookupErrors.length > 0) {
+      lines.push(`- Repos skipped: ${trace.repoLookupErrors.map((error) => truncateInline(error, 160)).join("; ")}`);
+    }
+    lines.push(
+      trace.commits.length > 0
+        ? `- Commits carrying the issue key:\n${
+          trace.commits.map((commit) => `  - \`${commit.sha.slice(0, 7)}\` ${commit.committedAt} — ${truncateInline(commit.subject, 160)}`).join("\n")
+        }`
+        : "- Commits carrying the issue key: none",
+    );
+    lines.push(
+      trace.artifacts.length > 0
+        ? `- Artifacts created since \`in_progress\`:\n${
+          trace.artifacts.map((artifact) => `  - ${artifact.kind} ${artifact.createdAt.toISOString()} — ${truncateInline(artifact.label, 160)}`).join("\n")
+        }`
+        : "- Artifacts created since `in_progress`: none",
+    );
+    return lines.join("\n");
+  }
+
+  function buildLastFailedRunSection(evidence: ProductivityReviewEvidence, prefix: string) {
+    const run = evidence.lastFailedRun;
+    if (!run) return "- No failed assignee run recorded on this issue.";
+    return [
+      `- ${runUiLink(run, prefix)} \`${run.status}\` liveness \`${run.livenessState ?? "unknown"}\`, created ${run.createdAt.toISOString()}`,
+      `- This failed run — not an unresponsive agent — is why the completion was never reported.`,
+    ].join("\n");
+  }
+
+  function buildUnreportedCompletionMarkdown(evidence: ProductivityReviewEvidence, prefix: string) {
+    return [
+      "Paperclip detected finished-but-unreported work on an assigned issue.",
+      "",
+      `The productivity detector fired (\`${evidence.trigger}\`), but the work-trace counter-check found demonstrable work since the issue went \`in_progress\`. This is **not** a stall: the deliverable exists and only the report/close is missing.`,
+      "",
+      "## Source",
+      "",
+      `- Source issue: ${issueUiLink(evidence.sourceIssue, prefix)}`,
+      `- Assigned agent: ${evidence.sourceAgent.name} (${evidence.sourceAgent.role})`,
+      `- Classification: \`unreported_completion\``,
+      `- Raw detector trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
+      `- Reasons: ${evidence.triggerReasons.join("; ")}`,
+      `- Generated at: ${evidence.generatedAt.toISOString()}`,
+      "",
+      "## Work Trace (counter-check)",
+      "",
+      buildWorkTraceSection(evidence),
+      "",
+      "## Why the completion is missing",
+      "",
+      buildLastFailedRunSection(evidence, prefix),
+      "",
+      "## Evidence",
+      "",
+      `- Total sampled issue-linked runs: ${evidence.totalRunCount}`,
+      `- Terminal sampled runs: ${evidence.terminalRunCount}`,
+      `- Active queued/running/scheduled runs: ${evidence.activeRunCount}`,
+      `- No-comment completed-run streak: ${evidence.noCommentStreak}`,
+      `- Current active elapsed time: ${msToHuman(evidence.elapsedMs)}`,
+      `- Assignee run-linked comments total: ${evidence.commentCount}`,
+      "",
+      "## Required Action",
+      "",
+      "- Wake the assignee to record the outcome on the source issue and give it a final disposition.",
+      "- Do **not** reassign, decompose, or restart the source work: that would rebuild work that already exists.",
+      "- Only if the assignee cannot report: verify the listed commits/artifacts yourself and close the source issue against them.",
+    ].join("\n");
+  }
+
   function buildReviewMarkdown(evidence: ProductivityReviewEvidence, prefix: string) {
+    if (evidence.classification === "unreported_completion") {
+      return buildUnreportedCompletionMarkdown(evidence, prefix);
+    }
     const latestRuns = evidence.latestRuns.length > 0
       ? evidence.latestRuns.map((run) =>
         `- ${runUiLink(run, prefix)} \`${run.status}\` liveness \`${run.livenessState ?? "unknown"}\`, created ${run.createdAt.toISOString()}${run.nextAction ? `, next action: ${truncateInline(run.nextAction, 160)}` : ""}`,
@@ -634,6 +766,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "",
       `- Source issue: ${issueUiLink(evidence.sourceIssue, prefix)}`,
       `- Assigned agent: ${evidence.sourceAgent.name} (${evidence.sourceAgent.role})`,
+      `- Classification: \`stall\` (work-trace counter-check found no commits and no artifacts)`,
       `- Primary trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
       `- Trigger reasons: ${evidence.triggerReasons.join("; ")}`,
       `- Generated at: ${evidence.generatedAt.toISOString()}`,
@@ -656,6 +789,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- Long active duration: ${msToHuman(evidence.thresholds.longActiveMs)}`,
       `- High churn: ${evidence.thresholds.highChurnHourly}/1h or ${evidence.thresholds.highChurnSixHours}/6h runs/assignee-run comments`,
       `- Resolved-review snooze: ${msToHuman(evidence.thresholds.resolvedSnoozeMs)}`,
+      "",
+      "## Work Trace (counter-check)",
+      "",
+      buildWorkTraceSection(evidence),
       "",
       "## Latest Runs",
       "",
@@ -682,8 +819,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "Productivity review evidence refreshed.",
       "",
       `- Source issue: ${issueUiLink(evidence.sourceIssue, prefix)}`,
+      `- Classification: \`${evidence.classification}\``,
       `- Trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
       `- Reasons: ${evidence.triggerReasons.join("; ")}`,
+      `- Work trace: ${evidence.workTrace.commits.length} commit(s), ${evidence.workTrace.artifacts.length} artifact(s) since \`in_progress\``,
       `- No-comment streak: ${evidence.noCommentStreak}`,
       `- Runs/assignee comments: ${evidence.runCountLastHour}/${evidence.commentCountLastHour} in 1h, ${evidence.runCountLastSixHours}/${evidence.commentCountLastSixHours} in 6h`,
       `- Next action: ${evidence.nextAction ? truncateInline(evidence.nextAction, 300) : "none recorded"}`,
@@ -717,6 +856,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           source: "productivity_review.reconcile",
           sourceIssueId: evidence.sourceIssue.id,
           trigger: evidence.trigger,
+          classification: evidence.classification,
+          workTraceCommitCount: evidence.workTrace.commits.length,
+          workTraceArtifactCount: evidence.workTrace.artifacts.length,
           noCommentStreak: evidence.noCommentStreak,
           runCountLastHour: evidence.runCountLastHour,
           commentCountLastHour: evidence.commentCountLastHour,
@@ -744,14 +886,23 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       return { kind: "no_action_suppressed" as const, reviewIssueId: null };
     }
 
-    const ownerAgentId = await resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent);
+    const ownerAgentId = await resolveReviewOwnerAgentId(
+      evidence.sourceIssue,
+      evidence.sourceAgent,
+      evidence.classification,
+    );
+    const sourceLabel = evidence.sourceIssue.identifier ?? evidence.sourceIssue.title;
     let review: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       review = await issuesSvc.create(evidence.sourceIssue.companyId, {
-        title: `Review productivity for ${evidence.sourceIssue.identifier ?? evidence.sourceIssue.title}`,
+        title: evidence.classification === "unreported_completion"
+          ? `Report and close finished work on ${sourceLabel}`
+          : `Review productivity for ${sourceLabel}`,
         description: buildReviewMarkdown(evidence, opts.prefix),
         status: "todo",
-        priority: evidence.trigger === "long_active_duration" ? "medium" : "high",
+        priority: evidence.classification === "unreported_completion" || evidence.trigger === "long_active_duration"
+          ? "medium"
+          : "high",
         parentId: evidence.sourceIssue.id,
         projectId: evidence.sourceIssue.projectId,
         goalId: evidence.sourceIssue.goalId,
@@ -792,6 +943,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         source: "productivity_review.reconcile",
         sourceIssueId: evidence.sourceIssue.id,
         trigger: evidence.trigger,
+        classification: evidence.classification,
+        workTraceCommitCount: evidence.workTrace.commits.length,
+        workTraceArtifactCount: evidence.workTrace.artifacts.length,
         noCommentStreak: evidence.noCommentStreak,
         runCountLastHour: evidence.runCountLastHour,
         commentCountLastHour: evidence.commentCountLastHour,
@@ -807,6 +961,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           issueId: review.id,
           sourceIssueId: evidence.sourceIssue.id,
           trigger: evidence.trigger,
+          classification: evidence.classification,
         }, "status_only"),
         requestedByActorType: "system",
         requestedByActorId: "productivity_review",
@@ -817,6 +972,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           source: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
           sourceIssueId: evidence.sourceIssue.id,
           productivityReviewTrigger: evidence.trigger,
+          productivityReviewClassification: evidence.classification,
         }, "status_only"),
       });
     }
@@ -940,11 +1096,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     if (sourceAgent.companyId !== input.companyId) return { held: false as const };
     const evidence = await collectEvidence(sourceIssue, sourceAgent, thresholds, now);
     if (!evidence || !isSoftStopTrigger(evidence.trigger)) return { held: false as const };
+    // Never soft-stop an assignee whose work already exists — the only thing left to do is report
+    // and close it, and holding the continuation is what left AUR-1370 open for two days.
+    if (evidence.classification === "unreported_completion") return { held: false as const };
     return {
       held: true as const,
       reviewIssueId: openReview.id,
       reviewIdentifier: openReview.identifier,
       trigger: evidence.trigger,
+      classification: evidence.classification,
       reason: evidence.triggerReasons.join("; "),
     };
   }

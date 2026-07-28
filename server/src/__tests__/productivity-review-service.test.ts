@@ -1,4 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -6,8 +10,10 @@ import {
   agents,
   companies,
   createDb,
+  documents,
   heartbeatRuns,
   issueComments,
+  issueDocuments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -23,6 +29,7 @@ import {
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
   productivityReviewService,
 } from "../services/productivity-review.ts";
+import { buildCommitGrepPattern } from "../services/productivity-review-work-trace.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -55,13 +62,18 @@ describeEmbeddedPostgres("productivity review service", () => {
     startedAt?: Date;
     parentId?: string | null;
     originKind?: string;
+    issuePrefix?: string;
+    issueNumber?: number;
+    title?: string;
+    createdAt?: Date;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
     const issueId = randomUUID();
-    const issuePrefix = `PR${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const createdAt = new Date("2026-04-28T10:00:00.000Z");
+    const issuePrefix = opts?.issuePrefix ?? `PR${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const issueNumber = opts?.issueNumber ?? 1;
+    const createdAt = opts?.createdAt ?? new Date("2026-04-28T10:00:00.000Z");
 
     await db.insert(companies).values({
       id: companyId,
@@ -97,14 +109,14 @@ describeEmbeddedPostgres("productivity review service", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Implement data import",
+      title: opts?.title ?? "Implement data import",
       status: opts?.status ?? "in_progress",
       priority: "medium",
       assigneeAgentId: coderId,
       parentId: opts?.parentId ?? null,
       originKind: opts?.originKind ?? "manual",
-      issueNumber: 1,
-      identifier: `${issuePrefix}-1`,
+      issueNumber,
+      identifier: `${issuePrefix}-${issueNumber}`,
       startedAt: opts?.startedAt ?? createdAt,
       createdAt,
       updatedAt: createdAt,
@@ -736,5 +748,238 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(result.failed).toBe(0);
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  describe("work-trace counter-check (AUR-1387)", () => {
+    const tempRepos: string[] = [];
+
+    afterAll(() => {
+      for (const repoPath of tempRepos) {
+        fs.rmSync(repoPath, { recursive: true, force: true });
+      }
+    });
+
+    /** A real git repo, so the counter-check exercises real `git log --grep`, not a stub. */
+    function createRepoWithCommit(input: { subject: string; committedAt: string }) {
+      const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-work-trace-"));
+      tempRepos.push(repoPath);
+      const git = (args: string[]) =>
+        execFileSync("git", ["-C", repoPath, ...args], {
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: "Coder",
+            GIT_AUTHOR_EMAIL: "coder@example.test",
+            GIT_COMMITTER_NAME: "Coder",
+            GIT_COMMITTER_EMAIL: "coder@example.test",
+            GIT_AUTHOR_DATE: input.committedAt,
+            GIT_COMMITTER_DATE: input.committedAt,
+          },
+          encoding: "utf8",
+        });
+      git(["init", "--initial-branch=master", "--quiet"]);
+      fs.writeFileSync(path.join(repoPath, "addon.py"), "# pricelists addon\n");
+      git(["add", "."]);
+      git(["commit", "--quiet", "-m", input.subject]);
+      const sha = git(["rev-parse", "HEAD"]).trim();
+      return { repoPath, sha };
+    }
+
+    /**
+     * The AUR-1370 timeline: one failed run right after checkout, the deliverable committed 2h
+     * later, then nothing until the detector fired 1d19h into the episode.
+     */
+    async function seedUnreportedCompletionCase() {
+      const startedAt = new Date("2026-07-26T05:15:08.507Z");
+      const now = new Date("2026-07-28T01:05:46.933Z");
+      const seeded = await seedAssignedIssue({
+        issuePrefix: "AUR",
+        issueNumber: 1370,
+        title: "AUR-771 Phase 1: Addon aurdvin_pricelists bauen",
+        createdAt: new Date("2026-07-26T05:15:08.293Z"),
+        startedAt,
+      });
+      await db.insert(heartbeatRuns).values([
+        {
+          id: randomUUID(),
+          companyId: seeded.companyId,
+          agentId: seeded.coderId,
+          status: "failed",
+          invocationSource: "assignment",
+          triggerDetail: "system",
+          startedAt,
+          finishedAt: new Date(startedAt.getTime() + 60_000),
+          contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+          livenessState: "failed",
+          createdAt: new Date("2026-07-26T05:15:08.427Z"),
+          updatedAt: new Date("2026-07-26T05:16:08.427Z"),
+        },
+        {
+          id: randomUUID(),
+          companyId: seeded.companyId,
+          agentId: seeded.coderId,
+          status: "running",
+          invocationSource: "timer",
+          triggerDetail: "system",
+          startedAt: now,
+          contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+          createdAt: new Date("2026-07-28T01:05:46.781Z"),
+          updatedAt: new Date("2026-07-28T01:05:46.781Z"),
+        },
+      ]);
+      return { seeded, now, startedAt };
+    }
+
+    it("classifies the AUR-1370 shape as unreported_completion instead of a stall", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const { repoPath, sha } = createRepoWithCommit({
+        subject: "feat(aur1370): Addon aurdvin_pricelists — Handel/Promo-Fixpreise eingefroren (AUR-771 Phase 1)",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+
+      const result = await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      expect(result.created).toBe(1);
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.title).toBe("Report and close finished work on AUR-1370");
+      expect(review?.description).toContain("Classification: `unreported_completion`");
+      expect(review?.description).not.toContain("Classification: `stall`");
+      expect(review?.description).toContain(sha.slice(0, 7));
+      expect(review?.description).toContain("Do **not** reassign, decompose, or restart");
+      // The failed run is named as the cause, instead of "agent unresponsive".
+      expect(review?.description).toContain("This failed run — not an unresponsive agent —");
+      // The assignee owns the loose end, so no manager can reassign finished work.
+      expect(review?.assigneeAgentId).toBe(seeded.coderId);
+      expect(review?.priority).toBe("medium");
+
+      const [activity] = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "issue.productivity_review_created"));
+      expect((activity?.details as Record<string, unknown>)?.classification).toBe("unreported_completion");
+      expect((activity?.details as Record<string, unknown>)?.workTraceCommitCount).toBe(1);
+    });
+
+    it("still reports a stall when the repo carries no commit for the issue key", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const { repoPath } = createRepoWithCommit({
+        subject: "docs(aur1371): unrelated neighbour issue",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+
+      const result = await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      expect(result.created).toBe(1);
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.title).toBe("Review productivity for AUR-1370");
+      expect(review?.description).toContain("Classification: `stall`");
+      expect(review?.description).toContain("Commits carrying the issue key: none");
+      expect(review?.description).toContain("Manager Decision");
+      expect(review?.assigneeAgentId).toBe(seeded.managerId);
+
+      const [activity] = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "issue.productivity_review_created"));
+      expect((activity?.details as Record<string, unknown>)?.classification).toBe("stall");
+      expect((activity?.details as Record<string, unknown>)?.workTraceCommitCount).toBe(0);
+    });
+
+    it("still reports a stall when the issue key only appears in commits predating in_progress", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const { repoPath } = createRepoWithCommit({
+        subject: "feat(aur1370): groundwork committed before the issue started",
+        committedAt: "2026-07-20T09:00:00+02:00",
+      });
+
+      await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `stall`");
+      expect(review?.description).toContain("Commits carrying the issue key: none");
+    });
+
+    it("counts an issue document written after in_progress as a work trace", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-work-trace-empty-"));
+      tempRepos.push(repoPath);
+      const documentId = randomUUID();
+      await db.insert(documents).values({
+        id: documentId,
+        companyId: seeded.companyId,
+        title: "Plan",
+        format: "markdown",
+        latestBody: "# Plan",
+        createdAt: new Date("2026-07-26T06:00:00.000Z"),
+        updatedAt: new Date("2026-07-26T06:00:00.000Z"),
+      });
+      await db.insert(issueDocuments).values({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        documentId,
+        key: "plan",
+        createdAt: new Date("2026-07-26T06:00:00.000Z"),
+        updatedAt: new Date("2026-07-26T06:00:00.000Z"),
+      });
+
+      await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `unreported_completion`");
+      expect(review?.description).toContain("issue_document");
+    });
+
+    it("does not hold the assignee's continuation when the work already exists", async () => {
+      const startedAt = new Date("2026-07-26T05:15:08.507Z");
+      const now = new Date("2026-07-28T01:05:46.933Z");
+      const seeded = await seedAssignedIssue({
+        issuePrefix: "AUR",
+        issueNumber: 1370,
+        createdAt: new Date("2026-07-26T05:15:08.293Z"),
+        startedAt,
+      });
+      await insertRuns({
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        issueId: seeded.issueId,
+        count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+        now,
+      });
+      const { repoPath } = createRepoWithCommit({
+        subject: "feat(AUR-1370): deliverable landed",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+      const service = productivityReviewService(db, { resolveAgentWorkspaceDir: () => repoPath });
+      await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const hold = await service.isProductivityReviewContinuationHoldActive({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        agentId: seeded.coderId,
+        now,
+      });
+
+      expect(hold.held).toBe(false);
+    });
+
+    it("matches compact and dashed issue keys without matching a longer number", () => {
+      const pattern = buildCommitGrepPattern("AUR-1370");
+      expect(pattern).toBe("AUR[-_ ]?1370([^0-9]|$)");
+      const regex = new RegExp(pattern!, "i");
+      expect(regex.test("feat(aur1370): addon")).toBe(true);
+      expect(regex.test("fix AUR-1370 rollout")).toBe(true);
+      expect(regex.test("fix AUR 1370 rollout")).toBe(true);
+      expect(regex.test("fix AUR-13700 rollout")).toBe(false);
+      expect(regex.test("fix AUR-1371 rollout")).toBe(false);
+      expect(buildCommitGrepPattern("not an identifier")).toBeNull();
+      expect(buildCommitGrepPattern(null)).toBeNull();
+    });
   });
 });

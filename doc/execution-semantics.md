@@ -570,6 +570,22 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
+### Work-trace counter-check before a stall is reported
+
+Productivity-review triggers (`no_comment_streak`, `long_active_duration`, `high_churn`) are measured on runs and assignee comments. Those are proxies for progress, not progress itself: a run that commits the deliverable and then dies before commenting or closing looks identical to an agent that did nothing.
+
+Before a triggered review is written, Paperclip therefore runs a work-trace counter-check over everything that landed since the issue entered `in_progress`:
+
+- commits in the issue's execution workspace, or in the assignee's default agent workspace, whose message carries the issue key (`AUR-1370`, `aur1370`, `aur_1370`, `aur 1370` — but not `AUR-13700`)
+- artifacts recorded against the issue: work products, attachments, issue documents
+
+The counter-check produces a classification, which the review issue states explicitly:
+
+- `stall` — no commits and no artifacts. The review keeps the existing manager-owned shape and the existing decision menu (close as productive, snooze, decompose, reroute, block, stop).
+- `unreported_completion` — work exists, only the report/close is missing. The review is titled `Report and close finished work on <issue>`, is assigned to the **source assignee** rather than a manager, lists the commits/artifacts it found and the assignee's last failed run as the cause, and explicitly forbids reassign/decompose/restart — those would rebuild finished work. An `unreported_completion` never holds the assignee's bounded continuation, because reporting and closing is exactly the action that must be allowed to run.
+
+The counter-check only widens the evidence base; it never suppresses a review. An issue with no work trace is still reported as a stall.
+
 ## 11. Task Watchdog for Issue Trees
 
 A task watchdog watches a configured issue subtree after that subtree has stopped moving. It is a product-level verification and recovery mechanism for selected work, not a process monitor.
