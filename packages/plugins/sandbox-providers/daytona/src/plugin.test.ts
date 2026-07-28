@@ -1988,6 +1988,209 @@ describe("daytona native file-sync hooks", () => {
     expect(linkStat.isSymbolicLink()).toBe(true);
     expect(await fs.readlink(path.join(restored, "shortcut"))).toBe("nested/data.txt");
   });
+
+  // -------------------------------------------------------------------------
+  // Post-upload commands (Phase 3 / Security Conditions C1–C4). Daytona runs an
+  // operation's ordered `postUploadCommands` in-sandbox AFTER `uploadFiles`,
+  // fail-fast, with the command `cwd` re-confined under the workspace remote dir.
+  // -------------------------------------------------------------------------
+
+  it("runs post-upload commands in array order AFTER uploadFiles, each verbatim via the exec seam", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "config.txt");
+    await fs.writeFile(source, "plain");
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentSyncIn?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "op-cmd",
+          files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
+          postUploadCommands: [
+            { command: "codex-auth-merge --first" },
+            { command: "chmod 600 config.txt" },
+          ],
+        },
+      ],
+    });
+
+    // Both commands ran, VERBATIM (first arg is the exact authored string — the
+    // provider never rewrote/concatenated a shell fragment onto it: C1/C3).
+    const findCall = (cmd: string) =>
+      sandbox.process.executeCommand.mock.calls.find(([c]: [string]) => c === cmd);
+    expect(findCall("codex-auth-merge --first")).toBeDefined();
+    expect(findCall("chmod 600 config.txt")).toBeDefined();
+
+    // Ordered: the first command's exec precedes the second's (C4 array order).
+    const orderOf = (cmd: string) => {
+      const idx = sandbox.process.executeCommand.mock.calls.findIndex(([c]: [string]) => c === cmd);
+      return sandbox.process.executeCommand.mock.invocationCallOrder[idx];
+    };
+    expect(orderOf("codex-auth-merge --first")).toBeLessThan(orderOf("chmod 600 config.txt"));
+
+    // Upload happened BEFORE the first command.
+    expect(sandbox.fs.uploadFiles.mock.invocationCallOrder[0]).toBeLessThan(
+      orderOf("codex-auth-merge --first"),
+    );
+
+    // Absent `cwd` defaults to the provider-resolved remote dir — never a process
+    // default cwd (C2). The command's structured cwd argument is REMOTE_DIR.
+    expect(findCall("codex-auth-merge --first")?.[1]).toBe(REMOTE_DIR);
+  });
+
+  it("aborts the operation fail-loud on a non-zero post-upload command exit, skipping the remainder (C4)", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "config.txt");
+    await fs.writeFile(source, "plain");
+
+    const sandbox = createMockSandbox();
+    // The first command exits non-zero; every transfer/guard script stays green.
+    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
+      if (command === "failing-command") {
+        return { exitCode: 7, result: "boom", artifacts: { stdout: "boom" } };
+      }
+      return { exitCode: 0, result: "", artifacts: { stdout: "" } };
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "op-fail",
+            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
+            postUploadCommands: [{ command: "failing-command" }, { command: "should-not-run" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/post-upload command failed \(exit 7\)/);
+
+    // Fail-fast: the command after the failing one never executed.
+    expect(
+      sandbox.process.executeCommand.mock.calls.some(([c]: [string]) => c === "should-not-run"),
+    ).toBe(false);
+  });
+
+  it("rejects a post-upload command cwd that escapes the remote dir lexically, before any exec (C2)", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "config.txt");
+    await fs.writeFile(source, "plain");
+
+    for (const badCwd of [`${REMOTE_DIR}/../etc`, "/etc"]) {
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      await expect(
+        plugin.definition.onEnvironmentSyncIn?.({
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          config: { timeoutMs: 300000, reuseLease: false },
+          lease: syncLease(),
+          operations: [
+            {
+              operationId: "op-escape",
+              files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
+              postUploadCommands: [{ command: "run-me", cwd: badCwd }],
+            },
+          ],
+        }),
+      ).rejects.toThrow(/not a confined absolute path|escapes the workspace remote dir/);
+      // The command never ran — lexical confinement rejected it before exec.
+      expect(sandbox.process.executeCommand.mock.calls.some(([c]: [string]) => c === "run-me")).toBe(
+        false,
+      );
+    }
+  });
+
+  it("rejects a post-upload command whose cwd resolves outside the root via a symlink (realpath guard, C2)", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "config.txt");
+    await fs.writeFile(source, "plain");
+
+    const cwd = `${REMOTE_DIR}/link`;
+    const sandbox = createMockSandbox();
+    // The in-sandbox realpath symlink-escape guard for THIS cwd fails closed (exit
+    // 42), simulating a sandbox-planted symlink that resolves out of root.
+    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
+      if (command.includes("_pc_resolve") && command.includes(cwd)) {
+        return { exitCode: 42, result: "ESCAPE", artifacts: { stdout: "ESCAPE" } };
+      }
+      return { exitCode: 0, result: "", artifacts: { stdout: "" } };
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "op-symlink",
+            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
+            postUploadCommands: [{ command: "run-me", cwd }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/symlink-escape guard|command failed/i);
+    expect(sandbox.process.executeCommand.mock.calls.some(([c]: [string]) => c === "run-me")).toBe(
+      false,
+    );
+  });
+
+  it("issues no extra exec when an operation has no post-upload commands (backward-compat)", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "config.txt");
+    await fs.writeFile(source, "plain");
+
+    const baseline = createMockSandbox();
+    mockGet.mockResolvedValue(baseline);
+    await plugin.definition.onEnvironmentSyncIn?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        { operationId: "op-plain", files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }] },
+      ],
+    });
+    const baselineExecCount = baseline.process.executeCommand.mock.calls.length;
+
+    // Same operation, now with an (empty) postUploadCommands array — must be
+    // byte-identical: an absent/empty command list adds zero execs.
+    const withEmpty = createMockSandbox();
+    mockGet.mockResolvedValue(withEmpty);
+    await plugin.definition.onEnvironmentSyncIn?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "op-plain",
+          files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
+          postUploadCommands: [],
+        },
+      ],
+    });
+    expect(withEmpty.process.executeCommand.mock.calls.length).toBe(baselineExecCount);
+  });
 });
 
 describe("daytona manifest memory config", () => {
