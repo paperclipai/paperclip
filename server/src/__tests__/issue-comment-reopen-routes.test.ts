@@ -3538,4 +3538,99 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     ));
   });
+
+  it("keeps execution_resumed when the approval comment also mentions the return assignee", async () => {
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          onApprove: "return_to_executor",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          type: "approval",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([
+      "22222222-2222-4222-8222-222222222222",
+    ]);
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "run-3",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "done",
+        comment: "@executor Pre-execution checks passed",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      executionState: {
+        status: "execution_pending",
+        currentStageId: null,
+        completedStageIds: [policy.stages[0].id],
+        lastDecisionOutcome: "approved",
+      },
+    });
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "execution_resumed",
+        payload: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          commentId: "comment-1",
+          executionStage: expect.objectContaining({
+            wakeRole: "executor",
+            stageId: null,
+            stageType: null,
+            lastDecisionOutcome: "approved",
+            allowedActions: ["execute", "complete"],
+          }),
+        }),
+        contextSnapshot: expect.objectContaining({
+          wakeReason: "execution_resumed",
+          taskId: "11111111-1111-4111-8111-111111111111",
+          commentId: "comment-1",
+          wakeCommentId: "comment-1",
+        }),
+      }),
+    ));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+  });
 });

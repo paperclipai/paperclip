@@ -1850,6 +1850,33 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("You are waking as the active reviewer for this issue.");
   });
 
+  it("renders approved pre-execution continuation instructions for the executor", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "execution_resumed",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-2012",
+        title: "Execute after approval",
+        status: "in_progress",
+      },
+      executionStage: {
+        wakeRole: "executor",
+        stageId: null,
+        stageType: null,
+        currentParticipant: null,
+        returnAssignee: { type: "agent", agentId: "agent-2" },
+        reviewRequest: null,
+        lastDecisionOutcome: "approved",
+        allowedActions: ["execute", "complete"],
+      },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("a pre-execution stage was approved");
+    expect(prompt).toContain("Perform the approved execution work now");
+    expect(prompt).not.toContain("changes were requested");
+  });
+
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",

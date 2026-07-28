@@ -119,6 +119,15 @@ vi.mock("../lib/recent-assignees", () => ({
 }));
 
 vi.mock("../lib/assignees", () => ({
+  parseAssigneeValue: (value: string) => {
+    if (value.startsWith("agent:")) {
+      return { assigneeAgentId: value.slice("agent:".length) || null, assigneeUserId: null };
+    }
+    if (value.startsWith("user:")) {
+      return { assigneeAgentId: null, assigneeUserId: value.slice("user:".length) || null };
+    }
+    return { assigneeAgentId: null, assigneeUserId: null };
+  },
   formatAssigneeUserLabel: (userId: string | null | undefined, currentUserId?: string | null, userLabelMap?: Map<string, string>) => {
     if (!userId) return null;
     return userLabelMap?.get(userId) ?? (userId === currentUserId ? "You" : "User");
@@ -2194,6 +2203,50 @@ describe("IssueProperties", () => {
     });
 
     expect(onUpdate).toHaveBeenCalledWith({ parentId: "issue-900" });
+
+    act(() => root.unmount());
+  });
+
+  it("configures reviewer approval to return to the executor from the web properties pane", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "review-stage",
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+            },
+            {
+              id: "approval-stage",
+              type: "approval",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-2", type: "user", agentId: null, userId: "user-1" }],
+            },
+          ],
+        }),
+      }),
+      onUpdate,
+    });
+
+    const control = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Continue to approval",
+    );
+    expect(control).toBeTruthy();
+    await act(async () => {
+      control?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionPolicy: expect.objectContaining({
+        stages: [
+          expect.objectContaining({ id: "review-stage", onApprove: "return_to_executor" }),
+          expect.objectContaining({ id: "approval-stage" }),
+        ],
+      }),
+    });
 
     act(() => root.unmount());
   });

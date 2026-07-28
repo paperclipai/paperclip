@@ -1878,11 +1878,19 @@ export function renderPaperclipWakePrompt(
         "",
       );
     } else if (executionStage.wakeRole === "executor") {
-      lines.push(
-        "You are waking because changes were requested in the execution workflow.",
-        "Address the requested changes on this issue and resubmit when the work is ready.",
-        "",
-      );
+      if (executionStage.lastDecisionOutcome === "approved") {
+        lines.push(
+          "You are waking because a pre-execution stage was approved.",
+          "Perform the approved execution work now, then mark the issue done to activate the next configured stage.",
+          "",
+        );
+      } else {
+        lines.push(
+          "You are waking because changes were requested in the execution workflow.",
+          "Address the requested changes on this issue and resubmit when the work is ready.",
+          "",
+        );
+      }
     }
   }
 

@@ -2295,6 +2295,46 @@ function buildExecutionStageWakeup(input: {
     };
   }
 
+  if (nextState.status === "execution_pending") {
+    const agentId = nextState.returnAssignee?.type === "agent" ? (nextState.returnAssignee.agentId ?? null) : null;
+    const becameExecutionPending =
+      previousState?.status !== "execution_pending" ||
+      previousState?.lastDecisionId !== nextState.lastDecisionId ||
+      !executionPrincipalsEqual(previousState?.returnAssignee ?? null, nextState.returnAssignee ?? null);
+    if (!agentId || !becameExecutionPending) return null;
+
+    const executionStage = buildExecutionStageWakeContext({
+      state: nextState,
+      wakeRole: "executor",
+      allowedActions: ["execute", "complete"],
+    });
+
+    return {
+      agentId,
+      wakeup: {
+        source: "assignment" as const,
+        triggerDetail: "system" as const,
+        reason: "execution_resumed",
+        payload: {
+          issueId,
+          mutation: "update",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_resumed",
+          source: "issue.execution_stage",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+      },
+    };
+  }
+
   if (nextState.status === "changes_requested") {
     const agentId = nextState.returnAssignee?.type === "agent" ? (nextState.returnAssignee.agentId ?? null) : null;
     const becameChangesRequested =
@@ -10189,12 +10229,51 @@ export function issueRoutes(
       };
       const dependencyReadinessSvc = svc as DependencyReadinessProvider;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
+      const isExecutionStageWake = (wakeup: WakeupRequest) =>
+        wakeup.reason === "execution_review_requested" ||
+        wakeup.reason === "execution_changes_requested" ||
+        wakeup.reason === "execution_resumed";
+      const mergeWakeComment = (preferred: WakeupRequest, secondary: WakeupRequest): WakeupRequest => {
+        const secondaryPayload = secondary.payload && typeof secondary.payload === "object"
+          ? secondary.payload
+          : null;
+        const commentId = secondaryPayload && typeof secondaryPayload.commentId === "string"
+          ? secondaryPayload.commentId
+          : null;
+        if (!commentId) return preferred;
+        return {
+          ...preferred,
+          payload: {
+            ...(preferred.payload && typeof preferred.payload === "object" ? preferred.payload : {}),
+            commentId,
+          },
+          contextSnapshot: {
+            ...(preferred.contextSnapshot ?? {}),
+            commentId,
+            wakeCommentId: commentId,
+          },
+        };
+      };
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
         const wakeIssueId =
           wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
             ? wakeup.payload.issueId
             : issue.id;
-        wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
+        const key = `${agentId}:${wakeIssueId}`;
+        const existingWake = wakeups.get(key);
+        if (existingWake && isExecutionStageWake(existingWake.wakeup) && !isExecutionStageWake(wakeup)) {
+          wakeups.set(key, {
+            agentId,
+            wakeup: mergeWakeComment(existingWake.wakeup, wakeup),
+          });
+          return;
+        }
+        wakeups.set(key, {
+          agentId,
+          wakeup: existingWake && isExecutionStageWake(wakeup)
+            ? mergeWakeComment(wakeup, existingWake.wakeup)
+            : wakeup,
+        });
       };
       const addDependencyResolvedWakeup = async (input: {
         agentId: string;

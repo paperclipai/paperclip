@@ -279,6 +279,166 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     return revisionId;
   }
 
+  it("reuses the executor task session after lifecycle-only review approval updates", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Execution Resume Session",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+      defaultResponsibleUserId: "responsible-user",
+      createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Executor",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+      createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Execute after review",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      identifier: "PAP-RESUME",
+      createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-28T00:00:00.000Z"),
+    });
+
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        body: "Execution prepared for review.",
+        createdByAgentId: agentId,
+      });
+      await db.update(issues).set({
+        status: "in_review",
+        updatedAt: new Date("2026-07-28T00:00:01.000Z"),
+      }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: "executor-session" },
+        sessionDisplayId: "executor-session",
+        summary: "Execution prepared for review.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const firstRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+    expect(firstRun).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(firstRun!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+
+    await db.update(issues).set({
+      status: "in_progress",
+      executionState: {
+        status: "execution_pending",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: { type: "agent", agentId },
+        reviewRequest: null,
+        completedStageIds: [randomUUID()],
+        lastDecisionId: randomUUID(),
+        lastDecisionOutcome: "approved",
+      },
+      updatedAt: new Date("2026-07-28T00:00:02.000Z"),
+    }).where(eq(issues.id, issueId));
+
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        body: "Execution completed after review.",
+        createdByAgentId: agentId,
+      });
+      await db.update(issues).set({
+        status: "done",
+        updatedAt: new Date("2026-07-28T00:00:03.000Z"),
+      }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: "executor-session" },
+        sessionDisplayId: "executor-session",
+        summary: "Execution resumed and completed.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const resumedRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "execution_resumed",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "execution_resumed",
+      },
+    });
+    expect(resumedRun).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(resumedRun!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+    const completedResumedRun = await heartbeat.getRun(resumedRun.id);
+
+    expect(adapterExecute).toHaveBeenCalledTimes(2);
+    const resumedInput = adapterExecute.mock.calls[1]?.[0] as {
+      runtime: { sessionId: string | null; sessionParams: Record<string, unknown> | null };
+    };
+    expect(resumedInput.runtime.sessionId).toBe("executor-session");
+    expect(resumedInput.runtime.sessionParams).toEqual(expect.objectContaining({
+      sessionId: "executor-session",
+    }));
+    expect(completedResumedRun?.resultJson).toMatchObject({
+      configFreshness: {
+        session: {
+          reset: false,
+          taskSessionReused: true,
+        },
+      },
+    });
+  }, 20_000);
+
   it("realizes an isolated workspace and drops stale shared task-session params before executing", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
