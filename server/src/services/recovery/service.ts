@@ -806,8 +806,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { consecutive, latestFinishedAt };
   }
 
-  async function hasActiveExecutionPath(companyId: string, issueId: string, agentId?: string | null) {
-    const [run, deferredWake] = await Promise.all([
+  async function readActiveExecutionPath(companyId: string, issueId: string, agentId?: string | null) {
+    const [contextRun, linkedState, deferredWake] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -817,6 +817,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
             sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
             agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+          activeRunId: heartbeatRuns.id,
+        })
+        .from(issues)
+        .leftJoin(
+          heartbeatRuns,
+          and(
+            or(
+              eq(issues.checkoutRunId, heartbeatRuns.id),
+              eq(issues.executionRunId, heartbeatRuns.id),
+            ),
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+            agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.id, issueId),
           ),
         )
         .limit(1)
@@ -836,7 +863,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(run || deferredWake);
+    return {
+      active: Boolean(contextRun || linkedState?.activeRunId || deferredWake),
+      checkoutRunId: linkedState?.checkoutRunId ?? null,
+      executionRunId: linkedState?.executionRunId ?? null,
+    };
+  }
+
+  async function hasActiveExecutionPath(companyId: string, issueId: string, agentId?: string | null) {
+    return (await readActiveExecutionPath(companyId, issueId, agentId)).active;
   }
 
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
@@ -3014,8 +3049,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
+    expectedCheckoutRunId?: string | null;
+    expectedExecutionRunId?: string | null;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      expectedCheckoutRunId: input.expectedCheckoutRunId,
+      expectedExecutionRunId: input.expectedExecutionRunId,
+    });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -3152,11 +3193,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
+    // Re-read the live-path state at the mutation boundary. A generic timer run
+    // can check out an issue after the reconciliation candidate snapshot was
+    // collected, and its original context does not necessarily contain issueId.
+    // The link columns are authoritative for that checkout.
+    const executionPath = await readActiveExecutionPath(input.issue.companyId, input.issue.id);
+    if (executionPath.active) {
+      return null;
+    }
+
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
         issue: input.issue,
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
+        expectedCheckoutRunId: executionPath.checkoutRunId,
+        expectedExecutionRunId: executionPath.executionRunId,
       });
     }
 
@@ -3185,6 +3237,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       status: "blocked",
       blockedByIssueIds: blockerIds,
       assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+      expectedCheckoutRunId: executionPath.checkoutRunId,
+      expectedExecutionRunId: executionPath.executionRunId,
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;

@@ -6569,6 +6569,8 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        expectedCheckoutRunId?: string | null;
+        expectedExecutionRunId?: string | null;
       },
       dbOrTx: any = db,
     ) => {
@@ -6584,6 +6586,8 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        expectedCheckoutRunId,
+        expectedExecutionRunId,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6741,7 +6745,21 @@ export function issueService(db: Db) {
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(eq(issues.id, id))
+          .where(
+            and(
+              eq(issues.id, id),
+              expectedCheckoutRunId === undefined
+                ? undefined
+                : expectedCheckoutRunId === null
+                  ? isNull(issues.checkoutRunId)
+                  : eq(issues.checkoutRunId, expectedCheckoutRunId),
+              expectedExecutionRunId === undefined
+                ? undefined
+                : expectedExecutionRunId === null
+                  ? isNull(issues.executionRunId)
+                  : eq(issues.executionRunId, expectedExecutionRunId),
+            ),
+          )
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;

@@ -5087,6 +5087,218 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it.each(["checkoutRunId", "executionRunId"] as const)(
+    "does not reap a live generic timer checkout linked through %s",
+    async (linkColumn) => {
+      const { companyId, agentId, issueId, runId: staleRunId } = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+      });
+      const timerRunId = randomUUID();
+      const timerWakeId = randomUUID();
+      const now = new Date("2026-03-19T00:06:00.000Z");
+
+      await db.insert(agentWakeupRequests).values({
+        id: timerWakeId,
+        companyId,
+        agentId,
+        source: "timer",
+        triggerDetail: "system",
+        reason: "heartbeat_timer",
+        payload: {},
+        status: "claimed",
+        runId: timerRunId,
+        claimedAt: now,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: timerRunId,
+        companyId,
+        agentId,
+        invocationSource: "timer",
+        triggerDetail: "system",
+        status: "running",
+        wakeupRequestId: timerWakeId,
+        contextSnapshot: {
+          wakeReason: "heartbeat_timer",
+          source: "heartbeat_timer",
+        },
+        startedAt: now,
+        updatedAt: now,
+      });
+      await db
+        .update(issues)
+        .set({
+          checkoutRunId: linkColumn === "checkoutRunId" ? timerRunId : null,
+          executionRunId: linkColumn === "executionRunId" ? timerRunId : null,
+          updatedAt: now,
+        })
+        .where(eq(issues.id, issueId));
+
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      expect(result.issueIds).toEqual([]);
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        [linkColumn]: timerRunId,
+      });
+
+      const recoveryActions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      expect(recoveryActions).toEqual([]);
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      expect(runs.map((row) => row.id).sort()).toEqual([staleRunId, timerRunId].sort());
+    },
+  );
+
+  it("reaps a process-lost generic timer run before its issue link can suppress recovery indefinitely", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    const timerRunId = randomUUID();
+    const staleAt = new Date(Date.now() - 60_000);
+
+    await db.insert(heartbeatRuns).values({
+      id: timerRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {
+        wakeReason: "heartbeat_timer",
+        source: "heartbeat_timer",
+      },
+      startedAt: staleAt,
+      updatedAt: staleAt,
+    });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: timerRunId,
+        executionRunId: timerRunId,
+        updatedAt: staleAt,
+      })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const reaped = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1 });
+
+    expect(reaped).toEqual({ reaped: 1, runIds: [timerRunId] });
+    const timerRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, timerRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(timerRun).toMatchObject({
+      status: "failed",
+      errorCode: "process_lost",
+    });
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.checkoutRunId).not.toBe(timerRunId);
+    expect(issue?.executionRunId).not.toBe(timerRunId);
+  });
+
+  it("does not overwrite a generic timer checkout acquired during stranded escalation", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+    });
+    const timerRunId = randomUUID();
+    const now = new Date("2026-03-19T00:06:00.000Z");
+
+    await db.insert(heartbeatRuns).values({
+      id: timerRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "test_recovery_lock_race",
+      status: "running",
+      contextSnapshot: {
+        wakeReason: "heartbeat_timer",
+        source: "heartbeat_timer",
+      },
+      startedAt: now,
+      updatedAt: now,
+    });
+    await db.execute(sql`
+      create or replace function test_link_timer_run_during_recovery()
+      returns trigger
+      language plpgsql
+      as $$
+      begin
+        update issues
+        set
+          checkout_run_id = (
+            select id from heartbeat_runs
+            where company_id = new.company_id
+              and trigger_detail = 'test_recovery_lock_race'
+            limit 1
+          ),
+          execution_run_id = (
+            select id from heartbeat_runs
+            where company_id = new.company_id
+              and trigger_detail = 'test_recovery_lock_race'
+            limit 1
+          )
+        where id = new.source_issue_id;
+        return new;
+      end;
+      $$;
+    `);
+    await db.execute(sql`
+      create trigger test_link_timer_run_during_recovery
+      after insert on issue_recovery_actions
+      for each row execute function test_link_timer_run_during_recovery();
+    `);
+
+    try {
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(result.escalated).toBe(0);
+      expect(result.issueIds).toEqual([]);
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        checkoutRunId: timerRunId,
+        executionRunId: timerRunId,
+      });
+    } finally {
+      await db.execute(sql`drop trigger if exists test_link_timer_run_during_recovery on issue_recovery_actions`);
+      await db.execute(sql`drop function if exists test_link_timer_run_during_recovery()`);
+    }
+  });
+
   it("does not continue seeded in-progress work that has no run linkage", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

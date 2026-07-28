@@ -131,6 +131,14 @@ These are related but not identical:
 - `checkoutRunId` answers who currently owns execution rights for the issue
 - `executionRunId` answers which run is actually live right now
 
+Either link counts as a live execution path while it points to a non-terminal
+same-company run. This includes generic timer or on-demand runs whose original
+context snapshot did not name the issue before checkout. A persisted `running`
+row with no live execution is first failed by orphan-run recovery; its terminal
+status then makes the link eligible for stale-lock cleanup. Stranded escalation
+compares both link values at its mutation boundary, so a checkout acquired
+during reconciliation is not overwritten.
+
 Paperclip already clears stale execution locks and can adopt some stale checkout locks when the original run is gone.
 
 The active-lock lifecycle is part of the checkout contract:
