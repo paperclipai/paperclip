@@ -7078,6 +7078,26 @@ export function issueRoutes(
       },
     });
     if (deduplicationReason) {
+      // The create attempt was folded into an existing issue and short-circuits before the
+      // issue.created row below, so without this the agent's durable-state-affecting attempt
+      // (reference sync, relatedWork) would leave no audit trail. Record the attempt itself.
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.create_deduplicated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          deduplicationReason,
+          identifier: issue.identifier,
+          title: issue.title,
+          attemptedTitle: createBody.title ?? null,
+        },
+      });
       const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       res.status(200).json({
         ...issue,

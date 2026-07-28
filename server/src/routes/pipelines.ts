@@ -925,6 +925,20 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
         })),
         actor,
       });
+      await logActivity(db, {
+        companyId,
+        ...activityActorForPipelineRoute(actor),
+        action: "pipeline.created",
+        entityType: "pipeline",
+        entityId: created.id,
+        details: {
+          key: created.key,
+          name: created.name,
+          projectId: created.projectId ?? null,
+          enforceTransitions: created.enforceTransitions,
+          stageCount: created.stages?.length ?? 0,
+        },
+      });
       res.status(201).json(created);
     } catch (error) {
       codedConflictForUnique(error);
@@ -1172,7 +1186,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const pipelineId = req.params.pipelineId as string;
     const companyId = await assertPipelineAccess(db, req, pipelineId);
     await assertPipelineWriteAccess(req, { access, companyId, pipelineId });
-    actorForMutation(req);
+    const actor = actorForMutation(req);
     const patch: Partial<typeof pipelines.$inferInsert> = { updatedAt: new Date() };
     if (req.body.name !== undefined) patch.name = req.body.name;
     if (req.body.description !== undefined) patch.description = req.body.description;
@@ -1183,6 +1197,17 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       .set(patch)
       .where(and(eq(pipelines.id, pipelineId), eq(pipelines.companyId, companyId)))
       .returning();
+    await logActivity(db, {
+      companyId,
+      ...activityActorForPipelineRoute(actor),
+      action: "pipeline.updated",
+      entityType: "pipeline",
+      entityId: pipelineId,
+      details: {
+        changedFields: Object.keys(patch).filter((field) => field !== "updatedAt"),
+        ...(req.body.archived !== undefined ? { archived: req.body.archived === true } : {}),
+      },
+    });
     res.json(updated);
   });
 
@@ -1202,6 +1227,14 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
         config: req.body.config,
         actor,
       });
+      await logActivity(db, {
+        companyId,
+        ...activityActorForPipelineRoute(actor),
+        action: "pipeline.stage_created",
+        entityType: "pipeline_stage",
+        entityId: stage.id,
+        details: { pipelineId, key: stage.key, name: stage.name, kind: stage.kind, position: stage.position },
+      });
       res.status(201).json(stage);
     } catch (error) {
       codedConflictForUnique(error);
@@ -1215,7 +1248,16 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     await assertPipelineWriteAccess(req, { access, companyId, pipelineId });
     const actor = actorForMutation(req);
     try {
-      res.json(await svc.updateStage({ companyId, pipelineId, stageId, patch: req.body, actor }));
+      const updated = await svc.updateStage({ companyId, pipelineId, stageId, patch: req.body, actor });
+      await logActivity(db, {
+        companyId,
+        ...activityActorForPipelineRoute(actor),
+        action: "pipeline.stage_updated",
+        entityType: "pipeline_stage",
+        entityId: stageId,
+        details: { pipelineId, changedFields: Object.keys(req.body ?? {}) },
+      });
+      res.json(updated);
     } catch (error) {
       codedConflictForUnique(error);
     }
@@ -1243,12 +1285,21 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const companyId = await assertPipelineAccess(db, req, pipelineId);
     await assertPipelineWriteAccess(req, { access, companyId, pipelineId });
     const actor = actorForMutation(req);
+    const moveCasesToStageId = typeof req.query.moveCasesToStageId === "string" ? req.query.moveCasesToStageId : null;
     const result = await svc.deleteStage({
       companyId,
       pipelineId,
       stageId,
-      moveCasesToStageId: typeof req.query.moveCasesToStageId === "string" ? req.query.moveCasesToStageId : null,
+      moveCasesToStageId,
       actor,
+    });
+    await logActivity(db, {
+      companyId,
+      ...activityActorForPipelineRoute(actor),
+      action: "pipeline.stage_deleted",
+      entityType: "pipeline_stage",
+      entityId: stageId,
+      details: { pipelineId, movedCasesToStageId: moveCasesToStageId },
     });
     res.json(result);
   });
@@ -1257,7 +1308,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const pipelineId = req.params.pipelineId as string;
     const companyId = await assertPipelineAccess(db, req, pipelineId);
     await assertPipelineWriteAccess(req, { access, companyId, pipelineId });
-    actorForMutation(req);
+    const actor = actorForMutation(req);
     const byKey = await getStagesByKey(db, pipelineId);
     const transitions = req.body.transitions.map((edge: z.infer<typeof replaceTransitionsSchema>["transitions"][number]) => {
       const from = byKey.get(edge.fromStageKey);
@@ -1272,6 +1323,17 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
           .where(and(eq(pipelines.id, pipelineId), eq(pipelines.companyId, companyId)));
       }
       return transitions.length ? tx.insert(pipelineTransitions).values(transitions).returning() : [];
+    });
+    await logActivity(db, {
+      companyId,
+      ...activityActorForPipelineRoute(actor),
+      action: "pipeline.transitions_replaced",
+      entityType: "pipeline",
+      entityId: pipelineId,
+      details: {
+        transitionCount: result.length,
+        ...(req.body.enforceTransitions !== undefined ? { enforceTransitions: req.body.enforceTransitions === true } : {}),
+      },
     });
     res.json({ transitions: result });
   });
