@@ -1522,8 +1522,7 @@ describe("Daytona sandbox provider plugin", () => {
 
       const overlappingExec = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
       await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(mockGet).toHaveBeenCalledTimes(2);
-      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
+      expect(mockGet).toHaveBeenCalledTimes(3);
 
       resolveStop();
       await Promise.all([releasePromise, overlappingExec]);
@@ -1659,6 +1658,59 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.delete).toHaveBeenCalledTimes(1);
 
       await fs.rm(hostDir, { recursive: true, force: true });
+    });
+
+    it("keeps a queued execute active when interactive cancel starts", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let resolveFirstExecute!: () => void;
+      let resolveSecondExecute!: () => void;
+      let executeCalls = 0;
+      sandbox.process.executeCommand.mockImplementation(async () => {
+        executeCalls += 1;
+        await new Promise<void>((resolve) => {
+          if (executeCalls === 1) {
+            resolveFirstExecute = resolve;
+            return;
+          }
+          resolveSecondExecute = resolve;
+        });
+        return {
+          exitCode: 0,
+          result: "bash",
+          artifacts: { stdout: "bash" },
+        };
+      });
+      mockGet.mockResolvedValue(sandbox);
+
+      const firstExecutePromise = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const cancelPromise = plugin.definition.onEnvironmentCancelInteractiveSetup?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: false },
+        reason: "cancelled",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const queuedExecutePromise = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(sandbox.delete).not.toHaveBeenCalled();
+
+      resolveFirstExecute();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sandbox.delete).not.toHaveBeenCalled();
+
+      resolveSecondExecute();
+      await Promise.all([firstExecutePromise, queuedExecutePromise, cancelPromise]);
+
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+      expect(sandbox.delete).toHaveBeenCalledTimes(1);
     });
 
     it("waits for an in-flight snapshot capture before destroy cleanup starts", async () => {

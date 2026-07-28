@@ -901,28 +901,21 @@ const sandboxHandleActivityGates = (() => {
 
   async function begin(scope: SandboxScope): Promise<SandboxHandleActivityGate> {
     const key = sandboxHandleCacheKey(scope);
-    while (true) {
-      const teardownGate = sandboxHandleTeardownGates.current(scope);
-      if (teardownGate) {
-        await teardownGate.promise;
-        continue;
-      }
-      const existing = gates.get(key);
-      if (existing) {
-        existing.refCount += 1;
-        return existing;
-      }
-      let release!: () => void;
-      const gate: SandboxHandleActivityGate = {
-        promise: new Promise<void>((resolve) => {
-          release = resolve;
-        }),
-        release: () => release(),
-        refCount: 1,
-      };
-      gates.set(key, gate);
-      return gate;
+    const existing = gates.get(key);
+    if (existing) {
+      existing.refCount += 1;
+      return existing;
     }
+    let release!: () => void;
+    const gate: SandboxHandleActivityGate = {
+      promise: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      release: () => release(),
+      refCount: 1,
+    };
+    gates.set(key, gate);
+    return gate;
   }
 
   async function waitForIdle(scope: SandboxScope): Promise<void> {
@@ -961,23 +954,9 @@ const sandboxHandleCache = (() => {
   async function get(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox> {
     const key = sandboxHandleCacheKey(scope);
 
-    if (!options.bypassTeardownGate) {
-      const gate = sandboxHandleTeardownGates.current(scope);
-      if (gate) {
-        await gate.promise;
-        return await get(scope, options);
-      }
-    }
     const entry = entries.get(key);
     if (entry) {
       const sandbox = await entry.sandbox;
-      if (!options.bypassTeardownGate) {
-        const gate = sandboxHandleTeardownGates.current(scope);
-        if (gate) {
-          await gate.promise;
-          return await get(scope, options);
-        }
-      }
       // Re-assert on every hit; evict + fail closed on any mismatch (C2).
       try {
         assertHandleMatchesLease(sandbox, scope.providerLeaseId);
@@ -1013,16 +992,6 @@ const sandboxHandleCache = (() => {
     entries.set(key, populated);
     try {
       const sandbox = await populate;
-      if (!options.bypassTeardownGate) {
-        const gate = sandboxHandleTeardownGates.current(scope);
-        if (gate) {
-          if (entries.get(key) === populated) {
-            entries.delete(key);
-          }
-          await gate.promise;
-          return await get(scope, options);
-        }
-      }
       return sandbox;
     } catch (error) {
       // A rejected populate (NotFound, network, id mismatch) must never remain
