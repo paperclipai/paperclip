@@ -548,7 +548,8 @@ export function createIssueImageGenerationJobService(
 
   async function clearAttachment(job: JobSelect, kind: "output" | "audit") {
     const attachmentId = kind === "output" ? job.outputAttachmentId : job.auditAttachmentId;
-    if (!attachmentId || !job.claimToken) return null;
+    const claimToken = job.claimToken;
+    if (!attachmentId || !claimToken) return null;
     try {
       const removed = await db.transaction(async (tx) => {
         const claimed = await tx
@@ -561,7 +562,7 @@ export function createIssueImageGenerationJobService(
             and(
               eq(issueImageGenerationJobs.id, job.id),
               eq(issueImageGenerationJobs.status, "running"),
-              eq(issueImageGenerationJobs.claimToken, job.claimToken),
+              eq(issueImageGenerationJobs.claimToken, claimToken),
             ),
           )
           .returning({ id: issueImageGenerationJobs.id });
