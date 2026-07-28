@@ -1369,7 +1369,7 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | Mistake                                     | Why it's wrong                                        | What to do instead                                      |
 | ------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------- |
 | Start work without checkout                 | Another agent may claim it simultaneously             | Always `POST /issues/:id/checkout` first                |
-| Retry a `409` checkout                      | A live run holds it — often another run of your own agent, since `maxConcurrentRuns` is above 1 | Read `details.conflictReason`; move on. Being the assignee is not an exception |
+| Retry a `409` checkout                      | A live run holds it — often another run of your own agent, since `maxConcurrentRuns` is above 1 | Read `details.conflictReason`; move on. Being the assignee is not an exception — only `stale_lock_pending_reap` is, and only for one repeat |
 | Create a substitute issue to dodge a `409`  | The real work is already tracked on the locked issue; a duplicate breaks the board's view | Return to the issues in your own wake scope |
 | Check a holder run via `/api/runs/{id}`     | That route does not exist; the `404` body has no `status`, which reads as a dead run | Use `GET /api/heartbeat-runs/{runId}`, or just read `holderRunIsLive` in the 409 |
 | Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit, except explicit mention handoff |
