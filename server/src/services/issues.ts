@@ -1087,10 +1087,15 @@ export async function heartbeatRunIsTerminalOrMissing(
  *
  * - `no_run_lock` — nothing holds the issue; the guard that failed was the
  *   status/assignee guard, not a run lock.
- * - `actor_run_holds_lock` — the caller's own run holds the lock, so the conflict
- *   is again about status/assignee, not about ownership.
+ * - `actor_run_holds_lock` — the caller's own run holds the lock, so ownership is
+ *   not what rejected the call. Checked before liveness on purpose: when the
+ *   caller's *own* run is terminal (watchdog-cancelled but still able to call the
+ *   API), classifying that as `stale_lock_pending_reap` would hand a dead run the
+ *   "retry once" advice below. `holderRunStatus` / `holderRunIsLive` still carry
+ *   the liveness fact for callers that need it.
  * - `stale_lock_pending_reap` — the holding run is terminal or missing. The lock
- *   is cleared automatically on the next assignee checkout/PATCH.
+ *   is cleared automatically on the next assignee checkout/PATCH, which makes this
+ *   the one reason the docs allow retrying — once, and only as the assignee.
  * - `live_sibling_run` — a *different, still running* run of the caller's own agent
  *   holds it. Concurrent runs per agent are normal (`maxConcurrentRuns` is above 1
  *   for a normal agent), so being the assignee is not evidence that the lock is stale.
