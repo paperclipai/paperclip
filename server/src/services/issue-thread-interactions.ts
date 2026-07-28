@@ -587,12 +587,48 @@ function interactionTerminalError(row: { status: string; result?: unknown }) {
   );
 }
 
-function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
+function isWakeAssigneeContinuationPolicy(continuationPolicy: string): boolean {
+  return continuationPolicy === "wake_assignee" || continuationPolicy === "wake_assignee_on_accept";
+}
+
+/**
+ * Which resolutions can hand a user-assigned issue back to the agent that created
+ * the interaction.
+ *
+ * `request_confirmation`-like kinds always qualify: the creating agent is blocked
+ * on the verdict by construction, so an accept is a continuation whatever policy
+ * was declared.
+ *
+ * `ask_user_questions` and `suggest_tasks` only qualify behind a `wake_assignee*`
+ * policy. Both can legitimately be posted without any intent to resume — an
+ * informational question, a task list the board owns — and taking the issue away
+ * from its human owner for a continuation nobody asked for would be worse than
+ * the stall this handoff exists to prevent.
+ */
+function isCreatorHandoffOnResolveKind(kind: string, continuationPolicy: string): boolean {
+  if (isRequestConfirmationLikeKind(kind)) return true;
+  if (kind !== "ask_user_questions" && kind !== "suggest_tasks") return false;
+  return isWakeAssigneeContinuationPolicy(continuationPolicy);
+}
+
+/**
+ * A user-assigned issue is itself a live waiting path only while the user still
+ * owes the answer. Once they have answered or accepted, the issue has to go back
+ * to the agent that asked: `queueResolvedInteractionContinuationWakeup` drops the
+ * continuation wakeup unless the issue carries an `assigneeAgentId`, and an issue
+ * may only have one assignee, so this handoff cannot happen any earlier than
+ * resolution time without taking the question away from the person answering it.
+ *
+ * Deliberately narrow — it fires only when a *user* resolved the interaction, the
+ * issue was assigned to that user side and to no agent, and the issue is still
+ * open. A board approval on an agent-owned issue keeps its assignee untouched.
+ */
+function shouldReturnResolvedInteractionToCreatorAgent(args: {
   issue: IssueResolutionContext;
   current: IssueThreadInteractionRow;
   actor: InteractionActor;
 }) {
-  if (!isRequestConfirmationLikeKind(args.current.kind)) return false;
+  if (!isCreatorHandoffOnResolveKind(args.current.kind, args.current.continuationPolicy)) return false;
   if (!args.current.createdByAgentId) return false;
   if (!args.actor.userId) return false;
   if (isTerminalIssueStatus(args.issue.status)) return false;
@@ -1499,6 +1535,106 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     return hydrateInteraction(current);
   }
 
+  /**
+   * Hand a user-assigned issue back to the interaction's creating agent when the
+   * resolution qualifies. Runs inside the caller's transaction so the resolved
+   * interaction and the wake target it depends on commit together — a resolution
+   * that survived a failed handoff would be exactly the dead wake path this
+   * exists to prevent.
+   *
+   * Returns the resulting wake target, or `null` when the issue keeps its current
+   * assignee; callers own the `touchIssue` fallback for that case.
+   */
+  async function returnResolvedIssueToCreatorAgent(
+    tx: Db,
+    args: {
+      issue: { id: string; companyId: string };
+      current: IssueThreadInteractionRow;
+      actor: InteractionActor;
+    },
+  ): Promise<IssueWakeTarget | null> {
+    const issueContext = await tx
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, args.issue.id))
+      .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+
+    if (!issueContext || issueContext.companyId !== args.issue.companyId) {
+      throw notFound("Issue not found");
+    }
+
+    if (!shouldReturnResolvedInteractionToCreatorAgent({
+      issue: issueContext,
+      current: args.current,
+      actor: args.actor,
+    })) {
+      return null;
+    }
+
+    const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
+    // Non-null once the eligibility check above passed — it requires a user assignee.
+    const judgedAssigneeUserId = issueContext.assigneeUserId;
+    if (!judgedAssigneeUserId) return null;
+
+    // Compare-and-swap rather than an ID-only update: the read above is not locked,
+    // so between it and this write a concurrent request can reassign the issue or
+    // move it terminal. An unconditional update would silently overwrite that — the
+    // worst case being a `done` issue reopened to `todo` by a late handoff.
+    //
+    // The guard is a WHERE clause, deliberately not `SELECT … FOR UPDATE`: this runs
+    // inside the caller's transaction, and taking a row lock here and then calling the
+    // fat `issueService.update()` (which also touches labels, blockers, activity and
+    // workspace settings) is what deadlocked against the `heartbeat_runs` FK cascade
+    // in #10274. A narrow conditional statement keeps the lock footprint to this row.
+    //
+    // Pinning `status` to the value we read covers both hazards at once: it rejects a
+    // concurrent terminal transition, and it guarantees `returnStatus` — which is
+    // derived from that same read — cannot unblock an issue that just became blocked.
+    //
+    // The user assignee is pinned to the exact id we judged, not merely "some user is
+    // assigned": a user-A-to-user-B reassignment leaves every other predicate true, so
+    // a laxer guard would let this stale handoff clear user B — silently taking the
+    // issue from a human who was never asked anything.
+    //
+    // Losing the race returns null, so the caller falls back to `touchIssue` exactly
+    // as it does for an ineligible resolution. The interaction still resolves; only
+    // the handoff is skipped, which is the safe direction.
+    const [returnedIssue] = await tx
+      .update(issues)
+      .set({
+        status: returnStatus,
+        assigneeAgentId: args.current.createdByAgentId,
+        assigneeUserId: null,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(issues.id, args.issue.id),
+        eq(issues.status, issueContext.status),
+        isNull(issues.assigneeAgentId),
+        eq(issues.assigneeUserId, judgedAssigneeUserId),
+      ))
+      .returning({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      });
+
+    if (!returnedIssue) return null;
+    return {
+      id: returnedIssue.id,
+      assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
+      assigneeUserId: returnedIssue.assigneeUserId ?? null,
+      status: returnedIssue.status,
+    };
+  }
+
   async function assertIssueWorkspaceFinalizedForAccept(args: {
     db: Pick<Db, "select">;
     issue: { id: string; companyId: string };
@@ -1671,30 +1807,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         );
       }
 
-      let continuationIssue: IssueWakeTarget | null = null;
-      if (shouldReturnAcceptedConfirmationToCreatorAgent({
-        issue: issueContext,
-        current: lockedCurrent,
+      const continuationIssue = await returnResolvedIssueToCreatorAgent(tx as unknown as Db, {
+        issue: args.issue,
+        current: args.current,
         actor: args.actor,
-      })) {
-        const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
-        const returnedIssue = await issueService(db).update(args.issue.id, {
-          status: returnStatus,
-          assigneeAgentId: lockedCurrent.createdByAgentId,
-          assigneeUserId: null,
-          actorAgentId: args.actor.agentId ?? null,
-          actorUserId: args.actor.userId ?? null,
-        }, tx);
-
-        if (returnedIssue) {
-          continuationIssue = {
-            id: returnedIssue.id,
-            assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
-            assigneeUserId: returnedIssue.assigneeUserId ?? null,
-            status: returnedIssue.status,
-          };
-        }
-      } else {
+      });
+      if (!continuationIssue) {
         await touchIssue(tx, args.issue.id);
       }
 
@@ -2603,6 +2721,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const parentById = new Map(parentRows.map((row) => [row.id, row] as const));
       const createdByClientKey = new Map<string, SuggestTasksResultCreatedTask>();
       const createdWakeTargets: IssueWakeTarget[] = [];
+      let continuationIssue: IssueWakeTarget | null = null;
 
       await db.transaction(async (tx) => {
         const resolvedAt = new Date();
@@ -2682,7 +2801,16 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           .where(eq(issueThreadInteractions.id, interactionId))
           .returning();
 
-        await touchIssue(tx, issue.id);
+        // Run the handoff after the child issues exist, so the creating agent is
+        // woken onto an issue whose suggested tasks are already there to act on.
+        continuationIssue = await returnResolvedIssueToCreatorAgent(tx as unknown as Db, {
+          issue,
+          current,
+          actor,
+        });
+        if (!continuationIssue) {
+          await touchIssue(tx, issue.id);
+        }
         current.status = updated.status;
         current.result = updated.result;
         current.resolvedByAgentId = updated.resolvedByAgentId;
@@ -2698,6 +2826,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       return {
         interaction: accepted,
         createdIssues: createdWakeTargets,
+        continuationIssue,
       };
     },
 
@@ -3337,35 +3466,47 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         answers: input.answers,
       });
 
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "answered",
-          result: {
-            version: 1,
-            answers: normalizedAnswers,
-            summaryMarkdown: input.summaryMarkdown ?? null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
+      const now = new Date();
+      const result = await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "answered",
+            result: {
+              version: 1,
+              answers: normalizedAnswers,
+              summaryMarkdown: input.summaryMarkdown ?? null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
 
-      if (!updated) {
-        throw interactionAlreadyResolvedError();
-      }
+        if (!updated) {
+          throw interactionAlreadyResolvedError();
+        }
 
-      await touchIssue(db, issue.id);
-      const answered = hydrateInteraction(updated);
-      await emitInteractionResolvedTelemetry(db, answered);
-      return answered;
+        const continuationIssue = await returnResolvedIssueToCreatorAgent(tx as unknown as Db, {
+          issue,
+          current,
+          actor,
+        });
+        if (!continuationIssue) {
+          await touchIssue(tx, issue.id);
+        }
+
+        return { interaction: hydrateInteraction(updated), continuationIssue };
+      });
+
+      await emitInteractionResolvedTelemetry(db, result.interaction);
+      return result;
     },
 
     cancelQuestions: async (

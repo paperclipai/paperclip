@@ -415,31 +415,34 @@ describe.sequential("issue thread interaction routes", () => {
       resolvedAt: "2026-04-20T12:05:00.000Z",
     });
     mockInteractionService.answerQuestions.mockResolvedValue({
-      id: "interaction-2",
-      companyId: "company-1",
-      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      kind: "ask_user_questions",
-      status: "answered",
-      continuationPolicy: "wake_assignee",
-      idempotencyKey: null,
-      sourceCommentId: "comment-2",
-      sourceRunId: RUN_2,
-      payload: {
-        version: 1,
-        questions: [{
-          id: "scope",
-          prompt: "Scope?",
-          selectionMode: "single",
-          options: [{ id: "phase-1", label: "Phase 1" }],
-        }],
+      interaction: {
+        id: "interaction-2",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "ask_user_questions",
+        status: "answered",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: "comment-2",
+        sourceRunId: RUN_2,
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+        result: {
+          version: 1,
+          answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:06:00.000Z",
+        resolvedAt: "2026-04-20T12:06:00.000Z",
       },
-      result: {
-        version: 1,
-        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
-      },
-      createdAt: "2026-04-20T12:00:00.000Z",
-      updatedAt: "2026-04-20T12:06:00.000Z",
-      resolvedAt: "2026-04-20T12:06:00.000Z",
+      continuationIssue: null,
     });
     mockInteractionService.submitItemVerdicts.mockResolvedValue({
       interaction: {
@@ -1679,6 +1682,153 @@ describe.sequential("issue thread interaction routes", () => {
           _previous: expect.objectContaining({
             assigneeUserId: "local-board",
           }),
+        }),
+      }),
+    );
+  });
+
+  it("wakes the returned agent when answering an agent-authored question from a board user assignee", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+    }));
+    mockInteractionService.answerQuestions.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-answered-handoff",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "ask_user_questions",
+        status: "answered",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: "comment-2",
+        sourceRunId: "run-2",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+        result: {
+          version: 1,
+          answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:06:00.000Z",
+        resolvedAt: "2026-04-20T12:06:00.000Z",
+      },
+      continuationIssue: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        assigneeAgentId: CREATED_AGENT_ID,
+        assigneeUserId: null,
+        status: "todo",
+      },
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-answered-handoff/respond")
+      .send({ answers: [{ questionId: "scope", optionIds: ["phase-1"] }] });
+
+    expect(res.status).toBe(200);
+    // The pre-resolution issue has no assignee agent, so a wake against it would
+    // have been dropped — the continuation issue is what makes this reachable.
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      CREATED_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          interactionId: "interaction-answered-handoff",
+          interactionKind: "ask_user_questions",
+          interactionStatus: "answered",
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          source: "ask_user_questions_answer",
+          assigneeAgentId: CREATED_AGENT_ID,
+          assigneeUserId: null,
+          _previous: expect.objectContaining({
+            assigneeUserId: "local-board",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("wakes the returned agent when accepting agent-authored task suggestions from a board user assignee", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+    }));
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-tasks-handoff",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "suggest_tasks",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-5",
+        payload: {
+          version: 1,
+          tasks: [{ clientKey: "task-1", title: "One" }],
+        },
+        result: {
+          version: 1,
+          createdTasks: [],
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+      continuationIssue: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        assigneeAgentId: CREATED_AGENT_ID,
+        assigneeUserId: null,
+        status: "todo",
+      },
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tasks-handoff/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      CREATED_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          interactionId: "interaction-tasks-handoff",
+          interactionKind: "suggest_tasks",
+          interactionStatus: "accepted",
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          source: "suggest_tasks_accept",
+          assigneeAgentId: CREATED_AGENT_ID,
         }),
       }),
     );

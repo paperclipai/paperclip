@@ -2063,6 +2063,58 @@ function buildRequestItemVerdictsWakeIdempotencyKey(args: {
   return `request_item_verdicts:${args.issueId}:${args.interactionId}:${bucket}`;
 }
 
+/**
+ * `issue.updated` activity source for the creator-agent handoff a resolved
+ * interaction can trigger. Keyed by kind so the audit trail names the resolution
+ * that moved the issue; `request_checkbox_confirmation` deliberately keeps the
+ * long-standing `request_confirmation_accept` source.
+ */
+const INTERACTION_CREATOR_HANDOFF_ACTIVITY_SOURCES: Record<string, string> = {
+  request_confirmation: "request_confirmation_accept",
+  request_checkbox_confirmation: "request_confirmation_accept",
+  suggest_tasks: "suggest_tasks_accept",
+  ask_user_questions: "ask_user_questions_answer",
+};
+
+async function logInteractionCreatorHandoff(db: Db, input: {
+  issue: {
+    id: string;
+    companyId: string;
+    identifier?: string | null;
+    status: string;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+  };
+  continuationIssue: { status: string; assigneeAgentId?: string | null; assigneeUserId?: string | null };
+  interaction: { id: string; kind: string };
+  actor: ReturnType<typeof getActorInfo>;
+}) {
+  await logActivity(db, {
+    companyId: input.issue.companyId,
+    actorType: input.actor.actorType,
+    actorId: input.actor.actorId,
+    agentId: input.actor.agentId,
+    runId: input.actor.runId,
+    agentApiKeyId: input.actor.agentApiKeyId,
+    action: "issue.updated",
+    entityType: "issue",
+    entityId: input.issue.id,
+    details: {
+      identifier: input.issue.identifier ?? null,
+      status: input.continuationIssue.status,
+      assigneeAgentId: input.continuationIssue.assigneeAgentId ?? null,
+      assigneeUserId: input.continuationIssue.assigneeUserId ?? null,
+      source: INTERACTION_CREATOR_HANDOFF_ACTIVITY_SOURCES[input.interaction.kind] ?? "interaction_resolved",
+      interactionId: input.interaction.id,
+      _previous: {
+        status: input.issue.status,
+        assigneeAgentId: input.issue.assigneeAgentId ?? null,
+        assigneeUserId: input.issue.assigneeUserId ?? null,
+      },
+    },
+  });
+}
+
 async function queueResolvedInteractionContinuationWakeup(input: {
   db: Db;
   heartbeat: ReturnType<typeof heartbeatService>;
@@ -11512,30 +11564,7 @@ export function issueRoutes(
       });
 
       if (continuationIssue) {
-        await logActivity(db, {
-          companyId: issue.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          agentApiKeyId: actor.agentApiKeyId,
-          action: "issue.updated",
-          entityType: "issue",
-          entityId: issue.id,
-          details: {
-            identifier: issue.identifier,
-            status: continuationIssue.status,
-            assigneeAgentId: continuationIssue.assigneeAgentId ?? null,
-            assigneeUserId: continuationIssue.assigneeUserId ?? null,
-            source: "request_confirmation_accept",
-            interactionId: interaction.id,
-            _previous: {
-              status: issue.status,
-              assigneeAgentId: issue.assigneeAgentId ?? null,
-              assigneeUserId: issue.assigneeUserId ?? null,
-            },
-          },
-        });
+        await logInteractionCreatorHandoff(db, { issue, continuationIssue, interaction, actor });
       }
 
       for (const createdIssue of createdIssues) {
@@ -11660,12 +11689,17 @@ export function issueRoutes(
       const { interactionSvc, resolutionAuthorization } = authorizedResolution;
 
       const actor = getActorInfo(req);
-      const interaction = await interactionSvc.answerQuestions(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        runId: actor.runId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-        resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
-      });
+      const { interaction, continuationIssue } = await interactionSvc.answerQuestions(
+        issue,
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          runId: actor.runId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
+        },
+      );
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -11694,10 +11728,17 @@ export function issueRoutes(
         },
       });
 
+      if (continuationIssue) {
+        await logInteractionCreatorHandoff(db, { issue, continuationIssue, interaction, actor });
+      }
+
       await queueResolvedInteractionContinuationWakeup({
         db,
         heartbeat,
-        issue,
+        // Answering hands a user-assigned issue back to the asking agent, so the
+        // wake has to target the post-handoff assignee rather than the stale
+        // pre-resolution row.
+        issue: continuationIssue ?? issue,
         interaction,
         actor,
         source: "issue.interaction.respond",

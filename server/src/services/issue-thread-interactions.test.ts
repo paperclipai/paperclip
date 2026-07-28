@@ -11,6 +11,21 @@ vi.mock("./issues.js", () => ({
 
 type SelectRow = Record<string, unknown>;
 
+/** Collect the bound string parameters of a drizzle WHERE predicate. */
+function guardStringParams(predicate: unknown): string[] {
+  const seen: string[] = [];
+  const visited = new Set<unknown>();
+  const walk = (node: any) => {
+    if (!node || typeof node !== "object" || visited.has(node)) return;
+    visited.add(node);
+    if (Array.isArray(node)) return node.forEach(walk);
+    if (typeof node.value === "string") seen.push(node.value);
+    for (const key of Object.keys(node)) walk(node[key]);
+  };
+  walk(predicate);
+  return seen;
+}
+
 function createSelectChain(rows: SelectRow[]) {
   return {
     from() {
@@ -30,25 +45,61 @@ function createSelectChain(rows: SelectRow[]) {
 function createFakeDb(args: {
   interactionRow: Record<string, unknown>;
   parentRows?: SelectRow[];
+  issueRow?: SelectRow | null;
+  // Rows the compare-and-swap handoff update reports as matched. An empty array
+  // is the lost race: another request changed the issue between the eligibility
+  // probe and the write, so the guarded WHERE matches nothing.
+  handoffUpdateRows?: SelectRow[];
 }) {
   let interactionRow = { ...args.interactionRow };
   const issueTouches: Array<Record<string, unknown>> = [];
   const interactionUpdates: Array<Record<string, unknown>> = [];
   const toolActionRequestUpdates: Array<Record<string, unknown>> = [];
+  const handoffUpdates: Array<Record<string, unknown>> = [];
+  const handoffGuards: unknown[] = [];
   let selectCallCount = 0;
+  // Defaults to an agent-owned issue so the creator-agent handoff stays out of the
+  // way unless a test opts into a user-assigned one.
+  const issueRow = args.issueRow === undefined
+    ? {
+        id: "11111111-1111-4111-8111-111111111111",
+        companyId: "company-1",
+        status: "in_progress",
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+      }
+    : args.issueRow;
 
   const db: any = {
-    select: vi.fn(() => {
+    select: vi.fn((columns?: Record<string, unknown>) => {
+      // The handoff probe is the only select asking for the assignee columns.
+      if (columns && "assigneeUserId" in columns) {
+        return createSelectChain(issueRow ? [issueRow] : []);
+      }
       selectCallCount += 1;
       return createSelectChain(selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []));
     }),
     update: vi.fn((table: unknown) => ({
       set(values: Record<string, unknown>) {
         return {
-          where() {
+          where(guard?: unknown) {
             if (getTableName(table as never) === "tool_action_requests") {
               toolActionRequestUpdates.push(values);
               return Promise.resolve(undefined);
+            }
+            // Checked before the interaction branch: the handoff write also carries
+            // `status`, so ordering by the assignee columns is what tells them apart.
+            if ("assigneeAgentId" in values) {
+              handoffUpdates.push(values);
+              handoffGuards.push(guard);
+              return {
+                returning: async () => args.handoffUpdateRows ?? [{
+                  id: issueRow?.id,
+                  status: values.status,
+                  assigneeAgentId: values.assigneeAgentId,
+                  assigneeUserId: values.assigneeUserId,
+                }],
+              };
             }
             if ("status" in values || "result" in values || "resolvedAt" in values) {
               interactionUpdates.push(values);
@@ -76,6 +127,8 @@ function createFakeDb(args: {
     issueTouches,
     interactionUpdates,
     toolActionRequestUpdates,
+    handoffUpdates,
+    handoffGuards,
   };
 }
 
@@ -251,8 +304,9 @@ describe("issueThreadInteractionService", () => {
       userId: "local-board",
     });
 
-    expect(result.status).toBe("answered");
-    expect(result.result).toEqual({
+    expect(result.continuationIssue).toBeNull();
+    expect(result.interaction.status).toBe("answered");
+    expect(result.interaction.result).toEqual({
       version: 1,
       answers: [
         { questionId: "scope", optionIds: ["phase-1"] },
@@ -370,5 +424,128 @@ describe("issueThreadInteractionService", () => {
     expect(expired[0]?.result).toMatchObject({ version: 1, outcome: "issue_closed" });
     expect(state.toolActionRequestUpdates).toHaveLength(1);
     expect(state.toolActionRequestUpdates[0]).toMatchObject({ status: "expired", resolvedByUserId: "local-board" });
+  });
+
+  // The eligibility probe is an unlocked read, so the issue can change between it
+  // and the handoff write. The write is therefore a compare-and-swap; these cover
+  // both outcomes of that race, which the embedded-Postgres suite cannot schedule
+  // deterministically.
+  describe("creator handoff compare-and-swap", () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+
+    function handoffInteractionRow() {
+      return {
+        id: "interaction-3",
+        companyId: "company-1",
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        sourceCommentId: null,
+        sourceRunId: null,
+        title: null,
+        summary: null,
+        createdByAgentId: "agent-asking",
+        createdByUserId: null,
+        resolvedByAgentId: null,
+        resolvedByUserId: null,
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Pick one scope",
+            selectionMode: "single",
+            options: [
+              { id: "phase-1", label: "Phase 1" },
+              { id: "phase-2", label: "Phase 2" },
+            ],
+          }],
+        },
+        result: null,
+        resolvedAt: null,
+        createdAt: new Date("2026-04-20T10:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T10:00:00.000Z"),
+      };
+    }
+
+    // A user-assigned, non-terminal issue: the probe says the handoff qualifies.
+    const eligibleIssueRow = {
+      id: issueId,
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+    };
+
+    async function answer(state: ReturnType<typeof createFakeDb>) {
+      const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+      return issueThreadInteractionService(state.db as never).answerQuestions({
+        id: issueId,
+        companyId: "company-1",
+      }, "interaction-3", {
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      }, {
+        userId: "local-board",
+      });
+    }
+
+    it("hands the issue back when the guarded update still matches", async () => {
+      const state = createFakeDb({
+        interactionRow: handoffInteractionRow(),
+        issueRow: eligibleIssueRow,
+      });
+
+      const result = await answer(state);
+
+      expect(result.continuationIssue).toEqual({
+        id: issueId,
+        assigneeAgentId: "agent-asking",
+        assigneeUserId: null,
+        status: "todo",
+      });
+      // The guard re-asserts every mutable precondition rather than updating by id.
+      expect(state.handoffUpdates).toHaveLength(1);
+      expect(state.handoffUpdates[0]).toMatchObject({
+        status: "todo",
+        assigneeAgentId: "agent-asking",
+        assigneeUserId: null,
+      });
+      // Handoff won, so no separate touch is needed.
+      expect(state.issueTouches).toHaveLength(0);
+    });
+
+    it("skips the handoff and falls back to touching the issue when it loses the race", async () => {
+      const state = createFakeDb({
+        interactionRow: handoffInteractionRow(),
+        issueRow: eligibleIssueRow,
+        // Someone reassigned the issue or closed it after the probe read it.
+        handoffUpdateRows: [],
+      });
+
+      const result = await answer(state);
+
+      // The answer still lands — only the handoff is skipped, which is the safe
+      // direction: a stale write could have reopened a terminal issue.
+      expect(result.interaction.status).toBe("answered");
+      expect(result.continuationIssue).toBeNull();
+      expect(state.handoffUpdates).toHaveLength(1);
+      expect(state.issueTouches).toHaveLength(1);
+    });
+
+    it("pins the guard to the exact user assignee it judged, not merely 'some user'", async () => {
+      const state = createFakeDb({
+        interactionRow: handoffInteractionRow(),
+        issueRow: eligibleIssueRow,
+      });
+
+      await answer(state);
+
+      // A user-A-to-user-B reassignment leaves "an agent is absent" and "a user is
+      // assigned" both true, so a guard that only checked `assigneeUserId IS NOT NULL`
+      // would still fire and clear user B — taking the issue from a human who was
+      // never asked anything. The guard must carry the judged id itself.
+      expect(state.handoffGuards).toHaveLength(1);
+      expect(guardStringParams(state.handoffGuards[0])).toContain(eligibleIssueRow.assigneeUserId);
+    });
   });
 });
