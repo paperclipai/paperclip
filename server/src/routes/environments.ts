@@ -18,6 +18,7 @@ import { conflict, forbidden, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "../middleware/auth.js";
 import { getManagedInstanceConfig, SECRET_LIKE_CONFIG_KEY_PATTERN } from "../services/managed-config.js";
 import { parseExecutionPolicyBootstrapEnv } from "../services/execution-policy-bootstrap.js";
+import { isExecutionForcedToKubernetes } from "../services/execution-allowlist.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -150,20 +151,35 @@ function isManagedSandboxProvisioningConfigured(): boolean {
  * - The single marked sandbox row (`environments_managed_sandbox_idx`):
  *   owned only while a managed-sandbox bootstrap path is configured —
  *   `ensureManagedSandboxEnvironment` then adopts and refreshes whichever
- *   row holds the slot on every boot. With no such path configured the
- *   platform holds no claim on any sandbox row, so a platform marker
- *   there is stale by definition and stays recoverable via the
- *   marker-clear escape hatch below.
+ *   row holds the slot on every boot.
+ * - Any sandbox row bearing the legacy kubernetes marker while the
+ *   persisted instance execution policy forces kubernetes:
+ *   `findKubernetesEnvironment` selects marked rows (newest first) for
+ *   every forced run, so under that policy each marked row is — or on the
+ *   newest row's removal becomes — the live runtime row. This holds even
+ *   with no bootstrap path configured: the per-run guard reads the
+ *   persisted `executionMode`, which can outlive the env that seeded it.
+ *
+ * With no provisioning path configured and no forced-kubernetes policy the
+ * platform holds no claim on any sandbox row, so a platform marker there
+ * is stale by definition and stays recoverable via the marker-clear
+ * escape hatch below.
  */
-function isPlatformSlotEnvironment(environment: {
-  driver: string;
-  metadata: Record<string, unknown> | null;
-}): boolean {
+async function isPlatformSlotEnvironment(
+  environment: { driver: string; metadata: Record<string, unknown> | null },
+  options: { isForcedKubernetesExecution: () => Promise<boolean> },
+): Promise<boolean> {
   if (environment.driver === "local") return true;
-  return (
-    environment.driver === "sandbox" &&
+  if (environment.driver !== "sandbox") return false;
+  if (
     environment.metadata?.managedByPaperclip === true &&
     isManagedSandboxProvisioningConfigured()
+  ) {
+    return true;
+  }
+  return (
+    environment.metadata?.managedKubernetesSandbox === true &&
+    (await options.isForcedKubernetesExecution())
   );
 }
 
@@ -205,15 +221,18 @@ function isPlatformMarkerClearOnlyPatch(body: unknown): boolean {
  * tenant-managed and bypass this floor. Every marker outside a live slot
  * is stale by construction, so no row is ever locked unrecoverably.
  */
-function assertPlatformProvisionedEnvironmentWritable(
+async function assertPlatformProvisionedEnvironmentWritable(
   environment: { driver: string; metadata: Record<string, unknown> | null },
-  options?: { patchBody?: unknown },
-): void {
+  options?: {
+    patchBody: unknown;
+    isForcedKubernetesExecution: () => Promise<boolean>;
+  },
+): Promise<void> {
   if (!isCloudManagedInstance() || !isPlatformProvisionedEnvironment(environment)) return;
   if (
-    options?.patchBody !== undefined &&
+    options !== undefined &&
     isPlatformMarkerClearOnlyPatch(options.patchBody) &&
-    !isPlatformSlotEnvironment(environment)
+    !(await isPlatformSlotEnvironment(environment, options))
   ) return;
   throw forbidden("Platform-provisioned environments are platform-managed on cloud-managed instances", {
     code: "environment_platform_managed",
@@ -925,7 +944,13 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertPlatformProvisionedEnvironmentWritable(existing, { patchBody: req.body });
+    await assertPlatformProvisionedEnvironmentWritable(existing, {
+      patchBody: req.body,
+      isForcedKubernetesExecution: async () =>
+        isExecutionForcedToKubernetes({
+          executionMode: (await instanceSettings.getGeneral()).executionMode,
+        }),
+    });
     assertNoClientPlatformProvisionedMarkers(req.body.metadata);
     const actor = getActorInfo(req);
     const nextDriver = req.body.driver ?? existing.driver;
@@ -1024,7 +1049,7 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertPlatformProvisionedEnvironmentWritable(existing);
+    await assertPlatformProvisionedEnvironmentWritable(existing);
     const actor = getActorInfo(req);
     const impact = await svc.getDeleteBlastRadius(existing.id);
     if (!impact) {

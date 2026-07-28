@@ -27,6 +27,7 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   listCompanyIds: vi.fn(),
+  getGeneral: vi.fn(),
 }));
 
 const mockEnvironmentService = vi.hoisted(() => ({
@@ -228,6 +229,8 @@ describe("environment routes", () => {
     mockProjectService.getById.mockReset();
     mockProjectService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
+    mockInstanceSettingsService.getGeneral.mockReset();
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({ executionMode: "any" });
     mockEnvironmentService.list.mockReset();
     mockEnvironmentService.list.mockResolvedValue([]);
     mockEnvironmentService.getById.mockReset();
@@ -487,8 +490,9 @@ describe("environment routes", () => {
     it("allows a marker-clear-only patch to unblock a row with a stale legacy kubernetes marker", async () => {
       // A sandbox row carrying only the legacy wrapper marker does not hold
       // the managed sandbox slot (`environments_managed_sandbox_idx` keys on
-      // `managedByPaperclip`), so its marker is a stale leftover, not live
-      // platform state.
+      // `managedByPaperclip`), and with the persisted execution mode not
+      // forcing kubernetes nothing selects rows by that marker either — so
+      // the marker is a stale leftover, not live platform state.
       const staleRow = {
         ...createPlatformSandboxEnvironment(),
         id: "env-legacy-1",
@@ -565,6 +569,53 @@ describe("environment routes", () => {
       } finally {
         delete process.env.PAPERCLIP_EXECUTION_MODE;
       }
+    });
+
+    it("refuses the marker-clear patch on a kubernetes-marked row while the persisted execution mode forces kubernetes", async () => {
+      // `findKubernetesEnvironment` selects sandbox rows by the legacy
+      // marker alone whenever the persisted executionMode forces kubernetes
+      // — including when the bootstrap env that seeded the setting is gone
+      // (rollback / config drift, which the heartbeat handles explicitly).
+      // Clearing the marker would declassify the live runtime row.
+      mockInstanceSettingsService.getGeneral.mockResolvedValue({ executionMode: "kubernetes" });
+      mockEnvironmentService.getById.mockResolvedValue({
+        ...createPlatformSandboxEnvironment(),
+        id: "env-legacy-1",
+        metadata: { managedKubernetesSandbox: true },
+      });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .patch("/api/environments/env-legacy-1")
+        .send({ metadata: { managedKubernetesSandbox: false } });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+    });
+
+    it("refuses the marker-clear patch on the kubernetes-managed row when only the persisted execution mode remains forced", async () => {
+      // Drift variant with the fully-stamped managed row: no managed-config
+      // entry and no bootstrap env, but the persisted executionMode still
+      // forces kubernetes, so the marker keeps selecting this row for runs.
+      mockInstanceSettingsService.getGeneral.mockResolvedValue({ executionMode: "kubernetes" });
+      mockEnvironmentService.getById.mockResolvedValue({
+        ...createPlatformSandboxEnvironment(),
+        metadata: {
+          managedByPaperclip: true,
+          managedSandboxProvider: "kubernetes",
+          managedKubernetesSandbox: true,
+        },
+      });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1")
+        .send({ metadata: { managedByPaperclip: false, managedKubernetesSandbox: false } });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
     });
 
     it("allows the marker-clear patch on a marked sandbox row when no provisioning path is configured", async () => {
