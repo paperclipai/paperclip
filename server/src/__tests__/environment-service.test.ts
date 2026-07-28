@@ -530,6 +530,79 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows[0]?.updatedAt.toISOString()).toBe(archivedAt.toISOString());
   });
 
+  it("adopts a pre-existing local row on a cloud-managed instance by stamping the platform marker", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const [existing] = await db
+      .insert(environments)
+      .values({
+        name: "Tenant Local",
+        driver: "local",
+        status: "active",
+        config: { shell: "zsh" },
+        metadata: { owner: "operator" },
+        createdAt: new Date("2025-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2025-01-01T00:00:00.000Z"),
+      })
+      .returning();
+
+    process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+    try {
+      const adopted = await svc.ensureLocalEnvironment(companyId);
+
+      expect(adopted.id).toBe(existing?.id);
+      expect(adopted.name).toBe("Tenant Local");
+      expect(adopted.metadata).toEqual({ owner: "operator", managedByPaperclip: true });
+
+      // Re-ensuring an already-adopted row must not rewrite it.
+      const adoptedRow = await db
+        .select()
+        .from(environments)
+        .where(eq(environments.driver, "local"))
+        .then((rows) => rows[0]);
+      const reused = await svc.ensureLocalEnvironment(companyId);
+      expect(reused.metadata).toEqual({ owner: "operator", managedByPaperclip: true });
+      const reusedRow = await db
+        .select()
+        .from(environments)
+        .where(eq(environments.driver, "local"))
+        .then((rows) => rows[0]);
+      expect(reusedRow?.updatedAt.toISOString()).toBe(adoptedRow?.updatedAt.toISOString());
+    } finally {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    }
+  });
+
+  it("does not stamp the platform marker on self-hosted instances (regression)", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(environments).values({
+      name: "Tenant Local",
+      driver: "local",
+      status: "active",
+      config: {},
+      metadata: { owner: "operator" },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const ensured = await svc.ensureLocalEnvironment(companyId);
+
+    expect(ensured.metadata).toEqual({ owner: "operator" });
+  });
+
   it("deduplicates concurrent default local environment creation", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

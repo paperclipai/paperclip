@@ -415,6 +415,17 @@ describe("environment routes", () => {
       isInstanceAdmin: true,
     };
 
+    // A minimal valid managed-config document whose `environments` entry makes
+    // the managed-sandbox provisioner own the marked sandbox slot row.
+    const MANAGED_CONFIG_WITH_SANDBOX_ENTRY = JSON.stringify({
+      v: 1,
+      mode: "cloud",
+      catalogVersion: "2026.720.0",
+      features: {},
+      plugins: { autoInstall: [] },
+      environments: [{ name: "Sandbox", provider: "daytona" }],
+    });
+
     beforeEach(() => {
       process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
     });
@@ -514,23 +525,71 @@ describe("environment routes", () => {
       expect(mockEnvironmentService.update).toHaveBeenCalled();
     });
 
-    it("refuses the marker-clear patch on the row holding the managed sandbox slot", async () => {
-      // driver=sandbox + managedByPaperclip is THE provisioner-owned slot row
-      // — clearing its markers would reclassify it tenant-managed and let the
-      // next PATCH/DELETE bypass the write floor.
-      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+    it("refuses the marker-clear patch on the sandbox slot row while managed provisioning is configured", async () => {
+      // With a managed-config `environments` entry, driver=sandbox +
+      // managedByPaperclip is THE provisioner-owned slot row, adopted and
+      // refreshed on every boot — clearing its markers would reclassify it
+      // tenant-managed and let the next PATCH/DELETE bypass the write floor.
+      process.env.PAPERCLIP_MANAGED_CONFIG = MANAGED_CONFIG_WITH_SANDBOX_ENTRY;
+      try {
+        mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+        const app = createApp(ownerAdminActor);
+
+        const res = await request(app)
+          .patch("/api/environments/env-managed-1")
+          .send({ metadata: { managedByPaperclip: false, managedKubernetesSandbox: false } });
+
+        expect(res.status).toBe(403);
+        expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+        expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+      } finally {
+        delete process.env.PAPERCLIP_MANAGED_CONFIG;
+      }
+    });
+
+    it("refuses the marker-clear patch on the sandbox slot row under the forced kubernetes execution mode", async () => {
+      // PAPERCLIP_EXECUTION_MODE=kubernetes is the other bootstrap path that
+      // owns (adopts and refreshes) the single marked sandbox row.
+      process.env.PAPERCLIP_EXECUTION_MODE = "kubernetes";
+      try {
+        mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+        const app = createApp(ownerAdminActor);
+
+        const res = await request(app)
+          .patch("/api/environments/env-managed-1")
+          .send({ metadata: { managedByPaperclip: false, managedKubernetesSandbox: false } });
+
+        expect(res.status).toBe(403);
+        expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+        expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+      } finally {
+        delete process.env.PAPERCLIP_EXECUTION_MODE;
+      }
+    });
+
+    it("allows the marker-clear patch on a marked sandbox row when no provisioning path is configured", async () => {
+      // Without a managed-config `environments` entry or a forced execution
+      // mode, nothing on this instance provisions a sandbox environment, so a
+      // platform marker on a sandbox row can only be a stale leftover of the
+      // old unrestricted API — the recovery hatch must apply or the row is
+      // locked forever.
+      const staleRow = createPlatformSandboxEnvironment();
+      mockEnvironmentService.getById.mockResolvedValue(staleRow);
+      mockEnvironmentService.update.mockResolvedValue({ ...staleRow, metadata: {} });
       const app = createApp(ownerAdminActor);
 
       const res = await request(app)
         .patch("/api/environments/env-managed-1")
         .send({ metadata: { managedByPaperclip: false, managedKubernetesSandbox: false } });
 
-      expect(res.status).toBe(403);
-      expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
-      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(mockEnvironmentService.update).toHaveBeenCalled();
     });
 
     it("refuses the marker-clear patch on the managed local row", async () => {
+      // The local slot needs no configuration check: on a cloud-managed
+      // instance `ensureLocalEnvironment` adopts and stamps the single local
+      // row from every caller, so its markers are always live platform state.
       mockEnvironmentService.getById.mockResolvedValue({
         ...createPlatformSandboxEnvironment(),
         id: "env-local-1",

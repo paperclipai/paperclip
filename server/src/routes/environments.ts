@@ -16,7 +16,8 @@ import {
 } from "@paperclipai/shared";
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "../middleware/auth.js";
-import { SECRET_LIKE_CONFIG_KEY_PATTERN } from "../services/managed-config.js";
+import { getManagedInstanceConfig, SECRET_LIKE_CONFIG_KEY_PATTERN } from "../services/managed-config.js";
+import { parseExecutionPolicyBootstrapEnv } from "../services/execution-policy-bootstrap.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -114,22 +115,55 @@ const PLATFORM_PROVISIONED_MARKER_KEYS = [
 ] as const;
 
 /**
- * Whether this row currently occupies one of the provisioner-owned
- * environment slots. The platform owns at most one local row
- * (`environments_local_driver_idx`) and at most one managed sandbox row
- * (`environments_managed_sandbox_idx`), and `ensureLocalEnvironment` /
- * `ensureManagedSandboxEnvironment` adopt and refresh whichever row holds
- * the slot on every convergence cycle — so on a cloud-managed instance a
- * slot row's platform markers are live platform state by construction,
- * never a stale leftover.
+ * Whether some bootstrap path on this instance currently owns the managed
+ * sandbox slot: the managed-config `environments` section
+ * (`applyManagedEnvironments`) or the forced execution-mode bootstrap
+ * (`PAPERCLIP_EXECUTION_MODE=kubernetes`). Both adopt and refresh the
+ * marked sandbox row on every boot. Fails closed: an unparseable document
+ * or env value counts as configured, keeping the slot protected (a
+ * malformed value refuses startup anyway, so a running server never hits
+ * the catch).
+ */
+function isManagedSandboxProvisioningConfigured(): boolean {
+  try {
+    if ((getManagedInstanceConfig()?.environments.length ?? 0) > 0) return true;
+  } catch {
+    return true;
+  }
+  try {
+    return parseExecutionPolicyBootstrapEnv(process.env) !== null;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Whether this row occupies a provisioner-owned environment slot whose
+ * platform markers are LIVE state — i.e. some platform code path converges
+ * the markers on this exact row, so a marker here is never a stale
+ * leftover:
+ *
+ * - The single local row (`environments_local_driver_idx`): on a
+ *   cloud-managed instance `ensureLocalEnvironment` adopts and stamps it
+ *   from every caller (company creation, the heartbeat, run
+ *   orchestration), so the local slot is platform-owned unconditionally.
+ * - The single marked sandbox row (`environments_managed_sandbox_idx`):
+ *   owned only while a managed-sandbox bootstrap path is configured —
+ *   `ensureManagedSandboxEnvironment` then adopts and refreshes whichever
+ *   row holds the slot on every boot. With no such path configured the
+ *   platform holds no claim on any sandbox row, so a platform marker
+ *   there is stale by definition and stays recoverable via the
+ *   marker-clear escape hatch below.
  */
 function isPlatformSlotEnvironment(environment: {
   driver: string;
   metadata: Record<string, unknown> | null;
 }): boolean {
+  if (environment.driver === "local") return true;
   return (
-    environment.driver === "local" ||
-    (environment.driver === "sandbox" && environment.metadata?.managedByPaperclip === true)
+    environment.driver === "sandbox" &&
+    environment.metadata?.managedByPaperclip === true &&
+    isManagedSandboxProvisioningConfigured()
   );
 }
 
@@ -138,8 +172,8 @@ function isPlatformSlotEnvironment(environment: {
  * purpose is to clear platform markers (setting them to null/false). This is
  * the escape hatch for rows that had these markers stamped through the old
  * unrestricted API before the floor was introduced. It never applies to a
- * row that holds a provisioner-owned slot (see `isPlatformSlotEnvironment`)
- * — clearing a live slot row's markers would reclassify it as
+ * row whose slot markers are live (see `isPlatformSlotEnvironment`) —
+ * clearing a live slot row's markers would reclassify it as
  * tenant-managed and lift the write floor in two steps.
  */
 function isPlatformMarkerClearOnlyPatch(body: unknown): boolean {
@@ -165,10 +199,11 @@ function isPlatformMarkerClearOnlyPatch(body: unknown): boolean {
  *
  * Exception: a metadata-only patch that only clears the marker keys is
  * allowed so tenants can recover rows stamped with stale markers by the old
- * unrestricted API — but only for rows OUTSIDE the provisioner-owned slots.
- * A slot row (the single local row, or the single managed sandbox row) is
- * live platform state, and clearing its markers would let the very next
- * write reclassify it as tenant-managed and bypass this floor.
+ * unrestricted API — for every row except those whose markers are live
+ * platform state (see `isPlatformSlotEnvironment`): there, clearing the
+ * markers would let the very next write reclassify the row as
+ * tenant-managed and bypass this floor. Every marker outside a live slot
+ * is stale by construction, so no row is ever locked unrecoverably.
  */
 function assertPlatformProvisionedEnvironmentWritable(
   environment: { driver: string; metadata: Record<string, unknown> | null },

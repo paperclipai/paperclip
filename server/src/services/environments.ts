@@ -28,6 +28,7 @@ import {
   type UpdateEnvironment,
 } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
+import { isCloudManagedInstance } from "../middleware/auth.js";
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
@@ -403,6 +404,21 @@ export function environmentService(db: Db) {
       return row ? toEnvironmentLease(row) : null;
     },
 
+    /**
+     * Idempotently ensure THE local-driver environment row; the partial
+     * unique index `environments_local_driver_idx` enforces at most one per
+     * instance.
+     *
+     * On a cloud-managed instance an existing row is additionally ADOPTED —
+     * stamped `managedByPaperclip: true` (other metadata preserved) — so the
+     * single local slot is platform-owned there by construction, mirroring
+     * `ensureManagedSandboxEnvironment`'s adoption of the sandbox slot. This
+     * is what lets the environment-routes write floor treat a local row's
+     * platform markers as live state rather than a stale leftover: every
+     * caller (company creation, the heartbeat, run orchestration) converges
+     * the marker. Self-hosted instances keep the historical behavior:
+     * an existing row is returned untouched.
+     */
     ensureLocalEnvironment: async (_companyId?: string): Promise<Environment> => {
       const now = new Date();
       const insert = () =>
@@ -443,6 +459,19 @@ export function environmentService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!existing) {
         throw new Error("Failed to ensure local environment");
+      }
+      const existingMetadata = (existing.metadata ?? {}) as Record<string, unknown>;
+      if (isCloudManagedInstance() && existingMetadata.managedByPaperclip !== true) {
+        const adopted = await db
+          .update(environments)
+          .set({
+            metadata: { ...existingMetadata, managedByPaperclip: true },
+            updatedAt: new Date(),
+          })
+          .where(eq(environments.id, existing.id))
+          .returning()
+          .then((rows) => rows[0] ?? existing);
+        return toEnvironment(adopted);
       }
       return toEnvironment(existing);
     },
