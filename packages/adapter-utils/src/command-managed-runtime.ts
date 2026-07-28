@@ -350,6 +350,7 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(command),
         cwd: input.commandCwd,
         timeoutMs: options.timeoutMs,
+        noProfile: options.noProfile === true,
       });
       requireSuccessfulResult(result, command);
     },
@@ -389,7 +390,7 @@ export function createCommandManagedRuntimeClient(input: {
               await client.writeFile(remoteTarPath, bufferToArrayBuffer(tarBytes));
               await client.run(
                 buildSyncInExtractDirectoryCommand({ remoteTarPath, targetDir: mapping.targetPath }),
-                { timeoutMs: input.timeoutMs },
+                { timeoutMs: input.timeoutMs, noProfile: true },
               );
               bytesTransferred += tarBytes.byteLength;
             } else {
@@ -402,11 +403,11 @@ export function createCommandManagedRuntimeClient(input: {
               if (mapping.mode != null) {
                 await client.run(
                   buildSyncInChmodCommand({ mode: mapping.mode, targetPath: targetPathForWrite }),
-                  { timeoutMs: input.timeoutMs },
+                  { timeoutMs: input.timeoutMs, noProfile: true },
                 );
                 await client.run(
                   buildSyncInRenameCommand({ sourcePath: targetPathForWrite, targetPath: mapping.targetPath }),
-                  { timeoutMs: input.timeoutMs },
+                  { timeoutMs: input.timeoutMs, noProfile: true },
                 );
               }
               bytesTransferred += fileBytes.byteLength;

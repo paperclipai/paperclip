@@ -588,6 +588,15 @@ describe("command managed runtime", () => {
     expect(untarIdx).toBeGreaterThan(uploadIdx);
     expect(cmd1Idx).toBeGreaterThan(untarIdx);
     expect(cmd2Idx).toBeGreaterThan(cmd1Idx);
+
+    // Fast path: the fixed internal transport helpers (tar upload + untar) ride
+    // the no-profile shell — they are trusted, fixed commands that never need a
+    // login-shell profile. The opaque post-upload commands stay profile-backed
+    // (noProfile !== true) so any env a caller-supplied command relies on is present.
+    expect(calls[uploadIdx]?.noProfile).toBe(true);
+    expect(calls[untarIdx]?.noProfile).toBe(true);
+    expect(calls[cmd1Idx]?.noProfile).not.toBe(true);
+    expect(calls[cmd2Idx]?.noProfile).not.toBe(true);
   });
 
   it("fallback syncIn stages mode-constrained files before chmod and rename", async () => {
@@ -621,6 +630,11 @@ describe("command managed runtime", () => {
     expect(scripts[3]).toContain(targetFile);
     expect(scripts[4]).toContain("rm -rf");
     expect(scripts[4]).toContain(targetFile + ".paperclip-syncin.");
+
+    // Fast path: the staged-write helpers (chmod + rename) are fixed internal
+    // commands, so they ride the no-profile shell alongside the upload/staging.
+    expect(calls[2]?.noProfile).toBe(true); // chmod
+    expect(calls[3]?.noProfile).toBe(true); // mv (rename into place)
   });
 
   it("fallback syncIn cleans up a staged file when chmod fails before rename", async () => {
