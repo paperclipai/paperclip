@@ -946,6 +946,21 @@ export async function startServer(): Promise<StartedServer> {
       );
     } else {
       const startupHeartbeatRecovery = (async () => {
+        try {
+          const hotRestartAdoption = await heartbeat.reconcileHotRestartAdoption();
+          if (
+            hotRestartAdoption.mode !== "not_requested" &&
+            hotRestartAdoption.mode !== "reported"
+          ) {
+            logger.warn(
+              { ...hotRestartAdoption },
+              "startup hot-restart adoption reconciliation did not complete cleanly",
+            );
+          }
+        } catch (err) {
+          logger.error({ err }, "startup hot-restart adoption reconciliation failed - continuing with orphan reaper");
+        }
+
         for (let attempt = 1; attempt <= 2; attempt++) {
           try {
             const result = await heartbeat.reapOrphanedRuns();

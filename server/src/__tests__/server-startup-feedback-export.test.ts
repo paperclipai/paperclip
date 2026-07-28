@@ -357,6 +357,26 @@ describe("startServer feedback export wiring", () => {
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
   });
 
+  it("reconciles hot-restart adoption before startup orphan reaping", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    const callOrder: string[] = [];
+    heartbeatServiceMock.reconcileHotRestartAdoption.mockImplementationOnce(async () => {
+      callOrder.push("adopt");
+      return { mode: "reported" as const, adoptedRunIds: [], finalizedWhileDownRunIds: [], lostRunIds: [], skippedRunIds: [] };
+    });
+    heartbeatServiceMock.reapOrphanedRuns.mockImplementationOnce(async () => {
+      callOrder.push("reap");
+      return { reaped: 0, runIds: [] };
+    });
+
+    await startServer();
+
+    expect(callOrder).toEqual(["adopt", "reap"]);
+  });
+
   it("refuses authenticated public startup without an external database URL", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       deploymentExposure: "public",
