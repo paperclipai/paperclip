@@ -1190,13 +1190,20 @@ describeEmbeddedPostgres("productivity review service", () => {
       // Ownership moves from the manager to the assignee, whose only loose end is the report.
       expect(review?.assigneeAgentId).toBe(seeded.coderId);
 
+      // Intent before the review is touched, confirmation after the wake — the pair is what makes
+      // a crash in between recoverable.
       const activity = await db
         .select()
         .from(activityLog)
         .where(eq(activityLog.action, "issue.productivity_review_updated"));
-      expect(activity).toHaveLength(1);
-      expect((activity[0]?.details as Record<string, unknown>)?.reclassifiedFrom).toBe("stall");
-      expect((activity[0]?.details as Record<string, unknown>)?.previousAssigneeAgentId).toBe(seeded.managerId);
+      expect(activity).toHaveLength(2);
+      expect(activity.map((row) => (row.details as Record<string, unknown>)?.wakeDelivered).sort())
+        .toEqual([false, true]);
+      const confirmed = activity
+        .find((row) => (row.details as Record<string, unknown>)?.wakeDelivered === true)
+        ?.details as Record<string, unknown>;
+      expect(confirmed?.reclassifiedFrom).toBe("stall");
+      expect(confirmed?.previousAssigneeAgentId).toBe(seeded.managerId);
     });
 
     // The wake is about the instruction changing, not about ownership moving. A review that was
@@ -1315,6 +1322,57 @@ describeEmbeddedPostgres("productivity review service", () => {
       expect(afterRetry?.description).toContain("Classification: `unreported_completion`");
       expect(afterRetry?.assigneeAgentId).toBe(seeded.coderId);
       expect(wakes).toEqual([seeded.coderId]);
+    });
+
+    // A crash between the review update and the wake cannot be caught, so it has to be recoverable:
+    // the review already reads `unreported_completion`, and the stall check alone would never retry.
+    it("re-wakes a reclassification whose wake was never confirmed", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const emptyRepo = createEmptyRepoPath();
+      const { repoPath } = createRepoWithCommit({
+        subject: "feat(aur1370): deliverable landed",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+      const wakes: string[] = [];
+      const service = (dir: string) =>
+        productivityReviewService(db, {
+          resolveAgentWorkspaceDir: () => dir,
+          enqueueWakeup: (async (agentId: string) => {
+            wakes.push(agentId);
+            return { id: "wake" };
+          }) as never,
+        });
+
+      await service(emptyRepo).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+      const [review] = await listProductivityReviews(seeded.companyId);
+
+      // Exactly the state a crash leaves behind: the review reclassified, the intent recorded, no
+      // confirmation, and no wake ever delivered.
+      await db.update(issues).set({
+        title: "Report and close finished work on AUR-1370",
+        description: "- Classification: `unreported_completion`",
+        assigneeAgentId: seeded.coderId,
+      }).where(eq(issues.id, review!.id));
+      await db.insert(activityLog).values({
+        companyId: seeded.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_updated",
+        entityType: "issue",
+        entityId: review!.id,
+        details: { reclassifiedFrom: "stall", wakeDelivered: false },
+      });
+      wakes.length = 0;
+
+      await service(repoPath).reconcileProductivityReviews({
+        now: new Date(now.getTime() + 60_000),
+        companyId: seeded.companyId,
+      });
+
+      expect(wakes).toEqual([seeded.coderId]);
+      const [recovered] = await listProductivityReviews(seeded.companyId);
+      expect(recovered?.description).toContain("Classification: `unreported_completion`");
+      expect(recovered?.assigneeAgentId).toBe(seeded.coderId);
     });
 
     // The transition lookup must not be capped: with a bounded "newest N status changes" list, a

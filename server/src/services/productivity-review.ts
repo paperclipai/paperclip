@@ -863,6 +863,32 @@ export function productivityReviewService(
   }
 
   /**
+   * Whether a reclassification was recorded for this review without a confirmed wake.
+   *
+   * The rollback below covers a wake that fails while the process is alive. It cannot cover the
+   * process dying between the review update and the wake — and after that the review reads
+   * `unreported_completion`, so the stall-based retry can never match again and the finished work
+   * stays assigned to an agent nobody triggered. So the intent is recorded *before* the review is
+   * touched and confirmed *after* the wake: a newest marker that is not `wakeDelivered` means the
+   * reclassification is unfinished, whatever killed it.
+   */
+  async function reclassificationWakeOutstanding(companyId: string, reviewIssueId: string) {
+    const marker = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "issue.productivity_review_updated"),
+        eq(activityLog.entityId, reviewIssueId),
+        sql`jsonb_exists(${activityLog.details}, 'wakeDelivered')`,
+      ))
+      .orderBy(desc(activityLog.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(marker) && (marker!.details as Record<string, unknown>)?.wakeDelivered !== true;
+  }
+
+  /**
    * Rewrite an open stall review into an unreported completion: new title and body (so the
    * reassign/decompose menu is replaced by "report and close"), reassigned from the manager to the
    * source assignee, and the assignee woken — the same shape the review would have had if the
@@ -879,27 +905,8 @@ export function productivityReviewService(
       evidence.classification,
     );
     const sourceLabel = evidence.sourceIssue.identifier ?? evidence.sourceIssue.title;
-    await db
-      .update(issues)
-      .set({
-        title: `Report and close finished work on ${sourceLabel}`,
-        description: buildReviewMarkdown(evidence, opts.prefix),
-        priority: "medium",
-        ...(ownerAgentId ? { assigneeAgentId: ownerAgentId } : {}),
-        updatedAt: evidence.generatedAt,
-      })
-      .where(eq(issues.id, existing.id));
-    await addRefreshComment(
-      existing.id,
-      [
-        "Reclassified from `stall` to `unreported_completion`.",
-        "",
-        "The work-trace counter-check found completion evidence that did not exist when this review was written, so the decision menu above no longer applies — reassigning or decomposing would rebuild work that already exists.",
-        "",
-        buildRefreshComment(evidence, opts.prefix),
-      ].join("\n"),
-      evidence.generatedAt,
-    );
+    // Intent first, so a crash anywhere after this leaves a marker that says the reclassification
+    // never finished. `wakeDelivered: false` is what the retry above keys on.
     await logActivity(db, {
       companyId: evidence.sourceIssue.companyId,
       actorType: "system",
@@ -911,18 +918,34 @@ export function productivityReviewService(
       details: {
         source: "productivity_review.reconcile",
         sourceIssueId: evidence.sourceIssue.id,
-        trigger: evidence.trigger,
         classification: evidence.classification,
         reclassifiedFrom: "stall",
-        previousAssigneeAgentId: existing.assigneeAgentId,
-        workTraceCommitCount: evidence.workTrace.commits.length,
-        workTraceArtifactCount: evidence.workTrace.artifacts.length,
-        workTraceCompletionArtifactCount: completionArtifacts(evidence.workTrace).length,
-        noCommentStreak: evidence.noCommentStreak,
-        runCountLastHour: evidence.runCountLastHour,
-        commentCountLastHour: evidence.commentCountLastHour,
+        wakeDelivered: false,
       },
     });
+    await db
+      .update(issues)
+      .set({
+        title: `Report and close finished work on ${sourceLabel}`,
+        description: buildReviewMarkdown(evidence, opts.prefix),
+        priority: "medium",
+        ...(ownerAgentId ? { assigneeAgentId: ownerAgentId } : {}),
+        updatedAt: evidence.generatedAt,
+      })
+      .where(eq(issues.id, existing.id));
+    if (readReviewClassification(existing) === "stall") {
+      await addRefreshComment(
+        existing.id,
+        [
+            "Reclassified from `stall` to `unreported_completion`.",
+          "",
+          "The work-trace counter-check found completion evidence that did not exist when this review was written, so the decision menu above no longer applies — reassigning or decomposing would rebuild work that already exists.",
+          "",
+          buildRefreshComment(evidence, opts.prefix),
+        ].join("\n"),
+        evidence.generatedAt,
+      );
+    }
     // Wake on every reclassification, not only when ownership moved. What changed is the
     // *instruction* — from "decide what to do about a stall" to "report and close finished work" —
     // and an owner who was already assigned has no other trigger to act on it.
@@ -1014,6 +1037,32 @@ export function productivityReviewService(
       });
       return { kind: "existing" as const, reviewIssueId: existing.id };
     }
+    // Delivery confirmed. This row is what `reclassificationWakeOutstanding` reads: until it
+    // exists, the intent row above still marks the reclassification unfinished.
+    await logActivity(db, {
+      companyId: evidence.sourceIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.productivity_review_updated",
+      entityType: "issue",
+      entityId: existing.id,
+      agentId: ownerAgentId ?? existing.assigneeAgentId,
+      details: {
+        source: "productivity_review.reconcile",
+        sourceIssueId: evidence.sourceIssue.id,
+        trigger: evidence.trigger,
+        classification: evidence.classification,
+        reclassifiedFrom: "stall",
+        previousAssigneeAgentId: existing.assigneeAgentId,
+        wakeDelivered: true,
+        workTraceCommitCount: evidence.workTrace.commits.length,
+        workTraceArtifactCount: evidence.workTrace.artifacts.length,
+        workTraceCompletionArtifactCount: completionArtifacts(evidence.workTrace).length,
+        noCommentStreak: evidence.noCommentStreak,
+        runCountLastHour: evidence.runCountLastHour,
+        commentCountLastHour: evidence.commentCountLastHour,
+      },
+    });
     return { kind: "updated" as const, reviewIssueId: existing.id };
   }
 
@@ -1034,7 +1083,14 @@ export function productivityReviewService(
       // call belongs to a human reading the refresh comment.
       if (
         evidence.classification === "unreported_completion" &&
-        readReviewClassification(existing) === "stall"
+        (
+          readReviewClassification(existing) === "stall" ||
+          // Already reclassified, but the wake never got confirmed — a crash between the review
+          // update and the wake leaves exactly this state, and the stall check alone would never
+          // retry it. Re-running is idempotent: the review is rewritten to what it already says
+          // and the assignee finally gets the trigger.
+          await reclassificationWakeOutstanding(evidence.sourceIssue.companyId, existing.id)
+        )
       ) {
         return await reclassifyReviewAsUnreportedCompletion(existing, evidence, opts);
       }
