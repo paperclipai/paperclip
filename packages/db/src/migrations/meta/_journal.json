@@ -820,6 +820,20 @@
       "when": 1783936800000,
       "tag": "0116_retire_terminal_issue_interactions",
       "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "7",
+      "when": 1785240000000,
+      "tag": "0117_issue_image_generation_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1785240060000,
+      "tag": "0118_issue_image_generation_job_claim_fencing",
+      "breakpoints": true
     }
   ]
 }
