@@ -245,23 +245,40 @@ function isWakeAssigneeContinuationPolicy(continuationPolicy: string): boolean {
 }
 
 /**
+ * Whether a resolution would actually queue a continuation wakeup.
+ *
+ * Deliberately a mirror of the guard in `queueResolvedInteractionContinuationWakeup`
+ * (`server/src/routes/issues.ts`) — the handoff below exists solely to give that
+ * wakeup a live target, so the two have to agree on which resolutions get one.
+ * Where they disagree the handoff is actively harmful: it takes the issue off the
+ * person holding it and parks it on an agent nobody will wake, which is the same
+ * dead path the handoff was written to close, just moved one step later.
+ */
+function wouldQueueResolvedContinuationWakeup(continuationPolicy: string, resolvedStatus: string): boolean {
+  if (!isWakeAssigneeContinuationPolicy(continuationPolicy)) return false;
+  if (continuationPolicy === "wake_assignee_on_accept" && resolvedStatus !== "accepted") return false;
+  if (resolvedStatus === "expired") return false;
+  return true;
+}
+
+/**
  * Which resolutions can hand a user-assigned issue back to the agent that created
  * the interaction.
  *
- * `request_confirmation`-like kinds always qualify: the creating agent is blocked
- * on the verdict by construction, so an accept is a continuation whatever policy
- * was declared.
- *
- * `ask_user_questions` and `suggest_tasks` only qualify behind a `wake_assignee*`
- * policy. Both can legitimately be posted without any intent to resume — an
- * informational question, a task list the board owns — and taking the issue away
- * from its human owner for a continuation nobody asked for would be worse than
- * the stall this handoff exists to prevent.
+ * Restricted to the kinds a person resolves on the agent's behalf, and beyond that
+ * gated purely on whether a continuation wakeup would fire. All three kinds can
+ * legitimately be posted without any intent to resume — an informational question,
+ * a task list the board owns, a confirmation logged for the record — and taking the
+ * issue away from its human owner for a continuation nobody asked for would be
+ * worse than the stall this handoff exists to prevent.
  */
-function isCreatorHandoffOnResolveKind(kind: string, continuationPolicy: string): boolean {
-  if (isRequestConfirmationLikeKind(kind)) return true;
-  if (kind !== "ask_user_questions" && kind !== "suggest_tasks") return false;
-  return isWakeAssigneeContinuationPolicy(continuationPolicy);
+function isCreatorHandoffOnResolveKind(kind: string, continuationPolicy: string, resolvedStatus: string): boolean {
+  if (
+    !isRequestConfirmationLikeKind(kind)
+    && kind !== "ask_user_questions"
+    && kind !== "suggest_tasks"
+  ) return false;
+  return wouldQueueResolvedContinuationWakeup(continuationPolicy, resolvedStatus);
 }
 
 /**
@@ -280,8 +297,13 @@ function shouldReturnResolvedInteractionToCreatorAgent(args: {
   issue: IssueResolutionContext;
   current: IssueThreadInteractionRow;
   actor: InteractionActor;
+  resolvedStatus: string;
 }) {
-  if (!isCreatorHandoffOnResolveKind(args.current.kind, args.current.continuationPolicy)) return false;
+  if (!isCreatorHandoffOnResolveKind(
+    args.current.kind,
+    args.current.continuationPolicy,
+    args.resolvedStatus,
+  )) return false;
   if (!args.current.createdByAgentId) return false;
   if (!args.actor.userId) return false;
   if (!args.issue.assigneeUserId) return false;
@@ -1028,6 +1050,13 @@ export function issueThreadInteractionService(db: Db) {
       issue: { id: string; companyId: string };
       current: IssueThreadInteractionRow;
       actor: InteractionActor;
+      /**
+       * The status the interaction is being resolved *to*. Passed explicitly rather
+       * than read off `current`: callers run this inside the same transaction as the
+       * row update, and some of them only copy the new status onto `current` after
+       * the handoff has already had to decide.
+       */
+      resolvedStatus: string;
     },
   ): Promise<IssueWakeTarget | null> {
     const issueContext = await tx
@@ -1050,6 +1079,7 @@ export function issueThreadInteractionService(db: Db) {
       issue: issueContext,
       current: args.current,
       actor: args.actor,
+      resolvedStatus: args.resolvedStatus,
     })) {
       return null;
     }
@@ -1223,6 +1253,7 @@ export function issueThreadInteractionService(db: Db) {
         issue: args.issue,
         current: args.current,
         actor: args.actor,
+        resolvedStatus: "accepted",
       });
       if (!continuationIssue) {
         await touchIssue(tx, args.issue.id);
@@ -1617,6 +1648,7 @@ export function issueThreadInteractionService(db: Db) {
           issue,
           current,
           actor,
+          resolvedStatus: "accepted",
         });
         if (!continuationIssue) {
           await touchIssue(tx, issue.id);
@@ -2279,6 +2311,7 @@ export function issueThreadInteractionService(db: Db) {
           issue,
           current,
           actor,
+          resolvedStatus: "answered",
         });
         if (!continuationIssue) {
           await touchIssue(tx, issue.id);
