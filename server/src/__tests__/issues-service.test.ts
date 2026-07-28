@@ -45,6 +45,7 @@ import { projectService } from "../services/projects.ts";
 import {
   isMultiProjectWorkspaceSyncEnabled,
   MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS,
+  MAX_RUN_REFERENCED_CANDIDATE_EVALUATIONS,
   MULTI_PROJECT_WORKSPACE_SYNC_ENV,
   resolveRunReferencedProjects,
   type ResolveRunReferencedProjectsOptions,
@@ -5245,6 +5246,122 @@ describeEmbeddedPostgres("resolveRunReferencedProjects", () => {
     expect(result.warnings[0]).toContain("not authorized");
     // The cap was satisfied by admitted projects, so no overflow warning is emitted.
     expect(result.warnings.some((warning) => warning.includes("Only the first"))).toBe(false);
+  });
+
+  it("bounds authorization fan-out when a same-company mention flood is denied", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorProjectId = randomUUID();
+    // A flood of same-company mentions that every fail authorization. Without a fan-out cap this
+    // would authorize all eight candidates because the admitted cap is never reached.
+    const deniedProjectIds = Array.from({ length: 8 }, () => randomUUID());
+
+    await seedCompany(companyId);
+    await db.insert(projects).values([
+      { id: anchorProjectId, companyId, name: "Anchor", status: "in_progress" },
+      ...deniedProjectIds.map((id, index) => ({
+        id,
+        companyId,
+        name: `Denied ${index}`,
+        status: "in_progress" as const,
+      })),
+    ]);
+    await seedIssueWithMentions({ companyId, issueId, anchorProjectId, mentionedProjectIds: deniedProjectIds });
+
+    const { decidedProjectIds, access } = recordingAccess(() => decision(false));
+    const result = await resolveRunReferencedProjects(
+      issueId,
+      anchorProjectId,
+      baseOpts(companyId, access, { maxAdditionalProjects: 2, maxCandidateEvaluations: 3 }),
+    );
+
+    // No project is admitted (all denied), but only the first three candidates are ever authorized —
+    // the remaining five are dropped before any authorization decision is made.
+    expect(result.additional).toEqual([]);
+    expect(decidedProjectIds).toEqual(deniedProjectIds.slice(0, 3));
+    expect(decidedProjectIds).toHaveLength(3);
+    // Each dropped-but-evaluated candidate warns it was unauthorized; the tail warns it was skipped
+    // without evaluation.
+    expect(result.warnings.some((warning) => warning.includes("were evaluated for this run"))).toBe(true);
+    expect(
+      result.warnings.some(
+        (warning) => warning.includes("Only the first 3") && warning.includes("5 additional"),
+      ),
+    ).toBe(true);
+  });
+
+  it("still admits authorized candidates inside the evaluation window under a flood", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorProjectId = randomUUID();
+    const allowedProjectId = randomUUID();
+    // The single authorized project sits ahead of a flood of denied mentions and inside the window.
+    const deniedProjectIds = Array.from({ length: 5 }, () => randomUUID());
+    const mentionedProjectIds = [allowedProjectId, ...deniedProjectIds];
+
+    await seedCompany(companyId);
+    await db.insert(projects).values([
+      { id: anchorProjectId, companyId, name: "Anchor", status: "in_progress" },
+      { id: allowedProjectId, companyId, name: "Allowed", status: "in_progress" },
+      ...deniedProjectIds.map((id, index) => ({
+        id,
+        companyId,
+        name: `Denied ${index}`,
+        status: "in_progress" as const,
+      })),
+    ]);
+    await seedIssueWithMentions({ companyId, issueId, anchorProjectId, mentionedProjectIds });
+
+    const { decidedProjectIds, access } = recordingAccess((projectId) =>
+      decision(projectId === allowedProjectId),
+    );
+    const result = await resolveRunReferencedProjects(
+      issueId,
+      anchorProjectId,
+      baseOpts(companyId, access, { maxAdditionalProjects: 2, maxCandidateEvaluations: 3 }),
+    );
+
+    // The authorized project is admitted; only the first three candidates are ever authorized.
+    expect(result.additional.map((entry) => entry.projectId)).toEqual([allowedProjectId]);
+    expect(decidedProjectIds).toEqual(mentionedProjectIds.slice(0, 3));
+    expect(result.warnings.some((warning) => warning.includes("were evaluated for this run"))).toBe(true);
+  });
+
+  it("floors the evaluation cap at the admitted cap so the admitted cap stays reachable", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorProjectId = randomUUID();
+    const allowedProjectIds = [randomUUID(), randomUUID()];
+
+    await seedCompany(companyId);
+    await db.insert(projects).values([
+      { id: anchorProjectId, companyId, name: "Anchor", status: "in_progress" },
+      ...allowedProjectIds.map((id, index) => ({
+        id,
+        companyId,
+        name: `Allowed ${index}`,
+        status: "in_progress" as const,
+      })),
+    ]);
+    await seedIssueWithMentions({ companyId, issueId, anchorProjectId, mentionedProjectIds: allowedProjectIds });
+
+    const { decidedProjectIds, access } = recordingAccess(() => decision(true));
+    // An evaluation cap below the admitted cap must not starve the admitted cap.
+    const result = await resolveRunReferencedProjects(
+      issueId,
+      anchorProjectId,
+      baseOpts(companyId, access, { maxAdditionalProjects: 2, maxCandidateEvaluations: 0 }),
+    );
+
+    expect(result.additional.map((entry) => entry.projectId)).toEqual(allowedProjectIds);
+    expect(decidedProjectIds).toEqual(allowedProjectIds);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("defaults the evaluation cap at or above the admitted cap", () => {
+    expect(MAX_RUN_REFERENCED_CANDIDATE_EVALUATIONS).toBeGreaterThanOrEqual(
+      MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS,
+    );
   });
 });
 
