@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import { readFile } from "node:fs/promises";
 import type { Command } from "commander";
 import { getStoredBoardCredential, loginBoardCli } from "../../client/board-auth.js";
 import { buildCliCommandLabel } from "../../client/command-label.js";
@@ -130,6 +131,29 @@ export function apiPath(strings: TemplateStringsArray, ...values: Array<string |
     path += `${encodeURIComponent(String(value))}${strings[index + 1] ?? ""}`;
   });
   return path;
+}
+
+const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * Read a user-content file (comment/document/skill bodies) and refuse anything
+ * that is not valid UTF-8. Decoding invalid bytes leniently would silently turn
+ * every non-ASCII character into U+FFFD before upload, corrupting the stored
+ * text permanently. The most common source is Windows PowerShell 5.1, whose
+ * Set-Content/Out-File default to legacy ANSI code pages.
+ */
+export async function readUtf8ContentFile(filePath: string): Promise<string> {
+  const raw = await readFile(filePath);
+  try {
+    return strictUtf8Decoder.decode(raw);
+  } catch {
+    throw new Error(
+      `${filePath} is not valid UTF-8. If the file was written on Windows, ` +
+        `PowerShell 5.1's Set-Content/Out-File default to a legacy ANSI code page; ` +
+        `re-save it as UTF-8 (e.g. "Set-Content -Encoding utf8") and retry. ` +
+        `Refusing to upload it so non-ASCII characters are not permanently replaced with �.`,
+    );
+  }
 }
 
 export function inferContentTypeFromPath(filePath: string): string | undefined {

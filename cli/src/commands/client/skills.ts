@@ -13,7 +13,6 @@ import type {
   CompanySkillProjectScanResult,
   CompanySkillUpdateStatus,
 } from "@paperclipai/shared";
-import { readFile } from "node:fs/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import {
@@ -21,6 +20,7 @@ import {
   formatInlineRecord,
   handleCommandError,
   printOutput,
+  readUtf8ContentFile,
   resolveCommandContext,
   type BaseClientOptions,
   type ResolvedClientContext,
@@ -988,7 +988,7 @@ async function readBodyFile(filePath: string): Promise<string> {
   if (filePath === "-") {
     return readStdin();
   }
-  return readFile(filePath, "utf8");
+  return readUtf8ContentFile(filePath);
 }
 
 async function readStdin(): Promise<string> {
