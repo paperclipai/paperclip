@@ -21,7 +21,7 @@ import {
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
-import { listAdapterModels } from "../adapters/registry.js";
+import { listAdapterModelProfiles, listAdapterModels } from "../adapters/registry.js";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -865,10 +865,36 @@ export function builtInAgentService(db: Db) {
   async function defaultProvisionInput(companyId: string, definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput) {
     if (input.adapterType || input.adapterConfig) return input;
     if (definition.defaultAdapterType || definition.defaultAdapterConfig) {
+      const adapterType = definition.defaultAdapterType;
+      let adapterConfig = definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined;
+      const configuredModel =
+        adapterConfig && typeof adapterConfig.model === "string"
+          ? adapterConfig.model.trim()
+          : "";
+      if (adapterType && configuredModel) {
+        const availableModels = await listAdapterModels(adapterType);
+        if (
+          availableModels.length > 0
+          && !availableModels.some((model) => model.id === configuredModel)
+        ) {
+          const cheapProfile = (await listAdapterModelProfiles(adapterType))
+            .find((profile) => profile.key === "cheap");
+          const fallbackModel =
+            cheapProfile && typeof cheapProfile.adapterConfig.model === "string"
+              ? cheapProfile.adapterConfig.model.trim()
+              : "";
+          if (fallbackModel && availableModels.some((model) => model.id === fallbackModel)) {
+            adapterConfig = {
+              ...adapterConfig,
+              model: fallbackModel,
+            };
+          }
+        }
+      }
       return {
         ...input,
-        adapterType: definition.defaultAdapterType,
-        adapterConfig: definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined,
+        adapterType,
+        adapterConfig,
       };
     }
     if (!definition.bundle) return input;
@@ -1664,7 +1690,6 @@ export function builtInAgentService(db: Db) {
     if (!company.requireBoardApprovalForNewAgents) {
       return { state: await ensure(companyId, key, input), approval: null };
     }
-    await assertKnownBuiltInAgentModel(definition, input);
 
     const existing = await findSingleAgent(companyId, definition);
     if (existing) {
@@ -1684,6 +1709,9 @@ export function builtInAgentService(db: Db) {
       }
 
       const providesAdapterSetup = input.adapterType !== undefined || input.adapterConfig !== undefined;
+      if (providesAdapterSetup) {
+        await assertKnownBuiltInAgentModel(definition, input);
+      }
 
       // A built-in row that has never completed adapter setup (incomplete
       // config, i.e. `needs_setup`) is still first-time configuration, not a
@@ -1710,11 +1738,13 @@ export function builtInAgentService(db: Db) {
       return { state: await state(definition, existing), approval: null };
     }
 
+    const resolvedInput = await defaultProvisionInput(companyId, definition, input);
+    await assertKnownBuiltInAgentModel(definition, resolvedInput);
     const reportsTo = definition.defaultManager === "single_root_agent"
       ? await findSingleRootManager(companyId)
       : null;
     const pending = await agentSvc.create(companyId, {
-      ...definitionPatch(definition, input),
+      ...definitionPatch(definition, resolvedInput),
       status: "pending_approval",
       reportsTo,
       metadata: builtInMetadata(definition),

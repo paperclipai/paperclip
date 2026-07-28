@@ -5,7 +5,12 @@ import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local"
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
-import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
+import {
+  listAdapterModelProfiles,
+  listAdapterModels,
+  listServerAdapters,
+  refreshAdapterModels,
+} from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
@@ -23,6 +28,8 @@ describe("adapter model listing", () => {
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.AWS_REGION;
+    delete process.env.AWS_DEFAULT_REGION;
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     resetClaudeModelsCacheForTests();
     resetCodexModelsCacheForTests();
@@ -67,6 +74,20 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "claude-fable-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-mythos-5")).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("uses a region-qualified Bedrock model for the cheap Claude profile", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "eu-west-1";
+
+    const profiles = await listAdapterModelProfiles("claude_local");
+
+    expect(profiles).toContainEqual(expect.objectContaining({
+      key: "cheap",
+      adapterConfig: expect.objectContaining({
+        model: expect.stringMatching(/^(?:eu|us|ap)\.anthropic\.claude-haiku-4-5-20251001-v1:0$/),
+      }),
+    }));
   });
 
   it("loads claude models dynamically and merges fallback options", async () => {
