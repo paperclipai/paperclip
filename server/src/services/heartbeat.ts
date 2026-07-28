@@ -2143,17 +2143,18 @@ export function isMultiProjectWorkspaceSyncEnabled(
 export const MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS = 10;
 
 /**
- * Upper bound on how many mentioned candidate projects a single run will *evaluate*
- * (hydrate + authorize) before the admitted-project cap is applied.
+ * Upper bound on how many *available* (same-company, hydrated) candidate projects a single run will
+ * *authorize* before the admitted-project cap is applied.
  *
  * This is a fan-out guard distinct from {@link MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS}:
  * the admitted cap counts only projects that were successfully authorized, so on its own it
  * does not bound how many `project:read` decisions a run performs — an adversarial same-company
  * mention flood in which every candidate is denied would authorize every candidate before the
- * admitted cap is ever reached. This limit caps the total candidate hydration and authorization
- * work regardless of how many candidates are admitted, so denied mentions cannot force unbounded
- * authorization decisions. It is always at least the admitted cap so the admitted cap remains
- * reachable in the normal (non-flood) case.
+ * admitted cap is ever reached. This limit caps the number of authorization decisions regardless of
+ * how many candidates are admitted, so denied mentions cannot force unbounded authorization work.
+ * Only available candidates count against it — unavailable mentions are filtered by the company-scoped
+ * hydration first and never consume an evaluation slot. It is always at least the admitted cap so the
+ * admitted cap remains reachable in the normal (non-flood) case.
  */
 export const MAX_RUN_REFERENCED_CANDIDATE_EVALUATIONS = 50;
 
@@ -2185,9 +2186,9 @@ export interface ResolveRunReferencedProjectsOptions {
   /** Override the additional-project cap (defaults to {@link MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS}). */
   maxAdditionalProjects?: number;
   /**
-   * Override the candidate-evaluation (hydrate + authorize) fan-out cap
-   * (defaults to {@link MAX_RUN_REFERENCED_CANDIDATE_EVALUATIONS}). Always effectively raised to at
-   * least the admitted-project cap so the admitted cap stays reachable.
+   * Override the candidate authorization fan-out cap — the maximum number of *available* candidates
+   * that are authorized (defaults to {@link MAX_RUN_REFERENCED_CANDIDATE_EVALUATIONS}). Always
+   * effectively raised to at least the admitted-project cap so the admitted cap stays reachable.
    */
   maxCandidateEvaluations?: number;
 }
@@ -2203,11 +2204,13 @@ export interface ResolveRunReferencedProjectsOptions {
  * authorization error drops the project and appends a warning (the run always continues).
  *
  * Candidate evaluation is bounded twice, independently: at most
- * {@link ResolveRunReferencedProjectsOptions.maxCandidateEvaluations} candidates are ever hydrated
- * or authorized (a fan-out guard against an adversarial same-company mention flood of denied
- * projects), and at most {@link ResolveRunReferencedProjectsOptions.maxAdditionalProjects} of those
- * are admitted. Candidates beyond the evaluation limit are dropped with a warning and never trigger
- * an authorization decision.
+ * {@link ResolveRunReferencedProjectsOptions.maxCandidateEvaluations} *available* candidates are ever
+ * authorized (a fan-out guard against an adversarial same-company mention flood of denied projects),
+ * and at most {@link ResolveRunReferencedProjectsOptions.maxAdditionalProjects} of those are admitted.
+ * Availability filtering runs against the company-scoped hydration before the evaluation cap, so an
+ * unavailable mention never occupies an evaluation slot or displaces a later authorized project.
+ * Available candidates beyond the evaluation limit are dropped with a warning and never trigger an
+ * authorization decision.
  */
 export async function resolveRunReferencedProjects(
   issueId: string,
@@ -2238,20 +2241,12 @@ export async function resolveRunReferencedProjects(
     allCandidateIds.push(projectId);
   }
 
-  // Bound the candidate fan-out *before* hydration or authorization: only the first `evaluationCap`
-  // deduped candidates are ever hydrated or authorized. This caps the total `project:read` decisions
-  // (and the hydration batch size) so an adversarial same-company mention flood in which every
-  // candidate is denied cannot force unbounded authorization work — the loop below would otherwise
-  // authorize every candidate because the admitted cap is never reached. Candidates past the limit
-  // are surfaced as a warning after the loop.
-  const candidateIds = allCandidateIds.slice(0, evaluationCap);
-  const unevaluatedCandidateCount = allCandidateIds.length - candidateIds.length;
-
-  // Hydrate the anchor plus every evaluated candidate in a single company-scoped batch. Every
-  // evaluated candidate is hydrated (not just the first `cap`) so the cap can be enforced against
-  // *admitted* projects below — a mention that is dropped for a company mismatch or a failed
-  // authorization must never consume a cap slot and displace a later valid, authorized reference.
-  const hydrateIds = anchorProjectId ? [anchorProjectId, ...candidateIds] : candidateIds;
+  // Hydrate the anchor plus every deduped candidate in a single company-scoped batch. `listByIds`
+  // filters by company, so this one query both fetches the records and performs availability
+  // filtering; because its input is already deduped and company-scoped, the batch size is bounded by
+  // the company's project count, not by mention volume. Hydration performs no per-candidate
+  // authorization, so it is deliberately *not* subject to the evaluation cap below.
+  const hydrateIds = anchorProjectId ? [anchorProjectId, ...allCandidateIds] : allCandidateIds;
   const hydrated = await projects.listByIds(companyId, hydrateIds);
   const byId = new Map(hydrated.map((project) => [project.id, project]));
 
@@ -2259,25 +2254,42 @@ export async function resolveRunReferencedProjects(
   const anchor: RunReferencedProject | null =
     anchorRecord && anchorProjectId ? { projectId: anchorProjectId, project: anchorRecord } : null;
 
+  // Availability filtering happens *before* the evaluation cap and never consumes an authorization
+  // decision: a mention that did not resolve inside this company (foreign-company, deleted, or
+  // malformed id) is dropped here, with a warning, so it can never occupy an evaluation slot and
+  // displace a later authorized project out of the fan-out window. Mention order is preserved.
+  const availableCandidates: RunReferencedProject[] = [];
+  for (const projectId of allCandidateIds) {
+    const project = byId.get(projectId);
+    if (!project) {
+      warnings.push(`Referenced project ${projectId} was skipped because it is not available in this company.`);
+      continue;
+    }
+    availableCandidates.push({ projectId, project });
+  }
+
+  // Bound the authorization fan-out: only the first `evaluationCap` *available* candidates are ever
+  // authorized. This caps the number of `project:read` decisions so an adversarial same-company
+  // mention flood in which every candidate is denied cannot force unbounded authorization work — the
+  // admit loop below would otherwise authorize every candidate because the admitted cap is never
+  // reached. Denied candidates still consume this window (each costs exactly one authorization
+  // decision, which is what the cap bounds); unavailable mentions, filtered above, do not. Available
+  // candidates past the limit are surfaced as a warning after the loop.
+  const candidates = availableCandidates.slice(0, evaluationCap);
+  const unevaluatedCandidateCount = availableCandidates.length - candidates.length;
+
   // Admit candidates in mention order until the cap of successfully-authorized projects is reached.
   // The cap bounds how many additional projects a run *materializes*, so it is counted against
-  // admitted projects only; dropped mentions never use a slot.
+  // admitted projects only; denied mentions never use a slot.
   const additional: RunReferencedProject[] = [];
   let capReachedAtIndex: number | null = null;
-  for (let index = 0; index < candidateIds.length; index++) {
+  for (let index = 0; index < candidates.length; index++) {
     if (additional.length >= cap) {
       capReachedAtIndex = index;
       break;
     }
 
-    const projectId = candidateIds[index]!;
-    const project = byId.get(projectId);
-    // Fail-closed: a mention that did not resolve inside this company (foreign-company, deleted, or
-    // malformed id) is dropped before authorization is ever consulted.
-    if (!project || project.companyId !== companyId) {
-      warnings.push(`Referenced project ${projectId} was skipped because it is not available in this company.`);
-      continue;
-    }
+    const { projectId, project } = candidates[index]!;
 
     let allowed = false;
     try {
@@ -2301,17 +2313,17 @@ export async function resolveRunReferencedProjects(
     additional.push({ projectId, project });
   }
 
-  // Warn once if the admitted cap stopped us before every candidate was considered. The skipped
-  // count includes both the still-unconsidered evaluated candidates and any candidates that were
-  // dropped before evaluation by the fan-out cap above.
+  // Warn once if the admitted cap stopped us before every available candidate was considered. The
+  // skipped count includes both the still-unconsidered evaluated candidates and any available
+  // candidates that were dropped before evaluation by the fan-out cap above.
   if (capReachedAtIndex !== null) {
-    const skipped = candidateIds.length - capReachedAtIndex + unevaluatedCandidateCount;
+    const skipped = candidates.length - capReachedAtIndex + unevaluatedCandidateCount;
     warnings.push(
       `Only the first ${cap} referenced project(s) will be synced for this run; ${skipped} additional referenced project(s) were skipped.`,
     );
   } else if (unevaluatedCandidateCount > 0) {
     // The admitted cap was never reached (e.g. a flood of denied mentions), but the evaluation
-    // fan-out cap dropped candidates before they could be authorized.
+    // fan-out cap dropped available candidates before they could be authorized.
     warnings.push(
       `Only the first ${evaluationCap} referenced mention(s) were evaluated for this run; ${unevaluatedCandidateCount} additional referenced mention(s) were skipped without evaluation.`,
     );

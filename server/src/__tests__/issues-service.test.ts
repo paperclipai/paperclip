@@ -5327,6 +5327,47 @@ describeEmbeddedPostgres("resolveRunReferencedProjects", () => {
     expect(result.warnings.some((warning) => warning.includes("were evaluated for this run"))).toBe(true);
   });
 
+  it("does not let unavailable mentions consume the evaluation window", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const anchorProjectId = randomUUID();
+    const allowedProjectId = randomUUID();
+    // Two unavailable (foreign-company / deleted / unknown) mentions sit ahead of the authorized
+    // project in mention order. The production mention lookup company-filters these out, so drive the
+    // mention set through a stub to exercise the resolver's own availability filtering directly.
+    const unavailableProjectIds = [randomUUID(), randomUUID()];
+
+    await seedCompany(companyId);
+    await db.insert(projects).values([
+      { id: anchorProjectId, companyId, name: "Anchor", status: "in_progress" },
+      { id: allowedProjectId, companyId, name: "Allowed", status: "in_progress" },
+    ]);
+    await seedIssueWithMentions({ companyId, issueId, anchorProjectId, mentionedProjectIds: [allowedProjectId] });
+
+    const mentions: ResolveRunReferencedProjectsOptions["issues"] = {
+      findMentionedProjectIds: async () => [...unavailableProjectIds, allowedProjectId],
+    };
+
+    const { decidedProjectIds, access } = recordingAccess(() => decision(true));
+    // The evaluation cap is only two slots; if unavailable mentions consumed them, the authorized
+    // project would be displaced out of the window and the set would underfill.
+    const result = await resolveRunReferencedProjects(
+      issueId,
+      anchorProjectId,
+      baseOpts(companyId, access, { issues: mentions, maxAdditionalProjects: 2, maxCandidateEvaluations: 2 }),
+    );
+
+    // Availability filtering runs before the evaluation cap, so the authorized project still lands
+    // inside the window and is admitted rather than displaced.
+    expect(result.additional.map((entry) => entry.projectId)).toEqual([allowedProjectId]);
+    expect(decidedProjectIds).toEqual([allowedProjectId]);
+    // Each unavailable mention warns, but none of them consumed an evaluation slot.
+    expect(
+      result.warnings.filter((warning) => warning.includes("not available in this company")),
+    ).toHaveLength(2);
+    expect(result.warnings.some((warning) => warning.includes("without evaluation"))).toBe(false);
+  });
+
   it("floors the evaluation cap at the admitted cap so the admitted cap stays reachable", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
