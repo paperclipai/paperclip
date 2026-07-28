@@ -124,6 +124,30 @@ function assertPlatformProvisionedEnvironmentWritable(environment: {
   }
 }
 
+const PLATFORM_PROVISIONED_MARKER_KEYS = [
+  "managedByPaperclip",
+  "managedKubernetesSandbox",
+] as const;
+
+/**
+ * Floor: on cloud-managed instances the platform markers in `metadata` are
+ * reserved to the platform provisioner (which writes them at the service
+ * layer, not through these routes). A client payload that sets them is
+ * rejected — otherwise a tenant could stamp its own row as
+ * platform-provisioned and permanently lock it behind the write floor above.
+ */
+function assertNoClientPlatformProvisionedMarkers(metadata: unknown): void {
+  if (!isCloudManagedInstance() || !isPlainRecord(metadata)) return;
+  for (const key of PLATFORM_PROVISIONED_MARKER_KEYS) {
+    if (metadata[key] !== undefined) {
+      throw unprocessable(
+        `metadata.${key} is reserved to the platform on cloud-managed instances`,
+        { code: "environment_platform_marker_reserved" },
+      );
+    }
+  }
+}
+
 export function environmentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -716,6 +740,7 @@ export function environmentRoutes(
   router.post("/companies/:companyId/environments", validate(createEnvironmentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCanAccessInstanceEnvironments(req);
+    assertNoClientPlatformProvisionedMarkers(req.body.metadata);
     if (req.body.driver === "local") {
       const existingLocal = await svc.list({ driver: "local" });
       if (existingLocal.length > 0) {
@@ -809,6 +834,7 @@ export function environmentRoutes(
       return;
     }
     assertPlatformProvisionedEnvironmentWritable(existing);
+    assertNoClientPlatformProvisionedMarkers(req.body.metadata);
     const actor = getActorInfo(req);
     const nextDriver = req.body.driver ?? existing.driver;
     const nextName = req.body.name ?? existing.name;

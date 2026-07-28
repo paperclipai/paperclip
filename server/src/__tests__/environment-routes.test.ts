@@ -498,6 +498,68 @@ describe("environment routes", () => {
       expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
     });
 
+    it("rejects creates that stamp platform markers so tenants cannot self-lock rows", async () => {
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .post("/api/companies/company-1/environments")
+        .send({
+          name: "Fake managed",
+          driver: "sandbox",
+          config: { provider: "daytona" },
+          metadata: { managedByPaperclip: true },
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_marker_reserved" });
+      expect(mockEnvironmentService.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects tenant patches that stamp platform markers so the row cannot become locked", async () => {
+      const tenantEnvironment = {
+        ...createPlatformSandboxEnvironment(),
+        id: "env-tenant-1",
+        metadata: { source: "manual" },
+      };
+      mockEnvironmentService.getById.mockResolvedValue(tenantEnvironment);
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .patch("/api/environments/env-tenant-1")
+        .send({ metadata: { source: "manual", managedKubernetesSandbox: true } });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_marker_reserved" });
+      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+    });
+
+    it("accepts platform markers in client payloads on self-hosted instances", async () => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      const existing = {
+        ...createPlatformSandboxEnvironment(),
+        id: "env-tenant-1",
+        metadata: { source: "manual" },
+      };
+      mockEnvironmentService.getById.mockResolvedValue(existing);
+      mockEnvironmentService.update.mockResolvedValue({
+        ...existing,
+        metadata: { source: "manual", managedByPaperclip: true },
+      });
+      const app = createApp({
+        type: "board",
+        userId: "admin-1",
+        source: "session",
+        isInstanceAdmin: true,
+      });
+
+      const res = await request(app)
+        .patch("/api/environments/env-tenant-1")
+        .send({ metadata: { source: "manual", managedByPaperclip: true } });
+
+      expect(res.status).toBe(200);
+      expect(mockEnvironmentService.update).toHaveBeenCalled();
+    });
+
     it("still updates tenant-created environments for instance admins on cloud-managed instances", async () => {
       const tenantEnvironment = {
         ...createPlatformSandboxEnvironment(),
