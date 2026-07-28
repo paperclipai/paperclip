@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
+import { chromium, expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 const requestedRuns = Number(process.env.PAPERCLIP_ISSUE_PERF_RUNS ?? 5);
 const RUNS = Number.isFinite(requestedRuns) ? Math.max(5, Math.floor(requestedRuns)) : 5;
@@ -26,6 +26,7 @@ type NetworkRecord = {
   status?: number;
   responseHeaders?: Record<string, string>;
   ttfbMs?: number;
+  completedAtEpochMs?: number;
 };
 
 type RunMetrics = {
@@ -144,7 +145,9 @@ async function installVitalObserver(page: Page, cold: boolean): Promise<void> {
 
 async function startNetworkCapture(session: Awaited<ReturnType<typeof configureProfile>>) {
   const records = new Map<string, NetworkRecord>();
+  let cdpEpochOffsetMs: number | null = null;
   session.on("Network.requestWillBeSent", (event) => {
+    cdpEpochOffsetMs ??= event.wallTime * 1000 - event.timestamp * 1000;
     records.set(event.requestId, {
       requestId: event.requestId,
       url: event.request.url,
@@ -167,12 +170,15 @@ async function startNetworkCapture(session: Awaited<ReturnType<typeof configureP
   });
   session.on("Network.loadingFinished", (event) => {
     const record = records.get(event.requestId);
-    if (record) record.encodedDataLength = event.encodedDataLength;
+    if (!record) return;
+    record.encodedDataLength = event.encodedDataLength;
+    if (cdpEpochOffsetMs !== null) record.completedAtEpochMs = cdpEpochOffsetMs + event.timestamp * 1000;
   });
   return records;
 }
 
 async function writeTrace(tracePath: string, metrics: RunMetrics, records: Map<string, NetworkRecord>) {
+  await fs.mkdir(path.dirname(tracePath), { recursive: true });
   const traceEvents = [
     { name: "issue-detail:navigate", cat: "blink.user_timing", ph: "i", ts: 0, pid: 1, tid: 1, s: "t" },
     { name: HEADER_MEASURE, cat: "blink.user_timing", ph: "X", ts: 0, dur: metrics.headerPaintMs * 1000, pid: 1, tid: 1 },
@@ -203,12 +209,17 @@ async function readPaintMetrics(page: Page) {
       ttfbMs: navigation ? navigation.responseStart - navigation.requestStart : null,
       fcpMs: fcp?.startTime ?? null,
       lcpMs: (window as Window & { __issuePerfLcp?: number }).__issuePerfLcp ?? null,
+      contentPaintEpochMs: performance.timeOrigin + (performance.getEntriesByName(contentMeasure)[0]?.startTime ?? 0) + (performance.getEntriesByName(contentMeasure)[0]?.duration ?? 0),
     };
   }, { headerMeasure: HEADER_MEASURE, contentMeasure: CONTENT_MEASURE });
 }
 
-function summarizeNetwork(records: Map<string, NetworkRecord>, seedData: Seed) {
-  const completed = [...records.values()].filter((record) => record.encodedDataLength > 0);
+function summarizeNetwork(records: Map<string, NetworkRecord>, seedData: Seed, contentPaintEpochMs: number) {
+  const completed = [...records.values()].filter((record) =>
+    record.encodedDataLength > 0
+    && record.completedAtEpochMs !== undefined
+    && record.completedAtEpochMs <= contentPaintEpochMs
+  );
   const api = completed.filter((record) => new URL(record.url).pathname.startsWith("/api/"));
   const scripts = completed.filter((record) => record.type === "Script" || record.mimeType?.includes("javascript"));
   const issueApi = completed.find((record) => {
@@ -236,7 +247,7 @@ async function runScenario(browser: Browser, baseURL: string, seedData: Seed, pr
   if (scenario.startsWith("S1")) {
     await page.goto(`/${seedData.prefix}/issues`);
     const issueLink = page.locator("[data-inbox-issue-link]", { hasText: seedData.title }).first();
-    await expect(issueLink).toBeVisible();
+    await expect(issueLink).toBeVisible({ timeout: 60_000 });
     network.clear();
     await page.evaluate(() => {
       window.__PAPERCLIP_ISSUE_DETAIL_NAVIGATE_START__ = performance.now();
@@ -248,10 +259,11 @@ async function runScenario(browser: Browser, baseURL: string, seedData: Seed, pr
 
   await expect(page.getByTestId("issue-detail-header")).toBeVisible({ timeout: 60_000 });
   const paint = await readPaintMetrics(page);
-  const summary = summarizeNetwork(network, seedData);
+  const summary = summarizeNetwork(network, seedData, paint.contentPaintEpochMs);
+  const { contentPaintEpochMs: _contentPaintEpochMs, ...reportedPaint } = paint;
   const scenarioPaint = scenario.startsWith("S1")
-    ? { ...paint, ttfbMs: null, fcpMs: null, lcpMs: null }
-    : paint;
+    ? { ...reportedPaint, ttfbMs: null, fcpMs: null, lcpMs: null }
+    : reportedPaint;
   const metrics = { scenario, profile: profile.name, run, ...scenarioPaint, ...summary };
   if (run === 1) await writeTrace(tracePath, metrics, network);
   await context.close();
@@ -259,6 +271,21 @@ async function runScenario(browser: Browser, baseURL: string, seedData: Seed, pr
   expect(Number.isFinite(paint.headerPaintMs)).toBe(true);
   expect(Number.isFinite(paint.contentPaintMs)).toBe(true);
   return metrics;
+}
+
+async function runScenarioWithBrowserRetry(baseURL: string, seedData: Seed, profile: Profile, scenario: RunMetrics["scenario"], run: number): Promise<RunMetrics> {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const sampleBrowser = await chromium.launch();
+    try {
+      return await runScenario(sampleBrowser, baseURL, seedData, profile, scenario, run);
+    } catch (error) {
+      const browserClosed = error instanceof Error && /Target page, context or browser has been closed/.test(error.message);
+      if (!browserClosed || attempt === 2) throw error;
+    } finally {
+      await sampleBrowser.close().catch(() => undefined);
+    }
+  }
+  throw new Error("Unreachable browser retry state");
 }
 
 function buildMarkdown(results: RunMetrics[]): string {
@@ -287,7 +314,7 @@ function buildMarkdown(results: RunMetrics[]): string {
   ].join("\n");
 }
 
-test("issue-detail baseline", async ({ browser, request, baseURL }) => {
+test("issue-detail baseline", async ({ request, baseURL }) => {
   expect(baseURL).toBeTruthy();
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
   const seedData = await seed(request);
@@ -295,8 +322,8 @@ test("issue-detail baseline", async ({ browser, request, baseURL }) => {
 
   for (const profile of PROFILES) {
     for (let run = 1; run <= RUNS; run += 1) {
-      results.push(await runScenario(browser, baseURL!, seedData, profile, "S1 warm in-app navigation", run));
-      results.push(await runScenario(browser, baseURL!, seedData, profile, "S2 cold open", run));
+      results.push(await runScenarioWithBrowserRetry(baseURL!, seedData, profile, "S1 warm in-app navigation", run));
+      results.push(await runScenarioWithBrowserRetry(baseURL!, seedData, profile, "S2 cold open", run));
     }
   }
 

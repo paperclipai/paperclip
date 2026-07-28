@@ -4,6 +4,8 @@ export const ISSUE_DETAIL_CONTENT_PAINT_MARK = "issue-detail:content-paint";
 export const ISSUE_DETAIL_HEADER_MEASURE = "issue-detail:navigate→header-paint";
 export const ISSUE_DETAIL_CONTENT_MEASURE = "issue-detail:navigate→content-paint";
 
+let issueDetailNavigationGeneration = 0;
+
 declare global {
   interface Window {
     __PAPERCLIP_ISSUE_DETAIL_NAVIGATE_START__?: number;
@@ -15,6 +17,7 @@ function supportsPerformanceMarks(): boolean {
 }
 
 export function beginIssueDetailNavigation(): void {
+  issueDetailNavigationGeneration += 1;
   if (!supportsPerformanceMarks()) return;
 
   performance.clearMarks(ISSUE_DETAIL_NAVIGATE_MARK);
@@ -36,8 +39,11 @@ export function scheduleIssueDetailPaintMeasure(
 ): void {
   if (!supportsPerformanceMarks() || performance.getEntriesByName(measureName).length > 0) return;
 
+  const navigationGeneration = issueDetailNavigationGeneration;
   requestAnimationFrame(() => {
+    if (navigationGeneration !== issueDetailNavigationGeneration) return;
     requestAnimationFrame(() => {
+      if (navigationGeneration !== issueDetailNavigationGeneration) return;
       if (performance.getEntriesByName(measureName).length > 0) return;
       if (performance.getEntriesByName(ISSUE_DETAIL_NAVIGATE_MARK).length === 0) {
         performance.mark(ISSUE_DETAIL_NAVIGATE_MARK);
