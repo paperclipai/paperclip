@@ -23,6 +23,15 @@ describe("heartbeat scheduling suppression", () => {
     });
   });
 
+  it("suppresses heartbeat scheduling for non-primary runtime instances", () => {
+    expect(resolveHeartbeatSchedulingSuppression({
+      PAPERCLIP_PRIMARY_RUNTIME_INSTANCE: "false",
+    })).toEqual({
+      suppressed: true,
+      reason: "non_primary_runtime_instance",
+    });
+  });
+
   it("leaves normal live-plane runtimes unsuppressed", () => {
     expect(resolveHeartbeatSchedulingSuppression({})).toEqual({
       suppressed: false,

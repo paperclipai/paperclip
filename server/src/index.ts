@@ -585,6 +585,7 @@ export async function startServer(): Promise<StartedServer> {
 
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
+  const isPrimaryRuntimeInstance = listenPort === requestedListenPort;
   if (
     config.deploymentMode === "authenticated"
     && config.deploymentExposure === "public"
@@ -800,6 +801,7 @@ export async function startServer(): Promise<StartedServer> {
   });
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
+  process.env.PAPERCLIP_PRIMARY_RUNTIME_INSTANCE = isPrimaryRuntimeInstance ? "true" : "false";
   process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
@@ -1020,14 +1022,21 @@ export async function startServer(): Promise<StartedServer> {
       await startupHeartbeatRecovery;
     }
 
-    const setupCleanup = await environmentCustomImages.cleanupExpiredSetupSessions();
-    if (setupCleanup.timedOut > 0 || setupCleanup.failed > 0) {
-      logger.warn({ ...setupCleanup }, "startup environment customImage setup cleanup changed sessions");
-    }
+    if (isPrimaryRuntimeInstance) {
+      const setupCleanup = await environmentCustomImages.cleanupExpiredSetupSessions();
+      if (setupCleanup.timedOut > 0 || setupCleanup.failed > 0) {
+        logger.warn({ ...setupCleanup }, "startup environment customImage setup cleanup changed sessions");
+      }
 
-    const toolHealthSweep = await tools.sweepConnectionHealth();
-    if (toolHealthSweep.failed > 0) {
-      logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
+      const toolHealthSweep = await tools.sweepConnectionHealth();
+      if (toolHealthSweep.failed > 0) {
+        logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
+      }
+    } else {
+      logger.warn(
+        { requestedPort: requestedListenPort, selectedPort: listenPort },
+        "skipping startup background reconciliation because this runtime instance is not primary",
+      );
     }
 
     heartbeatSchedulerInterval = setInterval(() => {
@@ -1057,7 +1066,7 @@ export async function startServer(): Promise<StartedServer> {
             }));
         }
 
-        if (heartbeatSchedulerStopped) return;
+        if (heartbeatSchedulerStopped || !isPrimaryRuntimeInstance) return;
         trackHeartbeatSchedulerWork(routines
           .tickScheduledTriggers(new Date())
           .then((result) => {
@@ -1155,7 +1164,7 @@ export async function startServer(): Promise<StartedServer> {
     }, config.heartbeatSchedulerIntervalMs);
   }
   
-  if (config.databaseBackupEnabled) {
+  if (config.databaseBackupEnabled && isPrimaryRuntimeInstance) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
     logger.info(
@@ -1171,6 +1180,11 @@ export async function startServer(): Promise<StartedServer> {
         // runServerDatabaseBackup already logs the failure with context.
       });
     }, backupIntervalMs);
+  } else if (config.databaseBackupEnabled) {
+    logger.warn(
+      { requestedPort: requestedListenPort, selectedPort: listenPort },
+      "automatic database backups disabled on non-primary runtime instance",
+    );
   }
   
   // Wait for external adapters to finish loading before accepting requests.
