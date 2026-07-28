@@ -1274,8 +1274,40 @@ export function productivityReviewService(
       },
     });
 
+    // A review created straight as an unreported completion has the same exposure as a
+    // reclassified one: the review is committed, and if its wake then fails there is nothing to
+    // tell a later pass that the assignee was never notified. It gets the same marker, so the
+    // recovery path above picks it up and re-wakes.
+    //
+    // Scoped to `unreported_completion` on purpose. A stall review's wake behaviour is unchanged
+    // by this PR, and its decision menu is manager-owned rather than a specific action nobody else
+    // will take; extending recovery to it is a separate change.
+    const creationWakeCycleId = evidence.classification === "unreported_completion" ? randomUUID() : null;
+    if (creationWakeCycleId) {
+      await logActivity(db, {
+        companyId: evidence.sourceIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_updated",
+        entityType: "issue",
+        entityId: review.id,
+        agentId: ownerAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: evidence.sourceIssue.id,
+          classification: evidence.classification,
+          reclassifiedFrom: "created",
+          reclassificationId: creationWakeCycleId,
+          wakeDelivered: false,
+        },
+      });
+    }
+    let creationWakeDelivered = false;
     if (ownerAgentId && deps?.enqueueWakeup) {
-      await deps.enqueueWakeup(ownerAgentId, {
+      creationWakeDelivered = Boolean(await deps.enqueueWakeup(ownerAgentId, {
+        ...(creationWakeCycleId
+          ? { idempotencyKey: `productivity-review-reclassify:${creationWakeCycleId}` }
+          : {}),
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -1296,6 +1328,25 @@ export function productivityReviewService(
           productivityReviewTrigger: evidence.trigger,
           productivityReviewClassification: evidence.classification,
         }, "status_only"),
+      }));
+    }
+    if (creationWakeCycleId && creationWakeDelivered) {
+      await logActivity(db, {
+        companyId: evidence.sourceIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_updated",
+        entityType: "issue",
+        entityId: review.id,
+        agentId: ownerAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: evidence.sourceIssue.id,
+          classification: evidence.classification,
+          reclassifiedFrom: "created",
+          reclassificationId: creationWakeCycleId,
+          wakeDelivered: true,
+        },
       });
     }
 

@@ -1467,6 +1467,42 @@ describeEmbeddedPostgres("productivity review service", () => {
       expect(markers.every((row) => (row.details as Record<string, unknown>)?.wakeDelivered !== true)).toBe(true);
     });
 
+    // A review created straight as an unreported completion has the same exposure as a
+    // reclassified one: nothing tells a later pass that its wake never landed.
+    it("re-wakes a newly created completion review whose first wake failed", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const { repoPath } = createRepoWithCommit({
+        subject: "feat(aur1370): deliverable landed",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+      const wakes: string[] = [];
+      const service = (enqueueWakeup: (agentId: string) => Promise<unknown>) =>
+        productivityReviewService(db, {
+          resolveAgentWorkspaceDir: () => repoPath,
+          enqueueWakeup: enqueueWakeup as never,
+        });
+
+      // Pass 1: the review is created as an unreported completion, but the wake never lands.
+      await service(async () => null).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+      const [created] = await listProductivityReviews(seeded.companyId);
+      expect(created?.title).toBe("Report and close finished work on AUR-1370");
+      expect(created?.assigneeAgentId).toBe(seeded.coderId);
+
+      // Pass 2: the outstanding marker makes the missed wake recoverable.
+      await service(async (agentId) => {
+        wakes.push(agentId);
+        return { id: "wake" };
+      }).reconcileProductivityReviews({
+        now: new Date(now.getTime() + 60_000),
+        companyId: seeded.companyId,
+      });
+
+      expect(wakes).toEqual([seeded.coderId]);
+      const reviews = await listProductivityReviews(seeded.companyId);
+      expect(reviews).toHaveLength(1);
+      expect(reviews[0]?.description).toContain("Classification: `unreported_completion`");
+    });
+
     // A crash between the review update and the wake cannot be caught, so it has to be recoverable:
     // the review already reads `unreported_completion`, and the stall check alone would never retry.
     it("re-wakes a reclassification whose wake was never confirmed", async () => {
