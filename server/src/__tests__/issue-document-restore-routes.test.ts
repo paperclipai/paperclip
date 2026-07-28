@@ -154,19 +154,25 @@ function registerModuleMocks() {
 
 function createRunContextDb(contextSnapshot: Record<string, unknown>) {
   return {
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          then: async (resolve: (rows: unknown[]) => unknown) =>
-            resolve([{
-              id: "run-1",
-              companyId,
-              agentId: "agent-1",
-              contextSnapshot,
-            }]),
+    select: vi.fn((selection?: Record<string, unknown>) => {
+      const rows = Object.keys(selection ?? {}).includes("contextSnapshot")
+        ? [{
+            id: "run-1",
+            companyId,
+            agentId: "agent-1",
+            contextSnapshot,
+          }]
+        : [];
+      const query = {
+        then: async (resolve: (value: unknown[]) => unknown) => resolve(rows),
+        limit: vi.fn(async () => rows),
+      };
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn(() => query),
         })),
-      })),
-    })),
+      };
+    }),
   };
 }
 
@@ -380,6 +386,7 @@ describe("issue document revision routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Cheap status-only recovery runs cannot update issue documents");
     expect(mockDocumentsService.restoreIssueDocumentRevision).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
   });
 
   it("rejects invalid document keys before attempting restore", async () => {

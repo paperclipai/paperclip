@@ -15,6 +15,8 @@ import {
 import { runningProcesses } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
+import { RECOVERY_REASON_KINDS } from "../services/recovery/origins.ts";
+import { withRecoveryModelProfileHint } from "../services/recovery/model-profile-hint.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -288,6 +290,198 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       approvalId: "approval-1",
       approvalStatus: "approved",
       wakeReason: "approval_approved",
+    });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+  });
+
+  it("coalesces concurrent cheap-recovery deliverable handoffs into one deferred normal-model wake", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+    const reason = RECOVERY_REASON_KINDS.cheapRecoveryDeliverableHandoff;
+    const idempotencyKey = [reason, issueId, runId].join(":");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Recovery Agent",
+      role: "engineer",
+      status: "running",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      },
+    });
+    runningProcesses.set(runId, {
+      child: {} as never,
+      graceSec: 0,
+      processGroupId: null,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Publish recovery evidence",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      executionRunId: runId,
+      executionAgentNameKey: "recovery-agent",
+      executionLockedAt: new Date(),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const handoffContext = withRecoveryModelProfileHint({
+      issueId,
+      taskId: issueId,
+      sourceRunId: runId,
+      forceFreshSession: true,
+      wakeReason: reason,
+      handoffIntent: "publish_existing_workspace_evidence",
+      livenessContinuationSourceRunId: runId,
+      livenessContinuationState: "pending_deliverable_work",
+      livenessContinuationReason: reason,
+      livenessContinuationInstruction: "Continue with the normal model and publish the pending artifact.",
+    }, "normal_model");
+    const enqueue = () => heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason,
+      idempotencyKey,
+      payload: handoffContext,
+      contextSnapshot: handoffContext,
+      requestedByActorType: "system",
+      requestedByActorId: "issue_routes",
+    });
+
+    const results = await Promise.all([enqueue(), enqueue()]);
+
+    expect(results).toEqual([null, null]);
+    const deferred = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+      ));
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0]?.reason).toBe("issue_execution_deferred");
+
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        idempotencyKey: "existing-cheap-deferred-wake",
+        payload: {
+          ...(deferred[0]?.payload as Record<string, unknown>),
+          modelProfile: "cheap",
+          recoveryIntent: "status_only",
+          allowDeliverableWork: false,
+          allowDocumentUpdates: false,
+          resumeRequiresNormalModel: true,
+          _paperclipWakeContext: {
+            issueId,
+            taskId: issueId,
+            modelProfile: "cheap",
+            recoveryIntent: "status_only",
+            allowDeliverableWork: false,
+            allowDocumentUpdates: false,
+            resumeRequiresNormalModel: true,
+          },
+        },
+      })
+      .where(eq(agentWakeupRequests.id, deferred[0]!.id));
+
+    expect(await enqueue()).toBeNull();
+    const laterComment = await db
+      .insert(issueComments)
+      .values({
+        companyId,
+        issueId,
+        authorUserId: "user-1",
+        body: "Please also publish the pending evidence.",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    expect(await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: laterComment.id },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        commentId: laterComment.id,
+        wakeReason: "issue_commented",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    })).toBeNull();
+
+    const recoalesced = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ));
+    expect(recoalesced).toHaveLength(1);
+
+    const payload = recoalesced[0]?.payload as Record<string, unknown>;
+    const deferredContext = payload._paperclipWakeContext as Record<string, unknown>;
+    for (const context of [payload, deferredContext]) {
+      expect(context).not.toHaveProperty("modelProfile");
+      expect(context).not.toHaveProperty("paperclipModelProfile");
+      expect(context).not.toHaveProperty("recoveryIntent");
+      expect(context).not.toHaveProperty("allowDeliverableWork");
+      expect(context).not.toHaveProperty("allowDocumentUpdates");
+      expect(context).not.toHaveProperty("resumeRequiresNormalModel");
+    }
+    expect(deferredContext).toMatchObject({
+      issueId,
+      taskId: issueId,
+      sourceRunId: runId,
+      forceFreshSession: true,
+      wakeReason: reason,
+      handoffIntent: "publish_existing_workspace_evidence",
+      livenessContinuationSourceRunId: runId,
+      livenessContinuationState: "pending_deliverable_work",
+      livenessContinuationReason: reason,
+      livenessContinuationInstruction: "Continue with the normal model and publish the pending artifact.",
+      commentId: laterComment.id,
     });
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));

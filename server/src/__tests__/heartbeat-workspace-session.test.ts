@@ -34,6 +34,7 @@ import {
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
   shouldDeferFollowupWakeForSameIssue,
+  shouldQueueFollowupForRunningIssueWake,
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForModelChange,
@@ -1646,6 +1647,17 @@ describe("shouldDeferFollowupWakeForSameIssue", () => {
         forceFreshSession: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldQueueFollowupForRunningIssueWake", () => {
+  it("keeps a cheap-recovery deliverable handoff out of the active cheap run", () => {
+    expect(
+      shouldQueueFollowupForRunningIssueWake({
+        contextSnapshot: { wakeReason: "cheap_recovery_deliverable_handoff" },
+        wakeCommentId: null,
+      }),
+    ).toBe(true);
   });
 });
 

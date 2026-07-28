@@ -284,11 +284,17 @@ function createRunContextDb(
     if (keys.includes("entityId")) return [];
     if (keys.includes("contextSnapshot")) return runRows;
     if (keys.includes("agentCompanyId")) return runRows;
+    if (keys.length === 2 && keys.includes("id") && keys.includes("status")) {
+      return mockHeartbeatService.wakeup.mock.calls.length > 0
+        ? [{ id: "deliverable-handoff-wake-1", status: "deferred_issue_execution" }]
+        : [];
+    }
     return [{ id: runAgentId, companyId: runAgentCompanyId, permissions: {}, role: "engineer", reportsTo: null }];
   };
   const buildQuery = (selection: Record<string, unknown>) => {
     const rows = rowsForSelection(selection);
     const whereResult = {
+      limit: vi.fn(() => whereResult),
       orderBy: vi.fn(async () => []),
       limit: vi.fn(() => ({
         then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
@@ -1134,6 +1140,100 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.removeAttachment).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.link).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.unlink).not.toHaveBeenCalled();
+  });
+
+  it("keeps cheap artifact uploads denied while arranging one deduplicated normal-model handoff", async () => {
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb({
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      }),
+    );
+    const upload = () => request(app)
+      .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
+      .attach("file", Buffer.from("report"), { filename: "report.txt", contentType: "text/plain" });
+
+    const first = await upload();
+    const second = await upload();
+
+    expect(first.status, JSON.stringify(first.body)).toBe(403);
+    expect(second.status, JSON.stringify(second.body)).toBe(403);
+    expect(first.body.error).toBe(
+      "Cheap status-only recovery runs cannot update issue documents, plans, or deliverable artifacts",
+    );
+    expect(mockStorageService.putFile).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ownerAgentId,
+      expect.objectContaining({
+        source: "automation",
+        triggerDetail: "system",
+        reason: "cheap_recovery_deliverable_handoff",
+        idempotencyKey: `cheap_recovery_deliverable_handoff:${issueId}:${ownerRunId}`,
+        payload: expect.objectContaining({
+          issueId,
+          sourceRunId: ownerRunId,
+          forceFreshSession: true,
+          handoffIntent: "publish_existing_workspace_evidence",
+          livenessContinuationSourceRunId: ownerRunId,
+          livenessContinuationState: "pending_deliverable_work",
+          livenessContinuationReason: "cheap_recovery_deliverable_handoff",
+          livenessContinuationInstruction: expect.stringContaining("complete the pending deliverable work"),
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId,
+          taskId: issueId,
+          sourceRunId: ownerRunId,
+          forceFreshSession: true,
+          wakeReason: "cheap_recovery_deliverable_handoff",
+          handoffIntent: "publish_existing_workspace_evidence",
+          livenessContinuationSourceRunId: ownerRunId,
+          livenessContinuationState: "pending_deliverable_work",
+          livenessContinuationReason: "cheap_recovery_deliverable_handoff",
+          livenessContinuationInstruction: expect.stringContaining("complete the pending deliverable work"),
+        }),
+      }),
+    );
+    const wakeupOptions = mockHeartbeatService.wakeup.mock.calls[0]?.[1] as {
+      payload: Record<string, unknown>;
+      contextSnapshot: Record<string, unknown>;
+    };
+    for (const context of [wakeupOptions.payload, wakeupOptions.contextSnapshot]) {
+      expect(context).not.toHaveProperty("modelProfile");
+      expect(context).not.toHaveProperty("paperclipModelProfile");
+      expect(context).not.toHaveProperty("recoveryIntent");
+      expect(context).not.toHaveProperty("allowDeliverableWork");
+      expect(context).not.toHaveProperty("allowDocumentUpdates");
+      expect(context).not.toHaveProperty("resumeRequiresNormalModel");
+      expect(context).not.toHaveProperty("resumeFromRunId");
+      expect(context).not.toHaveProperty("resumeIntent");
+    }
+  }, 20_000);
+
+  it("fails closed without masking a normal-model handoff persistence failure", async () => {
+    mockHeartbeatService.wakeup.mockRejectedValueOnce(new Error("handoff persistence failed"));
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb({
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      }),
+    );
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
+      .attach("file", Buffer.from("report"), { filename: "report.txt", contentType: "text/plain" });
+
+    expect(res.status).toBe(500);
+    expect(mockStorageService.putFile).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
   });
 
   it.each([
