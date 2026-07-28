@@ -240,6 +240,10 @@ function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
 }
 
+function isWakeAssigneeContinuationPolicy(continuationPolicy: string): boolean {
+  return continuationPolicy === "wake_assignee" || continuationPolicy === "wake_assignee_on_accept";
+}
+
 function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   issue: IssueResolutionContext;
   current: IssueThreadInteractionRow;
@@ -976,6 +980,105 @@ export function issueThreadInteractionService(db: Db) {
     return hydrateInteraction(current);
   }
 
+  /**
+   * A `wake_assignee` / `wake_assignee_on_accept` interaction only has a live
+   * continuation path if the issue carries an `assigneeAgentId` by the time it
+   * resolves — `queueResolvedInteractionContinuationWakeup` drops the wakeup
+   * otherwise, which leaves the interaction pending behind a permanently dead
+   * wake path until the slow ownerless sweep happens to notice.
+   *
+   * Adopt the creating agent as assignee when the issue is genuinely ownerless so
+   * that path always exists. Issues that already carry an `assigneeUserId` are
+   * deliberately left alone: a user assignee is itself a live waiting path
+   * (`ask_user_questions` on a user-owned issue is a pending *user* decision), and
+   * the issue schema permits only one assignee, so adopting here would silently
+   * take the issue away from its human owner.
+   *
+   * Callers must already hold a write lock on the issue row, and must have
+   * confirmed from that locked read that the issue carries neither an
+   * `assigneeAgentId` nor an `assigneeUserId`.
+   *
+   * Deliberately a single narrow UPDATE rather than `issueService.update()`. This
+   * runs inside the interaction-insert transaction while holding the issue row
+   * lock, and the full update path reads and writes further tables — which
+   * inverts lock order against heartbeat-run cleanup (whose `heartbeat_runs`
+   * delete cascades into `issues`) and deadlocks under concurrency. Keeping the
+   * transaction's footprint to `issues` plus the interaction row avoids the
+   * cycle. The WHERE guard makes the write a no-op if anything claimed the issue
+   * between the locked read and here.
+   */
+  async function adoptWakeTargetCreator(tx: Db, issueId: string, creatorAgentId: string) {
+    await tx
+      .update(issues)
+      .set({ assigneeAgentId: creatorAgentId, updatedAt: new Date() })
+      .where(and(
+        eq(issues.id, issueId),
+        isNull(issues.assigneeAgentId),
+        isNull(issues.assigneeUserId),
+      ));
+  }
+
+  /**
+   * Locked read + adopt, for callers that do not already hold the issue row.
+   */
+  async function ensureWakeAssigneeContinuationHasLiveTarget(
+    tx: Db,
+    args: {
+      issueId: string;
+      continuationPolicy: string;
+      creatorAgentId: string | null;
+    },
+  ) {
+    if (!args.creatorAgentId) return;
+    if (!isWakeAssigneeContinuationPolicy(args.continuationPolicy)) return;
+
+    // Lock the row so two agents racing on the same ownerless issue cannot both
+    // observe a null assignee and have the second adopt it out from under the first.
+    const current = await tx
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, args.issueId))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+
+    if (!current || current.assigneeAgentId || current.assigneeUserId) return;
+
+    await adoptWakeTargetCreator(tx, args.issueId, args.creatorAgentId);
+  }
+
+  /**
+   * Same invariant as above, applied when `create` returns an *existing* row for
+   * an idempotent retry instead of inserting one. Those rows can predate this
+   * guard, or can have lost their assignee since, so reuse has to re-establish the
+   * wake target rather than assume the insert path already did — otherwise a retry
+   * quietly hands back an interaction that will never wake anyone.
+   *
+   * Only pending rows are repaired. An interaction that already resolved — accepted,
+   * rejected, answered, cancelled or expired — has spent its one continuation and
+   * can never wake anyone again, so adopting the issue for its historical creator
+   * would change ownership without buying a wake path.
+   */
+  async function ensureReusedInteractionHasLiveWakeTarget(
+    existing: IssueThreadInteractionRow,
+    actor: InteractionActor,
+  ) {
+    if (existing.status !== "pending") return;
+    const creatorAgentId = existing.createdByAgentId ?? actor.agentId ?? null;
+    if (!creatorAgentId) return;
+    if (!isWakeAssigneeContinuationPolicy(existing.continuationPolicy)) return;
+
+    await db.transaction(async (tx) => {
+      await ensureWakeAssigneeContinuationHasLiveTarget(tx as unknown as Db, {
+        issueId: existing.issueId,
+        continuationPolicy: existing.continuationPolicy,
+        creatorAgentId,
+      });
+    });
+  }
+
   async function assertIssueWorkspaceFinalizedForAccept(args: {
     db: Pick<Db, "select">;
     issue: { id: string; companyId: string };
@@ -1226,6 +1329,7 @@ export function issueThreadInteractionService(db: Db) {
               idempotencyKey: data.idempotencyKey,
             });
           }
+          await ensureReusedInteractionHasLiveWakeTarget(existing, actor);
           return hydrateInteraction(existing);
         }
       }
@@ -1269,42 +1373,71 @@ export function issueThreadInteractionService(db: Db) {
         });
       }
 
+      const interactionValues = {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        kind: data.kind,
+        status: "pending" as const,
+        continuationPolicy: data.continuationPolicy,
+        idempotencyKey: data.idempotencyKey ?? null,
+        sourceCommentId: data.sourceCommentId ?? null,
+        sourceRunId: data.sourceRunId ?? null,
+        title: data.title ?? null,
+        summary: data.summary ?? null,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.userId ?? null,
+        payload: data.payload,
+      };
+
+      // Only agent-created interactions with a waking continuation policy can
+      // strand a wake path, so only those need the issue row locked for write.
+      const needsWakeTargetGuard =
+        Boolean(actor.agentId) && isWakeAssigneeContinuationPolicy(data.continuationPolicy);
+
       let created: IssueThreadInteractionRow;
       try {
-        // A terminal issue must not regain pending actionable cards. FOR SHARE
-        // on the issue row serializes this insert against the terminal status
+        // A terminal issue must not regain pending actionable cards. Locking the
+        // issue row serializes this insert against the terminal status
         // transition's row lock: either the close committed first and this
         // read rejects the create, or the insert commits before the close
         // proceeds and the close's expiry sweep collects the new row.
         // Idempotent reuse above stays allowed so retries of a pre-close
         // create keep returning the (by now expired) original.
+        //
+        // Take FOR UPDATE rather than FOR SHARE when the wake-target guard may
+        // adopt the creator, so the guard never has to upgrade a lock this
+        // transaction already holds: two agents racing to create an interaction
+        // on the same ownerless issue would otherwise both hold FOR SHARE and
+        // deadlock trying to upgrade. FOR UPDATE is strictly stronger, so the
+        // terminal-issue serialization above still holds.
         created = await db.transaction(async (tx) => {
+          // One locked read serves both gates: the terminal-status check and the
+          // wake-target probe read the same row under the same lock, so nothing
+          // has to re-read or re-lock it while the transaction is open.
           const [issueRow] = await tx
-            .select({ status: issues.status })
+            .select({
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              assigneeUserId: issues.assigneeUserId,
+            })
             .from(issues)
             .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
-            .for("share");
+            .for(needsWakeTargetGuard ? "update" : "share");
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
             throw conflict("Cannot create an interaction on a closed issue");
           }
           const [row] = await tx
             .insert(issueThreadInteractions)
-            .values({
-              companyId: issue.companyId,
-              issueId: issue.id,
-              kind: data.kind,
-              status: "pending",
-              continuationPolicy: data.continuationPolicy,
-              idempotencyKey: data.idempotencyKey ?? null,
-              sourceCommentId: data.sourceCommentId ?? null,
-              sourceRunId: data.sourceRunId ?? null,
-              title: data.title ?? null,
-              summary: data.summary ?? null,
-              createdByAgentId: actor.agentId ?? null,
-              createdByUserId: actor.userId ?? null,
-              payload: data.payload,
-            })
+            .values(interactionValues)
             .returning();
+          if (
+            needsWakeTargetGuard
+            && actor.agentId
+            && !issueRow.assigneeAgentId
+            && !issueRow.assigneeUserId
+          ) {
+            await adoptWakeTargetCreator(tx as unknown as Db, issue.id, actor.agentId);
+          }
           return row;
         });
       } catch (error) {
@@ -1322,6 +1455,7 @@ export function issueThreadInteractionService(db: Db) {
             idempotencyKey: data.idempotencyKey,
           });
         }
+        await ensureReusedInteractionHasLiveWakeTarget(existing, actor);
         return hydrateInteraction(existing);
       }
 
