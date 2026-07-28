@@ -16123,6 +16123,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               id: heartbeatRuns.id,
               status: heartbeatRuns.status,
               finishedAt: heartbeatRuns.finishedAt,
+              // The streak needs the error code to tell a
+              // dequeue-time staleness verdict (no session ever spawned, same
+              // verdict on every retry) apart from a crash-shaped cancel.
+              errorCode: heartbeatRuns.errorCode,
             })
             .from(heartbeatRuns)
             .where(

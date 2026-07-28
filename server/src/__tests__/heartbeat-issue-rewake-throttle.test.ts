@@ -151,8 +151,11 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     agentId: string;
     issueId: string;
     status?: string;
+    errorCode?: string;
     finishedSecondsAgo: number;
     startedSecondsAgo?: number;
+    /** Staleness cancels are decided before spawn, so they never start. */
+    neverStarted?: boolean;
   }) {
     const runId = randomUUID();
     const finishedAt = new Date(Date.now() - input.finishedSecondsAgo * 1000);
@@ -165,9 +168,10 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       agentId: input.agentId,
       invocationSource: "assignment",
       status: input.status ?? "succeeded",
+      errorCode: input.errorCode ?? null,
       responsibleUserId: "responsible-user",
       createdAt: startedAt,
-      startedAt,
+      startedAt: input.neverStarted ? null : startedAt,
       finishedAt,
       contextSnapshot: { issueId: input.issueId, wakeReason: "issue_assigned" },
     });
@@ -264,6 +268,68 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 70 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
     await seedTerminalRun({ companyId, agentId, issueId, status: "failed", finishedSecondsAgo: 10 });
+
+    const recoveryWake = await assignmentWake(agentId, issueId);
+    expect(recoveryWake).not.toBeNull();
+  });
+
+  // Dequeue-time staleness cancels are the throttle's own mitigation
+  // output. If they broke the streak, the throttle would be blind to the loop it
+  // exists to damp — the observed failure was 358 wakes in 76 minutes on one issue.
+  it("throttles a re-wake storm made of dequeue-time staleness cancels", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    for (const finishedSecondsAgo of [39, 26, 13]) {
+      await seedTerminalRun({
+        companyId,
+        agentId,
+        issueId,
+        status: "cancelled",
+        errorCode: "issue_continuation_waiting_on_review",
+        neverStarted: true,
+        finishedSecondsAgo,
+      });
+    }
+
+    const wake = await assignmentWake(agentId, issueId);
+    expect(wake).toBeNull();
+
+    const skipped = await latestWakeRequest(agentId);
+    expect(skipped?.reason).toBe("issue_rewake_throttled");
+    const heartbeatSkip = (skipped?.payload as Record<string, unknown> | null)?.heartbeatSkip as
+      | Record<string, unknown>
+      | undefined;
+    expect(heartbeatSkip?.noProgressStreak).toBe(3);
+
+    // No new run row: the storm stops costing control-plane writes too.
+    const runCount = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(runCount).toBe(3);
+  });
+
+  it("does not throttle the wake that follows a crash-shaped cancel", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    await seedTerminalRun({
+      companyId,
+      agentId,
+      issueId,
+      status: "cancelled",
+      errorCode: "issue_continuation_waiting_on_review",
+      neverStarted: true,
+      finishedSecondsAgo: 40,
+    });
+    await seedTerminalRun({
+      companyId,
+      agentId,
+      issueId,
+      status: "cancelled",
+      errorCode: "process_lost",
+      finishedSecondsAgo: 10,
+    });
 
     const recoveryWake = await assignmentWake(agentId, issueId);
     expect(recoveryWake).not.toBeNull();
