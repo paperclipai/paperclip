@@ -577,7 +577,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
-  it("expires ask_user_questions interactions by default when a user comments after creation", async () => {
+  // OPERATOR RULING 2026-07-28: operator-facing asks (request_confirmation,
+  // request_checkbox_confirmation, ask_user_questions) are NEVER expired by a
+  // later user comment — a bare timestamp is not evidence the comment answered
+  // the ask. The supersedeOnUserComment payload flag is still stamped at
+  // creation, but both comment sweeps skip operator-facing kinds. These tests
+  // pin that fork behavior; upstream's supersede-by-default was rejected.
+  it("keeps ask_user_questions pending when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Question supersede");
     const commentId = randomUUID();
 
@@ -586,7 +592,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "ask_user_questions",
-      summary: "ASK: Choose the scope. WHY: A later board comment should supersede this. ACTION: Pick Phase 1, or comment to supersede.",
+      summary: "ASK: Choose the scope. WHY: This ask must survive later board comments. ACTION: Pick Phase 1 when ready.",
       payload: {
         version: 1,
         questions: [{
@@ -618,20 +624,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     });
 
-    expect(expired).toHaveLength(1);
-    expect(expired[0]).toMatchObject({
-      id: created.id,
-      kind: "ask_user_questions",
-      status: "expired",
-      result: {
-        version: 1,
-        answers: [],
-        expirationReason: "superseded_by_comment",
-        commentId,
-        summaryMarkdown: null,
-      },
-      resolvedByUserId: "local-board",
-    });
+    expect(expired).toEqual([]);
+    const row = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({ status: "pending", result: null });
   });
 
   it("keeps ask_user_questions pending when user-comment supersede is explicitly disabled", async () => {
@@ -733,7 +732,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.status).toBe("pending");
   });
 
-  it("repairs historical ask_user_questions superseded by later user comments idempotently", async () => {
+  it("leaves historical ask_user_questions pending during the comment repair sweep", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Historical question supersede");
     const commentId = randomUUID();
     const createdAt = new Date("2026-05-18T12:00:00.000Z");
@@ -743,7 +742,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "ask_user_questions",
-      summary: "ASK: Choose the scope. WHY: A later board comment should supersede this. ACTION: Pick Phase 1, or comment to supersede.",
+      summary: "ASK: Choose the scope. WHY: The repair sweep must not expire operator asks. ACTION: Pick Phase 1 when ready.",
       payload: {
         version: 1,
         questions: [{
@@ -786,22 +785,15 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     });
 
-    expect(expired).toHaveLength(1);
-    expect(expired[0]).toMatchObject({
-      id: created.id,
-      kind: "ask_user_questions",
-      status: "expired",
-      result: {
-        version: 1,
-        answers: [],
-        expirationReason: "superseded_by_comment",
-        commentId,
-        summaryMarkdown: null,
-      },
-      resolvedByAgentId: null,
-      resolvedByUserId: "local-board",
-    });
+    expect(expired).toEqual([]);
+    const row = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({ status: "pending", result: null });
 
+    // Repeat-stability: a second sweep still leaves the ask untouched.
     await expect(interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({
       id: issueId,
       companyId,
@@ -1130,7 +1122,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Select no more than 2 checkbox confirmation option(s)");
   });
 
-  it("expires request_checkbox_confirmation interactions when a user comments after creation", async () => {
+  it("keeps request_checkbox_confirmation pending when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Checkbox confirmation supersede");
     const commentId = randomUUID();
 
@@ -1159,17 +1151,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     });
 
-    expect(expired).toHaveLength(1);
-    expect(expired[0]).toMatchObject({
-      id: created.id,
-      kind: "request_checkbox_confirmation",
-      status: "expired",
-      result: {
-        version: 1,
-        outcome: "superseded_by_comment",
-        commentId,
-      },
-    });
+    expect(expired).toEqual([]);
+    const row = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({ status: "pending", result: null });
   });
 
   it("submits request_item_verdicts partially and completes when all items are resolved", async () => {
@@ -1492,7 +1480,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("expires request confirmations by default when a user comments after creation", async () => {
+  it("keeps request confirmations pending when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue();
     const commentId = randomUUID();
 
@@ -1501,7 +1489,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "request_confirmation",
-      summary: "ASK: Proceed with the current draft? WHY: A new board comment should supersede this. ACTION: Approve, or comment to supersede.",
+      summary: "ASK: Proceed with the current draft? WHY: This ask must survive later board comments. ACTION: Approve when ready.",
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
@@ -1527,17 +1515,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     });
 
-    expect(expired).toHaveLength(1);
-    expect(expired[0]).toMatchObject({
-      id: created.id,
-      status: "expired",
-      result: {
-        version: 1,
-        outcome: "superseded_by_comment",
-        commentId,
-      },
-      resolvedByUserId: "local-board",
-    });
+    expect(expired).toEqual([]);
+    const row = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({ status: "pending", result: null });
   });
 
   it("keeps request confirmations pending when user-comment supersede is explicitly disabled", async () => {
@@ -1736,7 +1720,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.status).toBe("pending");
   });
 
-  it("repairs historical request confirmations superseded by later user comments idempotently", async () => {
+  it("leaves historical request confirmations pending during the comment repair sweep", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Historical comment supersede");
     const commentId = randomUUID();
     const createdAt = new Date("2026-05-18T12:00:00.000Z");
@@ -1746,7 +1730,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "request_confirmation",
-      summary: "ASK: Proceed with the current draft? WHY: A later board comment should supersede this. ACTION: Approve, or comment to supersede.",
+      summary: "ASK: Proceed with the current draft? WHY: The repair sweep must not expire operator asks. ACTION: Approve when ready.",
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
@@ -1784,19 +1768,15 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     });
 
-    expect(expired).toHaveLength(1);
-    expect(expired[0]).toMatchObject({
-      id: created.id,
-      status: "expired",
-      result: {
-        version: 1,
-        outcome: "superseded_by_comment",
-        commentId,
-      },
-      resolvedByAgentId: null,
-      resolvedByUserId: "local-board",
-    });
+    expect(expired).toEqual([]);
+    const row = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({ status: "pending", result: null });
 
+    // Repeat-stability: a second sweep still leaves the ask untouched.
     await expect(interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({
       id: issueId,
       companyId,

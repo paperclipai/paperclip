@@ -1840,6 +1840,12 @@ export function issueThreadInteractionService(db: Db) {
 
       const superseded = rows.filter((row) => {
         if (!isUserCommentSupersedableKind(row.kind)) return false;
+        // OPERATOR RULING 2026-07-28: do not "fix". Operator-facing asks are
+        // NEVER expired by a later user comment — a bare timestamp is not
+        // evidence the comment answered the ask (silent-expiry /
+        // hidden-operator-decision protection). If ever revisited, the only
+        // acceptable shape is a predicate that supersedes when the comment
+        // demonstrably resolves the ask.
         if (isOperatorFacingInteractionKind(row.kind)) return false;
         const interaction = hydrateInteraction(row) as UserCommentSupersedableInteraction;
         return (
@@ -1922,6 +1928,8 @@ export function issueThreadInteractionService(db: Db) {
       >();
       for (const row of rows) {
         if (!isUserCommentSupersedableKind(row.kind)) continue;
+        // OPERATOR RULING 2026-07-28: do not "fix" — see the comment-sweep
+        // guard above. The historical repair must not expire operator asks.
         if (isOperatorFacingInteractionKind(row.kind)) continue;
         const interaction = hydrateInteraction(row) as UserCommentSupersedableInteraction;
         if (!shouldSupersedeInteractionOnUserComment(interaction)) continue;
