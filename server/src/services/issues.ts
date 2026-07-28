@@ -117,6 +117,7 @@ import {
 import {
   classifyIssueGraphLiveness,
   classifyIssueReviewPaths,
+  hasScheduledIssueMonitorPath,
   type IssueGraphLivenessInput,
   type IssueLivenessFinding,
 } from "./recovery/issue-graph-liveness.js";
@@ -2505,7 +2506,49 @@ async function listIssueBlockerAttentionMap(
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
   if (explicitWaitCandidateIds.length > 0) {
+    // A scheduled monitor is a wake path the harness owns: the issue re-enters
+    // its assignee's queue at monitorNextCheckAt without any human action. The
+    // recovery liveness classifier already counts it (hasScheduledIssueMonitorPath),
+    // so blocker attention has to agree or it flags actively monitored blockers.
+    // Reuse that exact predicate rather than a bare monitorNextCheckAt > now
+    // comparison: it also drops monitors past timeoutAt or maxAttempts, which no
+    // longer fire and therefore must not read as covered.
+    const monitorNowMs = Date.now();
     for (const chunk of chunkList(explicitWaitCandidateIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      const monitorRows: Array<{
+        id: string;
+        companyId: string;
+        identifier: string | null;
+        title: string;
+        status: string;
+        executionPolicy: Record<string, unknown> | null;
+        executionState: Record<string, unknown> | null;
+        monitorNextCheckAt: Date | null;
+        monitorAttemptCount: number | null;
+      }> = await dbOrTx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.id, chunk),
+            isNotNull(issues.monitorNextCheckAt),
+          ),
+        );
+      for (const row of monitorRows) {
+        if (hasScheduledIssueMonitorPath(row, monitorNowMs)) explicitWaitingIssueIds.add(row.id);
+      }
+
       const interactionRows: Array<{ issueId: string }> = await dbOrTx
         .select({ issueId: issueThreadInteractions.issueId })
         .from(issueThreadInteractions)

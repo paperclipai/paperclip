@@ -101,6 +101,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originFingerprint?: string | null;
     executionState?: Record<string, unknown> | null;
     description?: string | null;
+    monitorNextCheckAt?: Date | null;
+    monitorAttemptCount?: number | null;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -118,8 +120,23 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
       description: input.description ?? null,
+      monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+      ...(input.monitorAttemptCount == null ? {} : { monitorAttemptCount: input.monitorAttemptCount }),
     });
     return id;
+  }
+
+  function monitorState(input: { timeoutAt: Date; maxAttempts?: number; attemptCount?: number }) {
+    return {
+      monitor: {
+        kind: "external_service",
+        status: "scheduled",
+        serviceName: "github-checks",
+        timeoutAt: input.timeoutAt.toISOString(),
+        maxAttempts: input.maxAttempts ?? 12,
+        attemptCount: input.attemptCount ?? 0,
+      },
+    } satisfies Record<string, unknown>;
   }
 
   async function block(input: { companyId: string; blockerIssueId: string; blockedIssueId: string }) {
@@ -640,6 +657,121 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       coveredBlockerCount: 0,
       attentionBlockerCount: 1,
       sampleBlockerIdentifier: "PBY-2",
+    });
+  });
+
+  it("treats an in_progress blocker with a scheduled monitor as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBMO");
+    const parentId = await insertIssue({ companyId, identifier: "PBMO-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBMO-2",
+      title: "Monitored blocker",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBMO-2",
+    });
+  });
+
+  it("covers a monitored blocker alongside a cancelled child on the same root", async () => {
+    const { companyId, agentId } = await createCompany("PBMC");
+    const parentId = await insertIssue({ companyId, identifier: "PBMC-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBMC-2",
+      title: "Monitored blocker",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await insertIssue({
+      companyId,
+      identifier: "PBMC-3",
+      title: "Cancelled child",
+      status: "cancelled",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+    });
+  });
+
+  it("does not treat an elapsed or exhausted monitor as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBME");
+    const elapsedParentId = await insertIssue({ companyId, identifier: "PBME-1", title: "Elapsed parent", status: "blocked" });
+    const elapsedBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBME-2",
+      title: "Monitor already due",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() - 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await block({ companyId, blockerIssueId: elapsedBlockerId, blockedIssueId: elapsedParentId });
+
+    const exhaustedParentId = await insertIssue({ companyId, identifier: "PBME-3", title: "Exhausted parent", status: "blocked" });
+    const exhaustedBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBME-4",
+      title: "Monitor attempts exhausted",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      monitorAttemptCount: 12,
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000), maxAttempts: 12 }),
+    });
+    await block({ companyId, blockerIssueId: exhaustedBlockerId, blockedIssueId: exhaustedParentId });
+
+    const blocked = await svc.list(companyId, { status: "blocked" });
+
+    expect(blocked.find((issue) => issue.id === elapsedParentId)?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBME-2",
+    });
+    expect(blocked.find((issue) => issue.id === exhaustedParentId)?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBME-4",
+    });
+  });
+
+  it("keeps a blocked issue without any blocker at needs_attention", async () => {
+    const { companyId } = await createCompany("PBNB");
+    const parentId = await insertIssue({ companyId, identifier: "PBNB-1", title: "Blocked with no blocker", status: "blocked" });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
     });
   });
 
