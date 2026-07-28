@@ -1079,6 +1079,111 @@ export async function heartbeatRunIsTerminalOrMissing(
 }
 
 /**
+ * Why a run-lock 409 was raised, from the point of view of the caller that hit it.
+ *
+ * A 409 alone does not tell an agent what to do next, and the failure mode we keep
+ * seeing is agents mistaking a *live* holder for a stale lock and then retrying or
+ * routing around the conflict. These reasons make the distinction explicit:
+ *
+ * - `no_run_lock` — nothing holds the issue; the guard that failed was the
+ *   status/assignee guard, not a run lock.
+ * - `actor_run_holds_lock` — the caller's own run holds the lock, so the conflict
+ *   is again about status/assignee, not about ownership.
+ * - `stale_lock_pending_reap` — the holding run is terminal or missing. The lock
+ *   is cleared automatically on the next assignee checkout/PATCH.
+ * - `live_sibling_run` — a *different, still running* run of the caller's own agent
+ *   holds it. Concurrent runs per agent are normal (`maxConcurrentRuns` is above 1
+ *   for a normal agent), so being the assignee is not evidence that the lock is stale.
+ * - `live_other_agent_run` — a live run of another agent holds it.
+ */
+export type RunLockConflictReason =
+  | "no_run_lock"
+  | "actor_run_holds_lock"
+  | "stale_lock_pending_reap"
+  | "live_sibling_run"
+  | "live_other_agent_run";
+
+export type RunLockConflictDetails = {
+  holderRunId: string | null;
+  holderRunStatus: string | null;
+  holderRunAgentId: string | null;
+  holderRunIsLive: boolean;
+  conflictReason: RunLockConflictReason;
+  hint: string;
+};
+
+/** One actionable sentence per reason, surfaced verbatim in the 409 body. */
+const RUN_LOCK_CONFLICT_HINTS: Record<RunLockConflictReason, string> = {
+  no_run_lock:
+    "No run holds this issue, so the conflict comes from the issue status/assignee guard rather than a run lock. Re-read the current issue state instead of retrying.",
+  actor_run_holds_lock:
+    "Your own run already holds this issue's lock, so the conflict comes from the issue status/assignee guard rather than ownership. Re-read the current issue state instead of retrying.",
+  stale_lock_pending_reap:
+    "The holding run has ended, so this lock is stale and is reaped automatically on the assignee's next checkout or PATCH. Retry that same call once rather than forcing or routing around the lock.",
+  live_sibling_run:
+    "A different, still-running run of your own agent is working this issue. Concurrent runs of one agent are normal (maxConcurrentRuns is above 1 for a normal agent), and being the assignee does not make this lock ignorable. Do not retry and do not create a workaround issue — return to the issues in your own wake scope.",
+  live_other_agent_run:
+    "A live run of another agent is working this issue. Do not retry — the holding run owns it until it ends or releases the issue.",
+};
+
+/**
+ * Resolves who actually holds an issue's run lock and whether that holder is still
+ * alive, so a 409 can say *why* it conflicted instead of leaving the caller to guess
+ * (or to probe run status through a second, easily mistyped API call).
+ *
+ * Purely descriptive: it never changes whether a 409 is raised.
+ */
+export async function describeRunLockConflict(
+  dbOrTx: Pick<Db, "select">,
+  params: {
+    checkoutRunId: string | null;
+    executionRunId: string | null;
+    actorAgentId: string | null;
+    actorRunId: string | null;
+  },
+): Promise<RunLockConflictDetails> {
+  const holderRunId = params.checkoutRunId ?? params.executionRunId ?? null;
+  const describe = (
+    reason: RunLockConflictReason,
+    holder: { status: string | null; agentId: string | null; isLive: boolean },
+  ): RunLockConflictDetails => ({
+    holderRunId,
+    holderRunStatus: holder.status,
+    holderRunAgentId: holder.agentId,
+    holderRunIsLive: holder.isLive,
+    conflictReason: reason,
+    hint: RUN_LOCK_CONFLICT_HINTS[reason],
+  });
+
+  if (!holderRunId) {
+    return describe("no_run_lock", { status: null, agentId: null, isLive: false });
+  }
+
+  const run = await dbOrTx
+    .select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, holderRunId))
+    .then((rows: Array<{ status: string; agentId: string }>) => rows[0] ?? null);
+
+  // A missing heartbeat_runs row is treated as not live, matching
+  // heartbeatRunIsTerminalOrMissing: a run we cannot see cannot make progress.
+  const holder = {
+    status: run?.status ?? null,
+    agentId: run?.agentId ?? null,
+    isLive: run ? !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status) : false,
+  };
+
+  if (params.actorRunId && holderRunId === params.actorRunId) {
+    return describe("actor_run_holds_lock", holder);
+  }
+  if (!holder.isLive) return describe("stale_lock_pending_reap", holder);
+  if (holder.agentId && params.actorAgentId && holder.agentId === params.actorAgentId) {
+    return describe("live_sibling_run", holder);
+  }
+  return describe("live_other_agent_run", holder);
+}
+
+/**
  * Returns whether a specific run's sync-back on a specific execution workspace
  * has settled — i.e. the accept/review gates that guard against a still-in-flight
  * worktree sync no longer need to block on this run.
@@ -7122,6 +7227,14 @@ export function issueService(db: Db) {
         assigneeAgentId: current.assigneeAgentId,
         checkoutRunId: current.checkoutRunId,
         executionRunId: current.executionRunId,
+        actorAgentId: agentId,
+        actorRunId: checkoutRunId,
+        ...(await describeRunLockConflict(db, {
+          checkoutRunId: current.checkoutRunId,
+          executionRunId: current.executionRunId,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+        })),
       });
     },
 
@@ -7255,6 +7368,12 @@ export function issueService(db: Db) {
           executionRunId: resolvedLatest.latest.executionRunId,
           actorAgentId,
           actorRunId,
+          ...(await describeRunLockConflict(db, {
+            checkoutRunId: resolvedLatest.latest.checkoutRunId,
+            executionRunId: resolvedLatest.latest.executionRunId,
+            actorAgentId,
+            actorRunId,
+          })),
         });
       }
 
@@ -7266,6 +7385,12 @@ export function issueService(db: Db) {
         executionRunId: latest.executionRunId,
         actorAgentId,
         actorRunId,
+        ...(await describeRunLockConflict(db, {
+          checkoutRunId: latest.checkoutRunId,
+          executionRunId: latest.executionRunId,
+          actorAgentId,
+          actorRunId,
+        })),
       });
     },
 
@@ -7297,7 +7422,15 @@ export function issueService(db: Db) {
               issueId: existing.id,
               assigneeAgentId: existing.assigneeAgentId,
               checkoutRunId: existing.checkoutRunId,
+              executionRunId: existing.executionRunId,
+              actorAgentId,
               actorRunId: actorRunId ?? null,
+              ...(await describeRunLockConflict(tx, {
+                checkoutRunId: existing.checkoutRunId,
+                executionRunId: existing.executionRunId,
+                actorAgentId,
+                actorRunId: actorRunId ?? null,
+              })),
             });
           }
         }

@@ -1159,9 +1159,34 @@ Terminal states: `done`, `cancelled`
 | 401  | Unauthenticated    | API key missing or invalid                                           |
 | 403  | Unauthorized       | You don't have permission for this action                            |
 | 404  | Not found          | Entity doesn't exist or isn't in your company                        |
-| 409  | Conflict           | Another agent owns the task. Pick a different one. **Do not retry.** |
+| 409  | Conflict           | A live run holds the task — possibly another run of your own agent. Move on. **Do not retry.** See [Run-lock 409s](#run-lock-409s). |
 | 422  | Semantic violation | Invalid state transition (e.g. `backlog` -> `done`)                  |
 | 500  | Server error       | Transient failure. Comment on the task and move on.                  |
+
+### Run-lock 409s
+
+`Issue checkout conflict`, `Issue run ownership conflict`, and `Only checkout run can release issue` all mean a heartbeat run holds the issue's lock. The `details` object says which run, and whether it is still alive:
+
+| Field              | Meaning                                                                        |
+| ------------------ | ------------------------------------------------------------------------------ |
+| `holderRunId`      | The run holding the lock (`checkoutRunId ?? executionRunId`), or `null`          |
+| `holderRunStatus`  | That run's `heartbeat_runs.status`; `null` when the row is missing               |
+| `holderRunAgentId` | The agent that run belongs to                                                   |
+| `holderRunIsLive`  | `false` for a terminal or missing run                                           |
+| `conflictReason`   | See below                                                                       |
+| `hint`             | One sentence you can act on directly                                            |
+
+| `conflictReason`          | What it means                                          | What to do                                                                  |
+| ------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `live_sibling_run`        | A different, still-running run of **your own agent**    | Do not retry, do not open a workaround issue; go back to your own wake scope |
+| `live_other_agent_run`    | A live run of another agent                            | Do not retry; that run owns the issue until it ends or releases it           |
+| `stale_lock_pending_reap` | Holder run is terminal or missing                      | The lock is reaped on the assignee's next checkout/PATCH — retry that call once |
+| `actor_run_holds_lock`    | Your own run already holds the lock                    | The conflict is the status/assignee guard, not ownership — re-read the issue |
+| `no_run_lock`             | Nothing holds the issue                                | Same — re-read the issue state rather than retrying                          |
+
+**`maxConcurrentRuns` is above 1 for a normal agent** (shipped default 20, often tuned down per agent), so a single agent commonly has several runs going at once and `live_sibling_run` is the most frequent reason. **Being the issue's assignee is not a reason to ignore a 409.**
+
+To inspect a holder run directly, use `GET /api/heartbeat-runs/{runId}`. **`/api/runs/{id}` does not exist** — it returns `{"error":"API route not found"}`, and reading the absent `status` as `null` has already caused live holders to be misreported as stale locks.
 
 ---
 
@@ -1342,7 +1367,9 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | Mistake                                     | Why it's wrong                                        | What to do instead                                      |
 | ------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------- |
 | Start work without checkout                 | Another agent may claim it simultaneously             | Always `POST /issues/:id/checkout` first                |
-| Retry a `409` checkout                      | The task belongs to someone else                      | Pick a different task                                   |
+| Retry a `409` checkout                      | A live run holds it — often another run of your own agent, since `maxConcurrentRuns` is above 1 | Read `details.conflictReason`; move on. Being the assignee is not an exception |
+| Create a substitute issue to dodge a `409`  | The real work is already tracked on the locked issue; a duplicate breaks the board's view | Return to the issues in your own wake scope |
+| Check a holder run via `/api/runs/{id}`     | That route does not exist; the `404` body has no `status`, which reads as a dead run | Use `GET /api/heartbeat-runs/{runId}`, or just read `holderRunIsLive` in the 409 |
 | Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit, except explicit mention handoff |
 | Exit without commenting on in-progress work | Your manager can't see progress; work appears stalled | Leave a comment explaining where you are                |
 | Create tasks without `parentId`             | Breaks the task hierarchy; work becomes untraceable   | Link every subtask to its parent                        |

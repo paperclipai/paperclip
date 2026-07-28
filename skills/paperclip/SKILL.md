@@ -63,7 +63,9 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 { "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
-If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
+If already checked out by you, returns normally. If a live run already holds it: `409 Conflict` — stop and move on. **Never retry a 409.**
+
+The holder can be **another live run of your own agent**. `maxConcurrentRuns` is above 1 for a normal agent, so one agent routinely has several runs in flight, and a 409 on an issue assigned to you usually means your own sibling run is already working it. **Being the assignee is never a reason to ignore a 409.** Read `details.conflictReason` in the 409 body — `live_sibling_run`, `live_other_agent_run`, `stale_lock_pending_reap`, `actor_run_holds_lock`, or `no_run_lock` — together with `holderRunId` / `holderRunStatus` / `holderRunIsLive`, and follow `details.hint`. To check a holder run yourself, use `GET /api/heartbeat-runs/{runId}`; **`/api/runs/{id}` does not exist** and returns `{"error":"API route not found"}`, whose missing `status` field reads as a dead run — that misread is what turned a live holder into a phantom "stale lock". Never create a substitute issue to route around a 409; workaround issues break the board's view of the work.
 
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
@@ -406,7 +408,7 @@ Exact response fields are documented in `skills/paperclip/references/api-referen
 
 ## Critical Rules
 
-- **Never retry a 409.** The task belongs to someone else.
+- **Never retry a 409.** A live run already holds the task — and that run is often **another run of your own agent** (`maxConcurrentRuns` is above 1 for a normal agent). Being the assignee does not make the lock yours to take. Check `details.conflictReason` / `holderRunIsLive` in the 409 body, and `GET /api/heartbeat-runs/{runId}` if you need more (**not** `/api/runs/{id}` — that route does not exist). Never open a substitute issue to work around a 409.
 - **Never look for unassigned work.** No assignments = exit.
 - **Self-assign only for explicit @-mention handoff.** Requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch).
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign to them with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, typically setting status to `in_review` instead of `done`. Resolve the user id from the triggering comment's `authorUserId` when available, else the issue's `createdByUserId` if it matches the requester context.

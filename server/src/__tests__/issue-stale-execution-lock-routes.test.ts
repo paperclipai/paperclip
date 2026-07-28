@@ -19,6 +19,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { describeRunLockConflict } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -341,6 +342,169 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body?.error).toBe("Issue run ownership conflict");
+    // The holder is a live run of the *same* agent — the case that keeps getting
+    // misread as a stale lock. The 409 has to say so without a follow-up API call.
+    expect(res.body?.details).toMatchObject({
+      holderRunId: liveOwnerRunId,
+      holderRunStatus: "running",
+      holderRunAgentId: agentId,
+      holderRunIsLive: true,
+      conflictReason: "live_sibling_run",
+    });
+    expect(res.body?.details?.hint).toContain("Do not retry");
+  });
+
+  it("reports a live other-agent holder on a run ownership conflict", async () => {
+    // The issue has been reassigned to this agent, but another agent's still-running
+    // run holds the checkout lock. Adoption must fail and the 409 must name the
+    // holding agent rather than implying the lock is the caller's to take.
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const otherAgentId = randomUUID();
+    const otherAgentRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: otherAgentRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Other agent live checkout lock",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: otherAgentRunId,
+      executionRunId: otherAgentRunId,
+      executionAgentNameKey: "otheragent",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Should fail" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body?.details).toMatchObject({
+      holderRunId: otherAgentRunId,
+      holderRunStatus: "running",
+      holderRunAgentId: otherAgentId,
+      holderRunIsLive: true,
+      conflictReason: "live_other_agent_run",
+    });
+  });
+
+  // `stale_lock_pending_reap` is race-only through the routes: both conflict paths
+  // run clearCheckoutRunIfTerminal / clearExecutionRunIfTerminal first, so a lock
+  // that is already terminal is reaped before the throw. It stays reachable when a
+  // holder run ends between that reap and the conflict re-read, so the classifier
+  // is covered directly instead of through a route.
+  describe("describeRunLockConflict", () => {
+    it("classifies a terminal holder run as a stale lock pending reap", async () => {
+      const { agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+
+      expect(
+        await describeRunLockConflict(db, {
+          checkoutRunId: failedRunId,
+          executionRunId: failedRunId,
+          actorAgentId: agentId,
+          actorRunId: currentRunId,
+        }),
+      ).toMatchObject({
+        holderRunId: failedRunId,
+        holderRunStatus: "failed",
+        holderRunAgentId: agentId,
+        holderRunIsLive: false,
+        conflictReason: "stale_lock_pending_reap",
+      });
+    });
+
+    it("treats a missing holder run row as not live", async () => {
+      const { agentId, currentRunId } = await seedCompanyAgentAndRuns();
+      const missingRunId = randomUUID();
+
+      expect(
+        await describeRunLockConflict(db, {
+          checkoutRunId: missingRunId,
+          executionRunId: null,
+          actorAgentId: agentId,
+          actorRunId: currentRunId,
+        }),
+      ).toMatchObject({
+        holderRunId: missingRunId,
+        holderRunStatus: null,
+        holderRunAgentId: null,
+        holderRunIsLive: false,
+        conflictReason: "stale_lock_pending_reap",
+      });
+    });
+
+    it("falls back to executionRunId when no checkout lock is held", async () => {
+      const { agentId, currentRunId, failedRunId } = await seedCompanyAgentAndRuns();
+
+      expect(
+        await describeRunLockConflict(db, {
+          checkoutRunId: null,
+          executionRunId: currentRunId,
+          actorAgentId: agentId,
+          actorRunId: failedRunId,
+        }),
+      ).toMatchObject({
+        holderRunId: currentRunId,
+        holderRunIsLive: true,
+        conflictReason: "live_sibling_run",
+      });
+    });
+
+    it("does not blame a sibling run when nothing holds the lock", async () => {
+      const { agentId, currentRunId } = await seedCompanyAgentAndRuns();
+
+      expect(
+        await describeRunLockConflict(db, {
+          checkoutRunId: null,
+          executionRunId: null,
+          actorAgentId: agentId,
+          actorRunId: currentRunId,
+        }),
+      ).toMatchObject({
+        holderRunId: null,
+        holderRunStatus: null,
+        holderRunAgentId: null,
+        holderRunIsLive: false,
+        conflictReason: "no_run_lock",
+      });
+    });
+
+    it("does not blame a sibling run when the caller's own run holds the lock", async () => {
+      const { agentId, currentRunId } = await seedCompanyAgentAndRuns();
+
+      expect(
+        await describeRunLockConflict(db, {
+          checkoutRunId: currentRunId,
+          executionRunId: currentRunId,
+          actorAgentId: agentId,
+          actorRunId: currentRunId,
+        }),
+      ).toMatchObject({
+        holderRunId: currentRunId,
+        holderRunIsLive: true,
+        conflictReason: "actor_run_holds_lock",
+      });
+    });
   });
 
   it("preserves live checkout ownership on checkout conflicts without retry side effects", async () => {
@@ -378,7 +542,17 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body).toMatchObject({
       error: "Issue checkout conflict",
+      details: {
+        holderRunId: currentRunId,
+        holderRunStatus: "running",
+        holderRunAgentId: agentId,
+        holderRunIsLive: true,
+        conflictReason: "live_sibling_run",
+        actorAgentId: agentId,
+        actorRunId: contenderRunId,
+      },
     });
+    expect(res.body?.details?.hint).toContain("maxConcurrentRuns");
 
     const row = await db
       .select({
