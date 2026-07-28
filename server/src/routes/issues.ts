@@ -6719,14 +6719,15 @@ export function issueRoutes(
       }
     }
     const sourceTrust = await sourceTrustForActorWrite(issue, actor);
-    const product = await workProductsSvc.update(id, {
+    const updateResult = await workProductsSvc.update(id, {
       ...patch,
       ...(sourceTrust ? { sourceTrust } : {}),
     });
-    if (!product) {
+    if (!updateResult) {
       res.status(404).json({ error: "Work product not found" });
       return;
     }
+    const { previousStatus, ...product } = updateResult;
     await logActivity(db, {
       companyId: existing.companyId,
       actorType: actor.actorType,
@@ -6740,11 +6741,14 @@ export function issueRoutes(
       details: {
         workProductId: product.id,
         changedKeys: Object.keys(req.body).sort(),
-        // The resulting status, so a later reader can tell what the change moved the product
-        // *into*. `changedKeys` alone only says that status changed, which is not enough to
-        // distinguish "entered completion" from a refinement between two completion states.
+        // The resulting status and the one it actually replaced, so a later reader can tell what
+        // the change moved the product *into*. `changedKeys` alone only says that status changed,
+        // which is not enough to distinguish "entered completion" from a refinement between two
+        // completion states. `previousStatus` comes from the locked read inside the update
+        // transaction, not from the pre-authorization read above, which a concurrent update could
+        // have made stale.
         status: product.status,
-        previousStatus: existing.status,
+        previousStatus,
       },
     });
     await revalidateActiveSourceRecoveryAfterCommittedWrite({

@@ -64,7 +64,9 @@ describe("workProductService", () => {
   it("uses a transaction when promoting an existing work product to primary", async () => {
     const existingRow = createWorkProductRow({ isPrimary: false });
 
-    const selectWhere = vi.fn(async () => [existingRow]);
+    // `.for("update")` locks the row so `previousStatus` describes the state this write replaces.
+    const selectFor = vi.fn(async () => [existingRow]);
+    const selectWhere = vi.fn(() => ({ for: selectFor }));
     const selectFrom = vi.fn(() => ({ where: selectWhere }));
     const txSelect = vi.fn(() => ({ from: selectFrom }));
 
@@ -90,6 +92,8 @@ describe("workProductService", () => {
     expect(transaction).toHaveBeenCalledTimes(1);
     expect(txSelect).toHaveBeenCalledTimes(1);
     expect(txUpdate).toHaveBeenCalledTimes(2);
+    expect(selectFor).toHaveBeenCalledWith("update");
     expect(result?.reviewState).toBe("ready_for_review");
+    expect(result?.previousStatus).toBe(existingRow.status);
   });
 });

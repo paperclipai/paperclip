@@ -79,11 +79,16 @@ export function workProductService(db: Db) {
     },
 
     update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
-      const row = await db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
+        // `for update` locks the row for the rest of this transaction, so the state read here is
+        // exactly the state the write below overwrites. Callers that record the transition (the
+        // audit row read by the productivity work trace) would otherwise report a `previousStatus`
+        // that a concurrent update had already replaced — a transition that never happened.
         const existing = await tx
           .select()
           .from(issueWorkProducts)
           .where(eq(issueWorkProducts.id, id))
+          .for("update")
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
@@ -100,14 +105,16 @@ export function workProductService(db: Db) {
             );
         }
 
-        return await tx
+        const updated = await tx
           .update(issueWorkProducts)
           .set({ ...patch, updatedAt: new Date() })
           .where(eq(issueWorkProducts.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
+        return updated ? { updated, previousStatus: existing.status } : null;
       });
-      return row ? toIssueWorkProduct(row) : null;
+      if (!result) return null;
+      return { ...toIssueWorkProduct(result.updated), previousStatus: result.previousStatus };
     },
 
     remove: async (id: string) => {
