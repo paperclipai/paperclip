@@ -363,6 +363,14 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       const latest = await heartbeat.getRun(firstRun!.id);
       expect(latest?.status).toBe("succeeded");
     }, { timeout: 10_000 });
+    await vi.waitFor(async () => {
+      const [taskSession] = await db
+        .select({ sessionParamsJson: agentTaskSessions.sessionParamsJson })
+        .from(agentTaskSessions)
+        .where(eq(agentTaskSessions.agentId, agentId))
+        .limit(1);
+      expect(taskSession?.sessionParamsJson).toMatchObject({ sessionId: "executor-session" });
+    }, { timeout: 10_000 });
 
     await db.update(issues).set({
       status: "in_progress",
