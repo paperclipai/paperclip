@@ -15,6 +15,7 @@ import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import { useAutoScroll } from "../hooks/useAutoScroll";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { Badge } from "@/components/ui/badge";
 
@@ -180,6 +181,8 @@ const AgentRunCard = memo(function AgentRunCard({
   isActive: boolean;
   className?: string;
 }) {
+  // Follow streaming run output (stick-to-bottom unless the user scrolls up).
+  const { ref: scrollRef, onScroll } = useAutoScroll<HTMLDivElement>();
   return (
     <div className={cn(
       "flex h-(--sz-320px) flex-col overflow-hidden rounded-xl border shadow-sm",
@@ -237,7 +240,11 @@ const AgentRunCard = memo(function AgentRunCard({
         )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="min-h-0 flex-1 overflow-y-auto p-3"
+      >
         <RunChatSurface
           run={run}
           transcript={transcript}
