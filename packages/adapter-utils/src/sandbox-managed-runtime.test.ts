@@ -11,7 +11,81 @@ import {
   mirrorDirectory,
   prepareSandboxManagedRuntime,
   type SandboxManagedRuntimeClient,
+  type SandboxSyncOperation,
+  type SandboxSyncResult,
 } from "./sandbox-managed-runtime.js";
+
+function toArrayBuffer(bytes: Buffer): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+// Give a bare fake client a `syncIn` that reproduces the non-native base64-tar
+// FALLBACK (place each file mapping via `writeFile`, then run the operation's
+// ordered `postUploadCommands` fail-fast via `run`) — byte-for-byte the prior
+// inline `writeFile`+`run` sequence, exercised through the unified seam. Inbound
+// staging uses only `kind: "file"` mappings.
+function attachFallbackSyncIn(client: SandboxManagedRuntimeClient, timeoutMs = 30_000): void {
+  client.syncIn = async (operations: SandboxSyncOperation[]): Promise<SandboxSyncResult> => {
+    const resultOperations: SandboxSyncResult["operations"] = [];
+    for (const operation of operations) {
+      let filesTransferred = 0;
+      let bytesTransferred = 0;
+      for (const mapping of operation.files) {
+        const bytes = await readFile(mapping.sourcePath);
+        await client.makeDir(path.posix.dirname(mapping.targetPath));
+        if (mapping.mode != null) {
+          const staged = `${mapping.targetPath}.pcstage`;
+          await client.writeFile(staged, toArrayBuffer(bytes));
+          await client.run(
+            `chmod ${(mapping.mode & 0o7777).toString(8)} '${staged}' && mv -f '${staged}' '${mapping.targetPath}'`,
+            { timeoutMs },
+          );
+        } else {
+          await client.writeFile(mapping.targetPath, toArrayBuffer(bytes));
+        }
+        filesTransferred += 1;
+        bytesTransferred += bytes.byteLength;
+      }
+      for (const command of operation.postUploadCommands ?? []) {
+        await client.run(command.command, { timeoutMs: command.timeoutMs ?? timeoutMs });
+      }
+      resultOperations.push({ operationId: operation.operationId, filesTransferred, bytesTransferred });
+    }
+    return { operations: resultOperations };
+  };
+}
+
+// A NATIVE-simulating `syncIn`: it records the operations for assertion and
+// materializes files directly (never through the client's `writeFile`/`run`), so
+// a test can prove the orchestrator delegates entirely to `syncIn` (0 direct
+// `writeFile`/`run` execs). Post-upload commands still run in-sandbox (via `sh`),
+// modeling a provider that honors `postUploadCommands` after `uploadFiles`.
+function attachNativeRecordingSyncIn(
+  client: SandboxManagedRuntimeClient,
+  captured: SandboxSyncOperation[],
+): void {
+  client.syncIn = async (operations: SandboxSyncOperation[]): Promise<SandboxSyncResult> => {
+    const resultOperations: SandboxSyncResult["operations"] = [];
+    for (const operation of operations) {
+      captured.push(operation);
+      let filesTransferred = 0;
+      let bytesTransferred = 0;
+      for (const mapping of operation.files) {
+        const bytes = await readFile(mapping.sourcePath);
+        await mkdir(path.posix.dirname(mapping.targetPath), { recursive: true });
+        await writeFile(mapping.targetPath, bytes);
+        if (mapping.mode != null) await fsPromises.chmod(mapping.targetPath, mapping.mode);
+        filesTransferred += 1;
+        bytesTransferred += bytes.byteLength;
+      }
+      for (const command of operation.postUploadCommands ?? []) {
+        await execFile("sh", ["-c", command.command], { maxBuffer: 32 * 1024 * 1024 });
+      }
+      resultOperations.push({ operationId: operation.operationId, filesTransferred, bytesTransferred });
+    }
+    return { operations: resultOperations };
+  };
+}
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -176,6 +250,7 @@ describe("sandbox managed runtime", () => {
     };
     const runtimeStatuses: string[] = [];
 
+    attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
@@ -296,6 +371,7 @@ describe("sandbox managed runtime", () => {
     };
     const runtimeStatuses: Array<{ phase: string; message: string }> = [];
 
+    attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
@@ -418,6 +494,7 @@ describe("sandbox managed runtime", () => {
       },
     };
 
+    attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
@@ -536,6 +613,7 @@ describe("sandbox managed runtime", () => {
       },
     };
 
+    attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
@@ -628,6 +706,7 @@ describe("sandbox managed runtime", () => {
       },
     };
 
+    attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
@@ -713,6 +792,7 @@ describe("sandbox managed runtime", () => {
       },
     };
 
+    attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
@@ -805,6 +885,7 @@ describe("sandbox managed runtime", () => {
     };
 
     const lines: string[] = [];
+    attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
@@ -872,6 +953,7 @@ describe("sandbox managed runtime", () => {
       },
     };
 
+    attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
@@ -928,6 +1010,7 @@ describe("sandbox managed runtime", () => {
       },
     };
 
+    attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
@@ -994,6 +1077,7 @@ describe("sandbox managed runtime", () => {
     const restored: string[] = [];
     const stagedContentSeen: string[] = [];
 
+    attachFallbackSyncIn(client);
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
@@ -1012,8 +1096,8 @@ describe("sandbox managed runtime", () => {
         provision: {
           stageFiles: [{ name: "widget-helper.txt", contents: "helper-bytes\n" }],
           // Extract the asset AND consume the staged helper file, proving both
-          // stageFiles and extractCommand flow through the core generically.
-          extractCommand: ({ assetTarPath, assetDir, runtimeRootDir }) =>
+          // stageFiles and postUploadCommand flow through the core generically.
+          postUploadCommand: ({ assetTarPath, assetDir, runtimeRootDir }) =>
             `rm -rf ${q(assetDir)} && mkdir -p ${q(assetDir)} && ` +
             `tar -xf ${q(assetTarPath)} -C ${q(assetDir)} && rm -f ${q(assetTarPath)} && ` +
             `cp ${q(path.posix.join(runtimeRootDir, "widget-helper.txt"))} ${q(path.posix.join(assetDir, "helper.copied.txt"))}`,
@@ -1070,6 +1154,7 @@ describe("sandbox managed runtime", () => {
         await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
       },
     };
+    attachFallbackSyncIn(client);
 
     // A compromised adapter supplying a traversal name must be rejected before
     // the core ever writes outside the runtime root.
@@ -1101,6 +1186,181 @@ describe("sandbox managed runtime", () => {
       // The guard fires before the offending write, so nothing landed under the runtime root.
       expect(writtenPaths.some((p) => p.endsWith("evil.txt") || p.endsWith("passwd") || p.endsWith("child.txt"))).toBe(false);
     }
+  });
+
+  it("routes a custom-provisioned asset through a single syncIn operation with its post-upload command (native runner → 0 direct writeFile/run)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-native-asset-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localAssetsDir = path.join(rootDir, "local-assets");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(localAssetsDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace\n", "utf8");
+    await writeFile(path.join(localAssetsDir, "seed.txt"), "seed\n", "utf8");
+
+    // A native runner delegates every staging step to `syncIn`; the orchestrator
+    // must make NO direct `writeFile`/`run` exec. These record any leak.
+    const directWrites: string[] = [];
+    const directRuns: string[] = [];
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        directWrites.push(remotePath);
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        directRuns.push(command);
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+    const captured: SandboxSyncOperation[] = [];
+    attachNativeRecordingSyncIn(client, captured);
+
+    const q = (value: string) => `'${value.replace(/'/g, `'\"'\"'`)}'`;
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "generic-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{
+        key: "widget",
+        localDir: localAssetsDir,
+        provision: {
+          stageFiles: [{ name: "widget-helper.sh", contents: "#!/bin/sh\ntar -xf \"$2\" -C \"$1\"\n" }],
+          // A bespoke post-upload command that consumes the staged helper — proves
+          // the custom command (not a plain default `tar -xf`) rides syncIn.
+          postUploadCommand: ({ assetTarPath, assetDir, runtimeRootDir }) =>
+            `rm -rf ${q(assetDir)} && mkdir -p ${q(assetDir)} && ` +
+            `sh ${q(path.posix.join(runtimeRootDir, "widget-helper.sh"))} ${q(assetDir)} ${q(assetTarPath)} && ` +
+            `rm -f ${q(assetTarPath)}`,
+        },
+      }],
+    });
+
+    // The orchestrator delegated everything to syncIn: no direct exec/writeFile.
+    expect(directWrites).toEqual([]);
+    expect(directRuns).toEqual([]);
+
+    // Exactly one operation carries the asset: the asset tar + the staged helper
+    // as `files`, and the bespoke command as the ordered post-upload command.
+    const assetOp = captured.find((op) =>
+      op.files.some((mapping) => mapping.targetPath.endsWith("widget-upload.tar")),
+    );
+    expect(assetOp).toBeDefined();
+    const targets = assetOp!.files.map((mapping) => path.posix.basename(mapping.targetPath)).sort();
+    expect(targets).toEqual(["widget-helper.sh", "widget-upload.tar"]);
+    expect(assetOp!.files.every((mapping) => mapping.kind === "file")).toBe(true);
+    expect(assetOp!.postUploadCommands).toHaveLength(1);
+    expect(assetOp!.postUploadCommands![0].command).toContain("widget-helper.sh");
+    expect(assetOp!.postUploadCommands![0].command).not.toBe(
+      `rm -rf ${q(path.posix.join(prepared.runtimeRootDir, "widget"))} && mkdir -p ${q(path.posix.join(prepared.runtimeRootDir, "widget"))}`,
+    );
+
+    // The asset actually materialized through the native seam.
+    await expect(readFile(path.join(prepared.assetDirs.widget, "seed.txt"), "utf8")).resolves.toBe("seed\n");
+  });
+
+  it("stages git and workspace via syncIn preserving .paperclip-runtime (native runner → 0 direct writeFile/run)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-native-git-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "tracked.txt"), "tracked\n", "utf8");
+    await git(sourceRepoDir, ["add", "tracked.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+    // Pre-seed the sandbox with a `.paperclip-runtime` dir that MUST survive.
+    await mkdir(path.join(remoteWorkspaceDir, ".paperclip-runtime"), { recursive: true });
+    await writeFile(path.join(remoteWorkspaceDir, ".paperclip-runtime", "keep.txt"), "keep\n", "utf8");
+
+    const directWrites: string[] = [];
+    const directRuns: string[] = [];
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        directWrites.push(remotePath);
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        directRuns.push(command);
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+    const captured: SandboxSyncOperation[] = [];
+    attachNativeRecordingSyncIn(client, captured);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    // Delegated entirely to syncIn.
+    expect(directWrites).toEqual([]);
+    expect(directRuns).toEqual([]);
+
+    // Two operations: git-workspace then workspace overlay. Each uploads a single
+    // tar as a `file` mapping and carries its extract as an ordered post-command.
+    expect(captured.length).toBeGreaterThanOrEqual(2);
+    const gitOp = captured.find((op) =>
+      op.files.some((mapping) => mapping.targetPath.endsWith("git-workspace-upload.tar")),
+    );
+    const workspaceOp = captured.find((op) =>
+      op.files.some((mapping) => mapping.targetPath.endsWith("workspace-upload.tar")),
+    );
+    expect(gitOp).toBeDefined();
+    expect(workspaceOp).toBeDefined();
+    expect(gitOp!.files.every((mapping) => mapping.kind === "file")).toBe(true);
+    // The git operation's post-upload command preserves `.paperclip-runtime` while
+    // replacing the rest of the tree (wipe-except-preserved), then untars.
+    const gitCommand = gitOp!.postUploadCommands![0].command;
+    expect(gitCommand).toContain(".paperclip-runtime");
+    expect(gitCommand).toContain("tar -xf");
+
+    // The pre-seeded runtime dir survived the git+workspace staging.
+    await expect(
+      readFile(path.join(remoteWorkspaceDir, ".paperclip-runtime", "keep.txt"), "utf8"),
+    ).resolves.toBe("keep\n");
+    await expect(readFile(path.join(remoteWorkspaceDir, "tracked.txt"), "utf8")).resolves.toBe("tracked\n");
+    expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
   });
 
   it("keeps the sandbox runtime core free of Codex-specific string literals", async () => {
