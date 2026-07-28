@@ -2205,12 +2205,16 @@ export interface ResolveRunReferencedProjectsOptions {
  *
  * Candidate evaluation is bounded twice, independently: at most
  * {@link ResolveRunReferencedProjectsOptions.maxCandidateEvaluations} *available* candidates are ever
- * authorized (a fan-out guard against an adversarial same-company mention flood of denied projects),
- * and at most {@link ResolveRunReferencedProjectsOptions.maxAdditionalProjects} of those are admitted.
- * Availability filtering runs against the company-scoped hydration before the evaluation cap, so an
- * unavailable mention never occupies an evaluation slot or displaces a later authorized project.
- * Available candidates beyond the evaluation limit are dropped with a warning and never trigger an
- * authorization decision.
+ * hydrated and authorized (a fan-out guard against an adversarial same-company mention flood of denied
+ * projects), and at most {@link ResolveRunReferencedProjectsOptions.maxAdditionalProjects} of those are
+ * admitted. The evaluation cap bounds hydration as well as authorization: candidates are hydrated and
+ * availability-filtered in mention order in bounded batches, and hydration stops as soon as the
+ * evaluation window is filled with available candidates (or the mention set is exhausted), so hydration
+ * never processes the complete mention set — its cost is bounded by the window, not by mention volume.
+ * Availability filtering still runs before a candidate consumes an evaluation slot, so an unavailable
+ * mention (foreign-company, deleted, or malformed id) never occupies a slot or displaces a later
+ * authorized project. Available candidates beyond the evaluation window are left un-hydrated and dropped
+ * with a warning, never triggering an authorization decision.
  */
 export async function resolveRunReferencedProjects(
   issueId: string,
@@ -2241,42 +2245,62 @@ export async function resolveRunReferencedProjects(
     allCandidateIds.push(projectId);
   }
 
-  // Hydrate the anchor plus every deduped candidate in a single company-scoped batch. `listByIds`
-  // filters by company, so this one query both fetches the records and performs availability
-  // filtering; because its input is already deduped and company-scoped, the batch size is bounded by
-  // the company's project count, not by mention volume. Hydration performs no per-candidate
-  // authorization, so it is deliberately *not* subject to the evaluation cap below.
-  const hydrateIds = anchorProjectId ? [anchorProjectId, ...allCandidateIds] : allCandidateIds;
-  const hydrated = await projects.listByIds(companyId, hydrateIds);
-  const byId = new Map(hydrated.map((project) => [project.id, project]));
+  // Hydrate + availability-filter candidates in mention order, but never process more of the mention
+  // set than the evaluation window needs. Candidates are pulled in bounded batches sized to what the
+  // window still needs, and hydration stops as soon as `evaluationCap` *available* candidates are
+  // collected (or the mention set is exhausted). This bounds hydration by the evaluation window rather
+  // than by mention volume: an adversarial same-company mention flood can neither force an unbounded
+  // hydration query nor displace a later authorized project out of the window. `listByIds` filters by
+  // company, so each batch both fetches the records and performs availability filtering — a mention that
+  // did not resolve inside this company (foreign-company, deleted, or malformed id) is dropped here with
+  // a warning and never occupies an evaluation slot. The anchor is co-hydrated with the first batch (it
+  // was excluded from `allCandidateIds` above, so it never double-counts) and is never re-authorized.
+  const availableCandidates: RunReferencedProject[] = [];
+  let hydrationCursor = 0;
+  let anchorRecord: RunReferencedProjectRecord | null = null;
+  let anchorHydrated = false;
+  while (availableCandidates.length < evaluationCap && hydrationCursor < allCandidateIds.length) {
+    const need = evaluationCap - availableCandidates.length;
+    const batchCandidateIds = allCandidateIds.slice(hydrationCursor, hydrationCursor + need);
+    hydrationCursor += batchCandidateIds.length;
 
-  const anchorRecord = anchorProjectId ? byId.get(anchorProjectId) ?? null : null;
+    const hydrateIds =
+      !anchorHydrated && anchorProjectId ? [anchorProjectId, ...batchCandidateIds] : batchCandidateIds;
+    const hydrated = await projects.listByIds(companyId, hydrateIds);
+    const byId = new Map(hydrated.map((project) => [project.id, project]));
+
+    if (!anchorHydrated && anchorProjectId) {
+      anchorRecord = byId.get(anchorProjectId) ?? null;
+      anchorHydrated = true;
+    }
+
+    for (const projectId of batchCandidateIds) {
+      const project = byId.get(projectId);
+      if (!project) {
+        warnings.push(`Referenced project ${projectId} was skipped because it is not available in this company.`);
+        continue;
+      }
+      availableCandidates.push({ projectId, project });
+    }
+  }
+
+  // Hydrate the anchor on its own if the candidate loop never ran (no mentions to co-hydrate it with).
+  if (!anchorHydrated && anchorProjectId) {
+    const hydrated = await projects.listByIds(companyId, [anchorProjectId]);
+    anchorRecord = hydrated.find((project) => project.id === anchorProjectId) ?? null;
+    anchorHydrated = true;
+  }
+
   const anchor: RunReferencedProject | null =
     anchorRecord && anchorProjectId ? { projectId: anchorProjectId, project: anchorRecord } : null;
 
-  // Availability filtering happens *before* the evaluation cap and never consumes an authorization
-  // decision: a mention that did not resolve inside this company (foreign-company, deleted, or
-  // malformed id) is dropped here, with a warning, so it can never occupy an evaluation slot and
-  // displace a later authorized project out of the fan-out window. Mention order is preserved.
-  const availableCandidates: RunReferencedProject[] = [];
-  for (const projectId of allCandidateIds) {
-    const project = byId.get(projectId);
-    if (!project) {
-      warnings.push(`Referenced project ${projectId} was skipped because it is not available in this company.`);
-      continue;
-    }
-    availableCandidates.push({ projectId, project });
-  }
-
-  // Bound the authorization fan-out: only the first `evaluationCap` *available* candidates are ever
-  // authorized. This caps the number of `project:read` decisions so an adversarial same-company
-  // mention flood in which every candidate is denied cannot force unbounded authorization work — the
-  // admit loop below would otherwise authorize every candidate because the admitted cap is never
-  // reached. Denied candidates still consume this window (each costs exactly one authorization
-  // decision, which is what the cap bounds); unavailable mentions, filtered above, do not. Available
-  // candidates past the limit are surfaced as a warning after the loop.
-  const candidates = availableCandidates.slice(0, evaluationCap);
-  const unevaluatedCandidateCount = availableCandidates.length - candidates.length;
+  // The loop already bounds `availableCandidates` to at most `evaluationCap` entries. Any mentions left
+  // un-hydrated past the window (the fan-out cap dropped them before hydration/authorization) are
+  // surfaced as a warning after the admit loop below. Denied candidates still consume this window (each
+  // costs exactly one authorization decision, which is what the cap bounds); unavailable mentions,
+  // filtered above, do not.
+  const candidates = availableCandidates;
+  const unevaluatedCandidateCount = allCandidateIds.length - hydrationCursor;
 
   // Admit candidates in mention order until the cap of successfully-authorized projects is reached.
   // The cap bounds how many additional projects a run *materializes*, so it is counted against
