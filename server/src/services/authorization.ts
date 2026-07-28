@@ -107,6 +107,7 @@ export type AuthorizationDecision = {
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_issue_unblock_owner"
     | "allow_direct_parent_report"
     | "allow_visible_issue_write"
     | "allow_self"
@@ -221,6 +222,13 @@ function readBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+function issueUnblockOwnerAgentId(value: unknown) {
+  if (!isPlainRecord(value)) return null;
+  const owner = value.owner;
+  if (!isPlainRecord(owner)) return null;
+  return readString(owner.agentId);
+}
+
 type AssignmentPolicyEffect =
   | { kind: "none" }
   | { kind: "restricted"; explanation: string }
@@ -254,6 +262,7 @@ type IssueAuthorizationRow = {
   executionPolicy: unknown;
   originKind: string | null;
   originId: string | null;
+  unblockDescriptor: unknown;
 };
 
 function evaluateAuthorizationPolicyForAssignment(
@@ -743,6 +752,7 @@ export function authorizationService(db: Db) {
         executionPolicy: issues.executionPolicy,
         originKind: issues.originKind,
         originId: issues.originId,
+        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
@@ -1925,6 +1935,28 @@ export function authorizationService(db: Db) {
         reason: "allow_direct_parent_report",
         explanation: "Allowed because the target is the current run issue's direct parent under the standard trust preset.",
       });
+    }
+
+    const issueUnblockOwnerAction =
+      input.action === "issue:comment" ||
+      (input.action === "issue:mutate" && scopeBoolean(input.scope, "allowIssueUnblockOwner"));
+    if (
+      issueUnblockOwnerAction &&
+      input.resource.type === "issue" &&
+      input.resource.issueId
+    ) {
+      const issue = await loadIssue(input.resource.issueId);
+      if (
+        issue?.companyId === companyId &&
+        issue.status === "blocked" &&
+        issueUnblockOwnerAgentId(issue.unblockDescriptor) === actorAgentId
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_issue_unblock_owner",
+          explanation: "Allowed because the actor is the current persisted unblock owner.",
+        });
+      }
     }
 
 

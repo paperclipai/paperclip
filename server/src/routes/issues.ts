@@ -3809,6 +3809,7 @@ export function issueRoutes(
       status: string;
     },
     action: "issue:comment" | "issue:read" | "issue:mutate",
+    additionalScope: Record<string, unknown> = {},
   ) {
     return access.decide({
       actor: req.actor,
@@ -3829,6 +3830,7 @@ export function issueRoutes(
         parentIssueId: issue.parentId,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        ...additionalScope,
       },
     });
   }
@@ -3977,6 +3979,9 @@ export function issueRoutes(
 
   function isDefaultOpenIssueWriteDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
     return decision !== true && decision.reason === "allow_visible_issue_write";
+
+  function isIssueUnblockOwnerDecision(decision: Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision.reason === "allow_issue_unblock_owner";
   }
 
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
@@ -4029,7 +4034,7 @@ export function issueRoutes(
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
-    options: { allowVisibleIssueWrite?: boolean } = {},
+    options: { allowVisibleIssueWrite?: boolean; allowIssueUnblockOwner?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -4060,9 +4065,17 @@ export function issueRoutes(
       }
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    const boundaryDecision = await decideIssueAccess(
+      req,
+      issue,
+      "issue:mutate",
+      options.allowIssueUnblockOwner ? { allowIssueUnblockOwner: true } : {},
+    );
     if (!boundaryDecision.allowed) {
       return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(boundaryDecision));
+    }
+    if (options.allowIssueUnblockOwner && isIssueUnblockOwnerDecision(boundaryDecision)) {
+      return true;
     }
     if (issue.assigneeAgentId === null) {
       return true;
@@ -9033,11 +9046,11 @@ export function issueRoutes(
       req,
       res,
       existing,
-      { allowVisibleIssueWrite: true },
+      { allowVisibleIssueWrite: true, allowIssueUnblockOwner: true },
     );
     if (!issueMutationAccess) return;
     const issueMutationAuthorizationReason = req.actor.type === "agent"
-      ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate"))
+      ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate", { allowIssueUnblockOwner: true }))
       : issueWriteAuthorizationReason(req, true);
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 

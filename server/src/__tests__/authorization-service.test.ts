@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
@@ -73,11 +74,13 @@ async function createIssue(
   input: {
     id?: string;
     title?: string;
+    status?: "todo" | "in_progress" | "blocked";
     projectId?: string | null;
     parentId?: string | null;
     assigneeAgentId?: string | null;
     originKind?: string | null;
     originId?: string | null;
+    unblockDescriptor?: Record<string, unknown> | null;
   } = {},
 ) {
   return db
@@ -86,13 +89,14 @@ async function createIssue(
       id: input.id ?? randomUUID(),
       companyId,
       title: input.title ?? `Issue ${randomUUID()}`,
-      status: "todo",
+      status: input.status ?? "todo",
       priority: "medium",
       projectId: input.projectId ?? null,
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
+      unblockDescriptor: input.unblockDescriptor ?? null,
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -1493,6 +1497,84 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       reason: "deny_unsupported_action",
     });
+  });
+
+  it("allows only the persisted unblock owner to comment on and mutate a blocked assigned issue", async () => {
+    const company = await createCompany(db, "IssueUnblockOwner");
+    const assigneeAgent = await createAgent(db, company.id, { role: "engineer" });
+    const unblockOwnerAgent = await createAgent(db, company.id, { role: "manager" });
+    const unrelatedAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Blocked issue awaiting owner action",
+      status: "blocked",
+      assigneeAgentId: assigneeAgent.id,
+      unblockDescriptor: {
+        owner: { agentId: unblockOwnerAgent.id },
+        action: "Choose the remediation path",
+      },
+    });
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: issue.assigneeAgentId,
+      status: issue.status,
+    } as const;
+
+    for (const action of ["issue:comment", "issue:mutate"] as const) {
+      await expect(authorization.decide({
+        actor: {
+          type: "agent",
+          agentId: unblockOwnerAgent.id,
+          companyId: company.id,
+          source: "agent_key",
+        },
+        action,
+        resource,
+        scope: action === "issue:mutate" ? { allowIssueUnblockOwner: true } : null,
+      })).resolves.toMatchObject({
+        allowed: true,
+        reason: "allow_issue_unblock_owner",
+      });
+    }
+
+    await expect(authorization.decide({
+      actor: {
+        type: "agent",
+        agentId: unblockOwnerAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false });
+
+    await expect(authorization.decide({
+      actor: {
+        type: "agent",
+        agentId: unrelatedAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource,
+      scope: { allowIssueUnblockOwner: true },
+    })).resolves.toMatchObject({ allowed: false });
+
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issue.id));
+    await expect(authorization.decide({
+      actor: {
+        type: "agent",
+        agentId: unblockOwnerAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource,
+      scope: { allowIssueUnblockOwner: true },
+    })).resolves.toMatchObject({ allowed: false });
   });
 
   it("allows mentioned agents to read and comment on assigned issues without granting issue mutation", async () => {
