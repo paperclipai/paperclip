@@ -9,7 +9,9 @@ const companyId = "22222222-2222-4222-8222-222222222222";
 const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
+const topManagerAgentId = "66666666-6666-4666-8666-666666666666";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const missingManagerAgentId = "88888888-8888-4888-8888-888888888888";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -269,7 +271,9 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
     companyId,
+    name: `Agent ${id}`,
     role: "engineer",
+    status: "active",
     reportsTo: null,
     permissions: { canCreateAgents: false },
     ...overrides,
@@ -280,6 +284,7 @@ function createRunContextDb(
   contextSnapshot: Record<string, unknown> = {},
   runAgentOrRows: string | Record<string, unknown>[] = ownerAgentId,
   runId: string = ownerRunId,
+  agentOrgRows?: Record<string, unknown>[],
 ) {
   const runRows = Array.isArray(runAgentOrRows)
     ? runAgentOrRows
@@ -298,7 +303,10 @@ function createRunContextDb(
     if (keys.includes("entityId")) return [];
     if (keys.includes("contextSnapshot")) return runRows;
     if (keys.includes("agentCompanyId")) return runRows;
-    return [{ id: runAgentId, companyId: runAgentCompanyId, permissions: {}, role: "engineer", reportsTo: null }];
+    if (keys.includes("name") && keys.includes("status") && keys.includes("reportsTo")) {
+      return agentOrgRows ?? [makeAgent(runAgentId, { companyId: runAgentCompanyId })];
+    }
+    return [makeAgent(runAgentId, { companyId: runAgentCompanyId })];
   };
   const buildQuery = (selection: Record<string, unknown>) => {
     const rows = rowsForSelection(selection);
@@ -1642,6 +1650,152 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent to name its reporting-line manager as unblock owner", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress" }),
+      ...patch,
+    }));
+    const db = createRunContextDb({}, ownerAgentId, ownerRunId, [
+      makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
+      makeAgent(peerAgentId),
+    ]);
+
+    const res = await request(await createApp(ownerActor(), db)).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Choose the remediation path for the delegated finding",
+      },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: { agentId: peerAgentId },
+          action: "Choose the remediation path for the delegated finding",
+        },
+      }),
+    );
+  });
+
+  it("allows an agent to name an ancestor in its reporting line as unblock owner", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress" }),
+      ...patch,
+    }));
+    const db = createRunContextDb({}, ownerAgentId, ownerRunId, [
+      makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
+      makeAgent(peerAgentId, { reportsTo: topManagerAgentId }),
+      makeAgent(topManagerAgentId),
+    ]);
+
+    const res = await request(await createApp(ownerActor(), db)).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: { agentId: topManagerAgentId },
+        action: "Resolve a dependency outside the worker's scope",
+      },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        unblockDescriptor: expect.objectContaining({ owner: { agentId: topManagerAgentId } }),
+      }),
+    );
+  });
+
+  it("rejects an agent naming an unrelated same-company agent as unblock owner", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    const db = createRunContextDb({}, ownerAgentId, ownerRunId, [
+      makeAgent(ownerAgentId),
+      makeAgent(peerAgentId),
+    ]);
+
+    const res = await request(await createApp(ownerActor(), db)).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Review the blocker",
+      },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe(
+      "Agents may only name themselves or a reporting-line manager as an unblock owner",
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "cyclic",
+      rows: [
+        makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
+        makeAgent(peerAgentId, { reportsTo: ownerAgentId }),
+      ],
+      error: "Unblock owner agent must be invokable with a healthy reporting chain",
+    },
+    {
+      label: "terminated",
+      rows: [
+        makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
+        makeAgent(peerAgentId, { status: "terminated" }),
+      ],
+      error: "Unblock owner agent must be invokable with a healthy reporting chain",
+    },
+    {
+      label: "paused",
+      rows: [
+        makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
+        makeAgent(peerAgentId, { status: "paused" }),
+      ],
+      error: "Unblock owner agent must be invokable with a healthy reporting chain",
+    },
+    {
+      label: "pending-approval",
+      rows: [
+        makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
+        makeAgent(peerAgentId, { status: "pending_approval" }),
+      ],
+      error: "Unblock owner agent must be invokable with a healthy reporting chain",
+    },
+    {
+      label: "missing-ancestor",
+      rows: [
+        makeAgent(ownerAgentId, { reportsTo: peerAgentId }),
+        makeAgent(peerAgentId, { reportsTo: missingManagerAgentId }),
+      ],
+      error: "Unblock owner agent must be invokable with a healthy reporting chain",
+    },
+    {
+      label: "not-in-company-roster",
+      rows: [makeAgent(ownerAgentId, { reportsTo: peerAgentId })],
+      error: "Unblock owner agent must belong to the issue company",
+    },
+  ])("rejects a $label reporting-line unblock owner before mutation", async ({ rows, error }) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    const db = createRunContextDb({}, ownerAgentId, ownerRunId, rows);
+
+    const res = await request(await createApp(ownerActor(), db)).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Review the blocker",
+      },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe(error);
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 

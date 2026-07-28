@@ -12,6 +12,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
@@ -1473,6 +1474,145 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .then((rows) => rows[0] ?? null);
     expect(run?.status).toBe("succeeded");
     expect(run?.errorCode).toBeNull();
+  });
+
+  it("runs a named manager unblock wake on a report-owned issue with unresolved blockers", async () => {
+    const { companyId, agentId: managerAgentId } = await seedCompanyAndAgent({ agentName: "ManagerAgent" });
+    const reportAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: reportAgentId,
+      companyId,
+      name: "ReportAgent",
+      role: "engineer",
+      status: "active",
+      reportsTo: managerAgentId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    const blockerIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Live blocker",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: reportAgentId,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked report-owned task",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: reportAgentId,
+        unblockDescriptor: {
+          owner: { agentId: managerAgentId },
+          action: "Choose the recovery path",
+        },
+        blockedTransitionAt: new Date(),
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId: managerAgentId,
+      issueId: blockedIssueId,
+      wakeReason: "issue_unblock_requested",
+      invocationSource: "automation",
+      contextExtras: { source: "issue.blocked" },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
+  it("rejects a spoofed manager unblock wake when the persisted owner does not match", async () => {
+    const { companyId, agentId: managerAgentId } = await seedCompanyAndAgent({ agentName: "ManagerAgent" });
+    const reportAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: reportAgentId,
+      companyId,
+      name: "ReportAgent",
+      role: "engineer",
+      status: "active",
+      reportsTo: managerAgentId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked task with a different unblock owner",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: reportAgentId,
+      unblockDescriptor: {
+        owner: { agentId: reportAgentId },
+        action: "Resolve the blocker",
+      },
+      blockedTransitionAt: new Date(),
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId: managerAgentId,
+      issueId,
+      wakeReason: "issue_unblock_requested",
+      invocationSource: "automation",
+      contextExtras: { source: "issue.blocked" },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_assignee_changed");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
   it("baseline: runs queued runs when the issue is in_progress with the same assignee", async () => {

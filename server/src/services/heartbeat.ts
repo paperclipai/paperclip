@@ -4157,6 +4157,17 @@ function allowsIssueInteractionWake(
   return Boolean(deriveCommentId(contextSnapshot, null));
 }
 
+function allowsIssueUnblockRequestWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  issue: { status: string; unblockDescriptor: unknown },
+  agentId: string,
+) {
+  if (readNonEmptyString(contextSnapshot?.wakeReason) !== "issue_unblock_requested") return false;
+  if (issue.status !== "blocked") return false;
+  const owner = parseObject(parseObject(issue.unblockDescriptor).owner);
+  return readNonEmptyString(owner.agentId) === agentId;
+}
+
 async function listUnresolvedBlockerSummaries(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -12544,7 +12555,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      const unblockRequestIssue = unresolvedBlockerCount > 0 &&
+        readNonEmptyString(context.wakeReason) === "issue_unblock_requested"
+        ? await db
+          .select({ status: issues.status, unblockDescriptor: issues.unblockDescriptor })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null)
+        : null;
+      const unblockRequestWake = unblockRequestIssue
+        ? allowsIssueUnblockRequestWake(context, unblockRequestIssue, run.agentId)
+        : false;
+      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context) && !unblockRequestWake) {
         await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
         logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
@@ -12716,6 +12738,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
+        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -12731,7 +12754,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const wakeCommentId = deriveCommentId(context, null);
-    const isInteractionWake = allowsIssueInteractionWake(context);
+    const isInteractionWake =
+      allowsIssueInteractionWake(context) ||
+      allowsIssueUnblockRequestWake(context, issue, run.agentId);
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
@@ -17854,6 +17879,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionWorkspacePreference: issues.executionWorkspacePreference,
             executionWorkspaceSettings: issues.executionWorkspaceSettings,
             assigneeAgentId: issues.assigneeAgentId,
+            unblockDescriptor: issues.unblockDescriptor,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
             createdAt: issues.createdAt,
@@ -18124,7 +18150,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
+          (
+            allowsIssueInteractionWake(enrichedContextSnapshot) ||
+            allowsIssueUnblockRequestWake(enrichedContextSnapshot, issue, agentId)
+          );
 
         if (blockedInteractionWake) {
           enrichedContextSnapshot.dependencyBlockedInteraction = true;
