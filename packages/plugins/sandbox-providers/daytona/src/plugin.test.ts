@@ -1383,95 +1383,98 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(3);
     });
 
-    it("evicts the cached handle on release so the next lookup re-fetches", async () => {
+    it("rejects a queued execute after release teardown closes the lease", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       mockGet.mockImplementation(async () => createMockSandbox({ id: "lease-a" }));
 
       await plugin.definition.onEnvironmentExecute?.(execParams("lease-a")); // miss → get #1 (cached)
-      await plugin.definition.onEnvironmentReleaseLease?.({
+      const releasePromise = plugin.definition.onEnvironmentReleaseLease?.({
         driverKey: "daytona",
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "lease-a",
         config: { timeoutMs: 300000, reuseLease: false },
       });
-      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a")); // evicted → get #2
-
-      // Without eviction the release would hit the cache and the second exec too,
-      // leaving mockGet at 1. Two calls proves the entry was dropped on release.
-      expect(mockGet).toHaveBeenCalledTimes(2);
-    });
-
-    it("evicts the cached handle before release cleanup so overlapping execs re-fetch", async () => {
-      process.env.DAYTONA_API_KEY = "host-key";
-      const sandbox = createMockSandbox({ id: "lease-a" });
-      let stopStarted = false;
-      let resolveRelease!: () => void;
-      const releaseGate = new Promise<void>((resolve) => {
-        resolveRelease = resolve;
-      });
-      sandbox.stop.mockImplementation(() => {
-        stopStarted = true;
-        return releaseGate;
-      });
-      mockGet.mockResolvedValue(sandbox);
-
-      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
-      const releasePromise = plugin.definition.onEnvironmentReleaseLease?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        providerLeaseId: "lease-a",
-        config: { timeoutMs: 300000, reuseLease: true },
-      });
       await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(stopStarted).toBe(true);
 
-      const overlappingExec = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
-      resolveRelease();
-      await Promise.all([releasePromise, overlappingExec]);
+      const queuedExecute = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await expect(queuedExecute).rejects.toThrow(/no longer active/);
+      await releasePromise;
 
-      expect(mockGet).toHaveBeenCalledTimes(2);
-      expect(sandbox.stop).toHaveBeenCalledTimes(1);
-      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
-    });
-
-    it("blocks a late execute from reacquiring while release teardown is in flight", async () => {
-      process.env.DAYTONA_API_KEY = "host-key";
-      const sandbox = createMockSandbox({ id: "lease-a" });
-      let stopStarted = false;
-      let resolveRelease!: () => void;
-      const releaseGate = new Promise<void>((resolve) => {
-        resolveRelease = resolve;
-      });
-      sandbox.stop.mockImplementation(() => {
-        stopStarted = true;
-        return releaseGate;
-      });
-      mockGet.mockResolvedValue(sandbox);
-
-      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
-      const releasePromise = plugin.definition.onEnvironmentReleaseLease?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        providerLeaseId: "lease-a",
-        config: { timeoutMs: 300000, reuseLease: true },
-      });
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(stopStarted).toBe(true);
-
-      const overlappingExec = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      // The tombstone closes the lease, so the queued execute never reacquires
+      // the sandbox after teardown.
       expect(mockGet).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects an overlapping execute after release teardown closes the lease", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let stopStarted = false;
+      let resolveRelease!: () => void;
+      const releaseGate = new Promise<void>((resolve) => {
+        resolveRelease = resolve;
+      });
+      sandbox.stop.mockImplementation(() => {
+        stopStarted = true;
+        return releaseGate;
+      });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      const releasePromise = plugin.definition.onEnvironmentReleaseLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: true },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(stopStarted).toBe(true);
+
+      const overlappingExec = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await expect(overlappingExec).rejects.toThrow(/no longer active/);
+      resolveRelease();
+      await releasePromise;
+
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
       expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects a late execute after the release tombstone is set", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let stopStarted = false;
+      let resolveRelease!: () => void;
+      const releaseGate = new Promise<void>((resolve) => {
+        resolveRelease = resolve;
+      });
+      sandbox.stop.mockImplementation(() => {
+        stopStarted = true;
+        return releaseGate;
+      });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      const releasePromise = plugin.definition.onEnvironmentReleaseLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: { timeoutMs: 300000, reuseLease: true },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(stopStarted).toBe(true);
+
+      const overlappingExec = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await expect(overlappingExec).rejects.toThrow(/no longer active/);
 
       resolveRelease();
-      await Promise.all([releasePromise, overlappingExec]);
+      await releasePromise;
 
-      expect(mockGet).toHaveBeenCalledTimes(2);
+      expect(mockGet).toHaveBeenCalledTimes(1);
       expect(sandbox.stop).toHaveBeenCalledTimes(1);
-      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
     });
 
     it("waits for an in-flight execute before teardown cleanup starts", async () => {
@@ -1559,41 +1562,44 @@ describe("Daytona sandbox provider plugin", () => {
       await destroyPromise;
 
       const overlappingExec = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(mockGet).toHaveBeenCalledTimes(2);
+      await expect(overlappingExec).rejects.toThrow(/no longer active/);
 
       resolveStop();
-      await Promise.all([releasePromise, overlappingExec]);
+      await releasePromise;
 
-      expect(mockGet).toHaveBeenCalledTimes(3);
+      expect(mockGet).toHaveBeenCalledTimes(2);
       expect(sandbox.stop).toHaveBeenCalledTimes(1);
       expect(sandbox.delete).toHaveBeenCalledTimes(1);
-      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
     });
 
-    it("evicts the cached handle on destroy so the next lookup re-fetches", async () => {
+    it("rejects a queued execute after destroy teardown closes the lease", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       mockGet.mockImplementation(async () => createMockSandbox({ id: "lease-a" }));
 
       await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
-      await plugin.definition.onEnvironmentDestroyLease?.({
+      const destroyPromise = plugin.definition.onEnvironmentDestroyLease?.({
         driverKey: "daytona",
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "lease-a",
         config: { timeoutMs: 300000, reuseLease: false },
       });
-      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
-      expect(mockGet).toHaveBeenCalledTimes(2);
+      const queuedExecute = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await expect(queuedExecute).rejects.toThrow(/no longer active/);
+      await destroyPromise;
+
+      expect(mockGet).toHaveBeenCalledTimes(1);
     });
 
-    it("evicts the cached handle on interactive-setup cancel so the next lookup re-fetches", async () => {
+    it("rejects a queued execute after interactive cancel closes the lease", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       mockGet.mockImplementation(async () => createMockSandbox({ id: "lease-a" }));
 
       await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
-      await plugin.definition.onEnvironmentCancelInteractiveSetup?.({
+      const cancelPromise = plugin.definition.onEnvironmentCancelInteractiveSetup?.({
         driverKey: "daytona",
         companyId: "company-1",
         environmentId: "env-1",
@@ -1601,9 +1607,13 @@ describe("Daytona sandbox provider plugin", () => {
         config: { timeoutMs: 300000, reuseLease: false },
         reason: "cancelled",
       });
-      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
-      expect(mockGet).toHaveBeenCalledTimes(2);
+      const queuedExecute = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await expect(queuedExecute).rejects.toThrow(/no longer active/);
+      await cancelPromise;
+
+      expect(mockGet).toHaveBeenCalledTimes(1);
     });
 
     it("waits for an in-flight execute before interactive cancel cleanup starts", async () => {
@@ -1698,20 +1708,15 @@ describe("Daytona sandbox provider plugin", () => {
       await fs.rm(hostDir, { recursive: true, force: true });
     });
 
-    it("keeps a queued execute active when interactive cancel starts", async () => {
+    it("rejects a queued execute once interactive cancel tombstones the lease", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });
       let resolveFirstExecute!: () => void;
-      let resolveSecondExecute!: () => void;
-      let executeCalls = 0;
+      let cancelResolved = false;
+      let queuedExecuteRejected = false;
       sandbox.process.executeCommand.mockImplementation(async () => {
-        executeCalls += 1;
         await new Promise<void>((resolve) => {
-          if (executeCalls === 1) {
-            resolveFirstExecute = resolve;
-            return;
-          }
-          resolveSecondExecute = resolve;
+          resolveFirstExecute = resolve;
         });
         return {
           exitCode: 0,
@@ -1735,20 +1740,24 @@ describe("Daytona sandbox provider plugin", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       const queuedExecutePromise = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      queuedExecutePromise?.catch(() => {
+        queuedExecuteRejected = true;
+      });
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(mockGet).toHaveBeenCalledTimes(1);
       expect(sandbox.delete).not.toHaveBeenCalled();
 
       resolveFirstExecute();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(mockGet).toHaveBeenCalledTimes(2);
-      expect(sandbox.delete).toHaveBeenCalledTimes(1);
+      await cancelPromise.then(() => {
+        cancelResolved = true;
+      });
+      await expect(queuedExecutePromise).rejects.toThrow(/no longer active/);
+      await firstExecutePromise;
 
-      resolveSecondExecute();
-      await Promise.all([firstExecutePromise, queuedExecutePromise, cancelPromise]);
-
-      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+      expect(cancelResolved).toBe(true);
+      expect(queuedExecuteRejected).toBe(true);
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
       expect(sandbox.delete).toHaveBeenCalledTimes(1);
     });
 
