@@ -1213,7 +1213,7 @@ describeEmbeddedPostgres("productivity review service", () => {
               agentId,
               classification: (wakeOpts?.payload as Record<string, unknown> | undefined)?.classification,
             });
-            return null;
+            return { id: "wake" };
           },
         });
 
@@ -1235,6 +1235,55 @@ describeEmbeddedPostgres("productivity review service", () => {
       const [review] = await listProductivityReviews(seeded.companyId);
       expect(review?.description).toContain("Classification: `unreported_completion`");
       expect(wakes).toEqual([{ agentId: seeded.coderId, classification: "unreported_completion" }]);
+    });
+
+    // A reclassification is only finished once the assignee has been told. If the wake fails after
+    // the review already reads as `unreported_completion`, the retry condition can never fire
+    // again and the finished work sits assigned to an agent nobody triggers.
+    it("retries the reclassification on a later pass when the wake fails", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const emptyRepo = createEmptyRepoPath();
+      const { repoPath } = createRepoWithCommit({
+        subject: "feat(aur1370): deliverable landed",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+      const service = (dir: string, enqueueWakeup: (agentId: string, o?: unknown) => Promise<unknown>) =>
+        productivityReviewService(db, {
+          resolveAgentWorkspaceDir: () => dir,
+          enqueueWakeup: enqueueWakeup as never,
+        });
+
+      await service(emptyRepo, async () => ({ id: "wake" })).reconcileProductivityReviews({
+        now,
+        companyId: seeded.companyId,
+      });
+      const [stallReview] = await listProductivityReviews(seeded.companyId);
+      expect(stallReview?.assigneeAgentId).toBe(seeded.managerId);
+
+      // Pass 2: evidence exists, but the wake cannot be delivered.
+      await service(repoPath, async () => {
+        throw new Error("wake queue unavailable");
+      }).reconcileProductivityReviews({ now: new Date(now.getTime() + 60_000), companyId: seeded.companyId });
+
+      const [afterFailure] = await listProductivityReviews(seeded.companyId);
+      // Restored, so the next pass still sees a stall to reclassify.
+      expect(afterFailure?.title).toBe("Review productivity for AUR-1370");
+      expect(afterFailure?.description).toContain("Classification: `stall`");
+      expect(afterFailure?.assigneeAgentId).toBe(seeded.managerId);
+
+      // Pass 3: the wake works, and the reclassification lands.
+      const wakes: string[] = [];
+      await service(repoPath, async (agentId) => {
+        wakes.push(agentId);
+        return { id: "wake" };
+      }).reconcileProductivityReviews({ now: new Date(now.getTime() + 120_000), companyId: seeded.companyId });
+
+      const [afterRetry] = await listProductivityReviews(seeded.companyId);
+      expect(afterRetry?.id).toBe(stallReview?.id);
+      expect(afterRetry?.title).toBe("Report and close finished work on AUR-1370");
+      expect(afterRetry?.description).toContain("Classification: `unreported_completion`");
+      expect(afterRetry?.assigneeAgentId).toBe(seeded.coderId);
+      expect(wakes).toEqual([seeded.coderId]);
     });
 
     // The transition lookup must not be capped: with a bounded "newest N status changes" list, a

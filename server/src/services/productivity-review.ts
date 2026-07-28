@@ -926,9 +926,16 @@ export function productivityReviewService(
     // Wake on every reclassification, not only when ownership moved. What changed is the
     // *instruction* — from "decide what to do about a stall" to "report and close finished work" —
     // and an owner who was already assigned has no other trigger to act on it.
+    //
+    // The reclassification is only finished once that wake exists. If it fails, the review already
+    // reads as `unreported_completion`, so the retry condition above can never fire again and the
+    // finished work would sit assigned to an agent nobody ever triggers. On failure the review is
+    // therefore restored to the stall it was, and the next reconcile pass retries the whole thing.
+    let wakeFailed = false;
     if (ownerAgentId && deps?.enqueueWakeup) {
-      await deps.enqueueWakeup(ownerAgentId, {
-        source: "assignment",
+      try {
+        wakeFailed = !(await deps.enqueueWakeup(ownerAgentId, {
+          source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
         payload: withRecoveryModelProfileHint({
@@ -948,7 +955,28 @@ export function productivityReviewService(
           productivityReviewTrigger: evidence.trigger,
           productivityReviewClassification: evidence.classification,
         }, "status_only"),
-      });
+        }));
+      } catch (error) {
+        wakeFailed = true;
+        logger.warn(
+          { reviewIssueId: existing.id, sourceIssueId: evidence.sourceIssue.id, err: error },
+          "productivity review reclassification wake failed",
+        );
+      }
+    }
+    if (wakeFailed) {
+      // Put the review back exactly as it was so the next pass sees a `stall` again and retries.
+      await db
+        .update(issues)
+        .set({
+          title: existing.title,
+          description: existing.description,
+          priority: existing.priority,
+          assigneeAgentId: existing.assigneeAgentId,
+          updatedAt: evidence.generatedAt,
+        })
+        .where(eq(issues.id, existing.id));
+      return { kind: "existing" as const, reviewIssueId: existing.id };
     }
     return { kind: "updated" as const, reviewIssueId: existing.id };
   }
