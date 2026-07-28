@@ -108,38 +108,67 @@ export function applyPlatformProvisionedEnvironmentFloor<T extends {
   };
 }
 
-/**
- * Floor: on cloud-managed instances, platform-provisioned rows are
- * platform-owned runtime state — no actor, including instance admins, may
- * update or delete them. Binds to the persisted row's markers, so a patch
- * cannot strip the marker to lift the floor.
- */
-function assertPlatformProvisionedEnvironmentWritable(environment: {
-  metadata: Record<string, unknown> | null;
-}): void {
-  if (isCloudManagedInstance() && isPlatformProvisionedEnvironment(environment)) {
-    throw forbidden("Platform-provisioned environments are platform-managed on cloud-managed instances", {
-      code: "environment_platform_managed",
-    });
-  }
-}
-
 const PLATFORM_PROVISIONED_MARKER_KEYS = [
   "managedByPaperclip",
   "managedKubernetesSandbox",
 ] as const;
 
 /**
+ * Returns true when the PATCH body is a metadata-only write whose only
+ * purpose is to clear platform markers (setting them to null/false). This is
+ * the escape hatch for rows that had these markers stamped through the old
+ * unrestricted API before the floor was introduced. The platform provisioner
+ * re-asserts markers at the service layer on the next cycle, so clearing a
+ * stale marker is low-risk.
+ */
+function isPlatformMarkerClearOnlyPatch(body: unknown): boolean {
+  if (!isPlainRecord(body)) return false;
+  const bodyKeys = Object.keys(body);
+  if (bodyKeys.length !== 1 || bodyKeys[0] !== "metadata") return false;
+  const metadata = body.metadata;
+  if (!isPlainRecord(metadata)) return false;
+  const metaKeys = Object.keys(metadata);
+  if (metaKeys.length === 0) return false;
+  return metaKeys.every(
+    (key) =>
+      (PLATFORM_PROVISIONED_MARKER_KEYS as readonly string[]).includes(key) &&
+      (metadata[key] === null || metadata[key] === false),
+  );
+}
+
+/**
+ * Floor: on cloud-managed instances, platform-provisioned rows are
+ * platform-owned runtime state — no actor, including instance admins, may
+ * update or delete them. Binds to the persisted row's markers, so a patch
+ * cannot strip the marker to lift the floor.
+ *
+ * Exception: a metadata-only patch that only clears the marker keys is
+ * allowed so tenants can recover rows stamped with stale markers by the old
+ * unrestricted API.
+ */
+function assertPlatformProvisionedEnvironmentWritable(
+  environment: { metadata: Record<string, unknown> | null },
+  options?: { patchBody?: unknown },
+): void {
+  if (!isCloudManagedInstance() || !isPlatformProvisionedEnvironment(environment)) return;
+  if (options?.patchBody !== undefined && isPlatformMarkerClearOnlyPatch(options.patchBody)) return;
+  throw forbidden("Platform-provisioned environments are platform-managed on cloud-managed instances", {
+    code: "environment_platform_managed",
+  });
+}
+
+/**
  * Floor: on cloud-managed instances the platform markers in `metadata` are
  * reserved to the platform provisioner (which writes them at the service
- * layer, not through these routes). A client payload that sets them is
- * rejected — otherwise a tenant could stamp its own row as
+ * layer, not through these routes). A client payload that sets them to a
+ * truthy value is rejected — otherwise a tenant could stamp its own row as
  * platform-provisioned and permanently lock it behind the write floor above.
+ * Clearing (null/false) is allowed so stale markers can be removed.
  */
 function assertNoClientPlatformProvisionedMarkers(metadata: unknown): void {
   if (!isCloudManagedInstance() || !isPlainRecord(metadata)) return;
   for (const key of PLATFORM_PROVISIONED_MARKER_KEYS) {
-    if (metadata[key] !== undefined) {
+    if (metadata[key] !== undefined && metadata[key] !== null && metadata[key] !== false) {
       throw unprocessable(
         `metadata.${key} is reserved to the platform on cloud-managed instances`,
         { code: "environment_platform_marker_reserved" },
@@ -833,7 +862,7 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertPlatformProvisionedEnvironmentWritable(existing);
+    assertPlatformProvisionedEnvironmentWritable(existing, { patchBody: req.body });
     assertNoClientPlatformProvisionedMarkers(req.body.metadata);
     const actor = getActorInfo(req);
     const nextDriver = req.body.driver ?? existing.driver;

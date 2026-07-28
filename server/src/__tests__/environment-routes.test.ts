@@ -473,13 +473,27 @@ describe("environment routes", () => {
       expect(mockEnvironmentService.update).not.toHaveBeenCalled();
     });
 
-    it("rejects marker-stripping patches based on the persisted row, not the payload", async () => {
-      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+    it("allows a marker-clear-only patch to unblock a row with stale legacy markers", async () => {
+      const staleRow = createPlatformSandboxEnvironment();
+      mockEnvironmentService.getById.mockResolvedValue(staleRow);
+      mockEnvironmentService.update.mockResolvedValue({ ...staleRow, metadata: {} });
       const app = createApp(ownerAdminActor);
 
       const res = await request(app)
         .patch("/api/environments/env-managed-1")
         .send({ metadata: { managedByPaperclip: false, managedKubernetesSandbox: false } });
+
+      expect(res.status).toBe(200);
+      expect(mockEnvironmentService.update).toHaveBeenCalled();
+    });
+
+    it("rejects non-marker-only patches to platform-provisioned rows even from instance admins", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1")
+        .send({ name: "Renamed", metadata: { managedByPaperclip: false } });
 
       expect(res.status).toBe(403);
       expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
