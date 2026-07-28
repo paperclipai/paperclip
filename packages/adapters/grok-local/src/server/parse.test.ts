@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
+import { isGrokCancelledStopReason, isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 describe("parseGrokJsonl", () => {
   it("collects streamed thought/text content and final session metadata", () => {
@@ -88,5 +88,13 @@ describe("isGrokUnknownSessionError", () => {
   it("detects stale resume failures", () => {
     expect(isGrokUnknownSessionError("", "session not found")).toBe(true);
     expect(isGrokUnknownSessionError("", "everything fine")).toBe(false);
+  });
+});
+
+describe("isGrokCancelledStopReason", () => {
+  it("matches Cancelled stop reasons", () => {
+    expect(isGrokCancelledStopReason("Cancelled")).toBe(true);
+    expect(isGrokCancelledStopReason("EndTurn")).toBe(false);
+    expect(isGrokCancelledStopReason(null)).toBe(false);
   });
 });
