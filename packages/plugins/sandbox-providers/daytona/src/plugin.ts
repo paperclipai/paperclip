@@ -941,14 +941,52 @@ const sandboxHandleActivityGates = (() => {
   return { begin, waitForIdle, end, reset };
 })();
 
+type SandboxLeaseAdmissionOptions = {
+  allowClosed?: boolean;
+};
+
+const sandboxHandleLeaseAdmissionStates = (() => {
+  const states = new Map<string, boolean>();
+
+  function key(scope: SandboxScope): string {
+    return sandboxHandleCacheKey(scope);
+  }
+
+  function open(scope: SandboxScope): void {
+    states.set(key(scope), false);
+  }
+
+  function close(scope: SandboxScope): void {
+    states.set(key(scope), true);
+  }
+
+  function isClosed(scope: SandboxScope): boolean {
+    return states.get(key(scope)) === true;
+  }
+
+  function reset(): void {
+    states.clear();
+  }
+
+  return { open, close, isClosed, reset };
+})();
+
 async function withSandboxActivityGate<T>(
   scope: SandboxScope,
   fn: () => Promise<T>,
+  options: SandboxLeaseAdmissionOptions = {},
 ): Promise<T> {
   while (true) {
+    if (!options.allowClosed && sandboxHandleLeaseAdmissionStates.isClosed(scope)) {
+      throw new Error(`Daytona sandbox lease ${scope.providerLeaseId} is no longer active.`);
+    }
+
     const teardownGate = sandboxHandleTeardownGates.current(scope);
     if (teardownGate) {
       await teardownGate.promise;
+      if (!options.allowClosed && sandboxHandleLeaseAdmissionStates.isClosed(scope)) {
+        throw new Error(`Daytona sandbox lease ${scope.providerLeaseId} is no longer active.`);
+      }
       continue;
     }
 
@@ -959,6 +997,9 @@ async function withSandboxActivityGate<T>(
       // teardown to finish instead of proceeding into a race with cleanup.
       if (sandboxHandleTeardownGates.current(scope)) {
         continue;
+      }
+      if (!options.allowClosed && sandboxHandleLeaseAdmissionStates.isClosed(scope)) {
+        throw new Error(`Daytona sandbox lease ${scope.providerLeaseId} is no longer active.`);
       }
       return await fn();
     } finally {
@@ -1049,6 +1090,7 @@ export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleCache.reset();
   sandboxHandleTeardownGates.reset();
   sandboxHandleActivityGates.reset();
+  sandboxHandleLeaseAdmissionStates.reset();
 }
 
 async function getSandbox(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox> {
@@ -1282,6 +1324,13 @@ const plugin = definePlugin({
         config,
         timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
       });
+      sandboxHandleLeaseAdmissionStates.open({
+        driverKey: params.driverKey,
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        providerLeaseId: sandbox.id,
+        config,
+      });
       return {
         providerLeaseId: sandbox.id,
         metadata: leaseMetadata({
@@ -1335,6 +1384,7 @@ const plugin = definePlugin({
       }
       const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
       sandboxHandleCache.markFresh(scope);
+      sandboxHandleLeaseAdmissionStates.open(scope);
       return {
         providerLeaseId: sandbox.id,
         metadata: leaseMetadata({
@@ -1351,7 +1401,7 @@ const plugin = definePlugin({
         await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
         throw error;
       }
-    });
+    }, { allowClosed: true });
   },
 
   async onEnvironmentReleaseLease(
@@ -1370,6 +1420,7 @@ const plugin = definePlugin({
     // blocks fresh cache reads while cleanup is in flight so overlapping
     // exec/sync calls cannot reacquire the same sandbox mid-stop/delete.
     const teardownGate = sandboxHandleTeardownGates.begin(scope);
+    sandboxHandleLeaseAdmissionStates.close(scope);
     try {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) return;
@@ -1432,6 +1483,7 @@ const plugin = definePlugin({
     // C4: the teardown gate blocks fresh cache reads while delete is in flight
     // so overlapping exec/sync calls cannot reacquire the same sandbox mid-teardown.
     const teardownGate = sandboxHandleTeardownGates.begin(scope);
+    sandboxHandleLeaseAdmissionStates.close(scope);
     try {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) return;
@@ -1492,6 +1544,13 @@ const plugin = definePlugin({
         sandbox,
         resolveConnectionExpiresInMinutes(params.connectionExpiresInMinutes),
       );
+      sandboxHandleLeaseAdmissionStates.open({
+        driverKey: params.driverKey,
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        providerLeaseId: sandbox.id,
+        config,
+      });
       return {
         providerLeaseId: sandbox.id,
         status: "waiting_for_user",
@@ -1653,6 +1712,7 @@ const plugin = definePlugin({
     // C4: cancelling an interactive-setup lease deletes the sandbox, so the
     // teardown gate blocks fresh cache reads while delete is in flight.
     const teardownGate = sandboxHandleTeardownGates.begin(scope);
+    sandboxHandleLeaseAdmissionStates.close(scope);
     try {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) {
