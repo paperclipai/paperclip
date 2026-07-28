@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/link-plugin-dev-sdk.mjs",
-    "preflight:workspace-links": "node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts",
+    "preflight:workspace-links": "node --import ./cli/node_modules/tsx/dist/loader.mjs scripts/ensure-workspace-package-links.ts",
     "dev": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
     "dev:watch": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
     "dev:once": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts dev",
@@ -27,7 +27,7 @@
     "issue-references:backfill": "pnpm run preflight:workspace-links && tsx scripts/backfill-issue-reference-mentions.ts",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
-    "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
+    "paperclipai": "node --import ./cli/node_modules/tsx/dist/loader.mjs cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
     "release": "./scripts/release.sh",
     "release:canary": "./scripts/release.sh canary",

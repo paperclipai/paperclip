@@ -9733,11 +9733,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? readClaudeCodexFallbackContract(agent)
         : null;
 
-    if (claudeCodexFallback) {
+    const fallbackIssueId = issueId;
+    if (claudeCodexFallback && fallbackIssueId) {
       const fallbackResult = await reassignClaudeProviderQuotaIssueToCodexFallback({
         run,
         agent,
-        issueId,
+        issueId: fallbackIssueId,
         fallbackAgentId: claudeCodexFallback.fallbackAgentId,
         returnStatus: claudeCodexFallback.returnStatus,
       });

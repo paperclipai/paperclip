@@ -858,7 +858,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (preparedExecutionTargetRuntime?.workspaceRemoteDir) {
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir;
     }
-    const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+    const runtimeExecutionTarget =
+      overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd) ?? null;
     const executionTargetIsSandbox =
       runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
     const restoreRemoteWorkspace = preparedExecutionTargetRuntime

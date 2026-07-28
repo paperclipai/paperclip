@@ -469,7 +469,7 @@ export function summarySlotService(db: Db) {
     const createdAt = new Date();
     const generationVersion = existing?.generatingIssueId ?? existing?.updatedAt.toISOString() ?? "initial";
     let issueDeduplicated = false;
-    const created = await issuesSvc.create(sel.companyId, {
+    const generationIssueInput = {
       projectId,
       projectWorkspaceId,
       title: generationIssueTitle(sel, createdAt),
@@ -487,10 +487,11 @@ export function summarySlotService(db: Db) {
         sel.slotKey,
         generationVersion,
       ].join(":"),
-      onDeduplicated: (reason) => {
+      onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
         issueDeduplicated = reason === "idempotency_key";
       },
-    });
+    };
+    const created = await issuesSvc.create(sel.companyId, generationIssueInput);
     const generationIssue = (
       await issuesSvc.update(created.id, {
         description: generationIssueDescription(sel, scopeSnapshot, created.id),

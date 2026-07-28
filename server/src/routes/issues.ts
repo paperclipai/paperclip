@@ -3974,15 +3974,14 @@ export function issueRoutes(
       if (seen.has(currentId)) return false;
       seen.add(currentId);
 
-      const row = await db
+      const row: { id: string; companyId: string; parentId: string | null } | null = (await db
         .select({
           id: issueRows.id,
           companyId: issueRows.companyId,
           parentId: issueRows.parentId,
         })
         .from(issueRows)
-        .where(and(eq(issueRows.id, currentId), eq(issueRows.companyId, companyId)))
-        .then((rows) => rows[0] ?? null);
+        .where(and(eq(issueRows.id, currentId), eq(issueRows.companyId, companyId))))[0] ?? null;
 
       if (!row) return false;
       if (row.id === supervisorIssueId) return depth > 0;
@@ -7218,11 +7217,7 @@ export function issueRoutes(
     if (!issue) return;
     const target = await resolveInboxArchiveTarget(req, issue);
     const actor = getActorInfo(req);
-    const archiveState = await svc.archiveInbox(issue.companyId, issue.id, target.userId, new Date(), {
-      archivedByActorType: req.actor.type === "agent" ? "agent" : "user",
-      archivedByAgentId: actor.agentId,
-      archivedByRunId: actor.runId,
-    });
+    const archiveState = await svc.archiveInbox(issue.companyId, issue.id, target.userId);
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
@@ -7473,7 +7468,7 @@ export function issueRoutes(
       actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
       trustExplicitResponsibleUserId: actor.actorType === "user",
       watchdogActorRunId: actor.runId,
-      onDeduplicated: (reason) => {
+      onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
         deduplicationReason = reason;
       },
     });
@@ -8241,12 +8236,13 @@ export function issueRoutes(
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
     const requestedStatus = typeof updateFields.status === "string" ? updateFields.status : undefined;
-    let successionGuard = await resolveSuccessfulRunHandoffSuccessionGuard({
-      db,
-      issue: existing,
-      actor,
-      requestedStatus,
-    });
+    let successionGuard: { sourceRunId: string | null; note: string } | null =
+      await resolveSuccessfulRunHandoffSuccessionGuard({
+        db,
+        issue: existing,
+        actor,
+        requestedStatus,
+      });
     if (!successionGuard) {
       successionGuard = await resolveDirectDoneCloseSuccessionGuard({
         db,

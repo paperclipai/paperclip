@@ -594,6 +594,9 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   actorRunId?: string | null;
   actorResponsibleUserId?: string | null;
   trustExplicitResponsibleUserId?: boolean;
+  idempotencyKey?: string | null;
+  allowDuplicate?: boolean;
+  onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -2822,9 +2825,10 @@ function readSuccessfulRunHandoffFromActivity(row: {
     ?? readStringFromRecord(details, "detected_progress_summary")
     ?? null;
 
-  return {
+  const stateRecord: SuccessfulRunHandoffState = {
     state,
     required: state === "required",
+    hasLiveContinuation: false,
     sourceRunId:
       readStringFromRecord(details, "sourceRunId")
       ?? readStringFromRecord(details, "source_run_id")
@@ -2843,6 +2847,7 @@ function readSuccessfulRunHandoffFromActivity(row: {
     detectedProgressSummary: detectedProgressSummary ? redactSensitiveText(detectedProgressSummary) : null,
     createdAt: row.createdAt,
   };
+  return stateRecord;
 }
 
 async function listSuccessfulRunHandoffMapForIssues(
