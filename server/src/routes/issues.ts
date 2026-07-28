@@ -987,6 +987,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES = new Set([
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "issue_assigned",
+  ISSUE_MANAGER_HANDOFF_WAKE_REASON,
   "issue_blockers_resolved",
   "issue_commented",
   "issue_comment_mentioned",
@@ -9115,12 +9116,14 @@ export function issueRoutes(
       return;
     }
 
-    const activatedIssue = await svc.update(issue.id, {
-      status: "todo",
-      actorAgentId: managerAgentId,
-      expectedStatus: issue.status,
-      expectedAssigneeAgentId: issue.assigneeAgentId,
-    });
+    const activatedIssue = issue.status === "backlog"
+      ? await svc.update(issue.id, {
+          status: "todo",
+          actorAgentId: managerAgentId,
+          expectedStatus: "backlog",
+          expectedAssigneeAgentId: issue.assigneeAgentId,
+        })
+      : issue;
     if (!activatedIssue) {
       res.status(409).json({ error: "Issue status or assignee changed during manager handoff" });
       return;

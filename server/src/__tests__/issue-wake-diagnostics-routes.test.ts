@@ -267,6 +267,47 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     expect(serialized).not.toContain("\"error\"");
   });
 
+  it("preserves manager handoff reason and run ids for diagnostic readback", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const project = await seedProject(db, company.id, "Core");
+    const issue = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Manager handoff target",
+      status: "todo",
+      assigneeAgentId: agent.id,
+    });
+    const wakeRunId = randomUUID();
+
+    await db.insert(agentWakeupRequests).values({
+      companyId: company.id,
+      agentId: agent.id,
+      source: "assignment",
+      reason: "issue_manager_handoff",
+      status: "completed",
+      payload: { issueId: issue.id },
+      runId: wakeRunId,
+      requestedAt: new Date(Date.now() - 10_000),
+      claimedAt: new Date(Date.now() - 9_000),
+      finishedAt: new Date(Date.now() - 1_000),
+    });
+
+    const res = await request(createApp(db, boardActor(company)))
+      .get(`/api/issues/${issue.id}/diagnostics/wakes`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.diagnosis).toContain("completed for issue_manager_handoff");
+    expect(res.body.events).toContainEqual(expect.objectContaining({
+      kind: "wake_request",
+      agentId: agent.id,
+      runId: wakeRunId,
+      source: "assignment",
+      reason: "issue_manager_handoff",
+      status: "completed",
+    }));
+  });
+
   it("returns null diagnosis for an unblocked issue with no wake history", async () => {
     const company = await seedCompany(db);
     const project = await seedProject(db, company.id, "Core");

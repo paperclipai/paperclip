@@ -447,6 +447,30 @@ describe("manager assignment handoff", () => {
     });
   });
 
+  it("requests a wake for an existing todo issue without mutating it", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      id: issueId,
+      title: "Ready delegated lane",
+      status: "todo",
+      assigneeAgentId,
+    }));
+    const wakeupRunId = "55555555-5555-4555-8555-555555555555";
+    const wakeRequestId = "66666666-6666-4666-8666-666666666666";
+    mockWakeup.mockResolvedValue({ id: wakeupRunId, wakeupRequestId: wakeRequestId } as any);
+
+    const res = await request(await createApp(managerActor))
+      .post(`/api/issues/${issueId}/manager-handoff`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockWakeup).toHaveBeenCalledWith(assigneeAgentId, expect.objectContaining({
+      reason: "issue_manager_handoff",
+      payload: expect.objectContaining({ mutation: "assignment_wake" }),
+    }));
+    expect(res.body.issue).toMatchObject({ id: issueId, status: "todo", assigneeAgentId });
+  });
+
   it("fails closed when the issue changes between authorization and backlog activation", async () => {
     mockIssueService.update.mockResolvedValue(null);
 
