@@ -473,18 +473,79 @@ describe("environment routes", () => {
       expect(mockEnvironmentService.update).not.toHaveBeenCalled();
     });
 
-    it("allows a marker-clear-only patch to unblock a row with stale legacy markers", async () => {
-      const staleRow = createPlatformSandboxEnvironment();
+    it("allows a marker-clear-only patch to unblock a row with a stale legacy kubernetes marker", async () => {
+      // A sandbox row carrying only the legacy wrapper marker does not hold
+      // the managed sandbox slot (`environments_managed_sandbox_idx` keys on
+      // `managedByPaperclip`), so its marker is a stale leftover, not live
+      // platform state.
+      const staleRow = {
+        ...createPlatformSandboxEnvironment(),
+        id: "env-legacy-1",
+        metadata: { managedKubernetesSandbox: true },
+      };
       mockEnvironmentService.getById.mockResolvedValue(staleRow);
       mockEnvironmentService.update.mockResolvedValue({ ...staleRow, metadata: {} });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .patch("/api/environments/env-legacy-1")
+        .send({ metadata: { managedKubernetesSandbox: false } });
+
+      expect(res.status).toBe(200);
+      expect(mockEnvironmentService.update).toHaveBeenCalled();
+    });
+
+    it("allows a marker-clear-only patch on a non-slot driver with a stale platform marker", async () => {
+      const staleRow = {
+        ...createPlatformSandboxEnvironment(),
+        id: "env-stale-ssh-1",
+        driver: "ssh",
+        metadata: { managedByPaperclip: true },
+      };
+      mockEnvironmentService.getById.mockResolvedValue(staleRow);
+      mockEnvironmentService.update.mockResolvedValue({ ...staleRow, metadata: {} });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .patch("/api/environments/env-stale-ssh-1")
+        .send({ metadata: { managedByPaperclip: false, managedKubernetesSandbox: false } });
+
+      expect(res.status).toBe(200);
+      expect(mockEnvironmentService.update).toHaveBeenCalled();
+    });
+
+    it("refuses the marker-clear patch on the row holding the managed sandbox slot", async () => {
+      // driver=sandbox + managedByPaperclip is THE provisioner-owned slot row
+      // — clearing its markers would reclassify it tenant-managed and let the
+      // next PATCH/DELETE bypass the write floor.
+      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
       const app = createApp(ownerAdminActor);
 
       const res = await request(app)
         .patch("/api/environments/env-managed-1")
         .send({ metadata: { managedByPaperclip: false, managedKubernetesSandbox: false } });
 
-      expect(res.status).toBe(200);
-      expect(mockEnvironmentService.update).toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+    });
+
+    it("refuses the marker-clear patch on the managed local row", async () => {
+      mockEnvironmentService.getById.mockResolvedValue({
+        ...createPlatformSandboxEnvironment(),
+        id: "env-local-1",
+        driver: "local",
+        metadata: { managedByPaperclip: true, defaultForInstance: true },
+      });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .patch("/api/environments/env-local-1")
+        .send({ metadata: { managedByPaperclip: false } });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
     });
 
     it("rejects non-marker-only patches to platform-provisioned rows even from instance admins", async () => {

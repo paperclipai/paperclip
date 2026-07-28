@@ -114,12 +114,33 @@ const PLATFORM_PROVISIONED_MARKER_KEYS = [
 ] as const;
 
 /**
+ * Whether this row currently occupies one of the provisioner-owned
+ * environment slots. The platform owns at most one local row
+ * (`environments_local_driver_idx`) and at most one managed sandbox row
+ * (`environments_managed_sandbox_idx`), and `ensureLocalEnvironment` /
+ * `ensureManagedSandboxEnvironment` adopt and refresh whichever row holds
+ * the slot on every convergence cycle — so on a cloud-managed instance a
+ * slot row's platform markers are live platform state by construction,
+ * never a stale leftover.
+ */
+function isPlatformSlotEnvironment(environment: {
+  driver: string;
+  metadata: Record<string, unknown> | null;
+}): boolean {
+  return (
+    environment.driver === "local" ||
+    (environment.driver === "sandbox" && environment.metadata?.managedByPaperclip === true)
+  );
+}
+
+/**
  * Returns true when the PATCH body is a metadata-only write whose only
  * purpose is to clear platform markers (setting them to null/false). This is
  * the escape hatch for rows that had these markers stamped through the old
- * unrestricted API before the floor was introduced. The platform provisioner
- * re-asserts markers at the service layer on the next cycle, so clearing a
- * stale marker is low-risk.
+ * unrestricted API before the floor was introduced. It never applies to a
+ * row that holds a provisioner-owned slot (see `isPlatformSlotEnvironment`)
+ * — clearing a live slot row's markers would reclassify it as
+ * tenant-managed and lift the write floor in two steps.
  */
 function isPlatformMarkerClearOnlyPatch(body: unknown): boolean {
   if (!isPlainRecord(body)) return false;
@@ -144,14 +165,21 @@ function isPlatformMarkerClearOnlyPatch(body: unknown): boolean {
  *
  * Exception: a metadata-only patch that only clears the marker keys is
  * allowed so tenants can recover rows stamped with stale markers by the old
- * unrestricted API.
+ * unrestricted API — but only for rows OUTSIDE the provisioner-owned slots.
+ * A slot row (the single local row, or the single managed sandbox row) is
+ * live platform state, and clearing its markers would let the very next
+ * write reclassify it as tenant-managed and bypass this floor.
  */
 function assertPlatformProvisionedEnvironmentWritable(
-  environment: { metadata: Record<string, unknown> | null },
+  environment: { driver: string; metadata: Record<string, unknown> | null },
   options?: { patchBody?: unknown },
 ): void {
   if (!isCloudManagedInstance() || !isPlatformProvisionedEnvironment(environment)) return;
-  if (options?.patchBody !== undefined && isPlatformMarkerClearOnlyPatch(options.patchBody)) return;
+  if (
+    options?.patchBody !== undefined &&
+    isPlatformMarkerClearOnlyPatch(options.patchBody) &&
+    !isPlatformSlotEnvironment(environment)
+  ) return;
   throw forbidden("Platform-provisioned environments are platform-managed on cloud-managed instances", {
     code: "environment_platform_managed",
   });
