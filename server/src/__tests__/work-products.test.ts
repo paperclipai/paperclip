@@ -96,4 +96,61 @@ describe("workProductService", () => {
     expect(result?.reviewState).toBe("ready_for_review");
     expect(result?.previousStatus).toBe(existingRow.status);
   });
+
+  // The productivity work trace reads the completion transition out of the audit row, not out of
+  // the work product. Recording it after the update returns would let a status change commit while
+  // the audit write fails, and a completion no reader can see is classified as a stall against work
+  // that is already finished. The hook therefore runs inside the transaction, still holding the
+  // row lock, so a failure takes the status change down with it.
+  it("records the transition inside the update transaction, before the row is handed back", async () => {
+    const existingRow = createWorkProductRow({ status: "open" });
+    const mergedRow = createWorkProductRow({ status: "merged" });
+
+    const selectFor = vi.fn(async () => [existingRow]);
+    const selectWhere = vi.fn(() => ({ for: selectFor }));
+    const selectFrom = vi.fn(() => ({ where: selectWhere }));
+    const txSelect = vi.fn(() => ({ from: selectFrom }));
+
+    const updateReturning = vi.fn().mockResolvedValue([mergedRow]);
+    const updateWhere = vi.fn(() => ({ returning: updateReturning }));
+    const updateSet = vi.fn(() => ({ where: updateWhere }));
+    const txUpdate = vi.fn(() => ({ set: updateSet }));
+
+    const tx = { select: txSelect, update: txUpdate };
+    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
+    const svc = workProductService({ transaction } as any);
+
+    const seen: Array<{ status: string; previousStatus: string | null; txIsSame: boolean }> = [];
+    const result = await svc.update(
+      "work-product-1",
+      { status: "merged" },
+      {
+        recordTransition: async (recordTx, { product, previousStatus }) => {
+          seen.push({
+            status: product.status,
+            previousStatus,
+            // The hook must receive the transaction, not the outer db — otherwise the audit row
+            // commits on its own connection and the rollback below would not reach it.
+            txIsSame: (recordTx as unknown) === tx,
+          });
+        },
+      },
+    );
+
+    expect(seen).toEqual([{ status: "merged", previousStatus: "open", txIsSame: true }]);
+    expect(result?.status).toBe("merged");
+
+    // A failing transition write must not leave the status change behind: the error propagates out
+    // of the transaction callback, so the surrounding transaction rolls back.
+    const failing = svc.update(
+      "work-product-1",
+      { status: "merged" },
+      {
+        recordTransition: async () => {
+          throw new Error("activity log unavailable");
+        },
+      },
+    );
+    await expect(failing).rejects.toThrow("activity log unavailable");
+  });
 });

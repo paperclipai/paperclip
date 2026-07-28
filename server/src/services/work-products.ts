@@ -78,7 +78,24 @@ export function workProductService(db: Db) {
       return row ? toIssueWorkProduct(row) : null;
     },
 
-    update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
+    update: async (
+      id: string,
+      patch: Partial<typeof issueWorkProducts.$inferInsert>,
+      opts?: {
+        /**
+         * Runs inside the update transaction, after the row is written and while it is still
+         * locked. The productivity work trace reads the completion transition out of the audit row,
+         * not out of the work product itself, so a caller that records that transition must commit
+         * it together with the status change. Writing it afterwards would let the status land while
+         * the audit row is lost, and a completion nobody can see reads as a stall — the exact
+         * failure the counter-check exists to prevent. Throwing here rolls back both.
+         */
+        recordTransition?: (
+          tx: Db,
+          args: { product: IssueWorkProductRow; previousStatus: string | null },
+        ) => Promise<void>;
+      },
+    ) => {
       const result = await db.transaction(async (tx) => {
         // `for update` locks the row for the rest of this transaction, so the state read here is
         // exactly the state the write below overwrites. Callers that record the transition (the
@@ -111,7 +128,14 @@ export function workProductService(db: Db) {
           .where(eq(issueWorkProducts.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
-        return updated ? { updated, previousStatus: existing.status } : null;
+        if (!updated) return null;
+        if (opts?.recordTransition) {
+          await opts.recordTransition(tx as unknown as Db, {
+            product: updated,
+            previousStatus: existing.status,
+          });
+        }
+        return { updated, previousStatus: existing.status };
       });
       if (!result) return null;
       return { ...toIssueWorkProduct(result.updated), previousStatus: result.previousStatus };
