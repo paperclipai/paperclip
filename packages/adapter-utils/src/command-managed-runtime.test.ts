@@ -349,7 +349,8 @@ describe("command managed runtime", () => {
     });
 
     // Exactly one upload process: O(1) round-trips regardless of payload size.
-    expect(calls.length).toBe(1);
+    expect(calls.length).toBe(2);
+    expect(calls[1].args?.join(" ")).toContain("rm -rf");
     expect(calls[0].stdin).toBeTypeOf("string");
 
     const written = await readFile(remotePath);
@@ -376,9 +377,47 @@ describe("command managed runtime", () => {
     // stage-then-atomic-rename shape (temp .paperclip-upload + `mv -f`).
     const script = (calls[0].args ?? []).join(" ");
     expect(script).toContain(`${remotePath}.paperclip-upload`);
+    expect(script).toContain(`trap cleanup EXIT`);
     expect(script).toContain(`mv -f`);
     expect(script.indexOf(".paperclip-upload")).toBeLessThan(script.indexOf("mv -f"));
     expect(await readFile(remotePath, "utf8")).toBe("hello atomic\n");
+  });
+
+  it("cleans up a staged upload when rename fails", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-upload-cleanup-"));
+    cleanupDirs.push(rootDir);
+    const remotePath = path.join(rootDir, "nested", "payload.bin");
+
+    const payload = Buffer.alloc(3 * 1024 * 1024, 7);
+    const { runner, calls } = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
+    const delegatedExecute = runner.execute.bind(runner);
+    runner.execute = async (input) => {
+      const script = (input.args ?? []).join(" ");
+      if (script.includes("mv -f") && script.includes(".paperclip-upload.")) {
+        calls.push({ command: input.command, args: input.args, cwd: input.cwd, stdin: input.stdin });
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "rename failed",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        };
+      }
+      return await delegatedExecute(input);
+    };
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
+
+    await expect(client.writeFile(remotePath, toArrayBuffer(payload))).rejects.toThrow(/rename failed/);
+
+    const uploadCall = calls.find((call) => (call.args ?? []).join(" ").includes(".paperclip-upload."));
+    expect(uploadCall).toBeDefined();
+    const stagedPath = (uploadCall?.args ?? []).join(" ").match(/([/A-Za-z0-9_.-]+\.paperclip-upload\.[A-Za-z0-9-]+)/)?.[1];
+    expect(stagedPath).toBeDefined();
+    await expect(readFile(stagedPath!, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(calls.some((call) => (call.args ?? []).join(" ").includes(`rm -rf '${stagedPath}'`))).toBe(true);
+    await expect(readFile(remotePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("stages a single-file write to a temp then renames it on the chunked fallback path too", async () => {
@@ -528,16 +567,18 @@ describe("command managed runtime", () => {
 
     expect(await readFile(targetFile, "utf8")).toBe("payload\n");
     const scripts = calls.map((call) => (call.args ?? []).join(" "));
-    expect(scripts).toHaveLength(4);
+    expect(scripts).toHaveLength(5);
     expect(scripts[0]).toContain(targetFile + ".paperclip-syncin.");
     expect(scripts[0]).toContain(".paperclip-upload.");
-    expect(scripts[1]).toContain("chmod 640");
-    expect(scripts[1]).toContain(targetFile + ".paperclip-syncin.");
-    expect(scripts[2]).toContain("mv -f");
+    expect(scripts[1]).toContain("rm -rf");
+    expect(scripts[1]).toContain(".paperclip-upload.");
+    expect(scripts[2]).toContain("chmod 640");
     expect(scripts[2]).toContain(targetFile + ".paperclip-syncin.");
-    expect(scripts[2]).toContain(targetFile);
-    expect(scripts[3]).toContain("rm -rf");
+    expect(scripts[3]).toContain("mv -f");
     expect(scripts[3]).toContain(targetFile + ".paperclip-syncin.");
+    expect(scripts[3]).toContain(targetFile);
+    expect(scripts[4]).toContain("rm -rf");
+    expect(scripts[4]).toContain(targetFile + ".paperclip-syncin.");
   });
 
   it("fallback syncIn cleans up a staged file when chmod fails before rename", async () => {
@@ -715,13 +756,13 @@ describe("command managed runtime", () => {
     const single = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
     const singleClient = createCommandManagedRuntimeClient({ runner: single.runner, commandCwd: "/", timeoutMs: 30_000 });
     await singleClient.writeFile(path.join(rootDir, "single.bin"), toArrayBuffer(payload));
-    expect(single.calls.length).toBe(1);
+    expect(single.calls.length).toBe(2);
 
     const chunked = makeSpawnRunner({ supportsSingleStreamStdinProgress: false });
     const chunkedClient = createCommandManagedRuntimeClient({ runner: chunked.runner, commandCwd: "/", timeoutMs: 30_000 });
     await chunkedClient.writeFile(path.join(rootDir, "chunked.bin"), toArrayBuffer(payload));
-    // 2 (init temp + final mv) + ceil(9MiB / 3MiB) = 5 round-trips.
-    expect(chunked.calls.length).toBe(2 + Math.ceil(payload.byteLength / (3 * 1024 * 1024)));
+    // 3 (init temp + final mv + cleanup) + ceil(9MiB / 3MiB) = 6 round-trips.
+    expect(chunked.calls.length).toBe(3 + Math.ceil(payload.byteLength / (3 * 1024 * 1024)));
     expect(chunked.calls.length).toBeGreaterThan(single.calls.length);
 
     expect((await readFile(path.join(rootDir, "single.bin"))).equals(payload)).toBe(true);

@@ -232,44 +232,49 @@ export function createCommandManagedRuntimeClient(input: {
       const remoteTempPath = buildUniqueStagingPath({ targetPath: remotePath, suffix: ".paperclip-upload" });
       const canUseSingleStreamProgressPath = input.runner.supportsSingleStreamStdinProgress === true;
 
-      // Primary path: a single round-trip. Stream the entire base64 body to one
-      // `base64 -d` process via stdin, decode straight into a temp file, then
-      // atomically rename into place. This replaces the previous loop that did
-      // one `printf >> tmpfile` shell round-trip per 32 KB — thousands of serial
-      // processes for a large workspace — with exactly one process.
-      if (
-        encodedLength <= REMOTE_WRITE_SINGLE_STREAM_MAX_BASE64_BYTES &&
-        canUseSingleStreamProgressPath
-      ) {
-        const body = buffer.toString("base64");
-        await options?.onProgress?.(0, total);
+      try {
+        // Primary path: a single round-trip. Stream the entire base64 body to one
+        // `base64 -d` process via stdin, decode straight into a temp file, then
+        // atomically rename into place. This replaces the previous loop that did
+        // one `printf >> tmpfile` shell round-trip per 32 KB — thousands of serial
+        // processes for a large workspace — with exactly one process.
+        if (
+          encodedLength <= REMOTE_WRITE_SINGLE_STREAM_MAX_BASE64_BYTES &&
+          canUseSingleStreamProgressPath
+        ) {
+          const body = buffer.toString("base64");
+          await options?.onProgress?.(0, total);
+          await runShell(
+            `cleanup() { rm -f ${shellQuote(remoteTempPath)}; }; trap cleanup EXIT INT TERM; ` +
+              `mkdir -p ${shellQuote(remoteDir)} && ` +
+              `base64 -d > ${shellQuote(remoteTempPath)} && ` +
+              `mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`,
+            { stdin: body },
+          );
+          await options?.onProgress?.(total, total);
+          return;
+        }
+
+        // Bounded fallback for payloads too large to hand the runner as one stdin
+        // string: append the base64 body to a remote temp file in large chunks
+        // (orders of magnitude fewer round-trips than the old 32 KB loop), decoding
+        // each self-contained chunk on arrival and emitting progress per write,
+        // then atomically rename into place.
         await runShell(
           `mkdir -p ${shellQuote(remoteDir)} && ` +
-            `base64 -d > ${shellQuote(remoteTempPath)} && ` +
-            `mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`,
-          { stdin: body },
+            `rm -f ${shellQuote(remoteTempPath)} && : > ${shellQuote(remoteTempPath)}`,
         );
+        for (let offset = 0; offset < total; offset += REMOTE_WRITE_FALLBACK_DECODED_CHUNK_SIZE) {
+          const end = Math.min(total, offset + REMOTE_WRITE_FALLBACK_DECODED_CHUNK_SIZE);
+          const chunk = buffer.subarray(offset, end).toString("base64");
+          await runShell(`base64 -d >> ${shellQuote(remoteTempPath)}`, { stdin: chunk });
+          await options?.onProgress?.(end, total);
+        }
+        await runShell(`mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`);
         await options?.onProgress?.(total, total);
-        return;
+      } finally {
+        await bestEffortRemoveRemotePath(client, remoteTempPath);
       }
-
-      // Bounded fallback for payloads too large to hand the runner as one stdin
-      // string: append the base64 body to a remote temp file in large chunks
-      // (orders of magnitude fewer round-trips than the old 32 KB loop), decoding
-      // each self-contained chunk on arrival and emitting progress per write,
-      // then atomically rename into place.
-      await runShell(
-        `mkdir -p ${shellQuote(remoteDir)} && ` +
-          `rm -f ${shellQuote(remoteTempPath)} && : > ${shellQuote(remoteTempPath)}`,
-      );
-      for (let offset = 0; offset < total; offset += REMOTE_WRITE_FALLBACK_DECODED_CHUNK_SIZE) {
-        const end = Math.min(total, offset + REMOTE_WRITE_FALLBACK_DECODED_CHUNK_SIZE);
-        const chunk = buffer.subarray(offset, end).toString("base64");
-        await runShell(`base64 -d >> ${shellQuote(remoteTempPath)}`, { stdin: chunk });
-        await options?.onProgress?.(end, total);
-      }
-      await runShell(`mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`);
-      await options?.onProgress?.(total, total);
     },
     readFile: async (remotePath, options) => {
       // Chunked reads intentionally query the remote size first, even without
