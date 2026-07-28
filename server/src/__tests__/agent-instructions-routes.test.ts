@@ -47,7 +47,16 @@ vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   approvalService: () => ({}),
   builtInAgentService: () => mockBuiltInAgentService,
-  companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
+  companySkillService: () => ({
+    listRuntimeSkillEntries: vi.fn(),
+    // Carry-over resolution echoes the requested entries back as resolved —
+    // enough for adapter-switch preservation; per-entry behavior is covered
+    // by the company-skills service tests.
+    resolveRequestedSkillEntries: vi.fn(async (_companyId: string, entries: Array<{ key: string; versionId: string | null }>) => ({
+      resolved: entries,
+      unresolved: [] as string[],
+    })),
+  }),
   budgetService: () => ({}),
   environmentService: () => mockEnvironmentService,
   heartbeatService: () => ({}),
@@ -69,6 +78,9 @@ vi.mock("../services/environments.js", () => ({
 
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: mockFindServerAdapter,
+  // undefined → shouldMaterializeRuntimeSkillsForAdapter falls back to the
+  // legacy adapter set, which is the pre-registry behavior these tests assume.
+  findActiveServerAdapter: vi.fn(() => undefined),
   listAdapterModels: vi.fn(),
 }));
 
@@ -79,7 +91,16 @@ function registerModuleMocks() {
     accessService: () => mockAccessService,
     approvalService: () => ({}),
     builtInAgentService: () => mockBuiltInAgentService,
-    companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
+    companySkillService: () => ({
+    listRuntimeSkillEntries: vi.fn(),
+    // Carry-over resolution echoes the requested entries back as resolved —
+    // enough for adapter-switch preservation; per-entry behavior is covered
+    // by the company-skills service tests.
+    resolveRequestedSkillEntries: vi.fn(async (_companyId: string, entries: Array<{ key: string; versionId: string | null }>) => ({
+      resolved: entries,
+      unresolved: [] as string[],
+    })),
+  }),
     budgetService: () => ({}),
     heartbeatService: () => ({}),
     issueApprovalService: () => ({}),
@@ -100,6 +121,7 @@ function registerModuleMocks() {
 
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: mockFindServerAdapter,
+    findActiveServerAdapter: vi.fn(() => undefined),
     listAdapterModels: vi.fn(),
   }));
 }

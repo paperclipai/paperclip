@@ -989,7 +989,8 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 20,
+            // Fork law (shared-Mac): AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1.
+            maxConcurrentRuns: 1,
           },
           modelProfiles: {
             cheap: { enabled: false },
@@ -1048,7 +1049,8 @@ describe.sequential("agent permission routes", () => {
           runtimeConfig: {
             heartbeat: {
               enabled: false,
-              maxConcurrentRuns: 20,
+              // Fork law (shared-Mac): AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1.
+              maxConcurrentRuns: 1,
             },
             modelProfiles: {
               cheap: {
@@ -1167,7 +1169,8 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 20,
+            // Fork law (shared-Mac): AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1.
+            maxConcurrentRuns: 1,
           },
           modelProfiles: {
             cheap: { enabled: false },
