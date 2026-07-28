@@ -5414,6 +5414,7 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id", async (req, res) => {
+    const requestStartedAt = performance.now();
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
@@ -5472,6 +5473,7 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    res.setHeader("Server-Timing", `paperclip_issue;dur=${(performance.now() - requestStartedAt).toFixed(1)}`);
     res.json({
       ...issue,
       ...inboxArchiveFields,
