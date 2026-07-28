@@ -99,6 +99,10 @@ import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
+// Imported directly rather than through the services barrel: it is a pure
+// lookup with no database dependency, and route tests that mock the barrel
+// wholesale should not have to stub it.
+import { creatorHandoffActivitySource } from "../services/issue-thread-interactions.js";
 import {
   accessService,
   agentService,
@@ -1887,22 +1891,6 @@ function buildRequestItemVerdictsWakeIdempotencyKey(args: {
  * that moved the issue; `request_checkbox_confirmation` deliberately keeps the
  * long-standing `request_confirmation_accept` source.
  */
-/**
- * Keyed by `kind:status`, not by kind alone: the same three kinds hand the issue
- * back on both their acceptance and their refusal paths, and an activity entry
- * labelled `..._accept` for a decline would misreport why the issue moved.
- */
-const INTERACTION_CREATOR_HANDOFF_ACTIVITY_SOURCES: Record<string, string> = {
-  "request_confirmation:accepted": "request_confirmation_accept",
-  "request_confirmation:rejected": "request_confirmation_reject",
-  "request_checkbox_confirmation:accepted": "request_confirmation_accept",
-  "request_checkbox_confirmation:rejected": "request_confirmation_reject",
-  "suggest_tasks:accepted": "suggest_tasks_accept",
-  "suggest_tasks:rejected": "suggest_tasks_reject",
-  "ask_user_questions:answered": "ask_user_questions_answer",
-  "ask_user_questions:cancelled": "ask_user_questions_cancel",
-};
-
 async function logInteractionCreatorHandoff(db: Db, input: {
   issue: {
     id: string;
@@ -1931,9 +1919,7 @@ async function logInteractionCreatorHandoff(db: Db, input: {
       status: input.continuationIssue.status,
       assigneeAgentId: input.continuationIssue.assigneeAgentId ?? null,
       assigneeUserId: input.continuationIssue.assigneeUserId ?? null,
-      source: INTERACTION_CREATOR_HANDOFF_ACTIVITY_SOURCES[
-        `${input.interaction.kind}:${input.interaction.status}`
-      ] ?? "interaction_resolved",
+      source: creatorHandoffActivitySource(input.interaction.kind, input.interaction.status),
       interactionId: input.interaction.id,
       _previous: {
         status: input.issue.status,
