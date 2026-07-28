@@ -2,25 +2,32 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getTableName } from "drizzle-orm";
 
 const mockCreateChild = vi.fn();
+const mockUpdateIssue = vi.fn();
 
 vi.mock("./issues.js", () => ({
   issueService: () => ({
     createChild: mockCreateChild,
+    update: mockUpdateIssue,
   }),
 }));
 
 type SelectRow = Record<string, unknown>;
 
-function createSelectChain(rows: SelectRow[]) {
+function createSelectChain(rows: SelectRow[], onLock?: (mode: string) => void) {
+  const result: any = {
+    for(mode: string) {
+      onLock?.(mode);
+      return result;
+    },
+    then(callback: (rows: SelectRow[]) => unknown) {
+      return Promise.resolve(callback(rows));
+    },
+  };
   return {
     from() {
       return {
         where() {
-          return {
-            then(callback: (rows: SelectRow[]) => unknown) {
-              return Promise.resolve(callback(rows));
-            },
-          };
+          return result;
         },
       };
     },
@@ -79,10 +86,105 @@ function createFakeDb(args: {
   };
 }
 
-describe("issueThreadInteractionService", () => {
+function createCreateFlowDb(args: {
+  currentIssueRow: SelectRow | null;
+  existingInteractionRow?: SelectRow | null;
+  issueStatus?: string;
+  failAssignment?: boolean;
+  onInsert?: () => void;
+}) {
+  const touches: Array<Record<string, unknown>> = [];
+  const events: string[] = [];
+  const locks: string[] = [];
+
+  const db: any = {
+    select: vi.fn((columns?: Record<string, unknown>) => {
+      // The assignee probe is the only select that asks for the assignee columns;
+      // every other select in the create flow (idempotency / source lookups) gets
+      // an empty result, so this stays independent of call ordering.
+      const wantsAssignee = Boolean(columns && "assigneeAgentId" in columns);
+      // The create path reads status and assignee together under one lock; the
+      // idempotent-reuse path reads assignee columns on their own.
+      if (columns && "status" in columns) {
+        events.push("select:issue");
+        return createSelectChain(
+          [{
+            status: args.issueStatus ?? "in_progress",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            ...(args.currentIssueRow ?? {}),
+          }],
+          (mode) => locks.push(mode),
+        );
+      }
+      if (wantsAssignee) {
+        events.push("select:assignee");
+        return createSelectChain(
+          args.currentIssueRow ? [args.currentIssueRow] : [],
+          (mode) => locks.push(mode),
+        );
+      }
+      // A column-less select is the idempotency lookup.
+      return createSelectChain(args.existingInteractionRow ? [args.existingInteractionRow] : []);
+    }),
+    insert: vi.fn(() => ({
+      values(values: Record<string, unknown>) {
+        events.push("insert:interaction");
+        args.onInsert?.();
+        const row = {
+          id: "interaction-new",
+          createdAt: new Date("2026-04-20T10:00:00.000Z"),
+          updatedAt: new Date("2026-04-20T10:00:00.000Z"),
+          resolvedByAgentId: null,
+          resolvedByUserId: null,
+          resolvedAt: null,
+          result: null,
+          ...values,
+        };
+        return {
+          returning: async () => [row],
+        };
+      },
+    })),
+    update: vi.fn(() => ({
+      set(values: Record<string, unknown>) {
+        return {
+          where() {
+            touches.push(values);
+            if ("assigneeAgentId" in values) {
+              events.push("update:assignee");
+              if (args.failAssignment) return Promise.reject(new Error("assignment failed"));
+            }
+            // Drizzle's update builder is awaitable *and* exposes `.returning()`;
+            // the adopt path awaits it directly, the supersede path chains.
+            const result: any = Promise.resolve(undefined);
+            result.returning = async () => [];
+            return result;
+          },
+        };
+      },
+    })),
+    transaction: async (callback: (tx: any) => Promise<void>) => {
+      events.push("tx:begin");
+      try {
+        return await callback(db);
+      } finally {
+        events.push("tx:end");
+      }
+    },
+  };
+
+  return { db, touches, events, locks };
+}
+
+// Every test re-imports the service module (`vi.resetModules()` below), so the
+// first one to run pays the full module-graph import cost and sits close to the
+// 5s default on a cold cache.
+describe("issueThreadInteractionService", { timeout: 30_000 }, () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    mockUpdateIssue.mockResolvedValue({ id: "issue-1", assigneeAgentId: "agent-1" });
   });
 
   it.each([
@@ -159,9 +261,15 @@ describe("issueThreadInteractionService", () => {
     };
 
     const db: any = {
-      select: vi.fn(() => createSelectChain([existingRow])),
+      // The issue already has an assignee, so reuse keeps its wake target and this
+      // test stays focused on the idempotency behaviour itself.
+      select: vi.fn((columns?: Record<string, unknown>) =>
+        columns && "assigneeAgentId" in columns
+          ? createSelectChain([{ assigneeAgentId: "agent-1", assigneeUserId: null }])
+          : createSelectChain([existingRow])),
       insert: vi.fn(),
       update: vi.fn(),
+      transaction: async (callback: (tx: any) => Promise<void>) => callback(db),
     };
 
     const svc = issueThreadInteractionService(db as never);
@@ -186,6 +294,358 @@ describe("issueThreadInteractionService", () => {
     expect(created.id).toBe("interaction-1");
     expect(created.idempotencyKey).toBe("run-1:suggest");
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("create auto-assigns the creating agent when a wake_assignee interaction targets an ownerless issue", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const { db, events, locks, touches } = createCreateFlowDb({
+      currentIssueRow: { assigneeAgentId: null, assigneeUserId: null },
+    });
+
+    const svc = issueThreadInteractionService(db as never);
+    const created = await svc.create({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Pick one scope",
+          selectionMode: "single",
+          required: true,
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      agentId: "agent-1",
+    });
+
+    expect(touches).toContainEqual(expect.objectContaining({ assigneeAgentId: "agent-1" }));
+    expect(created.kind).toBe("ask_user_questions");
+    // The issue row is read exactly once, under an exclusive lock. FOR SHARE here
+    // would let two agents racing to create an interaction on the same ownerless
+    // issue both hold it and then deadlock upgrading to write the assignee.
+    expect(locks).toEqual(["update"]);
+    // The adoption must happen inside the same transaction as the insert, so the
+    // interaction and the wake target it depends on both land or neither does.
+    expect(events).toEqual(["tx:begin", "select:issue", "insert:interaction", "update:assignee", "tx:end"]);
+  });
+
+  it("create leaves a user-assigned issue alone for a wake_assignee interaction", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const { db, events } = createCreateFlowDb({
+      currentIssueRow: { assigneeAgentId: null, assigneeUserId: "user-1" },
+    });
+
+    const svc = issueThreadInteractionService(db as never);
+    await svc.create({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Pick one scope",
+          selectionMode: "single",
+          required: true,
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      agentId: "agent-1",
+    });
+
+    // A user assignee is already a live waiting path (this is a pending *user*
+    // decision), and an issue may only carry one assignee — adopting here would
+    // take the issue away from its human owner.
+    expect(events).not.toContain("update:assignee");
+  });
+
+  it("create fails rather than persisting an interaction whose auto-assign failed", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const { db, events } = createCreateFlowDb({
+      currentIssueRow: { assigneeAgentId: null, assigneeUserId: null },
+      failAssignment: true,
+    });
+
+    const svc = issueThreadInteractionService(db as never);
+
+    // The assignment shares the insert's transaction: swallowing the failure here
+    // would persist an interaction behind exactly the dead wake path this guards
+    // against, so both must roll back and let the caller retry cleanly.
+    await expect(svc.create({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Pick one scope",
+          selectionMode: "single",
+          required: true,
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      agentId: "agent-1",
+    })).rejects.toThrow("assignment failed");
+
+    expect(events).toContain("update:assignee");
+  });
+
+  it("create does not override an existing assignee for a wake_assignee interaction", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const { db, events } = createCreateFlowDb({
+      currentIssueRow: { assigneeAgentId: "agent-2", assigneeUserId: null },
+    });
+
+    const svc = issueThreadInteractionService(db as never);
+    await svc.create({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Pick one scope",
+          selectionMode: "single",
+          required: true,
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    }, {
+      agentId: "agent-1",
+    });
+
+    expect(events).not.toContain("update:assignee");
+  });
+
+  it("create re-establishes the wake target when reusing an idempotent interaction on an ownerless issue", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    // Rows created before this guard existed — or whose issue lost its assignee
+    // since — must not be handed back on retry still pointing at a dead wake path.
+    const { db, events, locks, touches } = createCreateFlowDb({
+      currentIssueRow: { assigneeAgentId: null, assigneeUserId: null },
+      existingInteractionRow: {
+        id: "interaction-existing",
+        companyId: "company-1",
+        issueId: "11111111-1111-4111-8111-111111111111",
+        kind: "suggest_tasks",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        requestedResolverPolicy: "anyone",
+        effectiveResolverPolicy: "anyone",
+        resolverPolicyProvenance: "inherited",
+        effectiveResolverPolicySource: "requested",
+        addresseeAgentId: null,
+        idempotencyKey: "run-1:suggest",
+        sourceCommentId: null,
+        sourceRunId: null,
+        title: null,
+        summary: null,
+        createdByAgentId: "agent-1",
+        createdByUserId: null,
+        resolvedByAgentId: null,
+        resolvedByUserId: null,
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+        result: null,
+        resolvedAt: null,
+        createdAt: new Date("2026-04-20T10:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T10:00:00.000Z"),
+      },
+    });
+
+    const svc = issueThreadInteractionService(db as never);
+    const created = await svc.create({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+    }, {
+      kind: "suggest_tasks",
+      idempotencyKey: "run-1:suggest",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+    }, {
+      agentId: "agent-1",
+    });
+
+    expect(created.id).toBe("interaction-existing");
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(touches).toContainEqual(expect.objectContaining({ assigneeAgentId: "agent-1" }));
+    expect(locks).toContain("update");
+    expect(events).toEqual(["tx:begin", "select:assignee", "update:assignee", "tx:end"]);
+  });
+
+  it("create does not adopt the issue when reusing an already-resolved interaction", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    // A resolved interaction has spent its one continuation and can never wake
+    // anyone again, so repairing its wake target would change ownership of an
+    // ownerless issue without buying anything.
+    const { db, events } = createCreateFlowDb({
+      currentIssueRow: { assigneeAgentId: null, assigneeUserId: null },
+      existingInteractionRow: {
+        id: "interaction-existing",
+        companyId: "company-1",
+        issueId: "11111111-1111-4111-8111-111111111111",
+        kind: "suggest_tasks",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        requestedResolverPolicy: "anyone",
+        effectiveResolverPolicy: "anyone",
+        resolverPolicyProvenance: "inherited",
+        effectiveResolverPolicySource: "requested",
+        addresseeAgentId: null,
+        idempotencyKey: "run-1:suggest",
+        sourceCommentId: null,
+        sourceRunId: null,
+        title: null,
+        summary: null,
+        createdByAgentId: "agent-1",
+        createdByUserId: null,
+        resolvedByAgentId: null,
+        resolvedByUserId: "local-board",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+        result: { version: 1, outcome: "accepted", createdTasks: [] },
+        resolvedAt: new Date("2026-04-20T11:00:00.000Z"),
+        createdAt: new Date("2026-04-20T10:00:00.000Z"),
+        updatedAt: new Date("2026-04-20T11:00:00.000Z"),
+      },
+    });
+
+    const svc = issueThreadInteractionService(db as never);
+    const created = await svc.create({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+    }, {
+      kind: "suggest_tasks",
+      idempotencyKey: "run-1:suggest",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+    }, {
+      agentId: "agent-1",
+    });
+
+    expect(created.id).toBe("interaction-existing");
+    expect(events).not.toContain("update:assignee");
+  });
+
+  it("create re-establishes the wake target when it loses the idempotency insert race", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    // The loser of a concurrent create does not go through the pre-insert
+    // idempotency lookup — it reaches the existing row through the unique-violation
+    // catch instead. That branch hands the row back just like the pre-check does,
+    // so it has to re-establish the wake target too. Otherwise whichever caller
+    // loses the race silently receives an interaction with a dead wake path.
+    const winnerRow = {
+      id: "interaction-existing",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "suggest_tasks",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "inherited",
+      effectiveResolverPolicySource: "requested",
+      addresseeAgentId: null,
+      idempotencyKey: "run-1:suggest",
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: null,
+      summary: null,
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      result: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-04-20T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T10:00:00.000Z"),
+    };
+
+    // The pre-insert lookup must miss (that is what makes this the race path);
+    // the winner's row only becomes visible once our insert has hit the unique
+    // index, so the fixture starts empty and is filled by `onInsert`.
+    const dbArgs: Parameters<typeof createCreateFlowDb>[0] = {
+      currentIssueRow: { assigneeAgentId: null, assigneeUserId: null },
+      existingInteractionRow: null,
+      onInsert: () => {
+        dbArgs.existingInteractionRow = winnerRow;
+        throw Object.assign(new Error("duplicate key value violates unique constraint"), {
+          code: "23505",
+          constraint: "issue_thread_interactions_company_issue_idempotency_uq",
+        });
+      },
+    };
+    const { db, events, touches } = createCreateFlowDb(dbArgs);
+
+    const svc = issueThreadInteractionService(db as never);
+    const created = await svc.create({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+    }, {
+      kind: "suggest_tasks",
+      idempotencyKey: "run-1:suggest",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+    }, {
+      agentId: "agent-1",
+    });
+
+    expect(created.id).toBe("interaction-existing");
+    expect(events).toContain("insert:interaction");
+    expect(touches).toContainEqual(expect.objectContaining({ assigneeAgentId: "agent-1" }));
+  });
+
+  it("create does not auto-assign for request_confirmation's default none continuation policy", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const { db, events, locks, touches } = createCreateFlowDb({
+      currentIssueRow: { assigneeAgentId: null, assigneeUserId: null },
+    });
+
+    const svc = issueThreadInteractionService(db as never);
+    await svc.create({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "none",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        allowDeclineReason: true,
+      },
+    }, {
+      agentId: "agent-1",
+    });
+
+    expect(events).not.toContain("update:assignee");
+    // An interaction that cannot strand a wake path never writes the assignee;
+    // it still takes the terminal-issue gate's exclusive lock, which the create
+    // path holds unconditionally.
+    expect(events).toEqual(["tx:begin", "select:issue", "insert:interaction", "tx:end"]);
+    expect(locks).toEqual(["update"]);
+    expect(touches).not.toContainEqual(expect.objectContaining({ assigneeAgentId: "agent-1" }));
   });
 
   it("answerQuestions normalizes duplicate option ids and persists answered results", async () => {
