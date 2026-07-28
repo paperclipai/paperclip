@@ -330,9 +330,14 @@ describe("command managed runtime", () => {
       detectCommand: "sh",
     });
 
-    expect(calls).toHaveLength(1);
+    // The detection probe must be the first shell invocation and stay on the
+    // default profile-sourcing path (noProfile !== true) so a CLI provided by
+    // the login profile is discoverable before we decide whether to install.
     expect(calls[0]?.noProfile).not.toBe(true);
-    expect(calls[0]?.args?.join(" ")).toContain("command -v sh");
+    expect(calls[0]?.args?.join(" ")).toContain("command -v 'sh'");
+    // Detection succeeds here, so the install command must be skipped entirely;
+    // the remaining calls are workspace staging, never the install command.
+    expect(calls.some((call) => call.args?.join(" ").includes("echo install"))).toBe(false);
   });
 
   it("runs setup commands from a stable root cwd when staging into a nested remote workspace dir", async () => {

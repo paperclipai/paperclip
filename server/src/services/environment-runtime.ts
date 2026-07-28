@@ -1744,6 +1744,7 @@ function createPluginEnvironmentDriver(
           env: input.env,
           stdin: input.stdin,
           timeoutMs: input.timeoutMs,
+          noProfile: input.noProfile === true,
         },
       });
     },
