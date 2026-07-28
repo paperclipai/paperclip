@@ -1,0 +1,3 @@
+{ "brandSlug": "stack-lab",
+  "theme": { "accent": "#5db4ff", "accent2": "#2f8de4", "panel": "#0d1726", "lightPanel": "#f4f6f8" },
+  "recipes": [ { "mark": "stack", "container": "hexring", "treatment": "gradglow" } ] }

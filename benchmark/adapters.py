@@ -43,15 +43,17 @@ _AGY_SEM = threading.BoundedSemaphore(2)
 
 def run_model(prompt, model_row, adapters_cfg, timeout_sec):
     """Dispatch to the right adapter by model_row['adapter']."""
-    hold = benchlib.first_active_model_hold(model_row)
-    if hold:
+    guard = benchlib.first_model_guard(model_row)
+    if guard:
         r = benchlib.empty_result()
         r["model"] = model_row.get("id") or model_row.get("model_arg")
         r["error"] = (
-            f"model held by TSBC guard {hold.get('id', 'model-hold')}"
-            + (f" until {hold.get('until')}" if hold.get("until") else "")
+            f"model blocked by TSBC model guard {guard.get('id', 'model-guard')}"
+            + (f" until {guard.get('until')}" if guard.get("until") else "")
         )
-        return r
+        r["skipped"] = True
+        r["skipReason"] = "model_guard"
+        return _attach_request_metadata(r, model_row)
     adapter = model_row["adapter"]
     extra = list((adapters_cfg.get(adapter) or {}).get("extra_args", []))
     effort = benchlib.model_effort_label(model_row)
@@ -74,8 +76,20 @@ def run_model(prompt, model_row, adapters_cfg, timeout_sec):
     if fn is None:
         r = benchlib.empty_result()
         r["error"] = f"unknown adapter {adapter!r}"
-        return r
-    return fn(prompt, model_row.get("model_arg"), extra, timeout_sec, effort=effort)
+        return _attach_request_metadata(r, model_row)
+    return _attach_request_metadata(
+        fn(prompt, model_row.get("model_arg"), extra, timeout_sec, effort=effort),
+        model_row,
+    )
+
+
+def _attach_request_metadata(result, model_row):
+    result["requestedModelId"] = model_row.get("id")
+    result["requestedModelArg"] = model_row.get("model_arg")
+    result["benchAdapterType"] = model_row.get("adapter")
+    result.setdefault("servedModelVerified", False)
+    result.setdefault("servedModelMismatch", False)
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -148,6 +162,7 @@ def _run_claude(prompt, model_arg, extra, timeout_sec, effort=None):
         r["costUsd"] = j.get("total_cost_usd")
         mu = j.get("modelUsage") or {}
         reported_model = j.get("model")
+        served_verified = bool(reported_model)
         if not reported_model:
             # Claude can emit auxiliary modelUsage entries (for example a tiny
             # Haiku meter) alongside the requested model while leaving the
@@ -156,9 +171,12 @@ def _run_claude(prompt, model_arg, extra, timeout_sec, effort=None):
             # first map key.
             if model_arg and model_arg in mu:
                 reported_model = model_arg
+                served_verified = True
             elif len(mu) == 1:
                 reported_model = next(iter(mu))
+                served_verified = True
         r["model"] = reported_model or model_arg
+        r["servedModelVerified"] = served_verified
         r["ok"] = bool(r["output"]) and not r["error"]
         return r
 
@@ -208,7 +226,9 @@ def _run_codex(prompt, model_arg, extra, timeout_sec, effort=None):
             r["inputTokens"] = n["input"]
             r["outputTokens"] = n["output"]
             r["totalTokens"] = n["total"] or ((n["input"] or 0) + (n["output"] or 0)) or None
-        r["model"] = _codex_model(events) or model_arg
+        reported_model = _codex_model(events)
+        r["model"] = reported_model or model_arg
+        r["servedModelVerified"] = bool(reported_model)
         if timed_out:
             r["error"] = "timeout"
         elif rc not in (0, None) and not r["output"]:
@@ -254,6 +274,92 @@ def _codex_model(events):
 # antigravity (agy) — Google's supported replacement for the retired gemini CLI
 # --------------------------------------------------------------------------
 
+_AGY_SELF_REPORT_PROMPT = "State your exact model name and version number, nothing else."
+_MODEL_MODIFIER_TOKENS = {
+    "low",
+    "medium",
+    "med",
+    "high",
+    "thinking",
+    "reasoning",
+    "non",
+    "version",
+    "model",
+}
+
+
+def _model_identity_tokens(value):
+    tokens = re.findall(r"[a-z]+|\d+[a-z]?", str(value or "").lower())
+    return [token for token in tokens if token not in _MODEL_MODIFIER_TOKENS]
+
+
+def _served_model_matches_pin(pin, served_model):
+    pin_tokens = set(_model_identity_tokens(pin))
+    served_tokens = set(_model_identity_tokens(served_model))
+    if not pin_tokens or not served_tokens:
+        return False
+    return pin_tokens.issubset(served_tokens) or served_tokens.issubset(pin_tokens)
+
+
+def _parse_agy_json_response(stdout):
+    parsed = benchlib._try_json((stdout or "").strip()) or benchlib.extract_json(stdout)
+    if not isinstance(parsed, dict):
+        return None, None, None, None
+    response = (
+        parsed.get("response")
+        or parsed.get("result")
+        or parsed.get("text")
+        or parsed.get("output")
+        or ""
+    )
+    usage = parsed.get("usage") or {}
+    inp = usage.get("input_tokens") or usage.get("prompt_tokens") or usage.get("input")
+    outp = usage.get("output_tokens") or usage.get("completion_tokens") or usage.get("output")
+    return str(response or "").strip(), inp, outp, parsed
+
+
+def _run_antigravity_self_report(model_arg, timeout_sec, cwd):
+    r = {
+        "ok": False,
+        "servedModel": None,
+        "inputTokens": None,
+        "outputTokens": None,
+        "wallMs": None,
+        "error": None,
+        "stderrTail": None,
+        "raw": None,
+    }
+    cmd = ["agy", "--print", _AGY_SELF_REPORT_PROMPT, "--output-format", "json"]
+    if model_arg:
+        cmd += ["--model", model_arg]
+    probe_timeout = max(30, min(int(timeout_sec or 120), 180))
+    rc, out, err, wall, timed_out = _exec(cmd, probe_timeout, cwd)
+    r["wallMs"] = wall
+    r["stderrTail"] = _tail(err)
+    if timed_out:
+        r["error"] = "timeout"
+        return r
+    served, inp, outp, raw = _parse_agy_json_response(out)
+    r["raw"] = raw
+    r["inputTokens"] = inp
+    r["outputTokens"] = outp
+    if not served:
+        agy_error = ""
+        if isinstance(raw, dict):
+            agy_error = str(raw.get("error") or raw.get("status") or "").strip()
+        if agy_error:
+            r["error"] = f"agy self-report: {agy_error} (rc={rc})"
+        else:
+            r["error"] = f"agy self-report: unparseable output (rc={rc})"
+        return r
+    r["servedModel"] = served
+    if rc not in (0, None):
+        r["error"] = f"agy self-report: rc={rc}: {_tail(err, 160)}"
+        return r
+    r["ok"] = True
+    return r
+
+
 def _run_antigravity(prompt, model_arg, extra, timeout_sec, effort=None):
     """Antigravity (`agy`) CLI. Selects a model by its display-name string, e.g.
     'Gemini 3.5 Flash (Medium)'. Print mode returns plain text only (no usage JSON),
@@ -261,20 +367,49 @@ def _run_antigravity(prompt, model_arg, extra, timeout_sec, effort=None):
     142MB binary; cap concurrency on the shared Mac via _AGY_SEM."""
     r = benchlib.empty_result()
     with _AGY_SEM, tempfile.TemporaryDirectory(prefix="bench-agy-") as cwd:
+        probe = _run_antigravity_self_report(model_arg, timeout_sec, cwd)
+        r["servedModelSelfReport"] = probe.get("servedModel")
+        r["servedModelVerified"] = False
+        r["selfReportWallMs"] = probe.get("wallMs")
+        r["selfReportInputTokens"] = probe.get("inputTokens")
+        r["selfReportOutputTokens"] = probe.get("outputTokens")
+        if not probe.get("ok"):
+            detail = probe.get("error") or "agy self-report failed"
+            r["error"] = detail
+            r["failureReason"] = "served_model_unverified"
+            r["stderrTail"] = probe.get("stderrTail")
+            r["wallMs"] = probe.get("wallMs")
+            if antigravity_is_quota_error(detail + " " + (probe.get("stderrTail") or "")):
+                r["quotaError"] = True
+                r["failureReason"] = "quota"
+            return r
+        served_model = probe.get("servedModel")
+        r["model"] = served_model
+        if not _served_model_matches_pin(model_arg, served_model):
+            r["error"] = f"served_model_mismatch: requested {model_arg}, self-reported {served_model}"
+            r["failureReason"] = "served_model_mismatch"
+            r["servedModelMismatch"] = True
+            r["wallMs"] = probe.get("wallMs")
+            return r
+        r["servedModelVerified"] = True
         cmd = ["agy", "-p", prompt]
         if model_arg:
             cmd += ["--model", model_arg]
         cmd += list(extra)
         r["cmd"] = ["agy", "-p", "<prompt>"] + (["--model", model_arg] if model_arg else [])
         rc, out, err, wall, timed_out = _exec(cmd, timeout_sec, cwd)
-        r["wallMs"] = wall
+        r["taskWallMs"] = wall
+        r["wallMs"] = (probe.get("wallMs") or 0) + wall
         r["stderrTail"] = _tail(err)
         r["output"] = (out or "").strip()
         if timed_out:
             r["error"] = "timeout"
         elif rc not in (0, None) and not r["output"]:
             r["error"] = f"agy: rc={rc}: {_tail(err, 160)}"
-        r["model"] = model_arg
+        if r["error"] and antigravity_is_quota_error((err or "") + (out or "")):
+            r["quotaError"] = True
+            r["failureReason"] = "quota"
+        r["model"] = served_model
         # agy print mode emits no usage JSON -> estimate tokens (flagged)
         r["inputTokens"] = benchlib.estimate_tokens(prompt)
         r["outputTokens"] = benchlib.estimate_tokens(r["output"])
@@ -314,6 +449,31 @@ def run_antigravity_agentic(prompt, model_arg, extra, timeout_sec, cwd, skip_per
     the orchestrator can halt the lane instead of hammering a spent weekly Gemini quota."""
     r = benchlib.empty_result()
     with _AGY_SEM:
+        probe = _run_antigravity_self_report(model_arg, timeout_sec, cwd)
+        r["servedModelSelfReport"] = probe.get("servedModel")
+        r["servedModelVerified"] = False
+        r["selfReportWallMs"] = probe.get("wallMs")
+        r["selfReportInputTokens"] = probe.get("inputTokens")
+        r["selfReportOutputTokens"] = probe.get("outputTokens")
+        if not probe.get("ok"):
+            detail = probe.get("error") or "agy self-report failed"
+            r["error"] = detail
+            r["failureReason"] = "served_model_unverified"
+            r["stderrTail"] = probe.get("stderrTail")
+            r["wallMs"] = probe.get("wallMs")
+            if antigravity_is_quota_error(detail + " " + (probe.get("stderrTail") or "")):
+                r["quotaError"] = True
+                r["failureReason"] = "quota"
+            return r
+        served_model = probe.get("servedModel")
+        r["model"] = served_model
+        if not _served_model_matches_pin(model_arg, served_model):
+            r["error"] = f"served_model_mismatch: requested {model_arg}, self-reported {served_model}"
+            r["failureReason"] = "served_model_mismatch"
+            r["servedModelMismatch"] = True
+            r["wallMs"] = probe.get("wallMs")
+            return r
+        r["servedModelVerified"] = True
         cmd = ["agy", "-p", prompt]
         if model_arg:
             cmd += ["--model", model_arg]
@@ -324,7 +484,8 @@ def run_antigravity_agentic(prompt, model_arg, extra, timeout_sec, cwd, skip_per
                     + (["--dangerously-skip-permissions"] if skip_permissions else [])
                     + (["--model", model_arg] if model_arg else []))
         rc, out, err, wall, timed_out = _exec(cmd, timeout_sec, cwd)
-        r["wallMs"] = wall
+        r["taskWallMs"] = wall
+        r["wallMs"] = (probe.get("wallMs") or 0) + wall
         r["stderrTail"] = _tail(err)
         r["output"] = (out or "").strip()
         if timed_out:
@@ -333,7 +494,8 @@ def run_antigravity_agentic(prompt, model_arg, extra, timeout_sec, cwd, skip_per
             r["error"] = f"agy: rc={rc}: {_tail(err, 160)}"
         if r["error"] and antigravity_is_quota_error((err or "") + (out or "")):
             r["quotaError"] = True
-        r["model"] = model_arg
+            r["failureReason"] = "quota"
+        r["model"] = served_model
         r["inputTokens"] = benchlib.estimate_tokens(prompt)
         r["outputTokens"] = benchlib.estimate_tokens(r["output"])
         r["tokensEstimated"] = True
@@ -370,6 +532,7 @@ def _run_gemini(prompt, model_arg, extra, timeout_sec, effort=None):
         r["output"] = (j.get("response") or j.get("text") or "").strip()
         model_name, inp, outp, tot = _gemini_usage(j.get("stats") or {})
         r["model"] = model_name or model_arg
+        r["servedModelVerified"] = bool(model_name)
         r["inputTokens"] = inp
         r["outputTokens"] = outp
         r["totalTokens"] = tot
@@ -481,6 +644,7 @@ def _run_grok(prompt, model_arg, extra, timeout_sec, effort=None):
         r["stderrTail"] = _tail(err)
         r["output"] = parsed["summary"]
         r["model"] = model_arg
+        r["servedModelVerified"] = False
         r["inputTokens"] = benchlib.estimate_tokens(prompt)
         r["outputTokens"] = benchlib.estimate_tokens(r["output"])
         r["totalTokens"] = (r["inputTokens"] or 0) + (r["outputTokens"] or 0) or None
@@ -581,6 +745,7 @@ def _run_hermes(prompt, model_arg, extra, timeout_sec, effort=None):
             sess_model, inp, outp = fallback
 
         r["model"] = sess_model or model_arg
+        r["servedModelVerified"] = bool(sess_model)
         if inp is None and outp is None:
             # last resort: estimate so cross-lane efficiency still has a number (flagged)
             r["inputTokens"] = benchlib.estimate_tokens(prompt)

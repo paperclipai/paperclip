@@ -1,0 +1,22 @@
+{
+  "brandSlug": "vault-cases",
+  "theme": {
+    "accent": "#d4a017",
+    "accent2": "#8a6810",
+    "panel": "#1a1408",
+    "lightPanel": "#faf6ec"
+  },
+  "recipes": [
+    {
+      "container": "magnifier",
+      "containers": [
+        {
+          "type": "magnifier",
+          "scale": 1.0
+        }
+      ],
+      "mark": "fingerprint",
+      "treatment": "glow"
+    }
+  ]
+}

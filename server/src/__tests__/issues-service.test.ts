@@ -7334,6 +7334,56 @@ describeEmbeddedPostgres("board action requirements", () => {
     expect(result.has(issueId)).toBe(false);
   });
 
+  it("does not resurrect stale board-action state after a newer resolved board interaction", async () => {
+    const { companyId, issueId, assigneeAgentId } = await seedBoardActionIssue();
+
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "cancelled",
+        continuationPolicy: "wake_assignee_on_accept",
+        payload: {
+          version: 1,
+          prompt: "Approve artifact set?",
+        },
+        result: {
+          version: 1,
+          outcome: "stale_issue_state",
+          reason: "Issue closed as done.",
+        },
+        createdByAgentId: assigneeAgentId,
+        createdAt: new Date("2026-07-27T10:00:00.000Z"),
+        resolvedAt: new Date("2026-07-27T10:05:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee_on_accept",
+        payload: {
+          version: 1,
+          prompt: "Approve artifact set?",
+        },
+        result: {
+          version: 1,
+          outcome: "rejected",
+          reason: "Bookkeeping only; do not re-raise.",
+        },
+        createdByAgentId: assigneeAgentId,
+        createdAt: new Date("2026-07-28T11:00:00.000Z"),
+        resolvedAt: new Date("2026-07-28T11:05:00.000Z"),
+      },
+    ]);
+
+    const result = await svc.getBoardActionRequirements(companyId, [{ id: issueId }]);
+    expect(result.has(issueId)).toBe(false);
+  });
+
   it("surfaces stale_issue_state board-action expiries back onto the source issue", async () => {
     const { companyId, issueId, assigneeAgentId } = await seedBoardActionIssue();
 

@@ -67,6 +67,15 @@ def _claude_budget_skip(model_row):
     return r
 
 
+def _adapter_quota_skip(model_row, detail, adapter_key):
+    r = benchlib.empty_result()
+    r["model"] = model_row.get("model_arg") or model_row.get("id")
+    r["error"] = detail or f"{adapter_key} bench halted by quota guard"
+    r["skipped"] = True
+    r["skipReason"] = f"{adapter_key}_quota_halt"
+    return r
+
+
 def run_id_now():
     return "run-" + datetime.now().strftime("%Y%m%d-%H%M%S")
 
@@ -111,7 +120,7 @@ def select_roles(cfg, only):
     return want
 
 
-def build_cells(suites, roles, models, max_tasks):
+def build_cells(suites, roles, models, max_tasks, reps):
     cells = []
     for role in roles:
         tasks = suites[role].get("tasks", [])
@@ -120,7 +129,15 @@ def build_cells(suites, roles, models, max_tasks):
         for task in tasks:
             judged = bool((task.get("rubric", {}).get("judge", {}) or {}).get("criteria"))
             for m in models:
-                cells.append({"role": role, "task": task, "model": m, "judged": judged})
+                for rep in range(1, reps + 1):
+                    cells.append({
+                        "role": role,
+                        "task": task,
+                        "model": m,
+                        "judged": judged,
+                        "rep": rep,
+                        "reps": reps,
+                    })
     return cells
 
 
@@ -210,12 +227,20 @@ def execute(cells, cfg, run_dir):
     done = [0]
     runs = []
     runs_lock = threading.Lock()
+    adapter_quota_halts = {}
+    adapter_quota_halts_lock = threading.Lock()
 
     def work(cell):
         role, task, m = cell["role"], cell["task"], cell["model"]
         tag = f"{role}/{task['id']} @ {m['id']}"
+        adapter_key = str(m.get("adapter") or "").strip() or None
+        pass_started_at = now_iso()
         try:
-            if _is_claude_model(m):
+            with adapter_quota_halts_lock:
+                adapter_halt = adapter_quota_halts.get(adapter_key) if adapter_key else None
+            if adapter_halt:
+                raw = _adapter_quota_skip(m, adapter_halt, adapter_key)
+            elif _is_claude_model(m):
                 with _CLAUDE_LOCK:
                     if CLAUDE_BENCH_HALT_FLAG.exists():
                         raw = _claude_budget_skip(m)
@@ -229,23 +254,53 @@ def execute(cells, cfg, run_dir):
                 raw = paperclip_lane.run_case(task, m, cfg, timeout)
             else:
                 raw = run_model(task["prompt"], m, adapters_cfg, timeout)
+            if adapter_key and raw.get("quotaError"):
+                raw["skipped"] = True
+                raw["skipReason"] = f"{adapter_key}_quota_halt"
+                with adapter_quota_halts_lock:
+                    adapter_quota_halts.setdefault(
+                        adapter_key,
+                        raw.get("error") or f"{adapter_key} bench halted by quota guard",
+                    )
             scored = score_run(task, raw, cfg, adapters_cfg, timeout)
         except Exception as e:  # never let one cell kill the sweep
             raw = benchlib.empty_result()
             raw["error"] = f"harness exception: {e}"
+            raw["failureReason"] = "tool-error"
             scored = {"quality": None, "qualityPer1kTokens": None,
                       "deterministicScore": None, "judgeScore": None}
+        pass_finished_at = now_iso()
         rec = {
             "role": role, "task_id": task["id"], "task_title": task.get("title"),
             "model_id": m["id"], "model_label": m["label"], "lane": m["lane"],
-            "adapterType": m.get("adapter"),
+            "rep": int(cell.get("rep") or 1),
+            "reps": int(cell.get("reps") or 1),
+            "passStartedAt": pass_started_at,
+            "passFinishedAt": pass_finished_at,
+            "adapterType": raw.get("benchAdapterType") or m.get("adapter"),
             "effort": benchlib.model_effort_label(m),
             "ok": raw.get("ok"), "error": raw.get("error"),
+            "failureReason": raw.get("failureReason"),
             "output": raw.get("output"),
             "model_reported": raw.get("model"),
+            "servedModel": raw.get("model") or "unknown",
+            "servedModelSelfReport": raw.get("servedModelSelfReport"),
+            "servedModelVerified": bool(raw.get("servedModelVerified")),
+            "servedModelMismatch": bool(raw.get("servedModelMismatch")),
+            "requestedModelId": raw.get("requestedModelId") or m["id"],
+            "requestedModelArg": raw.get("requestedModelArg") or m.get("model_arg"),
+            "trueModelId": raw.get("model") or m.get("model_arg") or m["id"],
+            "benchAgentId": raw.get("benchAgentId"),
+            "benchAgentName": raw.get("benchAgentName"),
+            "benchAgentSource": raw.get("benchAgentSource"),
+            "benchAdapterType": raw.get("benchAdapterType") or m.get("adapter"),
             "inputTokens": raw.get("inputTokens"), "outputTokens": raw.get("outputTokens"),
             "totalTokens": raw.get("totalTokens"), "tokensEstimated": raw.get("tokensEstimated"),
             "costUsd": raw.get("costUsd"), "wallMs": raw.get("wallMs"),
+            "taskWallMs": raw.get("taskWallMs"),
+            "selfReportWallMs": raw.get("selfReportWallMs"),
+            "selfReportInputTokens": raw.get("selfReportInputTokens"),
+            "selfReportOutputTokens": raw.get("selfReportOutputTokens"),
             "stderrTail": raw.get("stderrTail"),
             "agentFileSha256": "none",
             "skillsBundleSha256": "none",
@@ -256,7 +311,10 @@ def execute(cells, cfg, run_dir):
         }
         rec.update(scored)
         # persist per-cell raw
-        fname = f"{benchlib.slugify(role)}__{benchlib.slugify(task['id'])}__{benchlib.slugify(m['id'])}.json"
+        fname = (
+            f"{benchlib.slugify(role)}__{benchlib.slugify(task['id'])}"
+            f"__rep-{int(cell.get('rep') or 1):02d}__{benchlib.slugify(m['id'])}.json"
+        )
         with open(raw_dir / fname, "w") as f:
             json.dump(rec, f, indent=2)
         with runs_lock:
@@ -278,7 +336,11 @@ def execute(cells, cfg, run_dir):
 
 
 def finalize(runs, cfg, run_dir, run_id, started):
-    runs.sort(key=lambda r: (r["role"], r["task_id"], r["model_id"]))
+    finished = now_iso()
+    for run in runs:
+        run.setdefault("runStartedAt", started)
+        run.setdefault("runFinishedAt", finished)
+    runs.sort(key=lambda r: (r["role"], r["task_id"], r["model_id"], int(r.get("rep") or 1)))
     with open(run_dir / "runs.json", "w") as f:
         json.dump(runs, f, indent=2)
 
@@ -287,7 +349,7 @@ def finalize(runs, cfg, run_dir, run_id, started):
     present_roles = sorted({r["role"] for r in runs})
     present_models = sorted({r["model_id"] for r in runs})
     roster = {m["id"]: m for m in (cfg.get("models", []) + cfg.get("models_catalog", []))}
-    meta = {"finished_at": now_iso(), "started_at": started,
+    meta = {"finished_at": finished, "started_at": started,
             "n_runs": len(runs),
             "n_fail": sum(1 for r in non_skipped if not r["ok"]),
             "n_skipped": sum(1 for r in runs if r.get("skipped")),
@@ -299,6 +361,8 @@ def finalize(runs, cfg, run_dir, run_id, started):
                 for model_id in present_models
                 if model_id in roster
             },
+            "reps": min((int(r.get("reps") or 1) for r in runs), default=1),
+            "minRepsForDecision": benchlib.min_reps_for_decision(cfg),
             "adapterTypeById": {
                 model_id: roster[model_id].get("adapter")
                 for model_id in present_models
@@ -316,19 +380,23 @@ def finalize(runs, cfg, run_dir, run_id, started):
 def cmd_all(args, cfg):
     roles = select_roles(cfg, args.roles)
     models = select_models(cfg, args.models)
-    models, held_models = benchlib.filter_models_for_active_holds(models)
+    models, held_models = benchlib.filter_models_for_active_holds(models, cfg)
     if held_models:
         log(benchlib.format_model_hold_skip(held_models))
     if not models:
         log("No benchmark models remain after active TSBC model holds; nothing to run.")
         return
+    reps = args.reps if args.reps is not None else benchlib.configured_reps(cfg)
+    if reps < 1:
+        sys.exit("--reps must be >= 1")
     suites = benchlib.load_all_suites(roles)
-    cells = build_cells(suites, roles, models, args.max_tasks_per_role)
+    cells = build_cells(suites, roles, models, args.max_tasks_per_role, reps)
 
     run_id = run_id_now()
     log(f"=== Paperclip Model Benchmark · {run_id} ===")
     log(f"roles  : {', '.join(roles)}")
     log(f"models : {', '.join(m['id'] for m in models)}")
+    log(f"reps   : {reps} (decision floor {benchlib.min_reps_for_decision(cfg)})")
     log(f"judge  : {cfg['judge'].get('id')}")
     log("plan:\n" + plan_summary(cells, models, cfg["judge"].get("id")))
     if args.dry_run:
@@ -417,6 +485,8 @@ def main():
     p_all.add_argument("--roles", default=None, help="comma list (default: all)")
     p_all.add_argument("--models", default=None, help="comma list of model ids (default: all)")
     p_all.add_argument("--max-tasks-per-role", type=int, default=None, dest="max_tasks_per_role")
+    p_all.add_argument("--reps", type=int, default=None,
+                       help="repetitions per role/task/model cell (default: config run.reps)")
     p_all.add_argument("--dry-run", action="store_true")
 
     p_rep = sub.add_parser("report", help="re-render report from a finished run")

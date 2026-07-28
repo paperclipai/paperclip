@@ -38,7 +38,7 @@ def resolve_models(cfg, only):
     if missing:
         raise SystemExit(f"unknown model id(s): {', '.join(missing)}")
     models = [roster[w] for w in want]
-    models, held = benchlib.filter_models_for_active_holds(models)
+    models, held = benchlib.filter_models_for_active_holds(models, cfg)
     if held:
         print(benchlib.format_model_hold_skip(held), flush=True)
     if not models:

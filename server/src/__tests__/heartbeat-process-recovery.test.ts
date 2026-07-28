@@ -4183,7 +4183,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakes.filter((wake) => wake.reason === "source_scoped_recovery_action")).toHaveLength(0);
   });
 
-  it("sweeps active missing-disposition recovery after the source becomes blocked", async () => {
+  it("keeps active missing-disposition recovery when the source becomes blocked", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
@@ -4219,6 +4219,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
+    expect(result.staleRecoveryActionsFolded).toBe(0);
+    expect(result.issueIds).not.toContain(issueId);
+
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(action).toMatchObject({
+      status: "active",
+      outcome: null,
+      attemptCount: 1,
+      maxAttempts: 1,
+    });
+    expect(action?.resolutionNote).toBeNull();
+
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes.filter((wake) => wake.reason === "source_scoped_recovery_action")).toHaveLength(0);
+  });
+
+  it("still sweeps active missing-disposition recovery after the source moves to todo", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "missing_disposition",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      fingerprint: `source_scoped_recovery:${companyId}:${issueId}:${SUCCESSFUL_RUN_MISSING_STATE_REASON}`,
+      evidence: { missingDisposition: "clear_next_step" },
+      nextAction: "Choose and record a valid issue disposition without copying transcript content.",
+      wakePolicy: { type: "wake_owner", reason: "source_scoped_recovery_action", ownerAgentId: agentId },
+      attemptCount: 1,
+      maxAttempts: 1,
+      lastAttemptAt: new Date("2026-03-19T00:05:00.000Z"),
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "todo",
+        checkoutRunId: null,
+        updatedAt: new Date("2026-03-19T00:06:00.000Z"),
+      })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
     expect(result.staleRecoveryActionsFolded).toBe(1);
     expect(result.issueIds).toContain(issueId);
 
@@ -4229,10 +4281,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       attemptCount: 1,
       maxAttempts: 1,
     });
-    expect(action?.resolutionNote).toContain("source issue is now blocked");
-
-    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
-    expect(wakes.filter((wake) => wake.reason === "source_scoped_recovery_action")).toHaveLength(0);
+    expect(action?.resolutionNote).toContain("source issue is now todo");
   });
 
   it("sweeps active liveness recovery after the recovery issue becomes terminal", async () => {

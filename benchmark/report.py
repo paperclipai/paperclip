@@ -8,7 +8,9 @@ machine-readable recommendations.json and a human report.md.
 
 import json
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
+
+import benchlib
 
 
 def _mean(xs):
@@ -28,6 +30,110 @@ def _value_key(cfg):
     so per-output-token is the fair marginal-cost signal."""
     metric = (cfg.get("recommendation", {}) or {}).get("value_metric", "output")
     return "meanQualityPer1kOutput" if metric == "output" else "meanQualityPer1k"
+
+
+def _success_suppression_reason(success_rate, cfg):
+    if benchlib.success_rate_meets_quality_floor(success_rate, cfg):
+        return None
+    if success_rate is None:
+        return None
+    floor = benchlib.min_success_rate_for_quality(cfg)
+    return f"successRate {success_rate:.4f} below floor {floor:.4f}"
+
+
+def _task_count(records):
+    return len({r.get("task_id") for r in records if r.get("task_id")})
+
+
+def _reps_for_records(records):
+    if not records:
+        return 0
+    counts = Counter(r.get("task_id") or "__unknown__" for r in records)
+    return min(counts.values()) if counts else 0
+
+
+def _decision_band(mean_quality, success_rate, reps, has_data, cfg):
+    if not has_data:
+        return "no_data", "no non-skipped runs"
+    suppression = _success_suppression_reason(success_rate, cfg)
+    if suppression:
+        return "failed", suppression
+    min_reps = benchlib.min_reps_for_decision(cfg)
+    if not benchlib.reps_meet_decision_floor(reps, cfg):
+        return "candidate", f"reps {reps} below decision floor {min_reps}"
+    floor = float((cfg.get("recommendation", {}) or {}).get("quality_floor", 0.6))
+    if mean_quality is None:
+        return "failed", "no publishable quality"
+    if mean_quality < floor:
+        return "candidate", f"quality {mean_quality:.4f} below recommendation floor {floor:.4f}"
+    return "possible_primary", "success-rate and repetition gates passed"
+
+
+def _norm(value):
+    return str(value or "").strip().casefold()
+
+
+def _identity_values(records, keys, fallback=None):
+    values = {
+        str(record.get(key)).strip()
+        for record in records
+        for key in keys
+        if str(record.get(key) or "").strip()
+    }
+    if fallback:
+        values.add(str(fallback).strip())
+    return sorted(value for value in values if value)
+
+
+def _contains_expected(values, expected):
+    if not expected:
+        return True
+    expected_norm = _norm(expected)
+    return any(_norm(value) == expected_norm for value in values)
+
+
+def _baseline_requirement(role, cells, cfg, roster_rows):
+    expected = benchlib.incumbent_baseline_for_role(cfg, role)
+    if not expected:
+        return None
+    model_id = expected.get("model")
+    records = [r for r in cells.get((role, model_id), []) if not r.get("skipped")]
+    roster_row = roster_rows.get(model_id, {})
+    adapters = _identity_values(records, ("benchAdapterType", "adapterType", "adapter_type"),
+                                roster_row.get("adapter"))
+    served_models = _identity_values(records, ("trueModelId", "model_reported", "requestedModelArg"),
+                                     roster_row.get("model_arg"))
+    agents = _identity_values(records, ("benchAgentName", "benchAgentId"))
+    expected_agents = [str(agent).strip() for agent in expected.get("agents", []) if str(agent).strip()]
+    adapter_ok = _contains_expected(adapters, expected.get("adapter_type") or expected.get("adapter"))
+    served_ok = _contains_expected(served_models, expected.get("served_model") or expected.get("model_arg"))
+    agent_ok = not expected_agents or any(_contains_expected(agents, agent) for agent in expected_agents)
+    present = bool(records)
+    satisfied = present and adapter_ok and served_ok and agent_ok
+    missing = []
+    if not present:
+        missing.append(f"model `{model_id}`")
+    if present and not adapter_ok:
+        missing.append(f"adapter `{expected.get('adapter_type') or expected.get('adapter')}`")
+    if present and not served_ok:
+        missing.append(f"served model `{expected.get('served_model') or expected.get('model_arg')}`")
+    if present and not agent_ok:
+        missing.append("resolved deployed agent")
+    reason = "deployed baseline present in this run" if satisfied else (
+        "missing deployed incumbent baseline: " + ", ".join(missing)
+    )
+    return {
+        "required": True,
+        "satisfied": satisfied,
+        "expected": expected,
+        "observed": {
+            "present": present,
+            "adapters": adapters,
+            "servedModels": served_models,
+            "agents": agents,
+        },
+        "reason": reason,
+    }
 
 
 def aggregate(runs, cfg):
@@ -56,6 +162,25 @@ def aggregate(runs, cfg):
     cells = defaultdict(list)
     for r in runs:
         cells[(r["role"], r["model_id"])].append(r)
+    min_success = benchlib.min_success_rate_for_quality(cfg)
+
+    model_identities = {}
+    for mid in models:
+        rs = [r for r in runs if r["model_id"] == mid]
+        model_identities[mid] = {
+            "benchAgentIds": sorted({r.get("benchAgentId") for r in rs if r.get("benchAgentId")}),
+            "benchAgentNames": sorted({r.get("benchAgentName") for r in rs if r.get("benchAgentName")}),
+            "benchAdapterTypes": sorted({
+                r.get("benchAdapterType") or r.get("adapterType")
+                for r in rs
+                if r.get("benchAdapterType") or r.get("adapterType")
+            }),
+            "trueModelIds": sorted({
+                r.get("trueModelId") or r.get("model_reported")
+                for r in rs
+                if r.get("trueModelId") or r.get("model_reported")
+            }),
+        }
 
     per_role = {}
     for role in roles_all:
@@ -64,28 +189,48 @@ def aggregate(runs, cfg):
             rs = cells.get((role, mid), [])
             considered = [r for r in rs if not r.get("skipped")]
             ran = [r for r in considered if r.get("ok")]
+            success_rate = (len(ran) / len(considered)) if considered else None
+            publish_quality = benchlib.success_rate_meets_quality_floor(success_rate, cfg)
             qualities = [r.get("quality") for r in ran]
             qpks = [r.get("qualityPer1kTokens") for r in ran]
             qpk_out = [_q_per_1k(r.get("quality"), r.get("outputTokens")) for r in ran]
             toks = [r.get("totalTokens") for r in ran]
             in_toks = [r.get("inputTokens") for r in ran]
             out_toks = [r.get("outputTokens") for r in ran]
+            n_tasks = _task_count(considered)
+            reps = _reps_for_records(considered)
+            mean_quality = _mean(qualities) if publish_quality else None
+            suppressed_reason = _success_suppression_reason(success_rate, cfg)
+            band, band_note = _decision_band(mean_quality, success_rate, reps, bool(considered), cfg)
             model_stats[mid] = {
                 "tasks": len(considered),
+                "nTasks": n_tasks,
+                "attempts": len(considered),
+                "reps": reps,
+                "minRepsForDecision": benchlib.min_reps_for_decision(cfg),
                 "okRuns": len(ran),
-                "successRate": (len(ran) / len(considered)) if considered else None,
-                "meanQuality": _mean(qualities),
-                "meanQualityPer1k": _mean(qpks),            # per TOTAL tokens (incl CLI overhead)
-                "meanQualityPer1kOutput": _mean(qpk_out),   # per OUTPUT tokens (marginal cost; fairer)
+                "successRate": success_rate,
+                "meanQuality": mean_quality,
+                "meanQualityPer1k": _mean(qpks) if publish_quality else None,            # per TOTAL tokens (incl CLI overhead)
+                "meanQualityPer1kOutput": _mean(qpk_out) if publish_quality else None,   # per OUTPUT tokens (marginal cost; fairer)
                 "meanTokens": _mean(toks),
                 "meanInputTokens": _mean(in_toks),
                 "meanOutputTokens": _mean(out_toks),
                 "estimatedTokens": any(r.get("tokensEstimated") for r in considered),
                 "skippedRuns": sum(1 for r in rs if r.get("skipped")),
+                "qualitySuppressed": bool(considered) and not publish_quality,
+                "suppressed_reason": suppressed_reason,
+                "suppressedReason": suppressed_reason,
+                "minSuccessRateForQuality": min_success,
+                "decisionBand": band,
+                "bandNote": band_note,
+                "decisionGrade": band == "possible_primary",
             }
+        baseline_gate = _baseline_requirement(role, cells, cfg, roster_rows)
         per_role[role] = {
             "models": model_stats,
-            "recommendation": _recommend(model_stats, cfg, labels),
+            "baselineRequirement": baseline_gate,
+            "recommendation": _recommend(model_stats, cfg, labels, baseline_gate),
             "grokHeadToHead": _grok_h2h(model_stats, labels),
         }
 
@@ -94,32 +239,89 @@ def aggregate(runs, cfg):
         "models": [{"id": mid, "label": labels.get(mid, mid),
                     "adapter": roster_rows[mid].get("adapter"),
                     "model_arg": roster_rows[mid].get("model_arg"),
-                    "lane": roster_rows[mid].get("lane")} for mid in models],
+                    "lane": roster_rows[mid].get("lane"),
+                    **model_identities[mid]} for mid in models],
         "judge": cfg["judge"].get("id"),
         "roles": per_role,
         "agenticRoles": agentic_roles,
         "overall": overall,
-        "config": {"scoring": cfg["scoring"], "recommendation": cfg["recommendation"]},
+        "config": {
+            "scoring": cfg["scoring"],
+            "recommendation": cfg["recommendation"],
+            "run": cfg.get("run", {}),
+            "incumbent_baselines": cfg.get("incumbent_baselines", {}),
+        },
     }
 
 
-def _recommend(model_stats, cfg, labels):
+def _recommend(model_stats, cfg, labels, baseline_gate=None):
     rc = cfg.get("recommendation", {})
     floor = float(rc.get("quality_floor", 0.6))
     eps = float(rc.get("quality_epsilon", 0.02))
     cost_trigger = float(rc.get("cost_ratio_trigger", 1.5))
     vkey = _value_key(cfg)
 
+    if baseline_gate and not baseline_gate.get("satisfied"):
+        return {
+            "pick": None,
+            "pickLabel": None,
+            "objective": "peak_quality_cost_aware",
+            "verdict": "void",
+            "reason": f"verdict void: {baseline_gate.get('reason')}",
+            "bestQuality": None,
+            "bestQualityLabel": None,
+            "bestValue": None,
+            "bestValueLabel": None,
+        }
+
     rated = {mid: s for mid, s in model_stats.items()
-             if s["meanQuality"] is not None and s["meanQuality"] >= floor}
+             if s.get("decisionGrade") and s["meanQuality"] is not None and s["meanQuality"] >= floor}
     if not rated:
+        under_repped = {
+            mid: s for mid, s in model_stats.items()
+            if s.get("meanQuality") is not None
+            and not benchlib.reps_meet_decision_floor(s.get("reps"), cfg)
+        }
+        if under_repped:
+            min_reps = benchlib.min_reps_for_decision(cfg)
+            return {
+                "pick": None,
+                "pickLabel": None,
+                "objective": "peak_quality_cost_aware",
+                "verdict": "candidate_only",
+                "reason": f"no model met the {min_reps}-repetition decision floor; capped at candidate",
+                "bestQuality": None,
+                "bestQualityLabel": None,
+                "bestValue": None,
+                "bestValueLabel": None,
+            }
+        suppressed = {
+            mid: s for mid, s in model_stats.items()
+            if s.get("qualitySuppressed") and s.get("okRuns")
+        }
+        if suppressed:
+            success_floor = benchlib.min_success_rate_for_quality(cfg)
+            return {
+                "pick": None,
+                "pickLabel": None,
+                "objective": "peak_quality_cost_aware",
+                "verdict": "failed",
+                "reason": (
+                    f"no model met the {success_floor:.0%} success threshold for a publishable quality score"
+                ),
+                "bestQuality": None,
+                "bestQualityLabel": None,
+                "bestValue": None,
+                "bestValueLabel": None,
+            }
         # nobody cleared the floor — fall back to best raw quality
         any_rated = {m: s for m, s in model_stats.items() if s["meanQuality"] is not None}
         if not any_rated:
-            return {"pick": None, "reason": "no successful runs"}
+            return {"pick": None, "verdict": "void", "reason": "no successful runs"}
         bq = max(any_rated, key=lambda m: any_rated[m]["meanQuality"])
-        return {"pick": bq, "pickLabel": labels.get(bq), "objective": "peak_quality_cost_aware",
-                "reason": f"no model cleared the {floor:.2f} quality floor; took highest quality",
+        return {"pick": None, "pickLabel": None, "objective": "peak_quality_cost_aware",
+                "verdict": "candidate_only",
+                "reason": f"no model cleared the {floor:.2f} quality floor; no decision-grade pick",
                 "bestQuality": bq, "bestQualityLabel": labels.get(bq),
                 "bestValue": bq, "bestValueLabel": labels.get(bq)}
 
@@ -159,6 +361,7 @@ def _recommend(model_stats, cfg, labels):
         "pick": pick,
         "pickLabel": labels.get(pick),
         "objective": "peak_quality_cost_aware",
+        "verdict": "decision_grade",
         "reason": reason,
         "qualityGivenUp": round(peak_q - rated[pick]["meanQuality"], 4),
         "outputCostRatioVsPeak": round(cost_ratio, 2) if cost_ratio else None,
@@ -224,6 +427,12 @@ def _fmt_int(x):
 
 def to_markdown(report, run_id, meta):
     L = []
+    success_floor = benchlib.min_success_rate_for_quality(
+        {"recommendation": report.get("config", {}).get("recommendation", {})}
+    )
+    min_reps = benchlib.min_reps_for_decision(
+        {"recommendation": report.get("config", {}).get("recommendation", {})}
+    )
     skip_note = f", {meta.get('n_skipped', 0)} skipped" if meta.get("n_skipped") else ""
     L.append(f"# Paperclip Model Benchmark — `{run_id}`\n")
     L.append(f"_Generated {meta.get('finished_at', '')}. "
@@ -235,7 +444,9 @@ def to_markdown(report, run_id, meta):
              "**`q/1k-out`** = quality per 1,000 **output** tokens — the primary value metric, "
              "because total tokens are ~95% fixed CLI system-prompt overhead (a harness artifact) "
              "that would otherwise reward whichever CLI ships the smallest base prompt rather than "
-             "the better model. `in`/`out` = mean input/output tokens. Models run in a neutralized "
+             "the better model. `in`/`out` = mean input/output tokens. Quality and q/1k are "
+             f"suppressed below the {success_floor:.0%} success floor. Reps below {min_reps} are "
+             "capped at `candidate`. Models run in a neutralized "
              "temp CWD — base-model capability, not the local agent harness.\n")
 
     # overall
@@ -261,14 +472,23 @@ def to_markdown(report, run_id, meta):
     for role in cli_roles:
         rd = report["roles"][role]
         L.append(f"### `{role}`\n")
-        L.append("| Model | Quality | q/1k-out | in | out | Success |")
-        L.append("|---|---|---|---|---|---|")
+        gate = rd.get("baselineRequirement")
+        if gate:
+            verdict = "pass" if gate.get("satisfied") else "VOID"
+            L.append(f"_Deployed-baseline gate: **{verdict}** — {gate.get('reason')}._\n")
+        L.append("| Model | Quality | q/1k-out | in | out | Success | n_tasks | reps | Band |")
+        L.append("|---|---|---|---|---|---|---|---|---|")
         for m in report["models"]:
             s = rd["models"][m["id"]]
             est = " *(est)*" if s["estimatedTokens"] else ""
+            note = s.get("suppressed_reason") or s.get("bandNote") or ""
+            band = s.get("decisionBand") or "—"
+            if note and band not in ("possible_primary", "no_data"):
+                band = f"{band}: {note}"
             L.append(f"| {m['label']} | {_fmt(s['meanQuality'])} | {_fmt(s.get('meanQualityPer1kOutput'))} "
                      f"| {_fmt_int(s['meanInputTokens'])} | {_fmt_int(s['meanOutputTokens'])}{est} "
-                     f"| {_fmt(s['successRate'], pct=True)} |")
+                     f"| {_fmt(s['successRate'], pct=True)} | {s.get('nTasks', s.get('tasks', '—'))} "
+                     f"| {s.get('reps', '—')} | {band} |")
         rec = rd["recommendation"]
         L.append(f"\n**→ Recommended for `{role}`: {rec.get('pickLabel') or '—'}** — {rec.get('reason', '')}  ")
         extra = ""
@@ -277,6 +497,16 @@ def to_markdown(report, run_id, meta):
                      f"{rec.get('outputCostRatioVsPeak','?')}× cheaper output)")
         L.append(f"_Peak quality: {rec.get('bestQualityLabel') or '—'} · "
                  f"Most output-efficient: {rec.get('bestValueLabel') or '—'}{extra}_\n")
+        suppressed = [
+            m["label"] for m in report["models"]
+            if rd["models"][m["id"]].get("qualitySuppressed")
+        ]
+        if suppressed:
+            L.append(
+                f"_Quality suppressed below the {success_floor:.0%} success floor for: "
+                + ", ".join(suppressed)
+                + "._\n"
+            )
         h = rd["grokHeadToHead"]
         if h.get("resolved"):
             L.append(f"_Grok head-to-head: quality winner **{h['qualityWinner']}** "
@@ -296,12 +526,30 @@ def to_markdown(report, run_id, meta):
         for role in agentic:
             rd = report["roles"][role]
             L.append(f"### `{role}`\n")
-            L.append("| Model | Completion quality | Success | cases |")
-            L.append("|---|---|---|---|")
+            L.append("| Model | Completion quality | Success | cases | reps | Band |")
+            L.append("|---|---|---|---|---|---|")
             for m in report["models"]:
                 s = rd["models"][m["id"]]
                 L.append(f"| {m['label']} | {_fmt(s['meanQuality'])} | "
-                         f"{_fmt(s['successRate'], pct=True)} | {s['tasks']} |")
+                         f"{_fmt(s['successRate'], pct=True)} | {s['tasks']} | "
+                         f"{s.get('reps', '—')} | {s.get('decisionBand') or '—'} |")
+            L.append("")
+        identity_rows = [
+            m for m in report["models"]
+            if m.get("benchAgentIds") or m.get("trueModelIds") or m.get("benchAdapterTypes")
+        ]
+        if identity_rows:
+            L.append("### Agent Identity Map\n")
+            L.append("| Cell | Bench agent | Agent id | Adapter | True model |")
+            L.append("|---|---|---|---|---|")
+            for m in identity_rows:
+                L.append(
+                    f"| {m['id']} | "
+                    f"{', '.join(m.get('benchAgentNames') or ['—'])} | "
+                    f"{', '.join(m.get('benchAgentIds') or ['—'])} | "
+                    f"{', '.join(m.get('benchAdapterTypes') or ['—'])} | "
+                    f"{', '.join(m.get('trueModelIds') or ['—'])} |"
+                )
             L.append("")
 
     # grok verdict — CLI base-model comparison; skip for agentic-only runs (no CLI data)
@@ -357,7 +605,8 @@ def to_markdown(report, run_id, meta):
     L.append("- PDF contents: hypothesis, method, data, verdict `CONFIRMED` / `REFUTED` / `INCONCLUSIVE`, dispatched follow-up key")
     L.append("- Fairness verdict: `pass` / `pass_with_caveat` / `fail`")
     L.append("- Evidence depth: `directional` / `candidate` / `decision_grade` / `production_locked`")
-    L.append("- Repetitions per compared cell: record the compared sample counts that support the recommendation")
+    L.append(f"- Repetitions per compared cell: `{meta.get('reps', 'not_preserved:missing run reps')}` "
+             f"(decision floor `{meta.get('minRepsForDecision', min_reps)}`)")
     L.append("- Low-tail / min-score note: name the weak cell or confirm why the low-tail is acceptable")
     L.append("- Token / cost / runtime note or caveat: summarize the efficiency trade, or say what is missing")
     L.append(f"- Scorer lane: `{report['judge']}`")

@@ -1229,13 +1229,6 @@ export function routineService(
     };
   }
 
-  async function assertRoutineAccess(companyId: string, routineId: string) {
-    const routine = await getRoutineById(routineId);
-    if (!routine) throw notFound("Routine not found");
-    if (routine.companyId !== companyId) throw forbidden("Routine must belong to same company");
-    return routine;
-  }
-
   // Lane guardrail (2026-06-17): a routine must not be pinned to a Claude CEO/CTO in a
   // *windowed* company. claude-window-flip parks that agent outside its ~6h sprint window,
   // so off-window the routine fails "Agent is not invokable in its current state" (e.g.

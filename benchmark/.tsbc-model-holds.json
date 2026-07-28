@@ -5,6 +5,13 @@
       "family": "claude",
       "until": "2026-07-07T00:00:00+01:00",
       "reason": "Operator requested no TSBC Claude-model benchmarking before 2026-07-07."
+    },
+    {
+      "id": "agy-gemini-label-collapse-20260727",
+      "models": [
+        "gemini-3.1-pro-high"
+      ],
+      "reason": "Tuesday, July 28, 2026 AGY model-truth probe narrowed the label-collapse hold to the single broken requested pin: gemini-3.1-pro-high self-reported Gemini 3.6 Flash in 4/4 live probes, and the follow-up split-flag probe showed --model gemini-3.1-pro --effort high does the same. The bare gemini-3.1-pro id fails loudly without effort, while gemini-3.1-pro-low and Gemini 3.5 Flash Low/Medium/High resolved correctly, so do not hold those cells. Evidence: TSBC-1439."
     }
   ]
 }

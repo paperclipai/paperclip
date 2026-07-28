@@ -1,0 +1,3 @@
+{ "brandSlug": "cashflow-compass",
+  "theme": { "accent": "#2fe88f", "accent2": "#00b86e", "panel": "#0f2018", "lightPanel": "#f4f6f5" },
+  "recipes": [ { "mark": "chartline", "container": "hexring", "treatment": "gradglow" } ] }

@@ -34,6 +34,120 @@ def load_config(path=None):
     return cfg
 
 
+def min_success_rate_for_quality(cfg=None):
+    cfg = cfg or load_config()
+    try:
+        raw = (cfg.get("recommendation", {}) or {}).get("min_success_rate_for_quality", 0.8)
+        val = float(raw)
+    except (TypeError, ValueError):
+        val = 0.8
+    return max(0.0, min(1.0, val))
+
+
+def success_rate_meets_quality_floor(success_rate, cfg=None):
+    return success_rate is not None and success_rate >= min_success_rate_for_quality(cfg)
+
+
+def configured_reps(cfg=None):
+    cfg = cfg or load_config()
+    try:
+        raw = (cfg.get("run", {}) or {}).get("reps", 3)
+        val = int(raw)
+    except (TypeError, ValueError):
+        val = 3
+    return max(1, val)
+
+
+def min_reps_for_decision(cfg=None):
+    cfg = cfg or load_config()
+    try:
+        raw = (cfg.get("recommendation", {}) or {}).get("min_reps_for_decision", 3)
+        val = int(raw)
+    except (TypeError, ValueError):
+        val = 3
+    return max(1, val)
+
+
+def reps_meet_decision_floor(reps, cfg=None):
+    try:
+        reps_value = int(reps)
+    except (TypeError, ValueError):
+        reps_value = 1
+    return reps_value >= min_reps_for_decision(cfg)
+
+
+def incumbent_baseline_for_role(cfg, role):
+    baselines = (cfg.get("incumbent_baselines", {}) or {})
+    row = baselines.get(role)
+    if not row:
+        return None
+    if row.get("required", True) is False:
+        return None
+    return row
+
+
+def model_denylist(cfg=None):
+    """Return permanent config-level model denials.
+
+    Unlike .tsbc-model-holds.json, this is not time-bound. Use it for pins that
+    have proven unsafe to benchmark until an explicit config edit removes them.
+    """
+    cfg = cfg or load_config()
+    raw_entries = cfg.get("model_denylist", [])
+    if not isinstance(raw_entries, list):
+        return []
+    entries = []
+    for entry in raw_entries:
+        if isinstance(entry, str):
+            entries.append({"id": entry, "models": [entry], "_guard_type": "denylist"})
+        elif isinstance(entry, dict):
+            normalized = dict(entry)
+            normalized.setdefault("_guard_type", "denylist")
+            entries.append(normalized)
+    return entries
+
+
+def _listify(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _model_identity_values(model_row):
+    values = set()
+    for key in ("id", "model_id", "model_arg"):
+        value = str(model_row.get(key) or "").strip().lower()
+        if value:
+            values.add(value)
+    model_arg = str(model_row.get("model_arg") or "").strip().lower()
+    effort = model_effort_label(model_row).strip().lower()
+    if model_arg and effort and effort != "cli_default":
+        values.add(f"{model_arg}-{effort}")
+    return values
+
+
+def _model_matches_guard(model_row, guard):
+    values = _model_identity_values(model_row)
+    adapter = str(model_row.get("adapter") or "").lower()
+    lane = str(model_row.get("lane") or "").lower()
+
+    if guard.get("adapter") and adapter == str(guard["adapter"]).lower():
+        return True
+    if guard.get("lane") and lane == str(guard["lane"]).lower():
+        return True
+
+    prefixes = [str(p).lower() for p in _listify(guard.get("prefix")) + _listify(guard.get("prefixes")) if p]
+    if prefixes and any(any(value.startswith(prefix) for value in values) for prefix in prefixes):
+        return True
+
+    guarded_models = []
+    for key in ("models", "model_args", "ids"):
+        guarded_models.extend(str(m).strip().lower() for m in _listify(guard.get(key)) if m)
+    return bool(guarded_models and any(value in guarded_models for value in values))
+
+
 def _parse_datetime(value):
     if not value:
         return None
@@ -54,7 +168,8 @@ def active_model_holds(now=None):
     """
     now = now or datetime.now(timezone.utc)
     try:
-        data = json.load(open(MODEL_HOLDS_PATH))
+        with open(MODEL_HOLDS_PATH) as f:
+            data = json.load(f)
     except FileNotFoundError:
         return []
     except Exception:
@@ -67,29 +182,31 @@ def active_model_holds(now=None):
         until = _parse_datetime(hold.get("until"))
         if until is not None and now >= until:
             continue
-        active.append(hold)
+        normalized = dict(hold)
+        normalized.setdefault("_guard_type", "hold")
+        active.append(normalized)
     return active
 
 
 def _model_matches_hold(model_row, hold):
-    mid = str(model_row.get("id") or model_row.get("model_id") or "").lower()
     adapter = str(model_row.get("adapter") or "").lower()
     lane = str(model_row.get("lane") or "").lower()
-    model_arg = str(model_row.get("model_arg") or "").lower()
     family = str(hold.get("family") or "").lower()
+    values = _model_identity_values(model_row)
     if family == "claude" and (
-        adapter == "claude" or lane == "claude" or mid.startswith("claude-") or model_arg.startswith("claude")
+        adapter == "claude"
+        or lane == "claude"
+        or any(value.startswith("claude") for value in values)
     ):
         return True
-    if hold.get("adapter") and adapter == str(hold["adapter"]).lower():
-        return True
-    if hold.get("lane") and lane == str(hold["lane"]).lower():
-        return True
-    prefix = str(hold.get("prefix") or "").lower()
-    if prefix and (mid.startswith(prefix) or model_arg.startswith(prefix)):
-        return True
-    models = [str(m).lower() for m in hold.get("models", [])]
-    return bool(models and (mid in models or model_arg in models))
+    return _model_matches_guard(model_row, hold)
+
+
+def first_model_deny(model_row, cfg=None):
+    for deny in model_denylist(cfg):
+        if _model_matches_guard(model_row, deny):
+            return deny
+    return None
 
 
 def first_active_model_hold(model_row):
@@ -99,13 +216,17 @@ def first_active_model_hold(model_row):
     return None
 
 
-def filter_models_for_active_holds(models):
+def first_model_guard(model_row, cfg=None):
+    return first_model_deny(model_row, cfg) or first_active_model_hold(model_row)
+
+
+def filter_models_for_active_holds(models, cfg=None):
     kept = []
     skipped = []
     for model in models:
-        hold = first_active_model_hold(model)
-        if hold:
-            skipped.append((model, hold))
+        guard = first_model_guard(model, cfg)
+        if guard:
+            skipped.append((model, guard))
         else:
             kept.append(model)
     return kept, skipped
@@ -120,7 +241,7 @@ def format_model_hold_skip(skipped):
         by_hold.setdefault(key, []).append(model.get("id") or model.get("model_id") or "?")
     lines = []
     for (hold_id, until, reason), model_ids in by_hold.items():
-        bits = [f"TSBC model hold {hold_id}: skipped {', '.join(model_ids)}"]
+        bits = [f"TSBC model guard {hold_id}: skipped {', '.join(model_ids)}"]
         if until:
             bits.append(f"until {until}")
         if reason:

@@ -216,7 +216,7 @@ def main():
             import sys
             sys.exit(f"unknown model id(s): {', '.join(missing)}  (known: {', '.join(sorted(roster))})")
         models = [roster[w] for w in want]
-    models, held_models = benchlib.filter_models_for_active_holds(models)
+    models, held_models = benchlib.filter_models_for_active_holds(models, _cfg)
     if held_models:
         print(benchlib.format_model_hold_skip(held_models))
     if not models:

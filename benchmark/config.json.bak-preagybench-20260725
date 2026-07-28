@@ -25,10 +25,9 @@
     {
       "id": "gemini-pro",
       "adapter": "antigravity",
-      "model_arg": "gemini-3.1-pro-low",
-      "label": "Gemini 3.1 Pro (Low)",
-      "lane": "antigravity",
-      "note": "TSBC-1439 repointed the active gemini-pro row from broken gemini-3.1-pro-high to gemini-3.1-pro-low; historical gemini-pro ledger rows before 2026-07-28 are served-model-unverified."
+      "model_arg": "Gemini 3.1 Pro (High)",
+      "label": "Gemini 3.1 Pro (High)",
+      "lane": "antigravity"
     },
     {
       "id": "grok-4.3",
@@ -47,14 +46,14 @@
     {
       "id": "gemini-flash",
       "adapter": "antigravity",
-      "model_arg": "gemini-3.5-flash-medium",
+      "model_arg": "Gemini 3.5 Flash (Medium)",
       "label": "Gemini 3.5 Flash (Med)",
       "lane": "antigravity"
     },
     {
       "id": "gemini-flash-low",
       "adapter": "antigravity",
-      "model_arg": "gemini-3.5-flash-low",
+      "model_arg": "Gemini 3.5 Flash (Low)",
       "label": "Gemini 3.5 Flash (Low)",
       "lane": "antigravity"
     },
@@ -85,27 +84,6 @@
       "model_arg": "haiku",
       "label": "Claude Haiku",
       "lane": "claude"
-    },
-    {
-      "id": "agy-claude-opus-4.6",
-      "adapter": "antigravity",
-      "model_arg": "claude-opus-4-6-thinking",
-      "label": "agy Claude Opus 4.6",
-      "lane": "antigravity"
-    },
-    {
-      "id": "agy-claude-sonnet-4.6",
-      "adapter": "antigravity",
-      "model_arg": "claude-sonnet-4-6",
-      "label": "agy Claude Sonnet 4.6",
-      "lane": "antigravity"
-    },
-    {
-      "id": "agy-gpt-oss-120b",
-      "adapter": "antigravity",
-      "model_arg": "gpt-oss-120b-medium",
-      "label": "agy GPT-OSS 120B",
-      "lane": "antigravity"
     }
   ],
   "_models_catalog_comment": "Validated within-family variants (confirmed callable via their CLI 2026-06-14 unless noted below). `bench.py all` runs the active `models` roster above; as of 2026-07-11 that includes the new codex mini tier (`gpt-5.4-mini`) and the Claude cheap-lane probe (`claude-sonnet-5`). Opt in per run for catalog-only variants such as `claude-haiku`, `gemini-flash`, or the direct-Grok `grok-4.5` flagship. GPT-5.6 family availability was re-confirmed on 2026-07-11 from the EU via Codex OAuth after upgrading codex-cli to 0.144.1. `grok-4.5` was re-confirmed callable on the direct EU `grok.com` lane on 2026-07-17 (`grok --prompt-file ... -m grok-4.5`), but the CLI still exposes no usage block so benchmark token accounting remains estimated on that lane. gpt-5.3-codex-spark IS a valid model (same as Paperclip's spark lane, invoked --model gpt-5.3-codex-spark with reasoning_effort=high) but is DAILY RATE-LIMITED \u2014 sweeps including it fail with a usage-limit error while exhausted (resets ~mid-afternoon). Genuinely NOT supported on this ChatGPT account (400 invalid_request, never works): plain gpt-5.3, gpt-5.3-codex, gpt-5-codex.",
@@ -238,7 +216,7 @@
     {
       "id": "gemini-pro-low",
       "adapter": "antigravity",
-      "model_arg": "gemini-3.1-pro-low",
+      "model_arg": "Gemini 3.1 Pro (Low)",
       "label": "Gemini 3.1 Pro (Low)",
       "lane": "antigravity"
     },
@@ -261,40 +239,30 @@
     {
       "id": "gemini-flash",
       "adapter": "antigravity",
-      "model_arg": "gemini-3.5-flash-medium",
+      "model_arg": "Gemini 3.5 Flash (Medium)",
       "label": "Gemini 3.5 Flash (Medium)",
       "lane": "antigravity"
     },
     {
       "id": "gemini-flash-low",
       "adapter": "antigravity",
-      "model_arg": "gemini-3.5-flash-low",
+      "model_arg": "Gemini 3.5 Flash (Low)",
       "label": "Gemini 3.5 Flash (Low)",
       "lane": "antigravity"
     },
     {
       "id": "gemini-flash-high",
       "adapter": "antigravity",
-      "model_arg": "gemini-3.5-flash-high",
+      "model_arg": "Gemini 3.5 Flash (High)",
       "label": "Gemini 3.5 Flash (High)",
       "lane": "antigravity"
     },
     {
       "id": "gpt-oss-120b",
       "adapter": "antigravity",
-      "model_arg": "gpt-oss-120b-medium",
+      "model_arg": "GPT-OSS 120B (Medium)",
       "label": "GPT-OSS 120B (Medium)",
       "lane": "antigravity"
-    }
-  ],
-  "model_denylist": [
-    {
-      "id": "agy-gemini-3.1-pro-high-20260728",
-      "models": [
-        "gemini-3.1-pro-high"
-      ],
-      "source": "TSBC-1439",
-      "reason": "Permanent bench guard after the July 28, 2026 AGY model-truth probe: gemini-3.1-pro-high self-reported Gemini 3.6 Flash both as a combined slug and as --model gemini-3.1-pro --effort high. The bare gemini-3.1-pro id fails loudly without effort, and gemini-3.1-pro-low self-reports correctly. Re-probe after AGY version bumps before removing."
     }
   ],
   "judge": {
@@ -360,33 +328,16 @@
   "recommendation": {
     "objective": "peak_quality_cost_aware",
     "quality_floor": 0.6,
-    "min_success_rate_for_quality": 0.8,
-    "min_reps_for_decision": 3,
     "value_metric": "output",
     "quality_epsilon": 0.02,
     "cost_ratio_trigger": 1.5,
-    "_comment": "objective=peak_quality_cost_aware (davin's policy 2026-06-14): TIER FOR PEAK QUALITY, but don't pay multiples for marginal gains. Rule per role: start from the highest-quality model; among models within quality_epsilon (0.02) of it, prefer the lowest mean output tokens only when materially cheaper. min_success_rate_for_quality suppresses published quality/q-per-token when too few tasks succeeded; min_reps_for_decision caps under-repeated cells at candidate."
-  },
-  "incumbent_baselines": {
-    "cv-review": {
-      "required": true,
-      "model": "gemini-flash",
-      "adapter_type": "antigravity_local",
-      "served_model": "Gemini 3.5 Flash (Medium)",
-      "agents": [
-        "ApplicationWriter-Gemini",
-        "RecruitmentManager-Gemini"
-      ],
-      "source": "TSBC-1391",
-      "_comment": "Any CV-review evaluation that proposes replacing or supplementing the deployed TSR lane must include the deployed agent+adapter+served-model baseline in the same run. A plain model-name row is not enough."
-    }
+    "_comment": "objective=peak_quality_cost_aware (davin's policy 2026-06-14): TIER FOR PEAK QUALITY, but don't pay multiples for marginal gains. Rule per role: start from the highest-quality model; among models within quality_epsilon (0.02) of it, pick the one with the LOWEST mean output tokens \u2014 BUT only drop from the peak if the cheaper model is materially cheaper (peak_output / cheaper_output >= cost_ratio_trigger, default 1.5x). Otherwise keep the peak. Report shows peak, the cost-aware pick, quality given up, and the output-cost ratio so the tradeoff is explicit. Set quality_epsilon=0 to always take true peak. value_metric=output because total tokens are ~95% fixed CLI overhead (a harness artifact)."
   },
   "run": {
     "timeout_sec": 300,
     "max_workers": 4,
-    "reps": 3,
     "neutralize_env": true,
-    "_comment": "Each model call runs in a fresh empty temp CWD with config/rules-ignore flags where the CLI supports them. reps is repetitions per role/task/model cell; decision-grade rows require recommendation.min_reps_for_decision or higher. max_workers parallelizes cells; keep modest because the Mac is shared with the live fleet + image-gen."
+    "_comment": "Each model call runs in a fresh empty temp CWD with config/rules-ignore flags where the CLI supports them. max_workers parallelizes across (role,task,model) cells; keep modest \u2014 the Mac is shared with the live fleet + image-gen."
   },
   "adapters": {
     "claude": {

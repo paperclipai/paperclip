@@ -4494,6 +4494,7 @@ export function resolveTaskSessionConfigFreshness(input: {
 export function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
+  issueDescription?: string | null;
   issueAssigneeAgentId: string | null;
   issueExecutionState?: unknown;
   isDependencyReady: boolean;
@@ -4515,12 +4516,40 @@ export function shouldAutoCheckoutIssueForWake(input: {
   }
 
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
+  const retryReason = readNonEmptyString(input.contextSnapshot?.retryReason);
   if (!wakeReason) return false;
+  if (
+    issueStatus === "blocked" &&
+    wakeReason === "issue_assigned" &&
+    hasExplicitBlockedExternalWait(input.issueDescription)
+  ) {
+    return false;
+  }
+  if (
+    issueStatus === "blocked" &&
+    (
+      wakeReason === "issue_assignment_recovery" ||
+      wakeReason === "issue_continuation_needed" ||
+      wakeReason === MAX_TURN_CONTINUATION_WAKE_REASON ||
+      retryReason === "assignment_recovery" ||
+      retryReason === "issue_continuation_needed" ||
+      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+    )
+  ) {
+    return false;
+  }
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason === "source_scoped_recovery_action") return false;
   if (wakeReason.startsWith("execution_")) return false;
 
   return true;
+}
+
+function hasExplicitBlockedExternalWait(description: string | null | undefined) {
+  if (!description) return false;
+  const owner = description.match(/^\s*external owner\s*:\s*(.+)$/im)?.[1]?.trim();
+  const action = description.match(/^\s*external action\s*:\s*(.+)$/im)?.[1]?.trim();
+  return Boolean(owner && action);
 }
 
 function shouldQueueFollowupForRunningIssueWake(input: {
@@ -9922,6 +9951,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
+        updatedAt: issues.updatedAt,
         monitorNextCheckAt: issues.monitorNextCheckAt,
       })
       .from(issues)
@@ -11922,6 +11952,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    if (
+      issue.status === "blocked" &&
+      !wakeCommentId &&
+      !resumeIntent &&
+      !isInteractionWake &&
+      run.createdAt.getTime() < issue.updatedAt.getTime() &&
+      (
+        wakeReason === "issue_assignment_recovery" ||
+        wakeReason === "issue_continuation_needed" ||
+        retryReason === "assignment_recovery" ||
+        retryReason === "issue_continuation_needed" ||
+        retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+      )
+    ) {
+      return {
+        stale: true,
+        errorCode: "issue_not_in_progress",
+        reason:
+          "Cancelled because the issue moved to blocked after this recovery wake was queued; wait for an explicit follow-up wake before resuming",
+        details: {
+          issueId,
+          currentStatus: issue.status,
+          wakeReason,
+          retryReason,
+          queuedRunCreatedAt: run.createdAt.toISOString(),
+          issueUpdatedAt: issue.updatedAt.toISOString(),
+        },
+      };
+    }
+
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
       return {
         stale: true,
@@ -13466,6 +13526,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       shouldAutoCheckoutIssueForWake({
         contextSnapshot: context,
         issueStatus: issueContext.status,
+        issueDescription: issueContext.description,
         issueAssigneeAgentId: issueContext.assigneeAgentId,
         issueExecutionState: issueContext.executionState,
         isDependencyReady: issueDependencyReadiness?.isDependencyReady ?? true,

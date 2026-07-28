@@ -23,11 +23,17 @@ Turn "which model / adapter / skill is best for which task" from guesswork into 
 ## Operating model
 1. A suite is `suite.json` per task class. `bench.py` runs suite × models → ledger.
 2. Decision-grade requires ≥3 runs; results below that are flagged directional.
+   The harness now records `reps` separately from `n_tasks`; under-3-rep cells
+   are capped at `candidate` even if their score is high. Ledger aggregates must
+   be backed by `model_eval_pass` rows with pass/fail, failure reason, requested
+   model, served model, and timestamps; unrecoverable historical fields are
+   `unknown`, not inferred.
 3. Skills are evaluated WITH and WITHOUT, per model/adapter, and tagged with the delta.
 4. Recommendations that could move a live lane require a post-bench refinement pass:
    record the raw base score, rerun the contender and incumbent in the same batch
    with the production-facing instruction/skill context, then publish the raw vs
    refined delta before MC adoption.
+   Missing deployed incumbent baselines void the verdict.
 5. Era discipline is mandatory: verdicts are only directly comparable when the
    suite hash and effort match. If either changes, call the read
    `cross-era` / `directional` until a same-batch rerun closes the gap.

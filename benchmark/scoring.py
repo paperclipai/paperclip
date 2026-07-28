@@ -226,7 +226,7 @@ def score_run(task, raw_result, cfg, adapters_cfg, judge_timeout):
     Full scoring for one (task, model) run. Returns a dict merged into the run record.
     Skips the judge entirely if the model produced no usable output.
     """
-    if raw_result.get("skipped"):
+    if raw_result.get("skipped") or raw_result.get("servedModelMismatch"):
         return {
             "deterministicScore": None,
             "deterministicDetails": [],
@@ -236,6 +236,15 @@ def score_run(task, raw_result, cfg, adapters_cfg, judge_timeout):
             "qualityPer1kTokens": None,
         }
     output = raw_result.get("output") or ""
+    if not raw_result.get("ok") and not output.strip():
+        return {
+            "deterministicScore": None,
+            "deterministicDetails": [],
+            "judgeScore": None,
+            "judgeDetail": None,
+            "quality": None,
+            "qualityPer1kTokens": None,
+        }
     checks = task.get("rubric", {}).get("deterministic", [])
     det_score, det_details = run_deterministic(output, checks)
 
