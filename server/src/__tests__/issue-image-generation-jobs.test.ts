@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { eq } from "drizzle-orm";
+import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   assets,
@@ -32,10 +33,7 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-const PNG_BYTES = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9sQnUn0AAAAASUVORK5CYII=",
-  "base64",
-);
+let pngBytes!: Buffer;
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -118,6 +116,16 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-image-jobs-");
     db = createDb(tempDb.connectionString);
+    pngBytes = await sharp({
+      create: {
+        width: 1,
+        height: 1,
+        channels: 4,
+        background: { r: 255, g: 255, b: 255, alpha: 1 },
+      },
+    })
+      .png()
+      .toBuffer();
   }, 20_000);
 
   afterAll(async () => {
@@ -256,7 +264,7 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
     mockGenerateCodexIssueImage
       .mockImplementationOnce(() => first.promise)
       .mockResolvedValueOnce({
-        outputBytes: PNG_BYTES,
+        outputBytes: pngBytes,
         endpoint: "codex",
         model: "codex-test",
         providerRequestId: "req-2",
@@ -270,7 +278,7 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
     await wait(1_350);
     await serviceB.tick();
     first.resolve({
-      outputBytes: PNG_BYTES,
+      outputBytes: pngBytes,
       endpoint: "codex",
       model: "codex-test",
       providerRequestId: "req-1",
@@ -294,7 +302,7 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
     const storage = createMockStorage({ failOnPutNumber: 2 });
     const service = createIssueImageGenerationJobService(db, storage, { leaseMs: 1_500, scheduleOnEnqueue: false });
     mockGenerateCodexIssueImage.mockResolvedValueOnce({
-      outputBytes: PNG_BYTES,
+      outputBytes: pngBytes,
       endpoint: "codex",
       model: "codex-test",
       providerRequestId: "req-3",
