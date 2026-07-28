@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   costEvents,
@@ -911,6 +912,7 @@ export function productivityReviewService(
     // One id per reclassification *cycle*, reused when an interrupted attempt is resumed, so the
     // retry's wake carries the same idempotency key as the one that may already have landed.
     const reclassificationId = resumeReclassificationId ?? randomUUID();
+    const wakeIdempotencyKey = `productivity-review-reclassify:${reclassificationId}`;
     const ownerAgentId = await resolveReviewOwnerAgentId(
       evidence.sourceIssue,
       evidence.sourceAgent,
@@ -972,10 +974,26 @@ export function productivityReviewService(
     // confirming delivery here would record a wake that never happened and close the retry path.
     // Rolling back keeps the manager-owned review until a candidate becomes invokable again.
     let wakeFailed = !ownerAgentId;
-    if (ownerAgentId && deps?.enqueueWakeup) {
+    // `agent_wakeup_requests.idempotency_key` is stored but carries no unique constraint and the
+    // enqueue path never reads it, so passing the key alone would not stop a duplicate. On a
+    // resumed cycle the row is looked up here instead: if the interrupted attempt's wake already
+    // landed, the work is already queued and re-enqueuing would produce a second
+    // report-and-close run.
+    const alreadyWoken = resumeReclassificationId
+      ? await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, evidence.sourceIssue.companyId),
+          eq(agentWakeupRequests.idempotencyKey, wakeIdempotencyKey),
+        ))
+        .limit(1)
+        .then((rows) => rows.length > 0)
+      : false;
+    if (ownerAgentId && !alreadyWoken && deps?.enqueueWakeup) {
       try {
         wakeFailed = !(await deps.enqueueWakeup(ownerAgentId, {
-          idempotencyKey: `productivity-review-reclassify:${reclassificationId}`,
+          idempotencyKey: wakeIdempotencyKey,
           source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",

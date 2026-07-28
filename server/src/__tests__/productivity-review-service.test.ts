@@ -7,6 +7,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -1322,6 +1323,65 @@ describeEmbeddedPostgres("productivity review service", () => {
       expect(afterRetry?.description).toContain("Classification: `unreported_completion`");
       expect(afterRetry?.assigneeAgentId).toBe(seeded.coderId);
       expect(wakes).toEqual([seeded.coderId]);
+    });
+
+    // The stored idempotency key is not enforced by the enqueue path, so the resume looks the wake
+    // row up itself. Without that, a crash after a successful wake would queue a second one.
+    it("does not re-enqueue when the interrupted attempt's wake already landed", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const emptyRepo = createEmptyRepoPath();
+      const { repoPath } = createRepoWithCommit({
+        subject: "feat(aur1370): deliverable landed",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+      const wakes: string[] = [];
+      const service = (dir: string) =>
+        productivityReviewService(db, {
+          resolveAgentWorkspaceDir: () => dir,
+          enqueueWakeup: (async (agentId: string) => {
+            wakes.push(agentId);
+            return { id: "wake" };
+          }) as never,
+        });
+
+      await service(emptyRepo).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+      const [review] = await listProductivityReviews(seeded.companyId);
+
+      // The crash state, but this time the wake had already been created before the process died.
+      await db.update(issues).set({
+        title: "Report and close finished work on AUR-1370",
+        description: "- Classification: `unreported_completion`",
+        assigneeAgentId: seeded.coderId,
+      }).where(eq(issues.id, review!.id));
+      await db.insert(activityLog).values({
+        companyId: seeded.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_updated",
+        entityType: "issue",
+        entityId: review!.id,
+        details: { reclassifiedFrom: "stall", reclassificationId: "cycle-9", wakeDelivered: false },
+      });
+      await db.insert(agentWakeupRequests).values({
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        source: "assignment",
+        idempotencyKey: "productivity-review-reclassify:cycle-9",
+      });
+      wakes.length = 0;
+
+      await service(repoPath).reconcileProductivityReviews({
+        now: new Date(now.getTime() + 60_000),
+        companyId: seeded.companyId,
+      });
+
+      expect(wakes).toEqual([]);
+      // The cycle is still closed out, so it stops being retried.
+      const markers = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "issue.productivity_review_updated"));
+      expect(markers.some((row) => (row.details as Record<string, unknown>)?.wakeDelivered === true)).toBe(true);
     });
 
     // Confirming delivery with no owner would record a wake that never happened and close the retry
