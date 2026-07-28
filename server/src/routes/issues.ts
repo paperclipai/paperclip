@@ -3428,6 +3428,7 @@ export function issueRoutes(
       status: string;
     },
     action: "issue:comment" | "issue:read" | "issue:mutate",
+    additionalScope: Record<string, unknown> = {},
   ) {
     return access.decide({
       actor: req.actor,
@@ -3448,6 +3449,7 @@ export function issueRoutes(
         parentIssueId: issue.parentId,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        ...additionalScope,
       },
     });
   }
@@ -3509,6 +3511,10 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_direct_parent_report";
   }
 
+  function isIssueUnblockOwnerDecision(decision: Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision.reason === "allow_issue_unblock_owner";
+  }
+
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
     const decisions = await Promise.all(rows.map((issue) => decideIssueAccess(req, issue, "issue:read")));
     return rows.filter((_, index) => decisions[index]?.allowed);
@@ -3556,6 +3562,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options: { allowIssueUnblockOwner?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3586,10 +3593,18 @@ export function issueRoutes(
       }
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    const boundaryDecision = await decideIssueAccess(
+      req,
+      issue,
+      "issue:mutate",
+      options.allowIssueUnblockOwner ? { allowIssueUnblockOwner: true } : {},
+    );
     if (!boundaryDecision.allowed) {
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
+    }
+    if (options.allowIssueUnblockOwner && isIssueUnblockOwnerDecision(boundaryDecision)) {
+      return true;
     }
     if (issue.assigneeAgentId === null) {
       return true;
@@ -7704,7 +7719,7 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowIssueUnblockOwner: true }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
