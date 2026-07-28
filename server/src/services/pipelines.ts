@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import {
+  runIssueMutation,
+  versionedIssuePatch,
+} from "./issue-versioning.js";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -1932,13 +1936,18 @@ async function postSystemCommentOnLinkedIssues(
     ));
 
   for (const row of rows) {
-    await db.insert(issueComments).values({
-      companyId: input.companyId,
+    await runIssueMutation(db, {
       issueId: row.issueId,
-      authorType: "system",
-      body: input.body,
+      mutate: async (tx) => {
+        await tx.insert(issueComments).values({
+          companyId: input.companyId,
+          issueId: row.issueId,
+          authorType: "system",
+          body: input.body,
+        });
+        return { result: null };
+      },
     });
-    await db.update(issues).set({ updatedAt: nowDate() }).where(eq(issues.id, row.issueId));
   }
 }
 
@@ -2047,13 +2056,18 @@ async function notifyDependentWorkIssuesOfUpstreamContentChange(
     for (const issueId of issueIds) {
       if (notifiedIssueIds.has(issueId)) continue;
       notifiedIssueIds.add(issueId);
-      await db.insert(issueComments).values({
-        companyId: input.companyId,
+      await runIssueMutation(db, {
         issueId,
-        authorType: "system",
-        body,
+        mutate: async (tx) => {
+          await tx.insert(issueComments).values({
+            companyId: input.companyId,
+            issueId,
+            authorType: "system",
+            body,
+          });
+          return { result: null };
+        },
       });
-      await db.update(issues).set({ updatedAt: nowDate() }).where(eq(issues.id, issueId));
     }
     // The drift event intentionally does not bump the dependent case's
     // updatedAt: "unresolved drift" is derived as event.createdAt > case.updatedAt.
@@ -4615,7 +4629,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         if (issueIdsToCancel.length > 0) {
           const cancelledIssues = await tx
             .update(issues)
-            .set({ status: "cancelled", updatedAt: now })
+            .set(versionedIssuePatch({ status: "cancelled" }, now))
             .where(and(
               eq(issues.companyId, input.companyId),
               inArray(issues.id, issueIdsToCancel),

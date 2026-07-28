@@ -164,6 +164,7 @@ async function createApp() {
 function makeIssue() {
   return {
     id: issueId,
+    version: 1,
     companyId: "company-1",
     status: "todo",
     priority: "medium",

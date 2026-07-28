@@ -570,6 +570,8 @@ describeEmbeddedPostgres("companySkillService skill test runs", () => {
 
     const pruned = await svc.pruneExpiredTestHarnessIssues(companyId);
     expect(pruned.pruned).toBe(1);
+    const [prunedIssue] = await db.select().from(issues).where(eq(issues.id, run.issueId));
+    expect(prunedIssue).toMatchObject({ hiddenAt: expect.any(Date), version: 2 });
     const detail = await svc.getTestRunDetail(companyId, skillId, run.id);
     expect(detail?.taskExpired).toBe(true);
     expect(detail?.harnessIssue).toBeNull();

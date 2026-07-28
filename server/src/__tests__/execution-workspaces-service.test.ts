@@ -629,6 +629,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       outcome: "restored",
       resolutionNote: "Execution workspace branch record reconciled from \"feature/recorded\" to \"feature/current\".",
     });
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(sourceIssue?.version).toBe(2);
   }, 20_000);
 
   it("quarantine_restore rescues dirty live-branch work, resolves recovery, and returns the source issue to todo", async () => {
@@ -777,6 +779,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       status: "todo",
       checkoutRunId: null,
       executionRunId: null,
+      version: 3,
     });
 
     const [recoveryAction] = await db

@@ -332,13 +332,18 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
     expect(cancelled.updatedIssueIds.sort()).toEqual([runningChildId, todoChildId].sort());
 
     const afterCancel = await db
-      .select({ id: issues.id, status: issues.status })
+      .select({ id: issues.id, status: issues.status, version: issues.version })
       .from(issues)
       .where(inArray(issues.id, [runningChildId, todoChildId, doneChildId]));
     expect(Object.fromEntries(afterCancel.map((issue) => [issue.id, issue.status]))).toMatchObject({
       [runningChildId]: "cancelled",
       [todoChildId]: "cancelled",
       [doneChildId]: "done",
+    });
+    expect(Object.fromEntries(afterCancel.map((issue) => [issue.id, issue.version]))).toMatchObject({
+      [runningChildId]: 2,
+      [todoChildId]: 2,
+      [doneChildId]: 1,
     });
 
     await db
@@ -367,13 +372,24 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
     expect(restored.updatedIssueIds).toEqual([runningChildId]);
 
     const afterRestore = await db
-      .select({ id: issues.id, status: issues.status, checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .select({
+        id: issues.id,
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        version: issues.version,
+      })
       .from(issues)
       .where(inArray(issues.id, [runningChildId, todoChildId, doneChildId]));
     expect(Object.fromEntries(afterRestore.map((issue) => [issue.id, issue.status]))).toMatchObject({
       [runningChildId]: "todo",
       [todoChildId]: "blocked",
       [doneChildId]: "done",
+    });
+    expect(Object.fromEntries(afterRestore.map((issue) => [issue.id, issue.version]))).toMatchObject({
+      [runningChildId]: 3,
+      [todoChildId]: 2,
+      [doneChildId]: 1,
     });
 
     const holds = await db

@@ -1511,6 +1511,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           status: issues.status,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          version: issues.version,
         })
         .from(issues)
         .where(eq(issues.id, issueId))
@@ -1519,6 +1520,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "in_progress",
         checkoutRunId: firstRun?.id,
         executionRunId: firstRun?.id,
+        version: 3,
       });
       gateway.releaseFirstWait();
       await waitFor(async () => {

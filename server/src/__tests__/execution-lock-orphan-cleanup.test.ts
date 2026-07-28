@@ -389,16 +389,19 @@ describeEmbeddedPostgres("execution lock orphan cleanup", () => {
       expect(dualAfter?.executionAgentNameKey).toBeNull();
       expect(dualAfter?.executionLockedAt).toBeNull();
       expect(dualAfter?.checkoutRunId).toBeNull();
+      expect(dualAfter?.version).toBe(2);
 
       // Retry sibling: checkout column cleared, retry's execution pointer preserved.
       expect(retryAfter?.checkoutRunId).toBeNull();
       expect(retryAfter?.executionRunId).toBe(retryRunId);
       expect(retryAfter?.executionAgentNameKey).toBe("ceo");
       expect(retryAfter?.executionLockedAt).not.toBeNull();
+      expect(retryAfter?.version).toBe(2);
 
       // Checkout-only sibling: column cleared, no execution side-effects.
       expect(checkoutOnlyAfter?.checkoutRunId).toBeNull();
       expect(checkoutOnlyAfter?.executionRunId).toBeNull();
+      expect(checkoutOnlyAfter?.version).toBe(2);
     });
 
     it("does not touch execution locks on issues owned by unrelated runs", async () => {

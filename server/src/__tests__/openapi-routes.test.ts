@@ -234,4 +234,37 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/board-api-keys"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/import"].post.responses["202"]).toBeDefined();
   });
+
+  it("documents optional issue If-Match and strong ETag responses", () => {
+    const { spec } = loadSpecRoutes();
+    const patchIssue = spec.paths["/api/issues/{id}"].patch;
+    const addComment = spec.paths["/api/issues/{id}/comments"].post;
+    const deleteComment = spec.paths["/api/issues/{id}/comments/{commentId}"].delete;
+    const getIssue = spec.paths["/api/issues/{id}"].get;
+
+    for (const operation of [patchIssue, addComment, deleteComment]) {
+      expect(operation.parameters).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "if-match",
+          in: "header",
+          required: false,
+          schema: expect.objectContaining({ type: "string" }),
+        }),
+      ]));
+      expect(operation.responses["400"]).toBeDefined();
+      expect(operation.responses["412"]).toMatchObject({
+        headers: {
+          ETag: expect.any(Object),
+          "Cache-Control": expect.any(Object),
+        },
+      });
+    }
+
+    expect(getIssue.responses["200"]).toMatchObject({
+      headers: {
+        ETag: expect.any(Object),
+        "Cache-Control": expect.any(Object),
+      },
+    });
+  });
 });

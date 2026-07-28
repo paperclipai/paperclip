@@ -1,4 +1,9 @@
 import fs from "node:fs/promises";
+import {
+  type DbTransaction,
+  runIssueMutation,
+  versionedIssuePatch,
+} from "./issue-versioning.js";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -6555,15 +6560,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (input.recoveryPolicy === "escalate_to_board") {
-      await db.insert(issueComments).values({
-        companyId: input.claimed.companyId,
+      await runIssueMutation(db, {
         issueId: input.claimed.id,
-        body: monitorRecoveryComment({
-          issue: input.claimed,
-          clearReason: input.clearReason,
-          recoveryPolicy: input.recoveryPolicy,
-          nextAttemptCount: input.nextAttemptCount,
-        }),
+        mutate: async (tx) => {
+          await tx.insert(issueComments).values({
+            companyId: input.claimed.companyId,
+            issueId: input.claimed.id,
+            body: monitorRecoveryComment({
+              issue: input.claimed,
+              clearReason: input.clearReason,
+              recoveryPolicy: input.recoveryPolicy,
+              nextAttemptCount: input.nextAttemptCount,
+            }),
+          });
+          return { result: null };
+        },
       });
 
       await logActivity(db, {
@@ -6639,15 +6650,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }) {
     await db
       .update(issues)
-      .set({
+      .set(versionedIssuePatch({
         ...buildIssueMonitorClearedPatch({
           issue: input.claimed,
           policy: input.policy,
           clearReason: input.clearReason,
           clearedAt: input.now,
-        }),
-        updatedAt: input.now,
-      })
+        })
+      }, input.now))
       .where(eq(issues.id, input.claimed.id));
 
     await logActivity(db, {
@@ -6798,14 +6808,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       await db
         .update(issues)
-        .set({
+        .set(versionedIssuePatch({
           ...buildIssueMonitorTriggeredPatch({
             issue: claimed,
             policy,
             triggeredAt: input.now,
-          }),
-          updatedAt: new Date(),
-        })
+          })
+        }, new Date()))
         .where(eq(issues.id, claimed.id));
 
       await logActivity(db, {
@@ -6834,15 +6843,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (input.clearOnClientError) {
           await db
             .update(issues)
-            .set({
+            .set(versionedIssuePatch({
               ...buildIssueMonitorClearedPatch({
                 issue: claimed,
                 policy,
                 clearReason: "dispatch_skipped",
                 clearedAt: input.now,
-              }),
-              updatedAt: new Date(),
-            })
+              })
+            }, new Date()))
             .where(eq(issues.id, claimed.id));
 
           await logActivity(db, {
@@ -6869,18 +6877,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         await db
           .update(issues)
-          .set({
-            monitorWakeRequestedAt: null,
-            updatedAt: new Date(),
-          })
+          .set(versionedIssuePatch({
+            monitorWakeRequestedAt: null
+          }, new Date()))
           .where(eq(issues.id, claimed.id));
       } else {
         await db
           .update(issues)
-          .set({
-            monitorWakeRequestedAt: null,
-            updatedAt: new Date(),
-          })
+          .set(versionedIssuePatch({
+            monitorWakeRequestedAt: null
+          }, new Date()))
           .where(eq(issues.id, claimed.id));
       }
 
@@ -6926,10 +6932,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimed = await db.transaction(async (tx) => {
       const [updated] = await tx
         .update(issues)
-        .set({
-          monitorWakeRequestedAt: now,
-          updatedAt: now,
-        })
+        .set(versionedIssuePatch({
+          monitorWakeRequestedAt: now
+        }, now))
         .where(
           and(
             eq(issues.id, issueId),
@@ -6995,10 +7000,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const claimed = await db.transaction(async (tx) => {
         const [updated] = await tx
           .update(issues)
-          .set({
-            monitorWakeRequestedAt: now,
-            updatedAt: now,
-          })
+          .set(versionedIssuePatch({
+            monitorWakeRequestedAt: now
+          }, now))
           .where(
             and(
               eq(issues.id, due.id),
@@ -8551,12 +8555,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       await tx
         .update(issues)
-        .set({
+        .set(versionedIssuePatch({
           executionRunId: queuedRun.id,
           executionAgentNameKey: normalizeAgentNameKey(agent.name),
-          executionLockedAt: now,
-          updatedAt: now,
-        })
+          executionLockedAt: now
+        }, now))
         .where(eq(issues.id, issue.id));
 
       await tx
@@ -8802,13 +8805,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (issueId) {
         await tx
           .update(issues)
-          .set({
+          .set(versionedIssuePatch({
             checkoutRunId: null,
             executionRunId: retryRun.id,
             executionAgentNameKey: normalizeAgentNameKey(agent.name),
-            executionLockedAt: now,
-            updatedAt: now,
-          })
+            executionLockedAt: now
+          }, now))
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
       }
 
@@ -9458,12 +9460,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (gate.issueId) {
       await db
         .update(issues)
-        .set({
+        .set(versionedIssuePatch({
           executionRunId: null,
           executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: now,
-        })
+          executionLockedAt: null
+        }, now))
         .where(
           and(
             eq(issues.companyId, cancelled.companyId),
@@ -10141,7 +10142,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (issueId) {
         await tx
           .update(issues)
-          .set({
+          .set(versionedIssuePatch({
             executionRunId: scheduledRun.id,
             executionAgentNameKey: normalizeAgentNameKey(agent.name),
             executionLockedAt: now,
@@ -10150,9 +10151,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   executionWorkspaceId: null,
                   executionWorkspacePreference: null,
                 }
-              : {}),
-            updatedAt: now,
-          })
+              : {})
+          }, now))
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
       }
 
@@ -10854,12 +10854,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const claimedAgent = await getAgent(claimed.agentId);
       await db
         .update(issues)
-        .set({
+        .set(versionedIssuePatch({
           executionRunId: claimed.id,
           executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
+          executionLockedAt: claimedAt
+        }, claimedAt))
         .where(
           and(
             eq(issues.id, claimedIssueId),
@@ -10905,12 +10904,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     await db
       .update(issues)
-      .set({
+      .set(versionedIssuePatch({
         executionRunId: null,
         executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: now,
-      })
+        executionLockedAt: null
+      }, now))
       .where(
         and(
           eq(issues.companyId, run.companyId),
@@ -11120,12 +11118,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     await db
       .update(issues)
-      .set({
+      .set(versionedIssuePatch({
         executionRunId: null,
         executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: now,
-      })
+        executionLockedAt: null
+      }, now))
       .where(
         and(
           eq(issues.companyId, run.companyId),
@@ -12051,7 +12048,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (responsibleUserId && issueContext && !issueContext.responsibleUserId) {
       await db
         .update(issues)
-        .set({ responsibleUserId, updatedAt: new Date() })
+        .set(versionedIssuePatch({ responsibleUserId }, new Date()))
         .where(and(eq(issues.companyId, agent.companyId), eq(issues.id, issueContext.id), isNull(issues.responsibleUserId)));
       issueContext = { ...issueContext, responsibleUserId };
     }
@@ -14539,41 +14536,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         )
         .orderBy(asc(issues.id));
 
-      // Clear orphaned execution-lock columns that still point at this finalizing
-      // run, across every sibling issue in one statement so it scales with N
-      // orphans without N round-trips. Rows are already held under FOR UPDATE from
-      // the lock query above.
-      //
-      // The two columns are cleared in separate UPDATEs so we never clobber a
-      // retry's executionRunId pointer: when a process-loss or codex-transient
-      // retry is scheduled mid-finalization, it moves `executionRunId` from this
-      // run to the retry run while leaving `checkoutRunId` pinned at this run.
-      // Only the checkout column should be released in that case; the execution
-      // column now belongs to the retry.
+      // Clear every lock column still owned by this run in one guarded update.
+      // CASE preserves a successor retry's execution pointer while allowing the
+      // original checkout pointer to be released without a second version bump.
       const promotionUpdateTimestamp = new Date();
       await tx
         .update(issues)
-        .set({
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: promotionUpdateTimestamp,
-        })
+        .set(versionedIssuePatch({
+          executionRunId: sql`case
+            when ${issues.executionRunId} = ${run.id} then null
+            else ${issues.executionRunId}
+          end`,
+          executionAgentNameKey: sql`case
+            when ${issues.executionRunId} = ${run.id} then null
+            else ${issues.executionAgentNameKey}
+          end`,
+          executionLockedAt: sql`case
+            when ${issues.executionRunId} = ${run.id} then null
+            else ${issues.executionLockedAt}
+          end`,
+          checkoutRunId: sql`case
+            when ${issues.checkoutRunId} = ${run.id} then null
+            else ${issues.checkoutRunId}
+          end`,
+        }, promotionUpdateTimestamp))
         .where(
-          and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)),
-        );
-      // `checkoutRunId` clear is symmetric to #6008's per-issue self-heal,
-      // extended to all siblings: covers paths where the issue's assignee or
-      // status changed between checkout and termination, which
-      // adoptStaleCheckoutRun's narrow WHERE clause cannot reach.
-      await tx
-        .update(issues)
-        .set({
-          checkoutRunId: null,
-          updatedAt: promotionUpdateTimestamp,
-        })
-        .where(
-          and(eq(issues.companyId, run.companyId), eq(issues.checkoutRunId, run.id)),
+          and(
+            eq(issues.companyId, run.companyId),
+            or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
+          ),
         );
 
       // Deferred-wake promotion is bound to a single primary issue: the run's context
@@ -14856,12 +14847,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         await tx
           .update(issues)
-          .set({
+          .set(versionedIssuePatch({
             executionRunId: newRun.id,
             executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
-            executionLockedAt: now,
-            updatedAt: now,
-          })
+            executionLockedAt: now
+          }, now))
           // Promoted mention wakes are issue-scoped, not issue ownership transfers.
           .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)));
 
@@ -15016,12 +15006,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         await tx
           .update(issues)
-          .set({
+          .set(versionedIssuePatch({
             executionRunId: queuedRun.id,
             executionAgentNameKey: recoveryAgentNameKey,
-            executionLockedAt: now,
-            updatedAt: now,
-          })
+            executionLockedAt: now
+          }, now))
           .where(eq(issues.id, issue.id));
 
         return {
@@ -15172,12 +15161,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       await tx
         .update(issues)
-        .set({
+        .set(versionedIssuePatch({
           executionRunId: queuedRun.id,
           executionAgentNameKey: recoveryAgentNameKey,
-          executionLockedAt: now,
-          updatedAt: now,
-        })
+          executionLockedAt: now
+        }, now))
         .where(eq(issues.id, issue.id));
 
       return {
@@ -15641,12 +15629,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (issue.executionRunId === scheduledRun.id) {
             await tx
               .update(issues)
-              .set({
+              .set(versionedIssuePatch({
                 executionRunId: null,
                 executionAgentNameKey: null,
-                executionLockedAt: null,
-                updatedAt: now,
-              })
+                executionLockedAt: null
+              }, now))
               .where(and(eq(issues.id, issue.id), eq(issues.executionRunId, scheduledRun.id)));
           }
 
@@ -15757,12 +15744,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (!activeExecutionRun && issue.executionRunId) {
           await tx
             .update(issues)
-            .set({
+            .set(versionedIssuePatch({
               executionRunId: null,
               executionAgentNameKey: null,
-              executionLockedAt: null,
-              updatedAt: new Date(),
-            })
+              executionLockedAt: null
+            }, new Date()))
             .where(eq(issues.id, issue.id));
         }
 
@@ -15796,12 +15782,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 .then((rows) => rows[0] ?? null);
               await tx
                 .update(issues)
-                .set({
+                .set(versionedIssuePatch({
                   executionRunId: legacyRun.id,
                   executionAgentNameKey: normalizeAgentNameKey(legacyAgent?.name),
-                  executionLockedAt: new Date(),
-                  updatedAt: new Date(),
-                })
+                  executionLockedAt: new Date()
+                }, new Date()))
                 .where(eq(issues.id, issue.id));
             }
           }
@@ -15911,14 +15896,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ].join("\n");
             await tx
               .update(issues)
-              .set({
+              .set(versionedIssuePatch({
                 status: "blocked",
                 checkoutRunId: null,
                 executionRunId: null,
                 executionAgentNameKey: null,
-                executionLockedAt: null,
-                updatedAt: now,
-              })
+                executionLockedAt: null
+              }, now))
               .where(eq(issues.id, issue.id));
             await tx.insert(issueComments).values({
               companyId: issue.companyId,
@@ -16589,6 +16573,90 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     eventPayload?: Record<string, unknown>;
   };
 
+  async function cancelScheduledRetryInTransaction(
+    tx: DbTransaction,
+    runId: string,
+    reason: string,
+  ) {
+    const finishedAt = new Date();
+    const cancelled = await tx
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt,
+        error: reason,
+        errorCode: "cancelled",
+        updatedAt: finishedAt,
+      })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "scheduled_retry")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!cancelled) {
+      const current = await tx
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      if (!current) throw notFound("Heartbeat run not found");
+      throw conflict(`Scheduled retry is no longer cancellable: ${current.status}`);
+    }
+
+    if (cancelled.wakeupRequestId) {
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt,
+          error: reason,
+          updatedAt: finishedAt,
+        })
+        .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
+    }
+
+    const [eventSeq] = await tx
+      .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, cancelled.id));
+    await tx.insert(heartbeatRunEvents).values({
+      companyId: cancelled.companyId,
+      runId: cancelled.id,
+      agentId: cancelled.agentId,
+      seq: Number(eventSeq?.maxSeq ?? 0) + 1,
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: "run cancelled",
+      payload: {
+        issueId: readNonEmptyString(parseObject(cancelled.contextSnapshot).issueId),
+        source: "issue_comment_scheduled_retry_superseded",
+      },
+    });
+    return cancelled;
+  }
+
+  async function finalizeScheduledRetryCancellation(runId: string) {
+    const cancelled = await getRun(runId);
+    if (!cancelled) return;
+    publishLiveEvent({
+      companyId: cancelled.companyId,
+      type: "heartbeat.run.status",
+      payload: {
+        runId: cancelled.id,
+        agentId: cancelled.agentId,
+        status: cancelled.status,
+        invocationSource: cancelled.invocationSource,
+        triggerDetail: cancelled.triggerDetail,
+        error: cancelled.error ?? null,
+        errorCode: cancelled.errorCode ?? null,
+        startedAt: cancelled.startedAt ? new Date(cancelled.startedAt).toISOString() : null,
+        finishedAt: cancelled.finishedAt ? new Date(cancelled.finishedAt).toISOString() : null,
+      },
+    });
+    publishRunLifecyclePluginEvent(cancelled);
+    await finalizeAgentStatus(cancelled.agentId, "cancelled");
+    await startNextQueuedRunForAgent(cancelled.agentId);
+  }
+
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
@@ -17154,6 +17222,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+    cancelScheduledRetryInTransaction,
+    finalizeScheduledRetryCancellation,
 
     /**
      * Pause-only. Emits errorCode "agent_paused" unconditionally; its sole caller is the

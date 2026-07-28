@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -7,6 +8,7 @@ import {
   companyMemberships,
   createDb,
   invites,
+  issues,
   principalPermissionGrants,
 } from "@paperclipai/db";
 import { buildHostServices } from "../services/plugin-host-services.js";
@@ -55,6 +57,7 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
     await db.delete(activityLog);
     await db.delete(principalPermissionGrants);
     await db.delete(invites);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companyMemberships);
     await db.delete(companies);
@@ -317,6 +320,41 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
     });
     expect(JSON.stringify(rows[0]!.details)).not.toContain("sk-test-secret");
     expect(JSON.stringify(rows[0]!.details)).not.toContain("should-not-persist");
+    services.dispose();
+  });
+
+  it("increments an issue version once when a plugin updates its authorization policy", async () => {
+    const company = await createCompany(db, "PAI");
+    const issue = await db
+      .insert(issues)
+      .values({
+        companyId: company.id,
+        title: "Policy target",
+        status: "todo",
+        priority: "medium",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub());
+
+    await services.authorization.updatePolicy({
+      companyId: company.id,
+      resourceType: "issue",
+      resourceId: issue.id,
+      policy: {
+        assignmentPolicy: { mode: "protected" },
+      },
+    });
+
+    const [updated] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(updated).toMatchObject({
+      executionPolicy: {
+        authorizationPolicy: {
+          assignmentPolicy: { mode: "protected" },
+        },
+      },
+      version: 2,
+    });
     services.dispose();
   });
 });
