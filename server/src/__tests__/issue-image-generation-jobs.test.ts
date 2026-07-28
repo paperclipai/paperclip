@@ -205,8 +205,8 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
   it("deduplicates concurrent enqueue attempts for the same request fingerprint", async () => {
     const seed = await seedIssue();
     const storage = createMockStorage();
-    const serviceA = createIssueImageGenerationJobService(db, storage);
-    const serviceB = createIssueImageGenerationJobService(db, storage);
+    const serviceA = createIssueImageGenerationJobService(db, storage, { scheduleOnEnqueue: false });
+    const serviceB = createIssueImageGenerationJobService(db, storage, { scheduleOnEnqueue: false });
     const input = buildEnqueueInput(seed);
 
     const [first, second] = await Promise.all([serviceA.enqueue(input), serviceB.enqueue(input)]);
@@ -224,7 +224,7 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
   it("marks provider failures as failed without publishing attachments", async () => {
     const seed = await seedIssue();
     const storage = createMockStorage();
-    const service = createIssueImageGenerationJobService(db, storage, { leaseMs: 1_500 });
+    const service = createIssueImageGenerationJobService(db, storage, { leaseMs: 1_500, scheduleOnEnqueue: false });
     mockGenerateCodexIssueImage.mockRejectedValueOnce(new Error("provider unavailable"));
 
     const job = await service.enqueue(buildEnqueueInput(seed));
@@ -242,8 +242,8 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
   it("prevents a stale worker from publishing after another worker reclaims the lease", async () => {
     const seed = await seedIssue();
     const storage = createMockStorage();
-    const serviceA = createIssueImageGenerationJobService(db, storage, { leaseMs: 1_200 });
-    const serviceB = createIssueImageGenerationJobService(db, storage, { leaseMs: 1_200 });
+    const serviceA = createIssueImageGenerationJobService(db, storage, { leaseMs: 1_200, scheduleOnEnqueue: false });
+    const serviceB = createIssueImageGenerationJobService(db, storage, { leaseMs: 1_200, scheduleOnEnqueue: false });
     const first = deferred<{
       outputBytes: Buffer;
       endpoint: string;
@@ -292,7 +292,7 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
   it("cleans partial output when audit persistence fails mid-delivery", async () => {
     const seed = await seedIssue();
     const storage = createMockStorage({ failOnPutNumber: 2 });
-    const service = createIssueImageGenerationJobService(db, storage, { leaseMs: 1_500 });
+    const service = createIssueImageGenerationJobService(db, storage, { leaseMs: 1_500, scheduleOnEnqueue: false });
     mockGenerateCodexIssueImage.mockResolvedValueOnce({
       outputBytes: PNG_BYTES,
       endpoint: "codex",

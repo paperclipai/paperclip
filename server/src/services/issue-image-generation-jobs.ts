@@ -423,7 +423,7 @@ async function createIssueGeneratedAttachment(input: {
 export function createIssueImageGenerationJobService(
   db: Db,
   storage: StorageService,
-  options: { tickIntervalMs?: number; leaseMs?: number } = {},
+  options: { tickIntervalMs?: number; leaseMs?: number; scheduleOnEnqueue?: boolean } = {},
 ) {
   const log = logger.child({ service: "issue-image-generation-jobs" });
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
@@ -484,9 +484,11 @@ export function createIssueImageGenerationJobService(
         ),
       )
       .then((rows) => rows[0]);
-    queueMicrotask(() => {
-      void tick();
-    });
+    if (options.scheduleOnEnqueue ?? true) {
+      queueMicrotask(() => {
+        void tick();
+      });
+    }
     return selectShape(job);
   }
 
@@ -523,8 +525,10 @@ export function createIssueImageGenerationJobService(
       WHERE jobs.id = candidate.id
       RETURNING jobs.id
     `);
-    const row = Array.isArray(rows) ? rows[0] : (rows as { rows?: Array<{ id?: string }> }).rows?.[0];
-    const jobId = row?.id;
+    const row = (Array.isArray(rows)
+      ? rows[0]
+      : (rows as { rows?: unknown[] }).rows?.[0]) as { id?: unknown } | undefined;
+    const jobId = typeof row?.id === "string" ? row.id : null;
     if (!jobId) return null;
     const job = await db
       .select()
