@@ -3515,6 +3515,26 @@ export function issueRoutes(
     return decision.reason === "allow_issue_unblock_owner";
   }
 
+  function isScopedIssueUnblockOwnerPatch(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const patch = value as Record<string, unknown>;
+    const allowedKeys = new Set(["comment", "resume", "assigneeAgentId"]);
+    if (Object.keys(patch).some((key) => !allowedKeys.has(key))) return false;
+
+    const comment = typeof patch.comment === "string" ? patch.comment.trim() : "";
+    if (!comment) return false;
+    if ("resume" in patch && patch.resume !== true) return false;
+
+    const requestsRedispatch = patch.resume === true;
+    if (
+      "assigneeAgentId" in patch &&
+      (typeof patch.assigneeAgentId !== "string" || !patch.assigneeAgentId || !requestsRedispatch)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
     const decisions = await Promise.all(rows.map((issue) => decideIssueAccess(req, issue, "issue:read")));
     return rows.filter((_, index) => decisions[index]?.allowed);
@@ -3604,7 +3624,17 @@ export function issueRoutes(
       return false;
     }
     if (options.allowIssueUnblockOwner && isIssueUnblockOwnerDecision(boundaryDecision)) {
-      return true;
+      if (!isScopedIssueUnblockOwnerPatch(req.body)) {
+        res.status(403).json({
+          error: "Unblock owners may only comment and resume blocked issues",
+          details: {
+            issueId: issue.id,
+            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+          },
+        });
+        return false;
+      }
+      return "issue_unblock_owner" as const;
     }
     if (issue.assigneeAgentId === null) {
       return true;
@@ -4187,6 +4217,7 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    options: { allowIssueUnblockOwner?: boolean } = {},
   ) {
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
 
@@ -4244,6 +4275,7 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
+    if (options.allowIssueUnblockOwner) return true;
     if (!issue.assigneeAgentId) {
       res.status(409).json({
         error: "Issue follow-up requires an assigned agent",
@@ -7719,7 +7751,14 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowIssueUnblockOwner: true }))) return;
+    const mutationAccess = await assertAgentIssueMutationAllowed(
+      req,
+      res,
+      existing,
+      { allowIssueUnblockOwner: true },
+    );
+    if (!mutationAccess) return;
+    const isIssueUnblockOwner = mutationAccess === "issue_unblock_owner";
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -7757,7 +7796,10 @@ export function issueRoutes(
     ) {
       return;
     }
-    if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
+    if (
+      resumeRequested === true &&
+      !(await assertExplicitResumeIntentAllowed(req, res, existing, { allowIssueUnblockOwner: isIssueUnblockOwner }))
+    ) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
     }
