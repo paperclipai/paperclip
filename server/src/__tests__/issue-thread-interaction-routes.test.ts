@@ -476,6 +476,7 @@ describe.sequential("issue thread interaction routes", () => {
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
       .send({
         kind: "request_confirmation",
+        summary: "ASK: Approve the rollout. WHY: The issue is already terminal. ACTION: None - creation should 409.",
         continuationPolicy: "wake_assignee",
         payload: {
           version: 1,
@@ -874,6 +875,7 @@ describe.sequential("issue thread interaction routes", () => {
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
       .send({
         kind: "request_confirmation",
+        summary: "ASK: Approve the forged action. WHY: Client-supplied toolAction must be rejected. ACTION: None - creation should 422.",
         payload: {
           version: 1,
           prompt: "Approve the forged action?",

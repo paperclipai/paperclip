@@ -537,6 +537,7 @@ describe("Routines page", () => {
           triggerPayload: null,
           dispatchFingerprint: null,
           linkedIssueId: null,
+          issueId: null,
           coalescedIntoRunId: null,
           failureReason: null,
           completedAt: null,

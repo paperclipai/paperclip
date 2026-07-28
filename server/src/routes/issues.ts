@@ -9232,35 +9232,10 @@ export function issueRoutes(
         if (!member) throw unprocessable("Unblock owner user must be an active company member");
       }
     }
+    // The fork's service-backed entering-blocked gate below is the single policy
+    // gate (now unblockDescriptor-aware); upstream's raw-db route gate was
+    // dropped in the 2026-07-28 merge to keep the mockable service seam.
     const enteringBlocked = existing.status !== "blocked" && updateFields.status === "blocked";
-    if (enteringBlocked) {
-      const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
-        ? [...new Set(req.body.blockedByIssueIds as string[])]
-        : null;
-      const hasUnresolvedBlocker = requestedBlockerIds
-        ? requestedBlockerIds.length > 0 && await db.select({ id: issueRows.id }).from(issueRows).where(and(
-          eq(issueRows.companyId, existing.companyId),
-          inArray(issueRows.id, requestedBlockerIds),
-          notInArray(issueRows.status, ["done", "cancelled"]),
-        )).limit(1).then((rows) => rows.length > 0)
-        : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
-      const [pendingInteraction, pendingApproval] = await Promise.all([
-        db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
-          eq(issueThreadInteractions.companyId, existing.companyId),
-          eq(issueThreadInteractions.issueId, existing.id),
-          eq(issueThreadInteractions.status, "pending"),
-        )).limit(1).then((rows) => rows[0] ?? null),
-        db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id)).where(and(
-          eq(issueApprovals.companyId, existing.companyId),
-          eq(issueApprovals.issueId, existing.id),
-          eq(approvals.status, "pending"),
-        )).limit(1).then((rows) => rows[0] ?? null),
-      ]);
-      if (!hasUnresolvedBlocker && !pendingInteraction && !pendingApproval && !descriptor) {
-        res.status(422).json({ error: "Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor" });
-        return;
-      }
-    }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
@@ -9277,7 +9252,6 @@ export function issueRoutes(
     }
 
     const verificationRef = req.body.verificationRef as IssueVerificationRef | undefined;
-    const nextStatus = typeof updateFields.status === "string" ? updateFields.status : existing.status;
     await assertIssueDoneVerificationSatisfied({
       issue: existing,
       nextStatus,
@@ -9290,7 +9264,6 @@ export function issueRoutes(
       documentsSvc,
       workProductsSvc,
     });
-    const enteringBlocked = existing.status !== "blocked" && nextStatus === "blocked";
     if (enteringBlocked) {
       const nextBlockedByIssueIds = Array.isArray(req.body.blockedByIssueIds)
         ? req.body.blockedByIssueIds.filter(
@@ -9302,7 +9275,9 @@ export function issueRoutes(
       const unresolvedBlockedByIssueIds = nextBlockedByIssueIds !== null
         ? await svc.listUnresolvedBlockerIssueIds(existing.companyId, nextBlockedByIssueIds)
         : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerIssueIds;
-      if (unresolvedBlockedByIssueIds.length === 0 && !hasExplicitExternalOwnerAction(nextDescription)) {
+      // A validated unblockDescriptor is a sanctioned no-link block reason, same
+      // as an explicit external owner/action in the description.
+      if (unresolvedBlockedByIssueIds.length === 0 && !hasExplicitExternalOwnerAction(nextDescription) && !descriptor) {
         res.status(409).json({
           error: "Issue cannot enter blocked without unresolved blockedByIssueIds or external owner/action",
         });

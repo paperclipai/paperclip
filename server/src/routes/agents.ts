@@ -1888,6 +1888,9 @@ export function agentRoutes(
       const betaSkillsEnabled = (await instanceSettings.getExperimental()).enableBetaSkills === true;
       if (!betaSkillsEnabled) {
         throw badRequest("Beta skill version pins require the Beta skills experimental setting to be enabled.");
+      }
+    }
+
     const existingDesiredSkillKeys = new Set(
       readPaperclipSkillSyncPreference(adapterConfig).desiredSkills,
     );

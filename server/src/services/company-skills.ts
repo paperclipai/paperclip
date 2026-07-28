@@ -912,6 +912,8 @@ function resolveBundledSkillReleasesRoot() {
     path.resolve(process.cwd(), "skills-releases/paperclip"),
     path.resolve(moduleDir, "../../../skills-releases/paperclip"),
   ];
+}
+
 function isBundledPaperclipSkill(skill: Pick<CompanySkill, "key" | "metadata">) {
   const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
   const sourceKind = asString(metadata?.sourceKind);

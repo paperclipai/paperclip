@@ -11852,6 +11852,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
+        updatedAt: issues.updatedAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))

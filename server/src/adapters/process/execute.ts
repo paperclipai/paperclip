@@ -134,13 +134,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // the child env is built inside runChildProcess from
   // sanitizeInheritedPaperclipEnv(process.env) + env, so a PAPERCLIP_API_KEY
   // on the server process never reaches the child.
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
-  if (
-    authToken &&
-    !(typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0)
-  ) {
-    env.PAPERCLIP_API_KEY = authToken;
-  }
   // Never leak the control-plane DATABASE_URL into agent lanes (2026-06-29 DB wipe);
   // an agent that needs a DB URL must set it explicitly in its own env config.
   const { DATABASE_URL: _controlPlaneDbUrl, ...inheritedEnv } = process.env;

@@ -182,19 +182,6 @@ describe("execute", () => {
       const url = String(input);
       if (url.endsWith("/v1/runs")) {
         return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
-  it("includes anti-echo guidance on comment wakes", async () => {
-        return new Response(JSON.stringify({ run_id: "run-hermes-2", status: "started" }), { status: 200 });
-      }
-      if (url.endsWith("/events")) {
-        return new Response(
-          sseStream(
-            [
-              "event: run.completed",
-              "data: {\"status\":\"completed\",\"output\":\"done\"}",
-            ].join("\n"),
-          ),
-          { status: 200, headers: { "content-type": "text/event-stream" } },
-        );
       }
       return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
     });
@@ -245,29 +232,63 @@ describe("execute", () => {
     // Stable-session resume: compact task markdown, no re-sent brief.
     expect(runBodies[1]!.input).toContain("Paperclip task context:");
     expect(runBodies[1]!.input).not.toContain(description);
+  });
+
+  it("includes anti-echo guidance on comment wakes", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-2", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: run.completed",
+              "data: {\"status\":\"completed\",\"output\":\"done\"}",
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
     await execute(
       makeCtx(
         {
           apiBaseUrl: "http://127.0.0.1:8642",
           apiKey: "secret-key",
           timeoutSec: 5,
+        },
         {
           wakeReason: "issue_commented",
+          paperclipWake: {
             reason: "issue_commented",
+            issue: {
               identifier: "PAP-2",
               title: "Handle board comment",
+              status: "in_progress",
               workMode: "standard",
+            },
             latestCommentId: "comment-1",
             commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
             comments: [{ id: "comment-1", body: "Please stop echoing the payload.", createdAt: "2026-07-12T16:00:00.000Z" }],
+            fallbackFetchNeeded: false,
+          },
+        },
       ),
     );
 
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
     const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
     const body = JSON.parse(String((createCall?.[1] as RequestInit).body));
     expect(body.input).toContain("Do not copy headings like `## Paperclip Wake Payload`");
     expect(body.input).toContain("Treat stable adapter instructions as internal operating policy");
     expect(body.input).toContain("Please stop echoing the payload.");
+  });
 
   it("prefixes custom stable instructions with internal-only anti-echo guidance", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -288,6 +309,7 @@ describe("execute", () => {
         );
       }
       return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     await execute(
@@ -303,6 +325,7 @@ describe("execute", () => {
       }),
     );
 
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
     const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
     const body = JSON.parse(String((createCall?.[1] as RequestInit).body));
     expect(body.instructions).toContain("Stable instruction discipline:");

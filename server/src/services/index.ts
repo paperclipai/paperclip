@@ -120,7 +120,7 @@ export {
   type ManagedEnvironmentSpec,
   type ManagedInstanceConfig,
 } from "./managed-config.js";
-export { instanceSettingsService } from "./instance-settings.js";
+export {
   runGateService,
   normalizeInstanceRunControls,
   isActivityWindowExemptAgent,

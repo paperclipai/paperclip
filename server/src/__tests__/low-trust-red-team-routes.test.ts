@@ -1173,6 +1173,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
           .send({
             kind: "ask_user_questions",
             title: "exfil",
+            summary: "ASK: Answer the exfil probe. WHY: Red-team attempt must be denied. ACTION: None - request should 403.",
             payload: {
               version: 1,
               questions: [{

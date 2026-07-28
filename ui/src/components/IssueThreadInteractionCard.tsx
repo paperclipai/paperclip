@@ -1386,36 +1386,36 @@ function RequestConfirmationResolution({
     );
   }
 
-  if (interaction.status === "expired") {
-    const expiredByComment = outcome === "superseded_by_comment";
-    const expiredWithIssue = outcome === "issue_closed";
   // A stale cancellation is terminal in the same way an expiry is. Only the
   // lazy read-path staleness check writes "expired"; the document-revision
   // sweep, the issue-state sweep and the comment sweeps all write "cancelled",
   // so keying this block off "expired" alone left those asks rendering nothing.
   if (interaction.status === "expired" || interaction.status === "cancelled") {
     const cancelled = interaction.status === "cancelled";
+    const expiredByComment = outcome === "superseded_by_comment";
+    const expiredWithIssue = outcome === "issue_closed";
     const expiredByIssueState = outcome === "stale_issue_state";
     const expiredByTargetChange = outcome === "stale_target";
     const staleReason = expiredByIssueState ? interaction.result?.reason?.trim() : null;
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
         <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
-          {expiredByComment ? "Expired by comment" : expiredWithIssue ? "Expired when issue closed" : "Expired by target change"}
           {expiredByComment
             ? cancelled ? "Cancelled by comment" : "Expired by comment"
             : expiredByIssueState
               ? "Cancelled by issue change"
-              : cancelled ? "Cancelled by target change" : "Expired by target change"}
+              : expiredWithIssue
+                ? "Expired when issue closed"
+                : cancelled ? "Cancelled by target change" : "Expired by target change"}
         </div>
         <p className="leading-6">
           {expiredByComment
             ? "A board comment superseded this confirmation before it was resolved."
-            : expiredWithIssue
-              ? "The issue was closed before this confirmation was resolved."
             : expiredByIssueState
               ? "The issue changed before this confirmation was resolved."
-              : "The requested target changed before this confirmation was resolved."}
+              : expiredWithIssue
+                ? "The issue was closed before this confirmation was resolved."
+                : "The requested target changed before this confirmation was resolved."}
         </p>
         {staleReason ? <p className="leading-6">{staleReason}</p> : null}
         {expiredByComment && interaction.result?.commentId ? (

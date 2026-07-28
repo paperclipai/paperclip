@@ -908,6 +908,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "request_confirmation",
+      summary: "ASK: Approve this after close. WHY: The guard must reject asks on terminal issues. ACTION: None - creation should 409.",
       continuationPolicy: "wake_assignee",
       payload: { version: 1, prompt: "Approve after close?" },
     }, {

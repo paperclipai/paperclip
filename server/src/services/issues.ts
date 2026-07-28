@@ -124,7 +124,6 @@ import { hasExplicitExternalOwnerAction } from "./issue-blocked-gate.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
-import { logActivity } from "./activity-log.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -3445,7 +3444,7 @@ function isBoardActionInteraction(
 }
 
 function isStaleIssueStateBoardActionInteraction(input: {
-  interaction: { kind: string; title: string | null; summary: string | null; result: unknown };
+  interaction: { kind: string; result: unknown };
   issue: { assigneeUserId?: string | null };
 }) {
   if (!isBoardActionInteraction(input.interaction, input.issue)) {
@@ -7783,7 +7782,11 @@ export function issueService(db: Db) {
         if (unresolvedBlockerIssueIds.length === 0) {
           const nextDescription =
             issueData.description !== undefined ? issueData.description : existing.description;
-          if (!hasExplicitExternalOwnerAction(nextDescription)) {
+          // A validated unblockDescriptor is a sanctioned no-link block reason,
+          // same as an explicit external owner/action in the description.
+          const nextUnblockDescriptor =
+            issueData.unblockDescriptor !== undefined ? issueData.unblockDescriptor : existing.unblockDescriptor;
+          if (!hasExplicitExternalOwnerAction(nextDescription) && !nextUnblockDescriptor) {
             throw unprocessable(
               "Issue cannot enter blocked without unresolved blockedByIssueIds or external owner/action",
             );

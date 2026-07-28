@@ -1317,7 +1317,7 @@ export function issueThreadInteractionService(db: Db) {
           throw notFound("Issue not found");
         }
         if (isTerminalIssueStatus(issueStatus)) {
-          throw unprocessable(
+          throw conflict(
             `Cannot create ${data.kind} on a ${issueStatus} issue. Reopen the issue to a live status first.`,
           );
         }

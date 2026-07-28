@@ -56,8 +56,6 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use an explicitly configured lower-cost Codex model without changing the primary model.",
-    adapterConfig: {},
     description: "Use the fast ChatGPT-auth-safe Codex local lane without changing the primary model.",
     adapterConfig: {
       model: "gpt-5.4",
