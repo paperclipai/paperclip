@@ -881,8 +881,8 @@ export function productivityReviewService(
    * touched and confirmed *after* the wake: a newest marker that is not `wakeDelivered` means the
    * reclassification is unfinished, whatever killed it.
    */
-  async function readOutstandingReclassification(companyId: string, reviewIssueId: string) {
-    const marker = await db
+  async function readOutstandingReclassification(tx: Db, companyId: string, reviewIssueId: string) {
+    const marker = await tx
       .select({ details: activityLog.details })
       .from(activityLog)
       .where(and(
@@ -913,11 +913,11 @@ export function productivityReviewService(
     existing: IssueRow,
     evidence: ProductivityReviewEvidence,
     opts: { prefix: string; thresholds: ProductivityReviewThresholds },
-    resumeReclassificationId?: string | null,
+    claim: { reclassificationId: string; resumed: boolean },
   ) {
     // One id per reclassification *cycle*, reused when an interrupted attempt is resumed, so the
     // retry's wake carries the same idempotency key as the one that may already have landed.
-    const reclassificationId = resumeReclassificationId ?? randomUUID();
+    const { reclassificationId, resumed } = claim;
     const wakeIdempotencyKey = `productivity-review-reclassify:${reclassificationId}`;
     const ownerAgentId = await resolveReviewOwnerAgentId(
       evidence.sourceIssue,
@@ -925,26 +925,6 @@ export function productivityReviewService(
       evidence.classification,
     );
     const sourceLabel = evidence.sourceIssue.identifier ?? evidence.sourceIssue.title;
-    // Intent first, so a crash anywhere after this leaves a marker that says the reclassification
-    // never finished. `wakeDelivered: false` is what the retry above keys on. A resumed cycle
-    // already has its marker; writing another would only bury it.
-    if (!resumeReclassificationId) await logActivity(db, {
-      companyId: evidence.sourceIssue.companyId,
-      actorType: "system",
-      actorId: "system",
-      action: "issue.productivity_review_updated",
-      entityType: "issue",
-      entityId: existing.id,
-      agentId: ownerAgentId ?? existing.assigneeAgentId,
-      details: {
-        source: "productivity_review.reconcile",
-        sourceIssueId: evidence.sourceIssue.id,
-        classification: evidence.classification,
-        reclassifiedFrom: "stall",
-        reclassificationId,
-        wakeDelivered: false,
-      },
-    });
     await db
       .update(issues)
       .set({
@@ -955,7 +935,7 @@ export function productivityReviewService(
         updatedAt: evidence.generatedAt,
       })
       .where(eq(issues.id, existing.id));
-    if (readReviewClassification(existing) === "stall") {
+    if (!resumed) {
       await addRefreshComment(
         existing.id,
         [
@@ -991,7 +971,7 @@ export function productivityReviewService(
     // for a row that is still live, was coalesced into another wake, or already produced a run.
     // The bias is deliberate: an unrecognised state re-wakes, which costs at worst a duplicate the
     // agent no-ops on, whereas guessing "delivered" strands finished work for good.
-    const alreadyWoken = resumeReclassificationId
+    const alreadyWoken = resumed
       ? await db
         .select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests)
@@ -1134,26 +1114,55 @@ export function productivityReviewService(
       // One direction only. Evidence disappearing (a rewritten branch, a deleted artifact) must
       // not silently hand a review back to a manager with the destructive actions re-enabled; that
       // call belongs to a human reading the refresh comment.
-      const outstandingReclassification = evidence.classification === "unreported_completion"
-        ? await readOutstandingReclassification(evidence.sourceIssue.companyId, existing.id)
+      //
+      // Deciding and claiming the cycle happen under a row lock. Two reconcile passes overlapping
+      // on the same review would otherwise each read "still a stall", each mint its own cycle id,
+      // and each enqueue a wake — different idempotency keys, so the deduplication above cannot
+      // see the collision and the assignee gets two report-and-close runs. Serialised here, the
+      // second pass reads the first pass's marker and resumes *its* cycle instead of starting one.
+      const claim = evidence.classification === "unreported_completion"
+        ? await db.transaction(async (tx) => {
+          const locked = await tx
+            .select({ description: issues.description })
+            .from(issues)
+            .where(eq(issues.id, existing.id))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          if (!locked) return null;
+          const outstanding = await readOutstandingReclassification(
+            tx as unknown as Db,
+            evidence.sourceIssue.companyId,
+            existing.id,
+          );
+          const stillStall = !(locked.description ?? "").includes(UNREPORTED_COMPLETION_MARKER);
+          // Already reclassified and confirmed — nothing to redo.
+          if (!stillStall && !outstanding) return null;
+          if (outstanding?.reclassificationId) {
+            return { reclassificationId: outstanding.reclassificationId, resumed: true };
+          }
+          const reclassificationId = randomUUID();
+          await logActivity(tx as unknown as Db, {
+            companyId: evidence.sourceIssue.companyId,
+            actorType: "system",
+            actorId: "system",
+            action: "issue.productivity_review_updated",
+            entityType: "issue",
+            entityId: existing.id,
+            agentId: existing.assigneeAgentId,
+            details: {
+              source: "productivity_review.reconcile",
+              sourceIssueId: evidence.sourceIssue.id,
+              classification: evidence.classification,
+              reclassifiedFrom: "stall",
+              reclassificationId,
+              wakeDelivered: false,
+            },
+          });
+          return { reclassificationId, resumed: !stillStall };
+        })
         : null;
-      if (
-        evidence.classification === "unreported_completion" &&
-        (
-          readReviewClassification(existing) === "stall" ||
-          // Already reclassified, but the wake never got confirmed — a crash between the review
-          // update and the wake leaves exactly this state, and the stall check alone would never
-          // retry it. Re-running is idempotent: the review is rewritten to what it already says
-          // and the assignee finally gets the trigger.
-          outstandingReclassification !== null
-        )
-      ) {
-        return await reclassifyReviewAsUnreportedCompletion(
-          existing,
-          evidence,
-          opts,
-          outstandingReclassification?.reclassificationId ?? null,
-        );
+      if (claim) {
+        return await reclassifyReviewAsUnreportedCompletion(existing, evidence, opts, claim);
       }
       const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
       const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;

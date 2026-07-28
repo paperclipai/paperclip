@@ -1467,6 +1467,45 @@ describeEmbeddedPostgres("productivity review service", () => {
       expect(markers.every((row) => (row.details as Record<string, unknown>)?.wakeDelivered !== true)).toBe(true);
     });
 
+    // Two reconcile passes overlapping on the same review would each mint their own cycle id and
+    // enqueue a wake under a different idempotency key, so deduplication could not see the
+    // collision and the assignee would get two report-and-close runs.
+    it("enqueues one wake when two reconcile passes race on the same review", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const emptyRepo = createEmptyRepoPath();
+      const { repoPath } = createRepoWithCommit({
+        subject: "feat(aur1370): deliverable landed",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+      const wakes: Array<unknown> = [];
+      const service = () =>
+        productivityReviewService(db, {
+          resolveAgentWorkspaceDir: () => repoPath,
+          enqueueWakeup: (async (_agentId: string, wakeOpts?: { idempotencyKey?: unknown }) => {
+            wakes.push(wakeOpts?.idempotencyKey);
+            return { id: "wake" };
+          }) as never,
+        });
+
+      await productivityReviewService(db, { resolveAgentWorkspaceDir: () => emptyRepo })
+        .reconcileProductivityReviews({ now, companyId: seeded.companyId });
+      wakes.length = 0;
+
+      const at = new Date(now.getTime() + 60_000);
+      await Promise.all([
+        service().reconcileProductivityReviews({ now: at, companyId: seeded.companyId }),
+        service().reconcileProductivityReviews({ now: at, companyId: seeded.companyId }),
+      ]);
+
+      // Both passes converge on a single cycle, so every wake carries the same idempotency key.
+      // That is the property deduplication needs; two enqueues of the *same* key are the
+      // at-least-once behaviour the lookup and any future unique constraint collapse.
+      expect(new Set(wakes).size).toBe(1);
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `unreported_completion`");
+      expect(review?.assigneeAgentId).toBe(seeded.coderId);
+    });
+
     // A review created straight as an unreported completion has the same exposure as a
     // reclassified one: nothing tells a later pass that its wake never landed.
     it("re-wakes a newly created completion review whose first wake failed", async () => {
