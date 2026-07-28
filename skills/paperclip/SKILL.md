@@ -107,6 +107,9 @@ If an important file intentionally remains in the project or execution workspace
 For technical upload instructions, read `references/artifacts.md`.
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
+
+**Bounded write retry.** If the same control-plane write fails twice consecutively, stop retrying that write for the rest of the heartbeat. Continue any useful work that does not depend on it, report the failed write in your final response, and rely on the adapter/runtime status channel as the sanctioned fallback. Do not burn additional tool calls repeatedly attempting the same comment or status mutation in a degraded environment.
+
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
 Before ending any heartbeat, apply this final-disposition checklist:

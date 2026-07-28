@@ -843,6 +843,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("evidence, not valid liveness paths by themselves");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("keep `in_progress` only when a live continuation path exists");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Prefer the smallest verification that proves the change");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("After 2 consecutive failures of the same control-plane write");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("adapter/runtime status channel as the sanctioned fallback");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
@@ -905,6 +907,8 @@ describe("renderPaperclipWakePrompt", () => {
       expect(prompt).toContain("Immediately before returning, verify that Paperclip records one of those dispositions");
       expect(prompt).toContain("a successful process exit or final response is not sufficient");
       expect(prompt).toContain("If no valid disposition is recorded, record it now and do not end the run");
+      expect(prompt).toContain("After 2 consecutive failures of the same control-plane write");
+      expect(prompt).toContain("adapter/runtime status channel as the sanctioned fallback");
       expect(prompt).toContain("evidence, not valid liveness paths by themselves");
       expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
       expect(prompt).toContain("named unblock owner/action");

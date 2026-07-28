@@ -2987,10 +2987,9 @@ function deriveTaskKey(
  * Extended task key derivation that falls back to a stable synthetic key
  * for timer/heartbeat wakes. The synthetic key keeps the
  * `agentTaskSessions` row addressable across heartbeats so the row can be
- * cleared and re-keyed deterministically; it does NOT mean the prior
- * session is resumed. Since PF-4 (#4838), `heartbeat_timer` wakes always
- * go through `shouldResetTaskSessionForWake` and start a fresh session —
- * see `describeSessionResetReason` for the paired log message.
+ * cleared and re-keyed deterministically. Unscoped exploratory timer wakes
+ * still start fresh to avoid accumulating low-value inbox scans, while timer
+ * wakes scoped to a real issue reuse that issue's task session.
  *
  * The synthetic key is only used when:
  * - No explicit task/issue key exists in the context
@@ -3021,13 +3020,11 @@ export function shouldResetTaskSessionForWake(
     wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON ||
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested" ||
-    // PF-4: timer-driven wakes are exploratory ("any new work?"). They do not
-    // carry meaningful continuation state, so reusing the prior task session
-    // for repeated timer wakes accumulates low-value context and pushes the
-    // session toward the 64k compaction threshold (observed in CEO run
-    // 292a5fd1, where timer wakes repeatedly bloated a long-lived manager
-    // session). Reset on every timer wake so each interval starts fresh.
-    wakeReason === "heartbeat_timer"
+    // PF-4: unscoped timer wakes are exploratory ("any new work?") and should
+    // not accumulate low-value inbox scans. Issue-scoped timer wakes are
+    // continuation work, so reuse their task session to avoid paying the full
+    // session-start and re-orientation cost on every heartbeat.
+    (wakeReason === "heartbeat_timer" && !deriveTaskKey(contextSnapshot, null))
   ) {
     return true;
   }
@@ -3140,7 +3137,9 @@ export function describeSessionResetReason(
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
   // PF-4: paired with shouldResetTaskSessionForWake — keep the reason wording
   // explicit so run logs make session reuse/reset behavior legible.
-  if (wakeReason === "heartbeat_timer") return "wake reason is heartbeat_timer (timer-driven wake starts fresh)";
+  if (wakeReason === "heartbeat_timer" && !deriveTaskKey(contextSnapshot, null)) {
+    return "wake reason is heartbeat_timer (unscoped timer wake starts fresh)";
+  }
   return null;
 }
 
