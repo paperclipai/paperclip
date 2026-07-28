@@ -5219,7 +5219,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).not.toBe(timerRunId);
   });
 
-  it("does not overwrite a generic timer checkout acquired during stranded escalation", async () => {
+  it.each(["new", "existing"] as const)(
+    "does not overwrite a generic timer checkout or leak a %s recovery action during stranded escalation",
+    async (recoveryActionState) => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
@@ -5244,6 +5246,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       startedAt: now,
       updatedAt: now,
     });
+    if (recoveryActionState === "existing") {
+      await db.insert(issueRecoveryActions).values({
+        companyId,
+        sourceIssueId: issueId,
+        kind: "stranded_assigned_issue",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: agentId,
+        previousOwnerAgentId: agentId,
+        returnOwnerAgentId: agentId,
+        cause: "stranded_assigned_issue",
+        fingerprint: `preexisting:${issueId}`,
+        evidence: { sentinel: "preserve-me" },
+        nextAction: "Preserve the pre-existing recovery action.",
+        wakePolicy: { type: "wake_owner" },
+        attemptCount: 3,
+        lastAttemptAt: now,
+      });
+    }
     await db.execute(sql`
       create or replace function test_link_timer_run_during_recovery()
       returns trigger
@@ -5271,7 +5292,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     `);
     await db.execute(sql`
       create trigger test_link_timer_run_during_recovery
-      after insert on issue_recovery_actions
+      after insert or update on issue_recovery_actions
       for each row execute function test_link_timer_run_during_recovery();
     `);
 
@@ -5293,9 +5314,123 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         checkoutRunId: timerRunId,
         executionRunId: timerRunId,
       });
+
+      const recoveryActions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      if (recoveryActionState === "new") {
+        expect(recoveryActions).toEqual([]);
+      } else {
+        expect(recoveryActions).toHaveLength(1);
+        expect(recoveryActions[0]).toMatchObject({
+          status: "active",
+          attemptCount: 3,
+          fingerprint: `preexisting:${issueId}`,
+          evidence: { sentinel: "preserve-me" },
+        });
+      }
+
+      const recoveryWakes = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.reason, "source_scoped_recovery_action"));
+      expect(recoveryWakes).toEqual([]);
+
+      const comments = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId));
+      expect(comments).toEqual([]);
+
+      const activity = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.entityId, issueId));
+      expect(activity).toEqual([]);
     } finally {
       await db.execute(sql`drop trigger if exists test_link_timer_run_during_recovery on issue_recovery_actions`);
       await db.execute(sql`drop function if exists test_link_timer_run_during_recovery()`);
+    }
+  });
+
+  it("does not reblock a generic timer checkout acquired while the recovery wake is enqueued", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+    });
+    const timerRunId = randomUUID();
+    const now = new Date("2026-03-19T00:06:00.000Z");
+
+    await db.insert(heartbeatRuns).values({
+      id: timerRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "test_reblock_timer_race",
+      status: "running",
+      contextSnapshot: {
+        wakeReason: "heartbeat_timer",
+        source: "heartbeat_timer",
+      },
+      startedAt: now,
+      updatedAt: now,
+    });
+    await db.execute(sql`
+      create or replace function test_link_timer_run_before_reblock()
+      returns trigger
+      language plpgsql
+      as $$
+      begin
+        if new.reason = 'source_scoped_recovery_action' then
+          update issues
+          set
+            status = 'in_progress',
+            checkout_run_id = (
+              select id from heartbeat_runs
+              where company_id = new.company_id
+                and trigger_detail = 'test_reblock_timer_race'
+              limit 1
+            ),
+            execution_run_id = (
+              select id from heartbeat_runs
+              where company_id = new.company_id
+                and trigger_detail = 'test_reblock_timer_race'
+              limit 1
+            )
+          where id = (new.payload ->> 'issueId')::uuid;
+        end if;
+        return new;
+      end;
+      $$;
+    `);
+    await db.execute(sql`
+      create trigger test_link_timer_run_before_reblock
+      after insert on agent_wakeup_requests
+      for each row execute function test_link_timer_run_before_reblock();
+    `);
+
+    try {
+      const heartbeat = heartbeatService(db);
+      await heartbeat.reconcileStrandedAssignedIssues();
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        checkoutRunId: timerRunId,
+        executionRunId: timerRunId,
+      });
+    } finally {
+      await db.execute(sql`drop trigger if exists test_link_timer_run_before_reblock on agent_wakeup_requests`);
+      await db.execute(sql`drop function if exists test_link_timer_run_before_reblock()`);
     }
   });
 

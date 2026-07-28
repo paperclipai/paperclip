@@ -2913,6 +2913,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
   }
 
+  async function compensateStrandedRecoveryActionCasMiss(input: {
+    previousAction: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>>;
+    attemptedAction: Awaited<ReturnType<typeof recoveryActionsSvc.upsertSourceScoped>>;
+  }) {
+    if (!input.previousAction) {
+      await db
+        .delete(issueRecoveryActions)
+        .where(and(
+          eq(issueRecoveryActions.id, input.attemptedAction.id),
+          eq(issueRecoveryActions.attemptCount, input.attemptedAction.attemptCount),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        ));
+      return;
+    }
+
+    const previous = input.previousAction;
+    const asDate = (value: string | Date | null) =>
+      typeof value === "string" ? new Date(value) : value;
+    await db
+      .update(issueRecoveryActions)
+      .set({
+        recoveryIssueId: previous.recoveryIssueId,
+        kind: previous.kind,
+        status: previous.status,
+        ownerType: previous.ownerType,
+        ownerAgentId: previous.ownerAgentId,
+        ownerUserId: previous.ownerUserId,
+        previousOwnerAgentId: previous.previousOwnerAgentId,
+        returnOwnerAgentId: previous.returnOwnerAgentId,
+        cause: previous.cause,
+        fingerprint: previous.fingerprint,
+        evidence: previous.evidence,
+        nextAction: previous.nextAction,
+        wakePolicy: previous.wakePolicy,
+        monitorPolicy: previous.monitorPolicy,
+        attemptCount: previous.attemptCount,
+        maxAttempts: previous.maxAttempts,
+        timeoutAt: asDate(previous.timeoutAt),
+        lastAttemptAt: asDate(previous.lastAttemptAt),
+        outcome: previous.outcome,
+        resolutionNote: previous.resolutionNote,
+        resolvedAt: asDate(previous.resolvedAt),
+        updatedAt: asDate(previous.updatedAt)!,
+      })
+      .where(and(
+        eq(issueRecoveryActions.id, input.attemptedAction.id),
+        eq(issueRecoveryActions.attemptCount, input.attemptedAction.attemptCount),
+        inArray(issueRecoveryActions.status, ["active", "escalated"]),
+      ));
+  }
+
   function readProviderQuotaRetryAt(latestRun: LatestIssueRun, now: Date) {
     const result = parseObject(latestRun?.resultJson);
     const context = parseObject(latestRun?.contextSnapshot);
@@ -3213,6 +3264,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
+    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const previousRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
+      input.issue.companyId,
+      input.issue.id,
+    );
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,
@@ -3221,6 +3277,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryOwnerAgentId: input.recoveryOwnerAgentId,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      blockedByIssueIds: blockerIds,
+      assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+      expectedCheckoutRunId: executionPath.checkoutRunId,
+      expectedExecutionRunId: executionPath.executionRunId,
+    });
+    if (!updated) {
+      const currentIssue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, input.issue.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      // Another reconciler may have won the same recovery race. Its blocked
+      // state owns the shared source-scoped action; every other CAS miss must
+      // restore the action snapshot so a productive checkout or unrelated
+      // issue transition cannot inherit recovery side effects.
+      if (currentIssue?.status !== "blocked") {
+        await compensateStrandedRecoveryActionCasMiss({
+          previousAction: previousRecoveryAction,
+          attemptedAction: recoveryAction,
+        });
+      }
+      return null;
+    }
     const isProviderQuotaWait = recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
       Boolean(recoveryAction.returnOwnerAgentId);
@@ -3232,15 +3314,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         agentId: recoveryAction.returnOwnerAgentId,
       });
     }
-    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
-      blockedByIssueIds: blockerIds,
-      assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
-      expectedCheckoutRunId: executionPath.checkoutRunId,
-      expectedExecutionRunId: executionPath.executionRunId,
-    });
-    if (!updated) return null;
     if (isProviderQuotaWait) return updated;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -3376,6 +3449,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           status: "blocked",
           blockedByIssueIds: blockerIds,
           assigneeAgentId: recoveryAction.ownerAgentId,
+          expectedCheckoutRunId: null,
+          expectedExecutionRunId: null,
         });
         if (reblocked) return reblocked;
       }
@@ -3612,7 +3687,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
-        const updated = await escalateStrandedRecoveryIssueInPlace({
+        const updated = await escalateStrandedAssignedIssue({
           issue,
           previousStatus: issue.status as StrandedPreviousStatus,
           latestRun,
