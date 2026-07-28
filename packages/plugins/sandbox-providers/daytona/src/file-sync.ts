@@ -211,19 +211,7 @@ async function assertSandboxCommandOk(
   timeoutSeconds: number,
   label: string,
 ): Promise<void> {
-  const result = await (sandbox.process.executeCommand as unknown as (
-    command: string,
-    cwd: string | undefined,
-    env: Record<string, string> | undefined,
-    timeoutSeconds: number,
-    options?: { noProfile?: boolean },
-  ) => Promise<{ exitCode: number | null; result?: unknown; artifacts?: { stdout?: unknown } }>)(
-    command,
-    undefined,
-    undefined,
-    timeoutSeconds,
-    { noProfile: true },
-  );
+  const result = await sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds);
   if ((result.exitCode ?? 1) !== 0) {
     const detail = (result.result ?? result.artifacts?.stdout ?? "").toString().trim();
     throw new Error(`Daytona ${label} command failed (exit ${result.exitCode ?? "unknown"})${detail ? `: ${detail}` : ""}`);
@@ -362,13 +350,9 @@ async function removeSandboxScratch(
 ): Promise<void> {
   if (paths.length === 0) return;
   const script = paths.map((entry) => `rm -f ${shellQuote(entry)}`).join(" ; ");
-  await (sandbox.process.executeCommand as unknown as (
-    command: string,
-    cwd: string | undefined,
-    env: Record<string, string> | undefined,
-    timeoutSeconds: number,
-    options?: { noProfile?: boolean },
-  ) => Promise<unknown>)(`sh -c ${shellQuote(script)}`, undefined, undefined, timeoutSeconds, { noProfile: true }).catch(() => undefined);
+  await sandbox.process
+    .executeCommand(`sh -c ${shellQuote(script)}`, undefined, undefined, timeoutSeconds)
+    .catch(() => undefined);
 }
 
 // ---------------------------------------------------------------------------

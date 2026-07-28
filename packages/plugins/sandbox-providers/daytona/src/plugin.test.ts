@@ -1307,6 +1307,96 @@ describe("Daytona sandbox provider plugin", () => {
     expect(result?.stderr).toMatch(/unreachable|credentials/i);
   });
 
+  // ─── No-profile fast path (A2) ─────────────────────────────────────────────
+  // The opt-in `noProfile` flag sheds the ~600 ms login-shell profile/nvm
+  // sourcing for command classes whose binary resolves on the default PATH
+  // (file-sync `tar`/`base64`/`mkdir`/`mv`), while every other exec surface
+  // (env prefix, cwd, quoting, stdin, durationMs) is preserved byte-for-byte.
+  it("test_no_profile_fast_path_omits_profile_sourcing", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "tar",
+      args: ["-xf", "/workspace/upload.tar", "-C", "/workspace"],
+      cwd: "/workspace",
+      noProfile: true,
+      timeoutMs: 1000,
+    });
+
+    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
+    expect(command).not.toMatch(/\/etc\/profile/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    expect(command).not.toMatch(/NVM_DIR/);
+    expect(command).not.toMatch(/\.bash_profile/);
+  });
+
+  it("test_no_profile_fast_path_preserves_env_cwd_and_duration", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.process.executeCommand.mockResolvedValue({
+      exitCode: 0,
+      result: "ok",
+      artifacts: { stdout: "ok" },
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    const result = await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "base64",
+      args: ["-d"],
+      cwd: "/workspace",
+      env: { FOO: "bar" },
+      noProfile: true,
+      timeoutMs: 1000,
+    });
+
+    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
+    // The full exec surface is preserved on the fast path — only profile sourcing
+    // is dropped. The command must still start with the `cd` (no profile lines
+    // ahead of it) and carry the env prefix and noninteractive git defaults.
+    expect(command).toMatch(/^cd '\/workspace' && env /);
+    expect(command).toMatch(/GIT_TERMINAL_PROMPT='0'/);
+    expect(command).toMatch(/FOO='bar' 'base64' '-d'$/);
+    expect(command).not.toMatch(/\/etc\/profile/);
+    // durationMs attribution is unchanged on the fast path.
+    expect(typeof (result!.metadata as Record<string, unknown>)?.durationMs).toBe("number");
+  });
+
+  it("test_default_path_still_sources_profile", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    // No `noProfile` flag: the fail-safe default must still source the login
+    // profile so node-launching execs resolve their nvm/profile PATH.
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "node",
+      args: ["--version"],
+      cwd: "/workspace",
+      timeoutMs: 1000,
+    });
+
+    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
+    expect(command).toMatch(/\/etc\/profile/);
+    expect(command).toMatch(/nvm\.sh/);
+  });
+
   // ─── Per-lease started-sandbox handle cache ────────────────────────────────
   // These prove the security conditions: single-fetch-per-lease, strict
   // composite-key isolation (no cross-lease / cross-company / cross-env reuse),
@@ -2154,7 +2244,6 @@ describe("daytona native file-sync hooks", () => {
     const secretTemp = permPath;
     const mvCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("mv -f"));
     expect(mvCall).toBeDefined();
-    expect(mvCall?.[4]).toEqual({ noProfile: true });
     const mvCommand = String(mvCall?.[0]);
     // TOCTOU-hardened rename: each promotion re-canonicalizes the target's parent
     // dir, confirms it is still confined, OPENS that dir as fd 8, re-verifies the
@@ -2239,17 +2328,14 @@ describe("daytona native file-sync hooks", () => {
         !String(cmd).includes("tar -xf"),
     );
     expect(mkdirCall).toBeDefined();
-    expect(mkdirCall?.[4]).toEqual({ noProfile: true });
     // The realpath symlink-escape guard runs on the target before extraction.
     const inboundGuardCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) =>
       String(cmd).includes("_pc_resolve"),
     );
     expect(inboundGuardCall).toBeDefined();
-    expect(inboundGuardCall?.[4]).toEqual({ noProfile: true });
 
     const extractCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("tar -xf"));
     expect(extractCall).toBeDefined();
-    expect(extractCall?.[4]).toEqual({ noProfile: true });
     const extractCommand = String(extractCall?.[0]);
     // The extract binds validation and extraction into one sandbox invocation: it
     // re-canonicalizes the target, opens the resolved dir as fd 9, re-verifies the
