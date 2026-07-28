@@ -252,8 +252,10 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
   it("prevents a stale worker from publishing after another worker reclaims the lease", async () => {
     const seed = await seedIssue();
     const storage = createMockStorage();
-    const serviceA = createIssueImageGenerationJobService(db, storage, { leaseMs: 1_200, scheduleOnEnqueue: false });
-    const serviceB = createIssueImageGenerationJobService(db, storage, { leaseMs: 1_200, scheduleOnEnqueue: false });
+    // Keep the test lease below the worker's 1s heartbeat floor so service B
+    // can reclaim before service A renews the stalled provider call.
+    const serviceA = createIssueImageGenerationJobService(db, storage, { leaseMs: 300, scheduleOnEnqueue: false });
+    const serviceB = createIssueImageGenerationJobService(db, storage, { leaseMs: 300, scheduleOnEnqueue: false });
     const first = deferred<{
       outputBytes: Buffer;
       endpoint: string;
@@ -277,7 +279,7 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
     const job = await serviceA.enqueue(buildEnqueueInput(seed));
     const firstTick = serviceA.tick();
     await vi.waitFor(() => expect(mockGenerateCodexIssueImage).toHaveBeenCalledTimes(1));
-    await wait(1_350);
+    await wait(600);
     await serviceB.tick();
     first.resolve({
       outputBytes: pngBytes,
