@@ -17,7 +17,7 @@ const execFile = promisify(execFileCallback);
 
 interface SpawnRunnerHandle {
   runner: CommandManagedRuntimeRunner;
-  calls: Array<{ command: string; args?: string[]; cwd?: string; stdin?: string }>;
+  calls: Array<{ command: string; args?: string[]; cwd?: string; stdin?: string; noProfile?: boolean }>;
 }
 
 // A runner that actually executes the shell scripts (piping stdin through a real
@@ -27,12 +27,18 @@ function makeSpawnRunner(options: {
   supportsSingleStreamStdinProgress?: boolean;
   maxStdoutBytes?: number;
 } = {}): SpawnRunnerHandle {
-  const calls: Array<{ command: string; args?: string[]; cwd?: string; stdin?: string }> = [];
+  const calls: Array<{ command: string; args?: string[]; cwd?: string; stdin?: string; noProfile?: boolean }> = [];
   const runner: CommandManagedRuntimeRunner = {
     supportsSingleStreamStdinProgress: options.supportsSingleStreamStdinProgress,
     execute: async (input) =>
       await new Promise<RunProcessResult>((resolve) => {
-        calls.push({ command: input.command, args: input.args, cwd: input.cwd, stdin: input.stdin });
+        calls.push({
+          command: input.command,
+          args: input.args,
+          cwd: input.cwd,
+          stdin: input.stdin,
+          noProfile: input.noProfile,
+        });
         const startedAt = new Date().toISOString();
         const command =
           input.command === "sh" ? "/bin/sh" : input.command === "bash" ? "/bin/bash" : input.command;
@@ -147,6 +153,7 @@ describe("command managed runtime", () => {
       env?: Record<string, string>;
       stdin?: string;
       timeoutMs?: number;
+      noProfile?: boolean;
     }> = [];
     const runner = {
       execute: async (input: {
@@ -156,6 +163,7 @@ describe("command managed runtime", () => {
         env?: Record<string, string>;
         stdin?: string;
         timeoutMs?: number;
+        noProfile?: boolean;
       }): Promise<RunProcessResult> => {
         calls.push({ ...input });
         const startedAt = new Date().toISOString();
@@ -228,6 +236,7 @@ describe("command managed runtime", () => {
     // The single-stream upload pipes the tarball through exactly one stdin-backed
     // process (the speed fix); nothing else streams stdin.
     expect(calls.filter((call) => call.stdin != null).length).toBe(1);
+    expect(calls.some((call) => call.noProfile === true)).toBe(true);
 
     await mkdir(path.join(remoteWorkspaceDir, ".paperclip-runtime"), { recursive: true });
     await writeFile(path.join(remoteWorkspaceDir, "README.md"), "remote workspace\n", "utf8");
@@ -242,6 +251,7 @@ describe("command managed runtime", () => {
     // Restore streams the download through `base64`/onLog (no stdin), so the only
     // stdin-backed call remains the single upload from prepare.
     expect(calls.filter((call) => call.stdin != null).length).toBe(1);
+    expect(calls.some((call) => call.noProfile === true)).toBe(true);
   });
 
   it("stages runtime assets without replacing or restoring an in-place workspace", async () => {
