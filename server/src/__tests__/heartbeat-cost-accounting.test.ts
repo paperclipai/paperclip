@@ -43,4 +43,25 @@ describe("heartbeat cost accounting", () => {
       cacheAdjustedCostUsd: Number.NaN,
     })).toBeNull();
   });
+
+  it("prices a run that only reports a cache-adjusted cost", () => {
+    const billedCostUsd = resolveCacheAdjustedCostUsd({
+      costUsd: null,
+      cacheAdjustedCostUsd: 0.42,
+    });
+    expect(billedCostUsd).toBe(0.42);
+    expect(resolveLedgerCostStatus({
+      costUsd: billedCostUsd,
+      inputTokens: 1_000,
+      cachedInputTokens: 900_000,
+      outputTokens: 5_000,
+    })).toBe("reported");
+  });
+
+  it("bills the discounted amount when both nominal and cache-adjusted costs are reported", () => {
+    expect(resolveCacheAdjustedCostUsd({
+      costUsd: 3.1,
+      cacheAdjustedCostUsd: 1.5,
+    })).toBe(1.5);
+  });
 });

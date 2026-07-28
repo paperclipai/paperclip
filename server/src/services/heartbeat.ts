@@ -12490,10 +12490,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    const billedCostUsd = resolveCacheAdjustedCostUsd(result);
+    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
-      costUsd: result.costUsd,
+      costUsd: billedCostUsd,
       inputTokens,
       cachedInputTokens,
       outputTokens,
@@ -14777,7 +14778,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               ...(cacheAdjustedCostUsd != null ? { cacheAdjustedCostUsd } : {}),
               costStatus: resolveLedgerCostStatus({
-                costUsd: adapterResult.costUsd,
+                costUsd: cacheAdjustedCostUsd,
                 inputTokens: normalizedUsage?.inputTokens ?? 0,
                 cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
                 outputTokens: normalizedUsage?.outputTokens ?? 0,
