@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 
 const {
   runChildProcess,
@@ -12,7 +13,7 @@ const {
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async () => ({
+  runChildProcess: vi.fn(async (): Promise<RunProcessResult> => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -169,9 +170,13 @@ describe("claude remote execution", () => {
       localDir: workspaceDir,
       remoteDir: managedRemoteWorkspace,
     }));
-    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
+    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`,
+      followSymlinks: true,
+    }));
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/mcp-config`,
       followSymlinks: true,
     }));
     expect(runChildProcess).toHaveBeenCalledTimes(1);
@@ -355,10 +360,13 @@ describe("claude remote execution", () => {
       pid: 124,
       startedAt: new Date().toISOString(),
       terminalResultCleanup: {
-        status: "terminated",
-        pid: 999,
+        kind: "terminal_result_cleanup",
+        stopped: true,
+        stopReason: "unmanaged_background_task_stopped",
+        reason: "unmanaged background task stopped; no durable live path",
+        terminalResultSeen: true,
         signal: "SIGTERM",
-        graceMs: 5000,
+        forceKilled: false,
       },
     });
 
@@ -416,10 +424,13 @@ describe("claude remote execution", () => {
       is_error: false,
       terminal_reason: "completed",
       unmanagedBackgroundTask: {
-        status: "terminated",
-        pid: 999,
+        kind: "terminal_result_cleanup",
+        stopped: true,
+        stopReason: "unmanaged_background_task_stopped",
+        reason: "unmanaged background task stopped; no durable live path",
+        terminalResultSeen: true,
         signal: "SIGTERM",
-        graceMs: 5000,
+        forceKilled: false,
       },
     });
   });
