@@ -1384,6 +1384,58 @@ describeEmbeddedPostgres("productivity review service", () => {
       expect(markers.some((row) => (row.details as Record<string, unknown>)?.wakeDelivered === true)).toBe(true);
     });
 
+    // A wake can be persisted and then dropped. Reading the row's existence as proof of delivery
+    // would close the recovery cycle on a wake that never produced a run.
+    it("re-wakes when the recorded wake was skipped rather than delivered", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const emptyRepo = createEmptyRepoPath();
+      const { repoPath } = createRepoWithCommit({
+        subject: "feat(aur1370): deliverable landed",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+      const wakes: string[] = [];
+      const service = (dir: string) =>
+        productivityReviewService(db, {
+          resolveAgentWorkspaceDir: () => dir,
+          enqueueWakeup: (async (agentId: string) => {
+            wakes.push(agentId);
+            return { id: "wake" };
+          }) as never,
+        });
+
+      await service(emptyRepo).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+      const [review] = await listProductivityReviews(seeded.companyId);
+      await db.update(issues).set({
+        title: "Report and close finished work on AUR-1370",
+        description: "- Classification: `unreported_completion`",
+        assigneeAgentId: seeded.coderId,
+      }).where(eq(issues.id, review!.id));
+      await db.insert(activityLog).values({
+        companyId: seeded.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_updated",
+        entityType: "issue",
+        entityId: review!.id,
+        details: { reclassifiedFrom: "stall", reclassificationId: "cycle-7", wakeDelivered: false },
+      });
+      await db.insert(agentWakeupRequests).values({
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        source: "assignment",
+        status: "skipped",
+        idempotencyKey: "productivity-review-reclassify:cycle-7",
+      });
+      wakes.length = 0;
+
+      await service(repoPath).reconcileProductivityReviews({
+        now: new Date(now.getTime() + 60_000),
+        companyId: seeded.companyId,
+      });
+
+      expect(wakes).toEqual([seeded.coderId]);
+    });
+
     // Confirming delivery with no owner would record a wake that never happened and close the retry
     // path for good, leaving finished work under an instruction nobody was given.
     it("rolls back rather than confirming a reclassification with no invokable owner", async () => {

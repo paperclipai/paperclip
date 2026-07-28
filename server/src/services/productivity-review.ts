@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
@@ -53,6 +53,12 @@ const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
 /** What an `unreported_completion` review states about itself; read back to detect reclassification. */
 const UNREPORTED_COMPLETION_MARKER = "Classification: `unreported_completion`";
+/**
+ * Wakeup-request states that mean the wake will still reach the agent, or already did. A request
+ * that was `skipped`, `cancelled` or `failed` was persisted but never ran, so it must not be read
+ * as proof of delivery.
+ */
+const DELIVERED_WAKEUP_STATUSES = ["queued", "claimed", "deferred_issue_execution", "coalesced"];
 
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
@@ -979,6 +985,12 @@ export function productivityReviewService(
     // resumed cycle the row is looked up here instead: if the interrupted attempt's wake already
     // landed, the work is already queued and re-enqueuing would produce a second
     // report-and-close run.
+    //
+    // The mere existence of the row is not enough — a wake can be persisted and then dropped
+    // (`skipped`, `cancelled`, `failed`), which triggers no run at all. So delivery is claimed only
+    // for a row that is still live, was coalesced into another wake, or already produced a run.
+    // The bias is deliberate: an unrecognised state re-wakes, which costs at worst a duplicate the
+    // agent no-ops on, whereas guessing "delivered" strands finished work for good.
     const alreadyWoken = resumeReclassificationId
       ? await db
         .select({ id: agentWakeupRequests.id })
@@ -986,6 +998,10 @@ export function productivityReviewService(
         .where(and(
           eq(agentWakeupRequests.companyId, evidence.sourceIssue.companyId),
           eq(agentWakeupRequests.idempotencyKey, wakeIdempotencyKey),
+          or(
+            sql`${agentWakeupRequests.runId} is not null`,
+            inArray(agentWakeupRequests.status, DELIVERED_WAKEUP_STATUSES),
+          ),
         ))
         .limit(1)
         .then((rows) => rows.length > 0)
