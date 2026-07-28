@@ -574,6 +574,87 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("does not let responsible-user unsupported-action decisions veto peer issue comments", async () => {
+    const company = await createCompany(db, "ResponsibleUserIssueCommentNoVeto");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const peerAgent = await createAgent(db, company.id, { role: "qa" });
+    const issue = await createIssue(db, company.id, {
+      title: "Peer-owned unmentioned issue",
+      status: "in_progress",
+      assigneeAgentId: ownerAgent.id,
+    });
+    const responsibleUserId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: peerAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: ownerAgent.id,
+        status: issue.status,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_company_agent",
+    });
+  });
+
+  it("keeps viewer responsible users from authorizing unsupported peer issue comments", async () => {
+    const company = await createCompany(db, "ResponsibleUserIssueCommentViewerDenied");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const peerAgent = await createAgent(db, company.id, { role: "qa" });
+    const issue = await createIssue(db, company.id, {
+      title: "Peer-owned comment for viewer-restricted check",
+      status: "in_progress",
+      assigneeAgentId: ownerAgent.id,
+    });
+    const responsibleUserId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: peerAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: ownerAgent.id,
+        status: issue.status,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAUTHORIZED",
+      reason: "deny_unsupported_action",
+    });
+  });
+
   it("keeps responsible-user issue mutations denied for viewer memberships", async () => {
     const company = await createCompany(db, "ResponsibleUserIssueViewerDenied");
     const actorAgent = await createAgent(db, company.id, { role: "engineer" });
