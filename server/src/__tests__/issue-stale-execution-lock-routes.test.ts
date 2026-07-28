@@ -505,6 +505,31 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         conflictReason: "actor_run_holds_lock",
       });
     });
+
+    // The caller's own run is the holder *and* has already been ended (watchdog
+    // cancel, with the process still alive and calling the API). The lock is
+    // technically stale, but `stale_lock_pending_reap` would tell an already-dead
+    // run to retry and reclaim the issue, so the reason stays
+    // `actor_run_holds_lock` and the hint carries the liveness fact instead.
+    it("tells the caller its own run has ended instead of advising a retry", async () => {
+      const { agentId, failedRunId } = await seedCompanyAgentAndRuns();
+
+      const details = await describeRunLockConflict(db, {
+        checkoutRunId: failedRunId,
+        executionRunId: failedRunId,
+        actorAgentId: agentId,
+        actorRunId: failedRunId,
+      });
+
+      expect(details).toMatchObject({
+        holderRunId: failedRunId,
+        holderRunStatus: "failed",
+        holderRunIsLive: false,
+        conflictReason: "actor_run_holds_lock",
+      });
+      expect(details.hint).toContain("no longer live");
+      expect(details.hint).not.toContain("Retry");
+    });
   });
 
   it("preserves live checkout ownership on checkout conflicts without retry side effects", async () => {

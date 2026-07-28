@@ -1092,7 +1092,8 @@ export async function heartbeatRunIsTerminalOrMissing(
  *   caller's *own* run is terminal (watchdog-cancelled but still able to call the
  *   API), classifying that as `stale_lock_pending_reap` would hand a dead run the
  *   "retry once" advice below. `holderRunStatus` / `holderRunIsLive` still carry
- *   the liveness fact for callers that need it.
+ *   the liveness fact, and the hint switches to `ACTOR_RUN_TERMINAL_HINT` so the
+ *   caller is told its own run has ended rather than being left to infer it.
  * - `stale_lock_pending_reap` — the holding run is terminal or missing. The lock
  *   is cleared automatically on the next assignee checkout/PATCH, which makes this
  *   the one reason the docs allow retrying — once, and only as the assignee.
@@ -1122,7 +1123,7 @@ const RUN_LOCK_CONFLICT_HINTS: Record<RunLockConflictReason, string> = {
   no_run_lock:
     "No run holds this issue, so the conflict comes from the issue status/assignee guard rather than a run lock. Re-read the current issue state instead of retrying.",
   actor_run_holds_lock:
-    "Your own run already holds this issue's lock, so ownership is not what rejected this call. Re-read the current issue state — and holderRunStatus, in case your own run has already been ended — instead of retrying.",
+    "Your own run already holds this issue's lock, so ownership is not what rejected this call. Re-read the current issue state instead of retrying.",
   stale_lock_pending_reap:
     "The holding run has ended, so this lock is stale and is reaped automatically on the assignee's next checkout or PATCH. Retry that same call once rather than forcing or routing around the lock.",
   live_sibling_run:
@@ -1130,6 +1131,17 @@ const RUN_LOCK_CONFLICT_HINTS: Record<RunLockConflictReason, string> = {
   live_other_agent_run:
     "A live run of another agent is working this issue. Do not retry — the holding run owns it until it ends or releases the issue.",
 };
+
+/**
+ * `actor_run_holds_lock` where the caller's *own* run is already terminal.
+ *
+ * The lock is technically stale, but the caller is that dead run, so the
+ * stale_lock_pending_reap advice ("retry once to reap it") is exactly wrong here:
+ * a run the platform has already ended should stop, not reclaim the issue. The
+ * hint names the caller's own status instead of leaving it to be inferred.
+ */
+const ACTOR_RUN_TERMINAL_HINT =
+  "Your own run holds this issue's lock, but your run is no longer live (see holderRunStatus) — it has already been ended. Do not retry to reclaim the issue: end this run and let the lock be reaped on the assignee's next checkout or PATCH.";
 
 /**
  * Resolves who actually holds an issue's run lock and whether that holder is still
@@ -1157,7 +1169,10 @@ export async function describeRunLockConflict(
     holderRunAgentId: holder.agentId,
     holderRunIsLive: holder.isLive,
     conflictReason: reason,
-    hint: RUN_LOCK_CONFLICT_HINTS[reason],
+    hint:
+      reason === "actor_run_holds_lock" && !holder.isLive
+        ? ACTOR_RUN_TERMINAL_HINT
+        : RUN_LOCK_CONFLICT_HINTS[reason],
   });
 
   if (!holderRunId) {

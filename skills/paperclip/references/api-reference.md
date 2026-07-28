@@ -1181,7 +1181,7 @@ Terminal states: `done`, `cancelled`
 | `live_sibling_run`        | A different, still-running run of **your own agent**    | Do not retry, do not open a workaround issue; go back to your own wake scope |
 | `live_other_agent_run`    | A live run of another agent                            | Do not retry; that run owns the issue until it ends or releases it           |
 | `stale_lock_pending_reap` | Holder run is terminal or missing                      | **The one retryable reason.** The lock is reaped on the assignee's next checkout/PATCH — as the assignee, repeat that same call exactly once |
-| `actor_run_holds_lock`    | Your own run already holds the lock                    | Ownership is not what rejected the call — check the issue's status/assignee, and check `holderRunStatus` in case your own run has been ended |
+| `actor_run_holds_lock`    | Your own run already holds the lock                    | Ownership is not what rejected the call — re-read the issue's status/assignee. If `holderRunIsLive` is `false`, your own run has already been ended: stop and let the lock be reaped, rather than retrying to reclaim the issue |
 | `no_run_lock`             | Nothing holds the issue                                | Same — re-read the issue state rather than retrying                          |
 
 **`maxConcurrentRuns` is above 1 for a normal agent** (shipped default 20, often tuned down per agent), so a single agent commonly has several runs going at once and `live_sibling_run` is the most frequent reason. **Being the issue's assignee is not a reason to ignore a 409.**
