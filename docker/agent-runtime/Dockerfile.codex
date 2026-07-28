@@ -3,7 +3,8 @@ ARG BASE_TAG=dev
 FROM paperclipai/agent-runtime-base:${BASE_TAG}
 
 USER root
-RUN npm install -g @openai/codex@latest \
+RUN git config --system --add safe.directory /tmp \
+    && npm install -g @openai/codex@latest \
     && { chown -R 1000:1000 /usr/lib/node_modules || true; }
 
 USER 1000:1000
