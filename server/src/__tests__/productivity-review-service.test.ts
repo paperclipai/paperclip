@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueWorkProducts,
   issues,
 } from "@paperclipai/db";
 import {
@@ -904,14 +905,18 @@ describeEmbeddedPostgres("productivity review service", () => {
       expect(review?.description).toContain("Commits carrying the issue key: none");
     });
 
-    it("counts an issue document written after in_progress as a work trace", async () => {
-      const { seeded, now } = await seedUnreportedCompletionCase();
+    /** An empty repo, so only the artifact side of the counter-check is under test. */
+    function createEmptyRepoPath() {
       const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-work-trace-empty-"));
       tempRepos.push(repoPath);
+      return repoPath;
+    }
+
+    async function insertPlanningDocument(input: { companyId: string; issueId: string }) {
       const documentId = randomUUID();
       await db.insert(documents).values({
         id: documentId,
-        companyId: seeded.companyId,
+        companyId: input.companyId,
         title: "Plan",
         format: "markdown",
         latestBody: "# Plan",
@@ -919,10 +924,58 @@ describeEmbeddedPostgres("productivity review service", () => {
         updatedAt: new Date("2026-07-26T06:00:00.000Z"),
       });
       await db.insert(issueDocuments).values({
-        companyId: seeded.companyId,
-        issueId: seeded.issueId,
+        companyId: input.companyId,
+        issueId: input.issueId,
         documentId,
         key: "plan",
+        createdAt: new Date("2026-07-26T06:00:00.000Z"),
+        updatedAt: new Date("2026-07-26T06:00:00.000Z"),
+      });
+    }
+
+    // The protective direction: the agent that is genuinely stuck is the one that writes a plan
+    // first. If a plan counted as completion, the review would be routed back to that agent with
+    // reassign/decompose forbidden and the continuation hold released — an unrecoverable stall.
+    it("still reports a manager-owned stall when the only artifact is a planning document", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const repoPath = createEmptyRepoPath();
+      await insertPlanningDocument({ companyId: seeded.companyId, issueId: seeded.issueId });
+
+      await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.title).toBe("Review productivity for AUR-1370");
+      expect(review?.description).toContain("Classification: `stall`");
+      expect(review?.description).not.toContain("Classification: `unreported_completion`");
+      // The document is still reported — as progress, explicitly not as completion evidence.
+      expect(review?.description).toContain("Completed artifacts since `in_progress`: none");
+      expect(review?.description).toContain("issue_document");
+      expect(review?.description).toContain("started is not finished");
+      expect(review?.description).toContain("Manager Decision");
+      expect(review?.assigneeAgentId).toBe(seeded.managerId);
+
+      const [activity] = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "issue.productivity_review_created"));
+      expect((activity?.details as Record<string, unknown>)?.classification).toBe("stall");
+      expect((activity?.details as Record<string, unknown>)?.workTraceArtifactCount).toBe(1);
+      expect((activity?.details as Record<string, unknown>)?.workTraceCompletionArtifactCount).toBe(0);
+    });
+
+    // A draft work product is the same shape of false positive as the planning document.
+    it("still reports a stall when the only work product is still a draft", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const repoPath = createEmptyRepoPath();
+      await db.insert(issueWorkProducts).values({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        type: "document",
+        provider: "paperclip",
+        title: "Pricelist import notes",
+        status: "draft",
         createdAt: new Date("2026-07-26T06:00:00.000Z"),
         updatedAt: new Date("2026-07-26T06:00:00.000Z"),
       });
@@ -932,8 +985,400 @@ describeEmbeddedPostgres("productivity review service", () => {
       }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
 
       const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `stall`");
+      expect(review?.assigneeAgentId).toBe(seeded.managerId);
+    });
+
+    // The other direction: a non-code deliverable that the assignee itself declared finished is
+    // completion evidence even without a commit, so it must not be rebuilt by a reassign.
+    it("counts a work product handed to review as completion evidence", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const repoPath = createEmptyRepoPath();
+      // A planning document from the same episode must not dilute the completion evidence.
+      await insertPlanningDocument({ companyId: seeded.companyId, issueId: seeded.issueId });
+      await db.insert(issueWorkProducts).values({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        type: "document",
+        provider: "paperclip",
+        title: "Pricelist migration report",
+        status: "ready_for_review",
+        createdAt: new Date("2026-07-26T07:31:26.000Z"),
+        updatedAt: new Date("2026-07-26T07:31:26.000Z"),
+      });
+
+      await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.title).toBe("Report and close finished work on AUR-1370");
       expect(review?.description).toContain("Classification: `unreported_completion`");
-      expect(review?.description).toContain("issue_document");
+      expect(review?.description).toContain("document (ready_for_review): Pricelist migration report");
+      expect(review?.assigneeAgentId).toBe(seeded.coderId);
+
+      const [activity] = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "issue.productivity_review_created"));
+      expect((activity?.details as Record<string, unknown>)?.workTraceCompletionArtifactCount).toBe(1);
+    });
+
+    // A product created in an earlier episode and only moved into a completion status during this
+    // one is the same evidence as one created here — filtering on creation time alone hid the
+    // transition and sent finished work back down the stall path.
+    /** The audit row the work-product PATCH route writes; `changedKeys` is what the trace reads. */
+    async function logWorkProductUpdate(input: {
+      companyId: string;
+      issueId: string;
+      workProductId: string;
+      changedKeys: string[];
+      previousStatus?: string;
+      status?: string;
+      at: Date;
+    }) {
+      await db.insert(activityLog).values({
+        companyId: input.companyId,
+        actorType: "agent",
+        actorId: "test",
+        action: "issue.work_product_updated",
+        entityType: "issue",
+        entityId: input.issueId,
+        details: {
+          workProductId: input.workProductId,
+          changedKeys: [...input.changedKeys].sort(),
+          ...(input.previousStatus === undefined ? {} : { previousStatus: input.previousStatus }),
+          ...(input.status === undefined ? {} : { status: input.status }),
+        },
+        createdAt: input.at,
+      });
+    }
+
+    it("counts a work product created before in_progress but completed during it", async () => {
+      const { seeded, now, startedAt } = await seedUnreportedCompletionCase();
+      const repoPath = createEmptyRepoPath();
+      const transitionAt = new Date("2026-07-26T07:31:26.000Z");
+      const [product] = await db.insert(issueWorkProducts).values({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        type: "pull_request",
+        provider: "github",
+        title: "Pricelist addon",
+        status: "merged",
+        createdAt: new Date(startedAt.getTime() - 48 * 60 * 60 * 1000),
+        updatedAt: transitionAt,
+      }).returning();
+      await logWorkProductUpdate({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        workProductId: product!.id,
+        changedKeys: ["status"],
+        previousStatus: "active",
+        status: "merged",
+        at: transitionAt,
+      });
+
+      await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `unreported_completion`");
+      expect(review?.description).toContain("pull_request (merged): Pricelist addon");
+      // Listed at the transition, not at the creation two days before the episode.
+      expect(review?.description).toContain("2026-07-26T07:31:26.000Z");
+      expect(review?.assigneeAgentId).toBe(seeded.coderId);
+    });
+
+    // The boundary of the rule above: a completion that happened entirely before this episode is
+    // not evidence for it, or a long-merged product would permanently disarm stall recovery.
+    it("ignores a work product that was already complete before in_progress", async () => {
+      const { seeded, now, startedAt } = await seedUnreportedCompletionCase();
+      const repoPath = createEmptyRepoPath();
+      await db.insert(issueWorkProducts).values({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        type: "pull_request",
+        provider: "github",
+        title: "Work from a previous episode",
+        status: "merged",
+        createdAt: new Date(startedAt.getTime() - 48 * 60 * 60 * 1000),
+        updatedAt: new Date(startedAt.getTime() - 24 * 60 * 60 * 1000),
+      });
+
+      await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `stall`");
+      expect(review?.description).toContain("Completed artifacts since `in_progress`: none");
+      expect(review?.assigneeAgentId).toBe(seeded.managerId);
+    });
+
+    // `changedKeys` says *that* status changed, never what it changed into. Without the recorded
+    // previous status, a refinement between two completion states on work finished long before the
+    // episode would read as a completion inside it — stale evidence disarming stall recovery.
+    it("ignores a status change between two completion states on pre-episode work", async () => {
+      const { seeded, now, startedAt } = await seedUnreportedCompletionCase();
+      const repoPath = createEmptyRepoPath();
+      const refinedAt = new Date("2026-07-26T09:00:00.000Z");
+      const [product] = await db.insert(issueWorkProducts).values({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        type: "pull_request",
+        provider: "github",
+        title: "Approved in a previous episode",
+        status: "approved",
+        createdAt: new Date(startedAt.getTime() - 48 * 60 * 60 * 1000),
+        updatedAt: refinedAt,
+      }).returning();
+      await logWorkProductUpdate({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        workProductId: product!.id,
+        changedKeys: ["status"],
+        // Already complete before the episode; this only refined which completion state it is in.
+        previousStatus: "ready_for_review",
+        status: "approved",
+        at: refinedAt,
+      });
+
+      await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `stall`");
+      expect(review?.description).toContain("Completed artifacts since `in_progress`: none");
+      expect(review?.assigneeAgentId).toBe(seeded.managerId);
+    });
+
+    // Evidence can land after the review was written. Leaving the review as a manager-owned stall
+    // would keep "reassign / decompose" pointed at work that now demonstrably exists.
+    it("reclassifies an open stall review once completion evidence appears", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const emptyRepo = createEmptyRepoPath();
+      const service = (repoPath: string) =>
+        productivityReviewService(db, { resolveAgentWorkspaceDir: () => repoPath });
+
+      await service(emptyRepo).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+      const [stallReview] = await listProductivityReviews(seeded.companyId);
+      expect(stallReview?.title).toBe("Review productivity for AUR-1370");
+      expect(stallReview?.assigneeAgentId).toBe(seeded.managerId);
+
+      // The finished run's commit surfaces on a later reconcile pass.
+      const { repoPath, sha } = createRepoWithCommit({
+        subject: "feat(aur1370): deliverable landed after the stall review was written",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+      await service(repoPath).reconcileProductivityReviews({
+        now: new Date(now.getTime() + 60_000),
+        companyId: seeded.companyId,
+      });
+
+      const reviews = await listProductivityReviews(seeded.companyId);
+      // Rewritten in place, not duplicated.
+      expect(reviews).toHaveLength(1);
+      const [review] = reviews;
+      expect(review?.id).toBe(stallReview?.id);
+      expect(review?.title).toBe("Report and close finished work on AUR-1370");
+      expect(review?.description).toContain("Classification: `unreported_completion`");
+      expect(review?.description).toContain(sha.slice(0, 7));
+      expect(review?.description).toContain("Do **not** reassign, decompose, or restart");
+      expect(review?.description).not.toContain("Manager Decision");
+      // Ownership moves from the manager to the assignee, whose only loose end is the report.
+      expect(review?.assigneeAgentId).toBe(seeded.coderId);
+
+      const activity = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "issue.productivity_review_updated"));
+      expect(activity).toHaveLength(1);
+      expect((activity[0]?.details as Record<string, unknown>)?.reclassifiedFrom).toBe("stall");
+      expect((activity[0]?.details as Record<string, unknown>)?.previousAssigneeAgentId).toBe(seeded.managerId);
+    });
+
+    // The wake is about the instruction changing, not about ownership moving. A review that was
+    // already assigned to the source assignee has no other trigger to act on the new instruction.
+    it("wakes the assignee on reclassification even when ownership does not change", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const emptyRepo = createEmptyRepoPath();
+      const wakes: Array<{ agentId: string; classification: unknown }> = [];
+      const service = (repoPath: string) =>
+        productivityReviewService(db, {
+          resolveAgentWorkspaceDir: () => repoPath,
+          enqueueWakeup: async (agentId, wakeOpts) => {
+            wakes.push({
+              agentId,
+              classification: (wakeOpts?.payload as Record<string, unknown> | undefined)?.classification,
+            });
+            return null;
+          },
+        });
+
+      await service(emptyRepo).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+      const [stallReview] = await listProductivityReviews(seeded.companyId);
+      // Put the review in the shape the guard used to skip: already owned by the source assignee.
+      await db.update(issues).set({ assigneeAgentId: seeded.coderId }).where(eq(issues.id, stallReview!.id));
+      wakes.length = 0;
+
+      const { repoPath } = createRepoWithCommit({
+        subject: "feat(aur1370): deliverable landed",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+      await service(repoPath).reconcileProductivityReviews({
+        now: new Date(now.getTime() + 60_000),
+        companyId: seeded.companyId,
+      });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `unreported_completion`");
+      expect(wakes).toEqual([{ agentId: seeded.coderId, classification: "unreported_completion" }]);
+    });
+
+    // The transition lookup must not be capped: with a bounded "newest N status changes" list, a
+    // busy issue would push the one relevant transition out and produce the same false stall.
+    it("keeps a completion transition that is older than many later status changes", async () => {
+      const { seeded, now, startedAt } = await seedUnreportedCompletionCase();
+      const repoPath = createEmptyRepoPath();
+      const transitionAt = new Date("2026-07-26T06:00:00.000Z");
+      const [product] = await db.insert(issueWorkProducts).values({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        type: "pull_request",
+        provider: "github",
+        title: "Pricelist addon",
+        status: "merged",
+        createdAt: new Date(startedAt.getTime() - 48 * 60 * 60 * 1000),
+        updatedAt: transitionAt,
+      }).returning();
+      await logWorkProductUpdate({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        workProductId: product!.id,
+        changedKeys: ["status"],
+        previousStatus: "active",
+        status: "merged",
+        at: transitionAt,
+      });
+      // 40 later status changes on other products of the same issue — comfortably more than any
+      // reasonable cap on a "newest N events" lookup.
+      for (let index = 0; index < 40; index += 1) {
+        await logWorkProductUpdate({
+          companyId: seeded.companyId,
+          issueId: seeded.issueId,
+          workProductId: randomUUID(),
+          changedKeys: ["status"],
+          previousStatus: "active",
+          status: "merged",
+          at: new Date(transitionAt.getTime() + (index + 1) * 60_000),
+        });
+      }
+
+      await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `unreported_completion`");
+      expect(review?.description).toContain("pull_request (merged): Pricelist addon");
+      expect(review?.assigneeAgentId).toBe(seeded.coderId);
+    });
+
+    // The reason the membership test reads the recorded `changedKeys` instead of `updatedAt`:
+    // a title fix on a long-merged product bumps `updatedAt` exactly like a completion would, and
+    // treating that as fresh evidence would disarm stall recovery for a genuinely stuck agent.
+    it("ignores a completed work product that was only edited, not re-completed, during the episode", async () => {
+      const { seeded, now, startedAt } = await seedUnreportedCompletionCase();
+      const repoPath = createEmptyRepoPath();
+      const editedAt = new Date("2026-07-26T09:00:00.000Z");
+      const [product] = await db.insert(issueWorkProducts).values({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        type: "pull_request",
+        provider: "github",
+        title: "Merged in a previous episode",
+        status: "merged",
+        createdAt: new Date(startedAt.getTime() - 48 * 60 * 60 * 1000),
+        // Touched inside the episode — but by a title correction, not by a status change.
+        updatedAt: editedAt,
+      }).returning();
+      await logWorkProductUpdate({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        workProductId: product!.id,
+        changedKeys: ["title"],
+        at: editedAt,
+      });
+
+      await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `stall`");
+      expect(review?.description).toContain("Completed artifacts since `in_progress`: none");
+      expect(review?.assigneeAgentId).toBe(seeded.managerId);
+    });
+
+    // The artifact list is capped in SQL. If the cap were applied by creation date alone, a burst
+    // of newer drafts would push the one completed product out of the result set and the finished
+    // work would be routed through the manager-owned stall path again.
+    it("keeps completion evidence that is older than a full page of in-flight artifacts", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const repoPath = createEmptyRepoPath();
+      await db.insert(issueWorkProducts).values({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        type: "document",
+        provider: "paperclip",
+        title: "Pricelist migration report",
+        status: "ready_for_review",
+        createdAt: new Date("2026-07-26T06:00:00.000Z"),
+        updatedAt: new Date("2026-07-26T06:00:00.000Z"),
+      });
+      // WORK_TRACE_MAX_ARTIFACTS newer drafts, i.e. exactly enough to fill the cap on their own.
+      await db.insert(issueWorkProducts).values(
+        Array.from({ length: 5 }, (_unused, index) => ({
+          companyId: seeded.companyId,
+          issueId: seeded.issueId,
+          type: "document",
+          provider: "paperclip",
+          title: `Scratch note ${index + 1}`,
+          status: "draft",
+          createdAt: new Date(Date.UTC(2026, 6, 26, 8 + index, 0, 0)),
+          updatedAt: new Date(Date.UTC(2026, 6, 26, 8 + index, 0, 0)),
+        })),
+      );
+
+      await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `unreported_completion`");
+      expect(review?.description).toContain("document (ready_for_review): Pricelist migration report");
+      expect(review?.assigneeAgentId).toBe(seeded.coderId);
+    });
+
+    // Greptile P1 on #10348: the suffix was bounded, the prefix was not, so a neighbouring
+    // project's key ending in the reviewed key read as evidence.
+    it("still reports a stall when a longer identifier merely ends in the issue key", async () => {
+      const { seeded, now } = await seedUnreportedCompletionCase();
+      const { repoPath } = createRepoWithCommit({
+        subject: "feat(BAUR-1370): neighbouring project key, not this issue",
+        committedAt: "2026-07-26T07:31:26+02:00",
+      });
+
+      await productivityReviewService(db, {
+        resolveAgentWorkspaceDir: () => repoPath,
+      }).reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+      const [review] = await listProductivityReviews(seeded.companyId);
+      expect(review?.description).toContain("Classification: `stall`");
+      expect(review?.description).toContain("Commits carrying the issue key: none");
+      expect(review?.assigneeAgentId).toBe(seeded.managerId);
     });
 
     it("does not hold the assignee's continuation when the work already exists", async () => {
@@ -969,15 +1414,22 @@ describeEmbeddedPostgres("productivity review service", () => {
       expect(hold.held).toBe(false);
     });
 
-    it("matches compact and dashed issue keys without matching a longer number", () => {
+    it("matches compact and dashed issue keys, bounded on both sides", () => {
       const pattern = buildCommitGrepPattern("AUR-1370");
-      expect(pattern).toBe("AUR[-_ ]?1370([^0-9]|$)");
+      expect(pattern).toBe("(^|[^0-9A-Za-z])AUR[-_ ]?1370([^0-9]|$)");
       const regex = new RegExp(pattern!, "i");
       expect(regex.test("feat(aur1370): addon")).toBe(true);
       expect(regex.test("fix AUR-1370 rollout")).toBe(true);
       expect(regex.test("fix AUR 1370 rollout")).toBe(true);
+      expect(regex.test("AUR-1370 at the very start")).toBe(true);
+      expect(regex.test("subject\nAUR-1370 in the body")).toBe(true);
+      // Suffix boundary: a longer number is a different issue.
       expect(regex.test("fix AUR-13700 rollout")).toBe(false);
       expect(regex.test("fix AUR-1371 rollout")).toBe(false);
+      // Prefix boundary: a longer identifier ending in the key is a different issue.
+      expect(regex.test("fix BAUR-1370 rollout")).toBe(false);
+      expect(regex.test("fix XAUR1370 rollout")).toBe(false);
+      expect(regex.test("fix 9AUR-1370 rollout")).toBe(false);
       expect(buildCommitGrepPattern("not an identifier")).toBeNull();
       expect(buildCommitGrepPattern(null)).toBeNull();
     });

@@ -576,15 +576,24 @@ Productivity-review triggers (`no_comment_streak`, `long_active_duration`, `high
 
 Before a triggered review is written, Paperclip therefore runs a work-trace counter-check over everything that landed since the issue entered `in_progress`:
 
-- commits in the issue's execution workspace, or in the assignee's default agent workspace, whose message carries the issue key (`AUR-1370`, `aur1370`, `aur_1370`, `aur 1370` — but not `AUR-13700`)
+- commits in the issue's execution workspace, or in the assignee's default agent workspace, whose message carries the issue key (`AUR-1370`, `aur1370`, `aur_1370`, `aur 1370` — but neither `AUR-13700` nor another project's `BAUR-1370`; the key is bounded on both sides)
 - artifacts recorded against the issue: work products, attachments, issue documents
+
+Not every artifact is proof of completion, and the distinction decides the classification:
+
+- **Completion evidence** — a matching commit, or a work product whose status is `ready_for_review`, `approved` or `merged`. Those states are reachable only by a deliberate act declaring the artifact finished or handed to a reviewer. A product created in an *earlier* episode counts too, but only if the activity log records, within this episode, a status change whose *resulting* status is a completion status and whose *previous* status was not: the completion transition is the evidence, not the creation. `updatedAt` is deliberately not used for this — it advances on any edit, so a title fix on a long-merged product would be indistinguishable from a completion that just happened. Nor is "status changed" enough on its own: a refinement from `ready_for_review` to `approved` on work finished long ago is not a completion inside this episode. Either way a stale artifact could otherwise permanently disarm stall recovery.
+- **Progress only** — issue documents (plans, notes, continuation summaries), raw attachments, and work products still in `draft`/`active`/`failed`/`archived`. They are listed in the review for context and never change the classification.
+
+The asymmetry is the safety argument of the whole counter-check. A genuinely stalled agent's *first* act is typically to write a planning document or open a draft. If those counted as proof of completion, the agent that is actually stuck would be the one classified `unreported_completion` — review routed back to itself, reassign/decompose forbidden, continuation hold released — and the stall would become unrecoverable, i.e. worse than having no counter-check at all. Requiring completion-shaped evidence means every ambiguous case falls back to `stall`, which is precisely the manager-owned behaviour that existed before.
 
 The counter-check produces a classification, which the review issue states explicitly:
 
-- `stall` — no commits and no artifacts. The review keeps the existing manager-owned shape and the existing decision menu (close as productive, snooze, decompose, reroute, block, stop).
+- `stall` — no commits and no completion evidence. The review keeps the existing manager-owned shape and the existing decision menu (close as productive, snooze, decompose, reroute, block, stop). Any progress-only artifacts found are named in the trigger reasons, so the manager sees that started is not finished.
 - `unreported_completion` — work exists, only the report/close is missing. The review is titled `Report and close finished work on <issue>`, is assigned to the **source assignee** rather than a manager, lists the commits/artifacts it found and the assignee's last failed run as the cause, and explicitly forbids reassign/decompose/restart — those would rebuild finished work. An `unreported_completion` never holds the assignee's bounded continuation, because reporting and closing is exactly the action that must be allowed to run.
 
-The counter-check only widens the evidence base; it never suppresses a review. An issue with no work trace is still reported as a stall.
+The counter-check only widens the evidence base; it never suppresses a review. An issue with no completion evidence is still reported as a stall, with the same owner and the same decision menu as before.
+
+Evidence can also arrive *after* a review was written — the run that finished the work commits, then dies, and a stall review already exists. On the next reconcile pass, an open `stall` review whose issue now has completion evidence is rewritten in place: new title and body, priority lowered, reassigned from the manager to the source assignee, and the assignee woken. Otherwise a manager would keep owning a review whose decision menu says reassign/decompose against work that demonstrably exists. This runs before the refresh-comment throttle, which is there to limit comment spam rather than to defer a wrong instruction. The reverse direction is deliberately *not* automatic: if evidence disappears, handing the review back to a manager with the destructive actions re-enabled is a call for a human reading the refresh comment.
 
 ## 11. Task Watchdog for Issue Trees
 

@@ -23,8 +23,10 @@ import {
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
 import {
   collectIssueWorkTrace,
-  hasWorkTrace,
+  completionArtifacts,
+  hasCompletionEvidence,
   type IssueWorkTrace,
+  progressOnlyArtifacts,
   toWorkTraceIssue,
 } from "./productivity-review-work-trace.js";
 
@@ -47,15 +49,20 @@ const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
+/** What an `unreported_completion` review states about itself; read back to detect reclassification. */
+const UNREPORTED_COMPLETION_MARKER = "Classification: `unreported_completion`";
 
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
 /**
- * `stall` — no demonstrable work since the issue went `in_progress`.
- * `unreported_completion` — work exists (commits carrying the issue key, or artifacts), only the
- * report/close is missing. Reassign/decompose would rebuild finished work, so it is never advised.
+ * `stall` — no evidence that the deliverable is finished since the issue went `in_progress`. This
+ * is the fallback: planning documents, attachments and in-flight work products land here, because
+ * a stuck agent produces exactly those.
+ * `unreported_completion` — the deliverable demonstrably exists (a commit carrying the issue key,
+ * or a work product the assignee moved into a completion status), only the report/close is
+ * missing. Reassign/decompose would rebuild finished work, so it is never advised.
  */
 export type ProductivityReviewClassification = "stall" | "unreported_completion";
 
@@ -572,7 +579,7 @@ export function productivityReviewService(
       agentId: sourceAgent.id,
       resolveAgentWorkspaceDir: deps?.resolveAgentWorkspaceDir,
     });
-    const classification: ProductivityReviewClassification = hasWorkTrace(workTrace)
+    const classification: ProductivityReviewClassification = hasCompletionEvidence(workTrace)
       ? "unreported_completion"
       : "stall";
     const lastFailedRun = latestRuns.find((run) =>
@@ -590,7 +597,17 @@ export function productivityReviewService(
 
     if (classification === "unreported_completion") {
       triggerReasons.push(
-        `work-trace counter-check found ${workTrace.commits.length} matching commit(s) and ${workTrace.artifacts.length} artifact(s) since ${workTrace.since.toISOString()} — the deliverable exists, only the report/close is missing`,
+        `work-trace counter-check found ${workTrace.commits.length} matching commit(s) and ${
+          completionArtifacts(workTrace).length
+        } completed artifact(s) since ${workTrace.since.toISOString()} — the deliverable exists, only the report/close is missing`,
+      );
+    } else if (progressOnlyArtifacts(workTrace).length > 0) {
+      // Named explicitly so the manager sees that in-flight work was found and still did not
+      // count: the review stays a stall precisely because started is not finished.
+      triggerReasons.push(
+        `work-trace counter-check found ${
+          progressOnlyArtifacts(workTrace).length
+        } in-flight artifact(s) but no completion evidence — started is not finished, so this is still reported as a stall`,
       );
     }
 
@@ -683,12 +700,21 @@ export function productivityReviewService(
         }`
         : "- Commits carrying the issue key: none",
     );
+    const formatArtifact = (artifact: IssueWorkTrace["artifacts"][number]) =>
+      `  - ${artifact.kind} ${artifact.recordedAt.toISOString()} — ${truncateInline(artifact.label, 160)}`;
+    const completed = completionArtifacts(trace);
+    const inFlight = progressOnlyArtifacts(trace);
     lines.push(
-      trace.artifacts.length > 0
-        ? `- Artifacts created since \`in_progress\`:\n${
-          trace.artifacts.map((artifact) => `  - ${artifact.kind} ${artifact.createdAt.toISOString()} — ${truncateInline(artifact.label, 160)}`).join("\n")
+      completed.length > 0
+        ? `- Completed artifacts since \`in_progress\` (count as completion evidence):\n${completed.map(formatArtifact).join("\n")}`
+        : "- Completed artifacts since `in_progress`: none",
+    );
+    lines.push(
+      inFlight.length > 0
+        ? `- In-flight artifacts since \`in_progress\` (progress only — do **not** count as completion evidence):\n${
+          inFlight.map(formatArtifact).join("\n")
         }`
-        : "- Artifacts created since `in_progress`: none",
+        : "- In-flight artifacts since `in_progress`: none",
     );
     return lines.join("\n");
   }
@@ -712,7 +738,7 @@ export function productivityReviewService(
       "",
       `- Source issue: ${issueUiLink(evidence.sourceIssue, prefix)}`,
       `- Assigned agent: ${evidence.sourceAgent.name} (${evidence.sourceAgent.role})`,
-      `- Classification: \`unreported_completion\``,
+      `- ${UNREPORTED_COMPLETION_MARKER}`,
       `- Raw detector trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
       `- Reasons: ${evidence.triggerReasons.join("; ")}`,
       `- Generated at: ${evidence.generatedAt.toISOString()}`,
@@ -766,7 +792,7 @@ export function productivityReviewService(
       "",
       `- Source issue: ${issueUiLink(evidence.sourceIssue, prefix)}`,
       `- Assigned agent: ${evidence.sourceAgent.name} (${evidence.sourceAgent.role})`,
-      `- Classification: \`stall\` (work-trace counter-check found no commits and no artifacts)`,
+      `- Classification: \`stall\` (work-trace counter-check found no commits and no completed artifacts)`,
       `- Primary trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
       `- Trigger reasons: ${evidence.triggerReasons.join("; ")}`,
       `- Generated at: ${evidence.generatedAt.toISOString()}`,
@@ -822,11 +848,109 @@ export function productivityReviewService(
       `- Classification: \`${evidence.classification}\``,
       `- Trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
       `- Reasons: ${evidence.triggerReasons.join("; ")}`,
-      `- Work trace: ${evidence.workTrace.commits.length} commit(s), ${evidence.workTrace.artifacts.length} artifact(s) since \`in_progress\``,
+      `- Work trace: ${evidence.workTrace.commits.length} commit(s), ${
+        completionArtifacts(evidence.workTrace).length
+      } completed / ${progressOnlyArtifacts(evidence.workTrace).length} in-flight artifact(s) since \`in_progress\``,
       `- No-comment streak: ${evidence.noCommentStreak}`,
       `- Runs/assignee comments: ${evidence.runCountLastHour}/${evidence.commentCountLastHour} in 1h, ${evidence.runCountLastSixHours}/${evidence.commentCountLastSixHours} in 6h`,
       `- Next action: ${evidence.nextAction ? truncateInline(evidence.nextAction, 300) : "none recorded"}`,
     ].join("\n");
+  }
+
+  /** The classification an already-written review states about itself, read back from its body. */
+  function readReviewClassification(review: IssueRow): ProductivityReviewClassification {
+    return (review.description ?? "").includes(UNREPORTED_COMPLETION_MARKER) ? "unreported_completion" : "stall";
+  }
+
+  /**
+   * Rewrite an open stall review into an unreported completion: new title and body (so the
+   * reassign/decompose menu is replaced by "report and close"), reassigned from the manager to the
+   * source assignee, and the assignee woken — the same shape the review would have had if the
+   * evidence had been there when it was first written.
+   */
+  async function reclassifyReviewAsUnreportedCompletion(
+    existing: IssueRow,
+    evidence: ProductivityReviewEvidence,
+    opts: { prefix: string; thresholds: ProductivityReviewThresholds },
+  ) {
+    const ownerAgentId = await resolveReviewOwnerAgentId(
+      evidence.sourceIssue,
+      evidence.sourceAgent,
+      evidence.classification,
+    );
+    const sourceLabel = evidence.sourceIssue.identifier ?? evidence.sourceIssue.title;
+    await db
+      .update(issues)
+      .set({
+        title: `Report and close finished work on ${sourceLabel}`,
+        description: buildReviewMarkdown(evidence, opts.prefix),
+        priority: "medium",
+        ...(ownerAgentId ? { assigneeAgentId: ownerAgentId } : {}),
+        updatedAt: evidence.generatedAt,
+      })
+      .where(eq(issues.id, existing.id));
+    await addRefreshComment(
+      existing.id,
+      [
+        "Reclassified from `stall` to `unreported_completion`.",
+        "",
+        "The work-trace counter-check found completion evidence that did not exist when this review was written, so the decision menu above no longer applies — reassigning or decomposing would rebuild work that already exists.",
+        "",
+        buildRefreshComment(evidence, opts.prefix),
+      ].join("\n"),
+      evidence.generatedAt,
+    );
+    await logActivity(db, {
+      companyId: evidence.sourceIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.productivity_review_updated",
+      entityType: "issue",
+      entityId: existing.id,
+      agentId: ownerAgentId ?? existing.assigneeAgentId,
+      details: {
+        source: "productivity_review.reconcile",
+        sourceIssueId: evidence.sourceIssue.id,
+        trigger: evidence.trigger,
+        classification: evidence.classification,
+        reclassifiedFrom: "stall",
+        previousAssigneeAgentId: existing.assigneeAgentId,
+        workTraceCommitCount: evidence.workTrace.commits.length,
+        workTraceArtifactCount: evidence.workTrace.artifacts.length,
+        workTraceCompletionArtifactCount: completionArtifacts(evidence.workTrace).length,
+        noCommentStreak: evidence.noCommentStreak,
+        runCountLastHour: evidence.runCountLastHour,
+        commentCountLastHour: evidence.commentCountLastHour,
+      },
+    });
+    // Wake on every reclassification, not only when ownership moved. What changed is the
+    // *instruction* — from "decide what to do about a stall" to "report and close finished work" —
+    // and an owner who was already assigned has no other trigger to act on it.
+    if (ownerAgentId && deps?.enqueueWakeup) {
+      await deps.enqueueWakeup(ownerAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: withRecoveryModelProfileHint({
+          issueId: existing.id,
+          sourceIssueId: evidence.sourceIssue.id,
+          trigger: evidence.trigger,
+          classification: evidence.classification,
+        }, "status_only"),
+        requestedByActorType: "system",
+        requestedByActorId: "productivity_review",
+        contextSnapshot: withRecoveryModelProfileHint({
+          issueId: existing.id,
+          taskId: existing.id,
+          wakeReason: "issue_assigned",
+          source: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+          sourceIssueId: evidence.sourceIssue.id,
+          productivityReviewTrigger: evidence.trigger,
+          productivityReviewClassification: evidence.classification,
+        }, "status_only"),
+      });
+    }
+    return { kind: "updated" as const, reviewIssueId: existing.id };
   }
 
   async function createOrUpdateReview(
@@ -835,6 +959,21 @@ export function productivityReviewService(
   ) {
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     if (existing) {
+      // Evidence can arrive after the review was written: the run that finished the work commits,
+      // dies, and the stall review already exists. Leaving it alone would keep a manager owning a
+      // review whose decision menu says reassign/decompose — against work that now demonstrably
+      // exists. Rewriting it is therefore not cosmetic, and it must happen before the refresh
+      // throttle, which exists to limit comment spam, not to defer a wrong instruction.
+      //
+      // One direction only. Evidence disappearing (a rewritten branch, a deleted artifact) must
+      // not silently hand a review back to a manager with the destructive actions re-enabled; that
+      // call belongs to a human reading the refresh comment.
+      if (
+        evidence.classification === "unreported_completion" &&
+        readReviewClassification(existing) === "stall"
+      ) {
+        return await reclassifyReviewAsUnreportedCompletion(existing, evidence, opts);
+      }
       const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
       const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;
       if (
@@ -859,6 +998,7 @@ export function productivityReviewService(
           classification: evidence.classification,
           workTraceCommitCount: evidence.workTrace.commits.length,
           workTraceArtifactCount: evidence.workTrace.artifacts.length,
+          workTraceCompletionArtifactCount: completionArtifacts(evidence.workTrace).length,
           noCommentStreak: evidence.noCommentStreak,
           runCountLastHour: evidence.runCountLastHour,
           commentCountLastHour: evidence.commentCountLastHour,
@@ -946,6 +1086,7 @@ export function productivityReviewService(
         classification: evidence.classification,
         workTraceCommitCount: evidence.workTrace.commits.length,
         workTraceArtifactCount: evidence.workTrace.artifacts.length,
+        workTraceCompletionArtifactCount: completionArtifacts(evidence.workTrace).length,
         noCommentStreak: evidence.noCommentStreak,
         runCountLastHour: evidence.runCountLastHour,
         commentCountLastHour: evidence.commentCountLastHour,

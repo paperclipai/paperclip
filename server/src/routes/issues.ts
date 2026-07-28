@@ -6737,7 +6737,15 @@ export function issueRoutes(
       action: "issue.work_product_updated",
       entityType: "issue",
       entityId: existing.issueId,
-      details: { workProductId: product.id, changedKeys: Object.keys(req.body).sort() },
+      details: {
+        workProductId: product.id,
+        changedKeys: Object.keys(req.body).sort(),
+        // The resulting status, so a later reader can tell what the change moved the product
+        // *into*. `changedKeys` alone only says that status changed, which is not enough to
+        // distinguish "entered completion" from a refinement between two completion states.
+        status: product.status,
+        previousStatus: existing.status,
+      },
     });
     await revalidateActiveSourceRecoveryAfterCommittedWrite({
       issue,
