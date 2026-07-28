@@ -1271,6 +1271,37 @@ describeEmbeddedPostgres("productivity review service", () => {
       expect(afterFailure?.description).toContain("Classification: `stall`");
       expect(afterFailure?.assigneeAgentId).toBe(seeded.managerId);
 
+      // Restoring the fields is not enough on its own. The reclassification comment and the
+      // `reclassifiedFrom: "stall"` activity were already written and are history — they stay. What
+      // must not happen is that they stand alone: a reader arriving at a review whose body says
+      // `stall` would otherwise find a comment instructing them to report and close, and a recorded
+      // transition that never survived. Both are answered by a compensating record, not by a delete.
+      const failureComments = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, stallReview!.id));
+      const bodies = failureComments.map((row) => row.body);
+      expect(bodies.some((body) => body.includes("Reclassified from `stall` to `unreported_completion`"))).toBe(true);
+      expect(bodies.some((body) => body.includes("Rolled back to `stall`"))).toBe(true);
+      expect(bodies.some((body) => body.includes("the assignee could not be woken"))).toBe(true);
+
+      const failureActivity = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "issue.productivity_review_updated"));
+      const rolledBack = failureActivity.filter(
+        (row) => (row.details as Record<string, unknown> | null)?.rolledBackFrom === "unreported_completion",
+      );
+      expect(rolledBack).toHaveLength(1);
+      expect((rolledBack[0]?.details as Record<string, unknown>)?.classification).toBe("stall");
+      expect((rolledBack[0]?.details as Record<string, unknown>)?.reason).toBe("assignee_wake_failed");
+      // The forward transition is still on record — appended to, never rewritten.
+      expect(
+        failureActivity.some(
+          (row) => (row.details as Record<string, unknown> | null)?.reclassifiedFrom === "stall",
+        ),
+      ).toBe(true);
+
       // Pass 3: the wake works, and the reclassification lands.
       const wakes: string[] = [];
       await service(repoPath, async (agentId) => {

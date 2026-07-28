@@ -976,6 +976,42 @@ export function productivityReviewService(
           updatedAt: evidence.generatedAt,
         })
         .where(eq(issues.id, existing.id));
+      // Restoring the fields alone would leave the review contradicting itself: the comment above
+      // still declares `unreported_completion` and the activity above still records a transition
+      // away from `stall`, while title, body and owner say `stall` again. A reader — a human, or the
+      // next pass reading the trail — would act on an instruction that no longer applies and count a
+      // transition that did not survive. The comment and the activity are history and stay put; a
+      // compensating pair states that the transition was rolled back and why.
+      await addRefreshComment(
+        existing.id,
+        [
+          "Rolled back to `stall`.",
+          "",
+          "The reclassification above did not complete: the assignee could not be woken. A reclassified"
+            + " review that nobody is triggered on would leave the finished work sitting unreported, so the"
+            + " decision menu in the review body applies again and the next reconcile pass retries the"
+            + " counter-check.",
+        ].join("\n"),
+        evidence.generatedAt,
+      );
+      await logActivity(db, {
+        companyId: evidence.sourceIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_updated",
+        entityType: "issue",
+        entityId: existing.id,
+        agentId: existing.assigneeAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: evidence.sourceIssue.id,
+          trigger: evidence.trigger,
+          classification: "stall",
+          rolledBackFrom: "unreported_completion",
+          reason: "assignee_wake_failed",
+          attemptedAssigneeAgentId: ownerAgentId ?? null,
+        },
+      });
       return { kind: "existing" as const, reviewIssueId: existing.id };
     }
     return { kind: "updated" as const, reviewIssueId: existing.id };
