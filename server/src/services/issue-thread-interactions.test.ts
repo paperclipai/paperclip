@@ -547,5 +547,34 @@ describe("issueThreadInteractionService", () => {
       expect(state.handoffGuards).toHaveLength(1);
       expect(guardStringParams(state.handoffGuards[0])).toContain(eligibleIssueRow.assigneeUserId);
     });
+
+    // `request_confirmation` defaults to `continuationPolicy: "none"`
+    // (`packages/mcp-server/src/tools.ts`), and a `none` resolution never queues a
+    // continuation wakeup. Handing the issue over anyway takes it off the person
+    // holding it and parks it on an agent nobody will wake — the exact dead path
+    // this handoff exists to prevent, just moved one step later.
+    it("leaves the issue with the user when the policy would never wake anyone", async () => {
+      const state = createFakeDb({
+        interactionRow: {
+          ...handoffInteractionRow(),
+          kind: "request_confirmation",
+          continuationPolicy: "none",
+          payload: { version: 1, prompt: "Ship it?" },
+        },
+        issueRow: eligibleIssueRow,
+      });
+
+      const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+      const result = await issueThreadInteractionService(state.db as never).acceptInteraction({
+        id: issueId,
+        companyId: "company-1",
+        projectId: null,
+        goalId: null,
+      }, "interaction-3", {}, { userId: "local-board" });
+
+      expect(result.continuationIssue).toBeNull();
+      expect(state.handoffUpdates).toHaveLength(0);
+      expect(state.issueTouches).toHaveLength(1);
+    });
   });
 });
