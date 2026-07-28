@@ -15,7 +15,7 @@ import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX, codexLocalThinkingEffortsForModel } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
@@ -153,14 +153,15 @@ function formatArgList(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-const codexThinkingEffortOptions = [
-  { id: "", label: "Auto" },
-  { id: "minimal", label: "Minimal" },
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-  { id: "xhigh", label: "X-High" },
-] as const;
+function codexThinkingEffortOptions(model: string) {
+  return [
+    { id: "", label: "Auto" },
+    ...codexLocalThinkingEffortsForModel(model).map((id) => ({
+      id,
+      label: id === "xhigh" ? "X-High" : id[0]!.toUpperCase() + id.slice(1),
+    })),
+  ];
+}
 
 const openCodeThinkingEffortOptions = [
   { id: "", label: "Auto" },
@@ -801,7 +802,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : "effort";
   const thinkingEffortOptions =
     adapterType === "codex_local"
-      ? codexThinkingEffortOptions
+      ? codexThinkingEffortOptions(currentModelId)
       : adapterType === "cursor"
         ? cursorModeOptions
         : adapterType === "opencode_local"

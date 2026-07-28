@@ -450,6 +450,11 @@ export function IssueProperties({
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
   const assigneeOverrideModel =
     typeof assigneeOverrideAdapterConfig.model === "string" ? assigneeOverrideAdapterConfig.model : "";
+  const assigneeAdapterConfig = asRecord(assignee?.adapterConfig);
+  const assigneeEffectiveModel = assigneeOverrideModel
+    || (typeof assigneeAdapterConfig.model === "string"
+      ? assigneeAdapterConfig.model
+      : "");
   const assigneeOverrideThinkingEffort = thinkingEffortValueFor(
     assigneeAdapterType,
     assigneeOverrideAdapterConfig,
@@ -614,7 +619,7 @@ export function IssueProperties({
           <div className="space-y-1.5">
             <div className="text-xs text-muted-foreground">Thinking effort</div>
             <div className="flex items-center gap-1.5 flex-wrap">
-              {thinkingEffortOptionsFor(assigneeAdapterType).map((option) => (
+              {thinkingEffortOptionsFor(assigneeAdapterType, assigneeEffectiveModel).map((option) => (
                 <button
                   key={option.value || "default"}
                   className={cn(
