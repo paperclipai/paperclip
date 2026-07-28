@@ -37,6 +37,7 @@ import {
   getManagedInstanceConfig,
   type ManagedInstanceConfig,
 } from "./services/managed-config.js";
+import { resolveServerRuntimeInfo } from "./runtime-mode.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
@@ -530,6 +531,23 @@ export async function startServer(): Promise<StartedServer> {
 
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
+  const serverRuntimeInfo = resolveServerRuntimeInfo({
+    listenPort,
+    shadowSourceApi: config.shadowDevSourceApi,
+    heartbeatSchedulerEnabled: config.heartbeatSchedulerEnabled,
+    databaseBackupEnabled: config.databaseBackupEnabled,
+  });
+  const shadowRuntime = serverRuntimeInfo.role === "shadow";
+  if (shadowRuntime) {
+    logger.warn(
+      {
+        sourceApi: serverRuntimeInfo.shadowSourceApi,
+        sourcePort: serverRuntimeInfo.shadowSourcePort,
+        targetPort: serverRuntimeInfo.targetPort,
+      },
+      "Shadow dev runtime active; startup reconcilers, scheduled jobs, and backups are disabled for shared-database safety",
+    );
+  }
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
@@ -542,16 +560,18 @@ export async function startServer(): Promise<StartedServer> {
   let resolveSessionFromHeaders:
     | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
     | undefined;
-  if (config.deploymentMode === "local_trusted") {
+  if (config.deploymentMode === "local_trusted" && !shadowRuntime) {
     await ensureLocalTrustedBoardPrincipal(db as any);
   }
-  const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
-  if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
-    logger.info(accessBackfill, "Backfilled principal access compatibility records");
-  }
-  const toolOAuthBackfill = await backfillLegacyToolOAuthTokens(db as any);
-  if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {
-    logger.info(toolOAuthBackfill, "Backfilled legacy tool OAuth credentials into company secrets");
+  if (!shadowRuntime) {
+    const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
+    if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
+      logger.info(accessBackfill, "Backfilled principal access compatibility records");
+    }
+    const toolOAuthBackfill = await backfillLegacyToolOAuthTokens(db as any);
+    if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {
+      logger.info(toolOAuthBackfill, "Backfilled legacy tool OAuth credentials into company secrets");
+    }
   }
   if (config.deploymentMode === "authenticated") {
     const {
@@ -726,6 +746,8 @@ export async function startServer(): Promise<StartedServer> {
           alertFiles: databaseBackupAlertFiles,
         }
       : undefined,
+    devDatabaseSourceUrl: config.uiDevMiddleware ? activeDatabaseConnectionString : undefined,
+    serverRuntimeInfo,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
@@ -737,6 +759,7 @@ export async function startServer(): Promise<StartedServer> {
     resolveSession,
     pluginWorkerManager,
     managedPluginAutoInstall,
+    pluginJobSchedulingEnabled: !shadowRuntime,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -779,86 +802,90 @@ export async function startServer(): Promise<StartedServer> {
     resolveSessionFromHeaders,
   });
 
-  void reconcilePersistedRuntimeServicesOnStartup(db as any)
-    .then((result) => {
-      if (result.reconciled > 0) {
-        logger.warn(
-          { reconciled: result.reconciled },
-          "reconciled persisted runtime services from a previous server process",
-        );
-      }
-    })
-    .catch((err) => {
-      logger.error({ err }, "startup reconciliation of persisted runtime services failed");
-    });
+  if (!shadowRuntime) {
+    void reconcilePersistedRuntimeServicesOnStartup(db as any)
+      .then((result) => {
+        if (result.reconciled > 0) {
+          logger.warn(
+            { reconciled: result.reconciled },
+            "reconciled persisted runtime services from a previous server process",
+          );
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "startup reconciliation of persisted runtime services failed");
+      });
 
-  void reconcileCloudUpstreamRunsOnStartup(db as any)
-    .then((result) => {
-      if (result.reconciled > 0) {
-        logger.warn(
-          { reconciled: result.reconciled },
-          "reconciled cloud upstream runs from a previous server process",
-        );
-      }
-    })
-    .catch((err) => {
-      logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
-    });
+    void reconcileCloudUpstreamRunsOnStartup(db as any)
+      .then((result) => {
+        if (result.reconciled > 0) {
+          logger.warn(
+            { reconciled: result.reconciled },
+            "reconciled cloud upstream runs from a previous server process",
+          );
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
+      });
 
-  // Backfill auth.json into any already-isolated codex_local managed home that
-  // was created by the #8272 isolation guard before the Phase 1 seeding fix.
-  // Idempotent; the Phase 1 execute-time seeding covers new strandings.
-  void reconcileCodexLocalManagedHomesOnStartup(db)
-    .then((result) => {
-      if (result.seeded > 0 || result.failed > 0) {
-        logger.warn(
-          { seeded: result.seeded, failed: result.failed, scanned: result.scanned },
-          "reconciled codex_local managed homes (backfilled missing auth)",
-        );
-      }
-      if (result.sourceAuthMissing > 0) {
-        logger.warn(
-          { sourceAuthMissing: result.sourceAuthMissing, scanned: result.scanned },
-          "could not backfill codex_local managed homes because shared Codex auth is missing",
-        );
-      }
-    })
-    .catch((err) => {
-      logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
-    });
+    // Backfill auth.json into any already-isolated codex_local managed home that
+    // was created by the #8272 isolation guard before the Phase 1 seeding fix.
+    // Idempotent; the Phase 1 execute-time seeding covers new strandings.
+    void reconcileCodexLocalManagedHomesOnStartup(db)
+      .then((result) => {
+        if (result.seeded > 0 || result.failed > 0) {
+          logger.warn(
+            { seeded: result.seeded, failed: result.failed, scanned: result.scanned },
+            "reconciled codex_local managed homes (backfilled missing auth)",
+          );
+        }
+        if (result.sourceAuthMissing > 0) {
+          logger.warn(
+            { sourceAuthMissing: result.sourceAuthMissing, scanned: result.scanned },
+            "could not backfill codex_local managed homes because shared Codex auth is missing",
+          );
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
+      });
 
-  void reconcileBuiltInAgentsOnStartup(db as any)
-    .then((result) => {
-      if (result.reconciled > 0 || result.unknown > 0 || result.duplicates > 0 || result.autoEnsured > 0) {
-        logger.warn(
-          result,
-          "startup reconciliation of built-in agents complete",
-        );
-      }
-    })
-    .catch((err) => {
-      logger.error({ err }, "startup reconciliation of built-in agents failed");
-    });
+    void reconcileBuiltInAgentsOnStartup(db as any)
+      .then((result) => {
+        if (result.reconciled > 0 || result.unknown > 0 || result.duplicates > 0 || result.autoEnsured > 0) {
+          logger.warn(
+            result,
+            "startup reconciliation of built-in agents complete",
+          );
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "startup reconciliation of built-in agents failed");
+      });
+  }
 
   // Force the instance onto the Kubernetes sandbox provider when configured via
   // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
   // queued runs so the policy + managed k8s environments are in place. A bad
   // PAPERCLIP_EXECUTION_MODE / PAPERCLIP_K8S_* value throws and fails startup
   // (fail-loud) rather than silently allowing local execution.
-  try {
-    const policyResult = await bootstrapExecutionPolicyFromEnv(db as any);
-    if (policyResult) {
-      logger.warn(
-        {
-          executionMode: policyResult.executionMode,
-          companiesConfigured: policyResult.companiesConfigured,
-        },
-        "forced execution policy applied at startup",
-      );
+  if (!shadowRuntime) {
+    try {
+      const policyResult = await bootstrapExecutionPolicyFromEnv(db as any);
+      if (policyResult) {
+        logger.warn(
+          {
+            executionMode: policyResult.executionMode,
+            companiesConfigured: policyResult.companiesConfigured,
+          },
+          "forced execution policy applied at startup",
+        );
+      }
+    } catch (err) {
+      logger.error({ err }, "failed to apply forced execution policy from environment");
+      throw err;
     }
-  } catch (err) {
-    logger.error({ err }, "failed to apply forced execution policy from environment");
-    throw err;
   }
 
   // Ensure sandbox environments declared in the managed-config document

@@ -22,6 +22,7 @@ import {
   resolveRuntimeBind,
   validateConfiguredBindMode,
 } from "@paperclipai/shared";
+import { normalizeShadowSourceApi } from "./runtime-mode.js";
 import {
   resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
@@ -52,6 +53,7 @@ type DatabaseMode = "embedded-postgres" | "postgres";
 export interface Config {
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
+  shadowDevSourceApi: string | undefined;
   bind: BindMode;
   customBindHost: string | undefined;
   host: string;
@@ -163,6 +165,7 @@ export function loadConfig(): Config {
       ? (deploymentModeFromEnvRaw as DeploymentMode)
       : null;
   const deploymentMode: DeploymentMode = deploymentModeFromEnv ?? fileConfig?.server.deploymentMode ?? "local_trusted";
+  const shadowDevSourceApi = normalizeShadowSourceApi(process.env.PAPERCLIP_SHADOW_DEV_SOURCE_API) ?? undefined;
   const strictModeFromEnv = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
   const secretsStrictMode =
     strictModeFromEnv !== undefined
@@ -244,8 +247,9 @@ export function loadConfig(): Config {
     companyDeletionEnvRaw !== undefined
       ? companyDeletionEnvRaw === "true"
       : deploymentMode === "local_trusted";
-  const databaseBackupEnabled =
-    process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
+  const databaseBackupEnabled = shadowDevSourceApi
+    ? false
+    : process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
       ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
       : (fileDatabaseBackup?.enabled ?? true);
   const databaseBackupIntervalMinutes = Math.max(
@@ -288,6 +292,7 @@ export function loadConfig(): Config {
   return {
     deploymentMode,
     deploymentExposure,
+    shadowDevSourceApi,
     bind: resolvedBind.bind,
     customBindHost: resolvedBind.customBindHost,
     host: resolvedBind.host,
@@ -329,7 +334,9 @@ export function loadConfig(): Config {
     storageS3ForcePathStyle,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
-    heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
+    heartbeatSchedulerEnabled: shadowDevSourceApi
+      ? false
+      : process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
