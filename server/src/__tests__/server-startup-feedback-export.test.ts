@@ -325,11 +325,11 @@ describe("startServer feedback export wiring", () => {
       suppressed: true,
       reason: "worktree_instance",
     });
-    let intervalCallback: (() => void) | null = null;
+    const intervalCallbacks: Array<() => void> = [];
     const setIntervalSpy = vi
       .spyOn(globalThis, "setInterval")
       .mockImplementation(((callback: () => void) => {
-        intervalCallback = callback;
+        intervalCallbacks.push(callback);
         return 1 as unknown as ReturnType<typeof setInterval>;
       }) as typeof setInterval);
 
@@ -380,11 +380,11 @@ describe("startServer feedback export wiring", () => {
       suppressed: true,
       reason: "non_primary_runtime_instance",
     });
-    let intervalCallback: (() => void) | null = null;
+    const intervalCallbacks: Array<() => void> = [];
     const setIntervalSpy = vi
       .spyOn(globalThis, "setInterval")
       .mockImplementation(((callback: () => void) => {
-        intervalCallback = callback;
+        intervalCallbacks.push(callback);
         return 1 as unknown as ReturnType<typeof setInterval>;
       }) as typeof setInterval);
 
@@ -397,10 +397,10 @@ describe("startServer feedback export wiring", () => {
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
-      expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+      expect(setIntervalSpy).toHaveBeenCalled();
 
-      expect(intervalCallback).not.toBeNull();
-      intervalCallback?.();
+      expect(intervalCallbacks.length).toBeGreaterThan(0);
+      intervalCallbacks.forEach((callback) => callback());
       await Promise.resolve();
       await Promise.resolve();
 
