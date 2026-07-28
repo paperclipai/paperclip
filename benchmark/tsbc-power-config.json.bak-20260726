@@ -1,24 +1,11 @@
 {
   "_doc": "TSBC power-mode rules. The controller (tsbc-power.py, hourly launchd) computes mode and writes .tsbc-power.json; bench.py reads it to cap concurrency + gate heavy tasks. LOW during any heavy-hitter's LIVE sprint window or any ad-hoc sprint; NORMAL otherwise.",
   "tz": "Europe/Dublin",
-  "heavyHitters": [
-    "ThinkStack Capital",
-    "ThinkStack Media"
-  ],
+  "heavyHitters": ["ThinkStack Capital", "ThinkStack Media", "ThinkStack Books"],
   "heavyHitterBasis": "token consumption + process-time over 7d (NOT run count): Capital 332.8Mtok (quant, ~267K/run), Media 200.3Mtok (render+output), Books 183.9Mtok (most gen output). Excluded: TSMC (always-on baseline), KISS 114M / Recruitment 92M / DP 91M (lighter). Windows read LIVE from DB so ad-hoc extensions are caught automatically.",
   "modes": {
-    "normal": {
-      "maxWorkers": 4,
-      "runsPerSample": 5,
-      "oneModelPerAdapter": true,
-      "heavyTasksAllowed": true
-    },
-    "low": {
-      "maxWorkers": 2,
-      "runsPerSample": 5,
-      "oneModelPerAdapter": true,
-      "heavyTasksAllowed": false
-    }
+    "normal": { "maxWorkers": 2, "runsPerSample": 5, "oneModelPerAdapter": true, "heavyTasksAllowed": true },
+    "low":    { "maxWorkers": 1, "runsPerSample": 5, "oneModelPerAdapter": true, "heavyTasksAllowed": false }
   },
   "maxWorkersNote": "normal=2 (conservative: the live fleet + TSMC run 24/7 and heavy fan-out has OOM'd this Mac; bump to 3 if it proves stable). low=1 (zero added pressure).",
   "adhocSprintTriggersLow": true,
@@ -30,14 +17,7 @@
   "sleepDream": {
     "dreamDailyHour": 5,
     "dreamDurationHours": 1,
-    "sleepWeekly": {
-      "weekday": 6,
-      "startHour": 4,
-      "endHour": 8
-    },
+    "sleepWeekly": { "weekday": 6, "startHour": 4, "endHour": 8 },
     "note": "TSBC is 24/7, not sprint-bound, so it needs a rhythm. DREAM (daily, just after the 04:00 ramp) = self-improvement instead of raw testing: analyse the ledger, refine suites, re-tag skills, fold in real fleet data. SLEEP (weekly, Sun 04-08) = full idle + deep dream. Execution lands with the Drillmaster operator; the controller emits the flags now."
-  },
-  "_maxWorkers_note": "Raised 2026-07-26 (operator): low 1->2, normal 2->4. No performance issues observed on the M1 Max Studio 32GB and bench throughput was the binding constraint. RAM is the metric to watch if this is pushed further.",
-  "_oneModelPerAdapter_note": "DEAD CONFIG as of 2026-07-26: this key appears only in this file and the derived .tsbc-power.json \u2014 no code reads it. It cannot be changed to '2 per adapter' because nothing implements it. Left in place rather than deleted so the name is not silently reused; implement or remove.",
-  "_heavyHitters_note": "ThinkStack Books removed 2026-07-26 (operator). Its 01:00-11:00 window blocked the entire morning and TSB is a publishing lane, not a render or live-money lane. With TSC (13-23) and TSM (09-19) remaining, the gate is now open 23:00-09:00 \u2014 a real overnight bench window instead of the previous 2h gap. Re-add if TSB ever becomes genuinely heavy."
+  }
 }

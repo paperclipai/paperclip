@@ -42,7 +42,11 @@ import benchlib
 # corrupting the score. Serialize per agent: same-agent cells run one at a time,
 # different-agent (different-model) cells still run in parallel.
 _AGENT_LOCKS = {}
+_AGENT_CACHE = {}
+_COMPANY_AGENTS_CACHE = {}
 _LOCKS_GUARD = threading.Lock()
+_AGENT_CACHE_GUARD = threading.Lock()
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 def _agent_lock(agent_id):
@@ -51,6 +55,25 @@ def _agent_lock(agent_id):
         if lock is None:
             lock = _AGENT_LOCKS[agent_id] = threading.Lock()
         return lock
+
+
+def _clean_text(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _looks_like_uuid(value):
+    text = _clean_text(value)
+    return bool(text and _UUID_RE.match(text))
+
+
+def _identity_key(value):
+    text = _clean_text(value)
+    if not text:
+        return None
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or None
 
 
 def _wait_agent_idle(agent_id, max_wait=90):
@@ -174,6 +197,146 @@ def _opt(method, path, body=None, timeout=SOCKET_TIMEOUT_SEC):
         raise
 
 
+def _parse_agent_ref(value):
+    if isinstance(value, str):
+        text = _clean_text(value)
+        if not text:
+            return {}
+        return {"agentId": text} if _looks_like_uuid(text) else {"agentName": text}
+    if not isinstance(value, dict):
+        return {}
+
+    out = {}
+    for key in ("agentId", "id", "paperclipAgentId", "benchAgentId", "assigneeAgentId"):
+        text = _clean_text(value.get(key))
+        if text:
+            out["agentId"] = text
+            break
+    for key in ("agentName", "name", "paperclipAgentName", "benchAgentName"):
+        text = _clean_text(value.get(key))
+        if text:
+            out["agentName"] = text
+            break
+    return out
+
+
+def _cache_agent(agent):
+    agent_id = _clean_text((agent or {}).get("id"))
+    if not agent_id:
+        return agent
+    with _AGENT_CACHE_GUARD:
+        _AGENT_CACHE[agent_id] = agent
+    return agent
+
+
+def _fetch_agent(agent_id):
+    with _AGENT_CACHE_GUARD:
+        cached = _AGENT_CACHE.get(agent_id)
+    if cached is not None:
+        return cached
+    agent = _opt("GET", f"/api/agents/{agent_id}")
+    if isinstance(agent, dict) and agent.get("id"):
+        return _cache_agent(agent)
+    return None
+
+
+def _list_company_agents(company_id):
+    with _AGENT_CACHE_GUARD:
+        cached = _COMPANY_AGENTS_CACHE.get(company_id)
+    if cached is not None:
+        return cached
+    payload = _opt("GET", f"/api/companies/{company_id}/agents") or []
+    rows = payload if isinstance(payload, list) else _aslist(payload, "agents")
+    rows = [row for row in rows if isinstance(row, dict) and row.get("id")]
+    for row in rows:
+        _cache_agent(row)
+    with _AGENT_CACHE_GUARD:
+        _COMPANY_AGENTS_CACHE[company_id] = rows
+    return rows
+
+
+def _resolve_agent_by_name(company_id, agent_name):
+    want = _clean_text(agent_name)
+    if not want:
+        return None, "missing bench agent name"
+    want_key = _identity_key(want)
+    rows = _list_company_agents(company_id)
+    exact = [row for row in rows if _clean_text(row.get("name", "")).lower() == want.lower()]
+    if len(exact) == 1:
+        return exact[0], None
+    keyed = [row for row in rows if _identity_key(row.get("name")) == want_key]
+    if len(keyed) == 1:
+        return keyed[0], None
+    if len(exact) > 1 or len(keyed) > 1:
+        return None, f"bench agent name {want!r} is ambiguous"
+    return None, f"bench agent name {want!r} not found in company {company_id}"
+
+
+def _resolve_bench_agent(model, cfg, company_id):
+    pc = cfg.get("paperclip", {}) or {}
+    model_ref = _parse_agent_ref(model.get("paperclipAgent") or model.get("benchAgent"))
+    model_ref.update({
+        k: v for k, v in {
+            "agentId": _clean_text(
+                model.get("paperclipAgentId")
+                or model.get("benchAgentId")
+                or model.get("assigneeAgentId")
+            ),
+            "agentName": _clean_text(
+                model.get("paperclipAgentName")
+                or model.get("benchAgentName")
+            ),
+        }.items() if v
+    })
+
+    ref = model_ref
+    source = "model"
+    if not ref:
+        map_entry = (pc.get("agents") or {}).get(model["id"])
+        if map_entry is None and model.get("model_arg"):
+            map_entry = (pc.get("agents") or {}).get(model.get("model_arg"))
+        ref = _parse_agent_ref(map_entry)
+        source = "config.paperclip.agents"
+
+    if not ref:
+        return None, (
+            "no bench agent configured for row "
+            f"{model.get('id')} (set model.paperclipAgentId/paperclipAgentName "
+            "or config.paperclip.agents)"
+        )
+
+    agent = None
+    if ref.get("agentId"):
+        agent = _fetch_agent(ref["agentId"])
+        if not agent:
+            return None, f"bench agent id {ref['agentId']} not found"
+        expected_name = ref.get("agentName")
+        actual_name = _clean_text(agent.get("name"))
+        if expected_name and _identity_key(expected_name) != _identity_key(actual_name):
+            return None, (
+                f"bench agent id {ref['agentId']} resolved to {actual_name!r}, "
+                f"not expected name {expected_name!r}"
+            )
+    else:
+        agent, err = _resolve_agent_by_name(company_id, ref.get("agentName"))
+        if err:
+            return None, err
+
+    if not isinstance(agent, dict):
+        return None, "resolved bench agent payload was not a dict"
+    if agent.get("companyId") and agent.get("companyId") != company_id:
+        return None, (
+            f"bench agent {agent.get('id')} belongs to company {agent.get('companyId')}, "
+            f"not bench company {company_id}"
+        )
+    return {
+        "id": agent.get("id"),
+        "name": agent.get("name"),
+        "adapterType": agent.get("adapterType"),
+        "source": source,
+    }, None
+
+
 def _aslist(payload, key="issues"):
     if isinstance(payload, list):
         return payload
@@ -211,22 +374,30 @@ def run_case(task, model, cfg, timeout):
     pc = cfg.get("paperclip", {}) or {}
     company = pc.get("benchCompanyId")
     project = pc.get("benchProjectId")
-    agent_id = (pc.get("agents") or {}).get(model["id"])
 
     res = benchlib.empty_result()
     res["model"] = model.get("model_arg") or model["id"]
+    res["requestedModelId"] = model.get("id")
+    res["requestedModelArg"] = model.get("model_arg") or model.get("id")
     if not company:
         res["error"] = "config.paperclip.benchCompanyId not set"
         return res
-    if not agent_id:
-        res["error"] = f"no bench agent configured for model {model['id']}"
+    agent_ref, agent_err = _resolve_bench_agent(model, cfg, company)
+    if agent_err:
+        res["error"] = agent_err
         return res
+    agent_id = agent_ref["id"]
+    res["benchAgentId"] = agent_id
+    res["benchAgentName"] = agent_ref.get("name")
+    res["benchAdapterType"] = agent_ref.get("adapterType") or model.get("adapter")
+    res["benchAgentSource"] = agent_ref.get("source")
 
     spec = task.get("paperclip", {}) or {}
     setup = spec.get("setup", {}) or {}
     expect = spec.get("expect", {}) or {}
     title = spec.get("title") or task.get("title") or task["id"]
     description = task.get("prompt", "")
+    requested_status = setup.get("initialStatus", "todo")
     if SHADOW_DISPOSITION:
         description += SHADOW_DISPOSITION_INSTRUCTION
 
@@ -235,10 +406,14 @@ def run_case(task, model, cfg, timeout):
     issue_id = None
     seeded_child_id = None
     try:
+        if requested_status == "blocked" and not setup.get("seedBlockerTitle"):
+            raise RuntimeError("paperclip.setup.initialStatus=blocked requires seedBlockerTitle")
         body = {
             "title": f"[agentic-bench] {title}",
             "description": description,
-            "status": setup.get("initialStatus", "todo"),
+            # Creating blocked issues now requires a first-class blocker up front.
+            # Seed the blocker first, then patch the fixture back to `blocked`.
+            "status": "todo" if requested_status == "blocked" else requested_status,
             "priority": "medium",
             "assigneeAgentId": agent_id,
         }
@@ -261,7 +436,12 @@ def run_case(task, model, cfg, timeout):
             })
             if isinstance(child, dict) and child.get("id"):
                 seeded_child_id = child["id"]
-                _opt("PATCH", f"/api/issues/{issue_id}", {"blockedByIssueIds": [seeded_child_id]})
+                patch = {"blockedByIssueIds": [seeded_child_id]}
+                if requested_status == "blocked":
+                    patch["status"] = "blocked"
+                _opt("PATCH", f"/api/issues/{issue_id}", patch)
+        elif requested_status == "blocked":
+            raise RuntimeError("blocked fixture setup failed to create the seeded blocker")
 
         # Exclusive per-agent: only one heartbeat per agent at a time (the agent
         # is single-threaded). Same-model cells serialize here; other models run

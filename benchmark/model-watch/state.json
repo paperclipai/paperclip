@@ -1,13 +1,50 @@
 {
-  "date": "2026-07-20",
-  "fire": "Monday",
-  "weekStart": "2026-07-20",
+  "date": "2026-07-28",
+  "fire": "Tuesday",
+  "weekStart": "2026-07-27",
   "cliVersions": {
     "codex": "0.144.1",
     "claude": "2.1.211 (Claude Code)",
-    "agy": "1.1.4",
-    "hermes": "v0.17.0 (2026.6.19) · upstream b61c033c",
-    "hermesUpdateAvailable": "2725 commits behind"
+    "agy": "1.1.8",
+    "grok": "0.2.77 (44e77bec3af6) [stable]",
+    "hermes": "v0.17.0 (2026.6.19) · upstream 3be565fb · local f2cb8773 (+1 carried commit)",
+    "hermesUpdateAvailable": "4935 commits behind"
+  },
+  "cliCatalogs": {
+    "grok": {
+      "authenticated": false,
+      "defaultModel": "grok-4.5",
+      "availableModels": [
+        "grok-4.5"
+      ],
+      "rejectedCandidateIds": {
+        "grok-build": "invalid params / unknown model id on the consumer Grok CLI lane"
+      },
+      "splitSurfaceStatus": "Tuesday, July 28, 2026: the direct consumer Grok CLI still exposes `grok-4.5` as the default available model on the Ireland host, direct `grok-4.5` returns `OK`, direct `grok-build` is still rejected as an unknown model id, and served `grok_local` notes still describe `grok-build` as the default model id."
+    },
+    "agy": {
+      "availableModels": [
+        "gemini-3.6-flash-high",
+        "gemini-3.6-flash-medium",
+        "gemini-3.6-flash-low",
+        "gemini-3.5-flash-high",
+        "gemini-3.5-flash-medium",
+        "gemini-3.5-flash-low",
+        "gemini-3.1-pro-high",
+        "gemini-3.1-pro-low",
+        "claude-sonnet-4-6",
+        "claude-opus-4-6-thinking",
+        "gpt-oss-120b-medium"
+      ],
+      "probeSummary": {
+        "gemini-3.6-flash": "executes; self-identifies as Gemini 3.6 Flash",
+        "Gemini 3.6 Flash (High)": "executes; self-identifies as Gemini 3.6 Flash",
+        "Gemini 3.6 Flash (Medium)": "executes; self-identifies as Gemini 3.6 Flash",
+        "Gemini 3.1 Pro (High)": "executes; self-identifies as Gemini 3.6 Flash (High)",
+        "gemini-3.5-flash-lite": "executes; self-identifies as Gemini 3.6 Flash",
+        "gemini-2.0-flash": "executes; self-identifies as Gemini 3.6 Flash"
+      }
+    }
   },
   "adapterModelLists": {
     "codex_local": [
@@ -28,13 +65,13 @@
     ],
     "claude_local": [
       "claude-opus-4-8",
+      "claude-opus-5",
       "claude-fable-5",
       "claude-sonnet-5",
       "claude-mythos-5",
       "claude-opus-4-7",
       "claude-opus-4-6",
       "claude-sonnet-4-6",
-      "claude-haiku-4-6",
       "claude-sonnet-4-5",
       "claude-haiku-4-5"
     ],
@@ -56,31 +93,289 @@
       "grok-build"
     ],
     "opencode_local": {
-      "count": 111,
+      "count": 113,
       "notables": [
         "cloudflare-ai-gateway/anthropic/claude-fable-5",
         "cloudflare-ai-gateway/anthropic/claude-opus-4-8",
+        "cloudflare-ai-gateway/anthropic/claude-opus-5",
         "cloudflare-ai-gateway/anthropic/claude-sonnet-5",
-        "cloudflare-ai-gateway/openai/gpt-5.5",
+        "cloudflare-ai-gateway/moonshotai/kimi-k3",
         "cloudflare-ai-gateway/openai/gpt-5.6-sol",
         "cloudflare-ai-gateway/openai/gpt-5.6-terra",
         "cloudflare-ai-gateway/openai/gpt-5.6-luna",
         "cloudflare-workers-ai/@cf/google/gemma-4-26b-a4b-it",
-        "cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code",
         "cloudflare-workers-ai/@cf/openai/gpt-oss-20b",
         "cloudflare-workers-ai/@cf/zai-org/glm-5.2",
-        "cloudflare-ai-gateway/moonshotai/kimi-k3"
+        "opencode/laguna-s-2.1-free",
+        "opencode/ling-3.0-flash-free"
       ]
     },
     "pi_local": [],
     "cursor_cloud": [],
     "hermes_local": [],
-    "hermes_gateway": []
+    "hermes_gateway": [],
+    "antigravity_local": [
+      "antigravity",
+      "Gemini 3.6 Flash (High)",
+      "Gemini 3.6 Flash (Medium)",
+      "Gemini 3.6 Flash (Low)",
+      "Gemini 3.5 Flash (High)",
+      "Gemini 3.5 Flash (Medium)",
+      "Gemini 3.5 Flash (Low)",
+      "Gemini 3.1 Pro (High)",
+      "Gemini 3.1 Pro (Low)",
+      "Claude Sonnet 4.6 (Thinking)",
+      "Claude Opus 4.6 (Thinking)",
+      "GPT-OSS 120B (Medium)"
+    ]
+  },
+  "agentModelReconciliation": {
+    "checkedToday": true,
+    "query": "SELECT c.name, a.name, a.adapter_type, a.adapter_config->>'model' FROM agents a JOIN companies c ON c.id=a.company_id WHERE a.status <> 'terminated' ORDER BY a.adapter_type;",
+    "findings": {
+      "antigravityConfiguredLabelCollapse": [
+        {
+          "model": "Gemini 3.1 Pro (High)",
+          "count": 14,
+          "companyCount": 7,
+          "companies": [
+            "Dastardly Print",
+            "TSMC",
+            "ThinkStack Books",
+            "ThinkStack BootCamp",
+            "ThinkStack Capital",
+            "ThinkStack KISS",
+            "ThinkStack Media"
+          ],
+          "agents": [
+            "Dastardly Print/Fionn-Gemini",
+            "TSMC/Astra-Gemini",
+            "TSMC/Auditor-Gemini",
+            "TSMC/Engineer-Gemini",
+            "TSMC/GLaD0S-Gemini",
+            "TSMC/Ledger-Gemini",
+            "ThinkStack Books/Marlowe-Gemini",
+            "ThinkStack BootCamp/Bench-gemini-pro",
+            "ThinkStack Capital/MIDAS-Gemini",
+            "ThinkStack KISS/GrowthSEO-Gemini",
+            "ThinkStack KISS/Kestrel-Gemini",
+            "ThinkStack Media/Atlas-Gemini",
+            "ThinkStack Media/Prometheus-Gemini",
+            "ThinkStack Media/Showrunner-Gemini"
+          ]
+        },
+        {
+          "model": "Gemini 3.5 Flash (Low)",
+          "count": 11,
+          "companyCount": 5,
+          "companies": [
+            "Dastardly Print",
+            "ThinkStack Books",
+            "ThinkStack KISS",
+            "ThinkStack Media",
+            "ThinkStack Recruitment"
+          ],
+          "agents": [
+            "Dastardly Print/DP-Drafter-Gemini",
+            "ThinkStack Books/Author-Gemini",
+            "ThinkStack Books/Designer-Gemini",
+            "ThinkStack Books/Editor-Gemini",
+            "ThinkStack Books/Quill-Gemini",
+            "ThinkStack KISS/KISS-Drafter-Gemini",
+            "ThinkStack KISS/Scribe-Gemini",
+            "ThinkStack Media/ContentStrategist-Gemini",
+            "ThinkStack Media/Media-Drafter",
+            "ThinkStack Media/Storyboard-Gemini",
+            "ThinkStack Recruitment/Recruitment-Drafter-Gemini"
+          ]
+        },
+        {
+          "model": "Gemini 3.5 Flash (Medium)",
+          "count": 4,
+          "companyCount": 1,
+          "companies": [
+            "ThinkStack Recruitment"
+          ],
+          "agents": [
+            "ThinkStack Recruitment/ApplicationWriter-Gemini",
+            "ThinkStack Recruitment/Athena-Gemini",
+            "ThinkStack Recruitment/Daedalus-Gemini",
+            "ThinkStack Recruitment/RecruitmentManager-Gemini"
+          ]
+        }
+      ],
+      "sampleAgentRows": {
+        "Gemini 3.1 Pro (High)": [
+          {
+            "company": "Dastardly Print",
+            "agent": "Fionn-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "TSMC",
+            "agent": "Astra-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "TSMC",
+            "agent": "Auditor-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "TSMC",
+            "agent": "Engineer-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "TSMC",
+            "agent": "GLaD0S-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "TSMC",
+            "agent": "Ledger-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "ThinkStack Books",
+            "agent": "Marlowe-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "ThinkStack BootCamp",
+            "agent": "Bench-gemini-pro",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "ThinkStack Capital",
+            "agent": "MIDAS-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "ThinkStack KISS",
+            "agent": "GrowthSEO-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "ThinkStack KISS",
+            "agent": "Kestrel-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "ThinkStack Media",
+            "agent": "Atlas-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "ThinkStack Media",
+            "agent": "Prometheus-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          },
+          {
+            "company": "ThinkStack Media",
+            "agent": "Showrunner-Gemini",
+            "configuredModel": "Gemini 3.1 Pro (High)"
+          }
+        ],
+        "Gemini 3.5 Flash (Low)": [
+          {
+            "company": "Dastardly Print",
+            "agent": "DP-Drafter-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Low)"
+          },
+          {
+            "company": "ThinkStack Books",
+            "agent": "Author-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Low)"
+          },
+          {
+            "company": "ThinkStack Books",
+            "agent": "Designer-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Low)"
+          },
+          {
+            "company": "ThinkStack Books",
+            "agent": "Editor-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Low)"
+          },
+          {
+            "company": "ThinkStack Books",
+            "agent": "Quill-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Low)"
+          },
+          {
+            "company": "ThinkStack KISS",
+            "agent": "KISS-Drafter-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Low)"
+          },
+          {
+            "company": "ThinkStack KISS",
+            "agent": "Scribe-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Low)"
+          },
+          {
+            "company": "ThinkStack Media",
+            "agent": "ContentStrategist-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Low)"
+          },
+          {
+            "company": "ThinkStack Media",
+            "agent": "Media-Drafter",
+            "configuredModel": "Gemini 3.5 Flash (Low)"
+          },
+          {
+            "company": "ThinkStack Media",
+            "agent": "Storyboard-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Low)"
+          },
+          {
+            "company": "ThinkStack Recruitment",
+            "agent": "Recruitment-Drafter-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Low)"
+          }
+        ],
+        "Gemini 3.5 Flash (Medium)": [
+          {
+            "company": "ThinkStack Recruitment",
+            "agent": "ApplicationWriter-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Medium)"
+          },
+          {
+            "company": "ThinkStack Recruitment",
+            "agent": "Athena-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Medium)"
+          },
+          {
+            "company": "ThinkStack Recruitment",
+            "agent": "Daedalus-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Medium)"
+          },
+          {
+            "company": "ThinkStack Recruitment",
+            "agent": "RecruitmentManager-Gemini",
+            "configuredModel": "Gemini 3.5 Flash (Medium)"
+          }
+        ]
+      },
+      "resolvedGrokBenchPin": {
+        "company": "ThinkStack BootCamp",
+        "agent": "Bench-grok-build",
+        "configuredModel": "grok-4.5",
+        "consumerCliCatalog": [
+          "grok-4.5"
+        ],
+        "consumerCliStatus": "consumer Grok CLI exposes and executes grok-4.5 on Monday, July 27, 2026",
+        "consumerCliProbe": "grok-4.5 OK; grok-build unknown model id",
+        "hermesApiProbe": "grok-4.5 OK via xai-oauth",
+        "status": "split-surface"
+      }
+    },
+    "summary": "Tuesday, July 28, 2026: 29 live antigravity_local agents across 8 companies still record configured Gemini labels that collapse onto Gemini 3.6 execution truth on the Ireland AGY 1.1.8 lane: 14 x `Gemini 3.1 Pro (High)`, 11 x `Gemini 3.5 Flash (Low)`, and 4 x `Gemini 3.5 Flash (Medium)`. Tuesday shifted `Gemini 3.1 Pro (High)` back onto `Gemini 3.6 Flash (High)` while configured `Gemini 3.5 Flash (Medium)` now resolves to plain `Gemini 3.6 Flash`. `Bench-grok-build` still records `grok-4.5`, and the direct consumer Grok CLI continues to serve `grok-4.5` while the served `grok_local` docs still default to `grok-build`."
   },
   "providerDocs": {
     "openai": {
-      "url": "https://developers.openai.com/api/docs/models",
-      "summary": "OpenAI still presents GPT-5.6 Sol, Terra, and Luna as the frontier coding family, with the `gpt-5.6` alias routing to Sol in the public docs. On the Ireland Codex OAuth lane on Monday, July 20, 2026, the explicit family IDs (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) still return OK, while the previously observed ChatGPT-account base-ID gate on `gpt-5.6` remains in place. The official changelog still centers the July 9, 2026 GPT-5.6 family release rather than a newer Monday model-change entry.",
+      "url": "https://platform.openai.com/docs/models",
+      "summary": "OpenAI remained unchanged on Tuesday, July 28, 2026 at the alert threshold: the explicit GPT-5.6 family ids (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) still return OK on the Ireland Codex OAuth lane, while base `gpt-5.6` still fails on the ChatGPT-account lane.",
       "liveProbes": {
         "gpt-5.6": "400/not supported when using Codex with a ChatGPT account",
         "gpt-5.6-sol": "OK",
@@ -90,66 +385,144 @@
     },
     "anthropic": {
       "url": "https://docs.anthropic.com/en/docs/about-claude/models/overview",
-      "summary": "Anthropic's overview still presents Claude Fable 5 and Claude Sonnet 5 as broadly available, while Claude Mythos 5 remains invitation-only via Project Glasswing. On the Ireland Claude Code subscription lane on Monday, July 20, 2026, `claude-fable-5` and `claude-sonnet-5` still return OK, and `claude-mythos-5` still returns the expected no-access error.",
+      "summary": "Anthropic's public docs remained available on Tuesday, July 28, 2026, but the live Ireland Claude Code subscription lane hit a weekly-limit gate: `claude-fable-5`, `claude-sonnet-5`, `claude-opus-5`, and `claude-haiku-4-5` now return `You've hit your weekly limit · resets 9am (Europe/Dublin)`, while `claude-mythos-5` still returns a separate model/no-access error.",
       "liveProbes": {
-        "claude-fable-5": "OK",
-        "claude-sonnet-5": "OK",
+        "claude-fable-5": "weekly limit reached; resets 9am (Europe/Dublin)",
+        "claude-sonnet-5": "weekly limit reached; resets 9am (Europe/Dublin)",
+        "claude-opus-5": "weekly limit reached; resets 9am (Europe/Dublin)",
+        "claude-haiku-4-5": "weekly limit reached; resets 9am (Europe/Dublin)",
         "claude-mythos-5": "model/no-access error on this Claude Code lane"
       }
     },
     "google": {
-      "url": "https://ai.google.dev/gemini-api/docs/models",
-      "summary": "Google's current models page marks `gemini-2.0-flash` and `gemini-2.0-flash-lite` as shut down, and the official release notes say the Gemini 2.0 Flash family is now shut down as of June 1, 2026. On the Ireland AGY lane on Monday, July 20, 2026, both retired IDs still execute but self-identify as Gemini 3.5 Flash, while the live `gemini_local` adapter catalog still advertises the retired IDs. This is now a routed retirement/routing-drift alert rather than an unchanged catalog note.",
+      "url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash",
+      "summary": "Google's public Gemini docs remained stable on Tuesday, July 28, 2026, still surfacing `gemini-3.6-flash` and the now-GA `gemini-3.5-flash-lite`, but the live Ireland AGY 1.1.8 lane shifted execution truth again while the served `antigravity_local` catalog simultaneously began surfacing explicit labels. Tuesday's live probes now resolve raw `gemini-3.6-flash`, `Gemini 3.6 Flash (High)`, and `Gemini 3.6 Flash (Medium)` to plain `Gemini 3.6 Flash`, while `Gemini 3.1 Pro (High)` now resolves to `Gemini 3.6 Flash (High)` and configured `Gemini 3.5 Flash (Medium)` falls back to plain `Gemini 3.6 Flash`.",
       "liveProbes": {
-        "gemini-3.5-flash": "executes; self-identifies as Gemini 3.5 Flash",
-        "gemini-3.1-flash-lite": "executes; self-identifies as Gemini 3.5 Flash",
-        "gemini-3.1-flash-live-preview": "executes; self-identifies as Gemini 3.5 Flash",
-        "gemini-3.5-live-translate-preview": "executes; self-identifies as Gemini 3.5 Flash",
-        "gemini-3-flash-preview": "executes; self-identifies as Gemini 3.5 Flash",
-        "Gemini 3.1 Pro (Low)": "executes; self-identifies as Gemini 3.5 Flash",
-        "gemini-2.0-flash": "executes; self-identifies as Gemini 3.5 Flash",
-        "gemini-2.0-flash-lite": "executes; self-identifies as Gemini 3.5 Flash"
+        "gemini-3.6-flash": "executes; self-identifies as Gemini 3.6 Flash",
+        "Gemini 3.6 Flash (High)": "executes; self-identifies as Gemini 3.6 Flash",
+        "Gemini 3.6 Flash (Medium)": "executes; self-identifies as Gemini 3.6 Flash",
+        "Gemini 3.1 Pro (High)": "executes; self-identifies as Gemini 3.6 Flash (High)",
+        "gemini-3.5-flash-lite": "executes; self-identifies as Gemini 3.6 Flash",
+        "gemini-2.0-flash": "executes; self-identifies as Gemini 3.6 Flash"
       }
     },
     "xai": {
-      "url": "https://docs.x.ai/developers/models",
-      "summary": "xAI docs still position Grok 4.5 as the recommended code/chat model, and the public release-notes surface still points to the July 8, 2026 launch entry rather than a newer Monday model change. On the Ireland Grok host on Monday, July 20, 2026, `grok models` reports a live grok.com login with `grok-4.5` as the default and a direct `grok --single ... -m grok-4.5` probe still returns OK, so the Friday, July 17, 2026 EU-availability confirmation stands unchanged.",
-      "hostProbe": "grok models -> logged in with grok.com; default model grok-4.5; available model grok-4.5",
+      "url": "https://docs.x.ai/docs/models",
+      "summary": "xAI docs remained unchanged on Tuesday, July 28, 2026 at the alert threshold: the native consumer Grok CLI still lists `grok-4.5` as the default available model on the Ireland host, direct `grok-4.5` returns OK, direct `grok-build` is still rejected as an unknown model id, and Hermes `xai-oauth` still returns OK for `grok-4.5`.",
+      "hostProbe": "grok models -> unauthenticated banner, default model `grok-4.5`, available models [`grok-4.5`]",
       "liveProbe": {
-        "model": "grok-4.5",
-        "result": "OK"
+        "grok-4.5": "consumer Grok CLI: OK",
+        "grok-build": "consumer Grok CLI: invalid params / unknown model id",
+        "hermes-xai-oauth/grok-4.5": "OK via https://api.x.ai/v1"
       }
+    }
+  },
+  "voiceTtsSurfaces": {
+    "checkedToday": true,
+    "schemaIntroducedOn": "2026-07-21",
+    "alertsToday": [],
+    "xai": {
+      "url": "https://docs.x.ai/developers/models/text-to-speech",
+      "summary": "xAI public voice/TTS docs remained unchanged on Tuesday, July 28, 2026 at the alert threshold: TTS is still priced at $15.00 / 1M chars, and the public model blob still exposes `grok-tts`, `grok-stt`, and `grok-realtime` for both `us-east-1` and `eu-west-1`. No new Tuesday roster or pricing alert fired.",
+      "pricing": {
+        "ttsPer1MCharsUsd": 15,
+        "voiceAgentRealtimeUsdPerHour": 3
+      },
+      "availability": "public model blob exposes both us-east-1 and eu-west-1 clusters; no separate Ireland-authenticated proof exists on our lane",
+      "rosterNotables": [
+        "eve",
+        "orion",
+        "perseus",
+        "lux",
+        "cosmo"
+      ]
+    },
+    "google": {
+      "url": "https://ai.google.dev/gemini-api/docs/speech-generation",
+      "summary": "Google's TTS surface remained unchanged on Tuesday, July 28, 2026: 30 public voices and the same three supported TTS model surfaces (`gemini-3.1-flash-tts-preview`, `gemini-2.5-flash-preview-tts`, and `gemini-2.5-pro-preview-tts`). No Tuesday roster, pricing, or explicit Ireland/EU availability flip was detected for TSBC-996.",
+      "supportedModels": [
+        "gemini-3.1-flash-tts-preview",
+        "gemini-2.5-flash-preview-tts",
+        "gemini-2.5-pro-preview-tts"
+      ],
+      "voiceCount": 30,
+      "voiceRosterSample": [
+        "Zephyr",
+        "Puck",
+        "Charon",
+        "Kore",
+        "Fenrir",
+        "Leda",
+        "Orus",
+        "Aoede",
+        "Callirrhoe",
+        "Autonoe"
+      ],
+      "pricing": {
+        "gemini-3.1-flash-tts-preview": {
+          "standardInputTextPer1MUsd": 1,
+          "standardOutputAudioPer1MUsd": 20,
+          "batchInputTextPer1MUsd": 0.5,
+          "batchOutputAudioPer1MUsd": 10
+        },
+        "gemini-2.5-flash-preview-tts": {
+          "standardInputTextPer1MUsd": 0.5,
+          "standardOutputAudioPer1MUsd": 10,
+          "batchInputTextPer1MUsd": 0.25,
+          "batchOutputAudioPer1MUsd": 5
+        },
+        "gemini-2.5-pro-preview-tts": {
+          "standardInputTextPer1MUsd": 1,
+          "standardOutputAudioPer1MUsd": 20,
+          "batchInputTextPer1MUsd": 0.5,
+          "batchOutputAudioPer1MUsd": 10
+        }
+      }
+    },
+    "openRadar": {
+      "TSBC-996": "Unchanged Tuesday, July 28, 2026: xAI public voice docs still preserve the prior pricing and roster assumptions, with `grok-tts`, `grok-stt`, and `grok-realtime` visible in the captured public model blob for `eu-west-1` as well as `us-east-1`. No new roster or price alert fired."
     }
   },
   "localCatalog": {
     "ollama": {
-      "checkedToday": true,
-      "lastMondayObservationDate": "2026-07-20",
-      "version": "0.31.1",
-      "apiVersion": "0.31.1",
-      "installedCatalog": "`ollama list` returned `gemma3:12b` (8.1 GB, modified 3 weeks ago) and `qwen3:8b` (5.2 GB, modified 3 weeks ago).",
-      "onlineWatchSummary": "Monday, July 20, 2026: the local/Ollama leg recovered and the host now shows `gemma3:12b` and `qwen3:8b` installed. The web library pass did not surface a stronger new sub-12B / <=10GB alert than the existing local storm-resilience watch, so no separate local-model radar issue was opened from today's Monday pass."
+      "checkedToday": false,
+      "lastMondayObservationDate": "2026-07-27",
+      "version": "0.32.3",
+      "apiVersion": null,
+      "installedCatalog": "`ollama list` last returned `gemma3:12b` (8.1 GB, modified 4 weeks ago) and `qwen3:8b` (5.2 GB, modified 4 weeks ago).",
+      "onlineWatchSummary": "Tuesday, July 28, 2026 was not the Monday local-model leg. Monday's local/Ollama observation still stands: the host shows `gemma3:12b` and `qwen3:8b` installed, the client binary reports `0.32.3`, and no stronger new sub-12B / <=10GB alert has been promoted since that pass."
     }
   },
   "openRadar": {
-    "grok-4.5": "RESOLVED 2026-07-17: the Ireland Grok host is now authenticated, `grok models` lists `grok-4.5`, and `grok --single -m grok-4.5` returns OK. The parked EU-watch should now hand off to a real Grok 4.5 bench.",
-    "gemini-catalog-drift": "Updated 2026-07-20: the live `gemini_local` catalog still omits `gemini-3-flash-preview` and now also still advertises retired `gemini-2.0-flash*` IDs. The retirement half is routed separately in TSBC-1111.",
-    "agy-gemini-routing-drift": "Updated 2026-07-20: AGY 1.1.4 still accepts the tracked raw docs IDs and now also reroutes retired `gemini-2.0-flash*` IDs to Gemini 3.5 Flash instead of proving model-specific execution. Treat this as routing/name-surface drift until a harder probe proves model-specific execution on the Ireland lane.",
-    "gemini-2.0-retirement-drift": "NEW 2026-07-20: Google's official docs mark `gemini-2.0-flash` and `gemini-2.0-flash-lite` shut down as of June 1, 2026, but the live `gemini_local` catalog still advertises both IDs and AGY reroutes both to Gemini 3.5 Flash. Follow-up radar issue: TSBC-1111.",
-    "claude-mythos-5": "Unchanged 2026-07-20: docs and `claude_local` catalog still list it, but Claude Code still returns a model/no-access error on this lane; this still matches Anthropic's limited-availability positioning rather than a public GA flip.",
-    "opencode-gpt-5.6-catalog": "Unchanged 2026-07-20: `opencode_local` still reports 111 models and retains the tracked GPT-5.6 / gemma / Kimi notables including `cloudflare-ai-gateway/moonshotai/kimi-k3`. This remains served-catalog evidence from Ireland; a direct workspace `opencode` probe is still blocked locally by missing `CLOUDFLARE_GATEWAY_ID`.",
-    "codex-gpt-5.6-base-id-gate": "Unchanged 2026-07-20: the adapter catalog still lists `gpt-5.6` and the docs front-door still routes `gpt-5.6` to Sol, but the ChatGPT-backed Codex lane still rejects base `gpt-5.6` while `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` return OK. Keep explicit family IDs in matrices and smoke tests."
+    "grok-4.5": "Unchanged 2026-07-27: the Ireland consumer Grok host still exposes `grok-4.5`, `grok models` still lists `grok-4.5` as the default available model, direct `grok-4.5` still returns OK, and direct `grok-build` is still an invalid model id. Served `grok_local` notes still default to `grok-build`. Radar issue: TSBC-1294.",
+    "grok-local-default-drift": "Unchanged 2026-07-27: served `grok_local` adapter docs still default to `grok-build`, but the native consumer Grok CLI continues to expose and execute `grok-4.5` directly on the Ireland host. Radar issue: TSBC-1294.",
+    "gemini-catalog-drift": "Updated 2026-07-28: the live `gemini_local` catalog still omits AGY-native names such as `gemini-3.6-flash-high` / `gemini-3.6-flash-medium` / `gemini-3.6-flash-low`, still advertises retired `gemini-2.0-flash*` ids, and still does not expose the GA `gemini-3.5-flash-lite` id that Google docs now front. Tuesday's served `antigravity_local` catalog now surfaces explicit labels for those AGY-visible families, but live execution truth still drifts under them. Radar issues: TSBC-1235, TSBC-1296, TSBC-1309, and TSBC-1340.",
+    "agy-gemini-routing-drift": "Updated 2026-07-28: AGY 1.1.8 still lists the same visible `gemini-3.6-flash*` family on the Ireland surface, but Tuesday execution truth shifted again while served `antigravity_local` began surfacing explicit labels. Raw `gemini-3.6-flash`, `Gemini 3.6 Flash (High)`, and `Gemini 3.6 Flash (Medium)` now identify as plain `Gemini 3.6 Flash`, while raw `Gemini 3.1 Pro (High)` and configured `Gemini 3.1 Pro (Low)` now identify as `Gemini 3.6 Flash (High)`. Treat AGY name acceptance as routing/name-surface drift unless the lane emits stronger served-model proof. Radar issues: TSBC-1188, TSBC-1206, TSBC-1235, TSBC-1296, TSBC-1309, and TSBC-1340.",
+    "gemini-2.0-retirement-drift": "Updated 2026-07-28: Google's official docs still mark `gemini-2.0-flash` and `gemini-2.0-flash-lite` shut down, but the live `gemini_local` catalog still advertises both ids. Tuesday's AGY 1.1.8 lane reroutes `gemini-2.0-flash` to plain `Gemini 3.6 Flash`. Historical radar issue: TSBC-1111; current drift packets: TSBC-1309 and TSBC-1340.",
+    "antigravity-model-truth-drift": "Updated 2026-07-28: 29 live `antigravity_local` agents across 8 companies still record configured Gemini labels that collapse onto Gemini 3.6 execution truth on the Ireland AGY 1.1.8 lane, and Tuesday's served `antigravity_local` catalog now surfaces explicit labels without resolving that truth gap. TSBC radars: TSBC-1188, TSBC-1206, TSBC-1235, TSBC-1296, TSBC-1309, and TSBC-1340. TSBC same-company defect issue: TSBC-1190.",
+    "claude-haiku-4.6-removal": "Unchanged 2026-07-26: `claude-haiku-4-6` remains absent from `claude_local`, and direct Ireland Claude Code probes still do not elevate it above `claude-haiku-4-5`. Radar issue: TSBC-1136.",
+    "opencode-hy3-free-removal": "Unchanged 2026-07-26: Tuesday's `opencode/hy3-free` removal remains unreversed. Sunday, July 26, 2026 added `opencode/ling-3.0-flash-free` as a separate new catalog event rather than restoring `opencode/hy3-free`. Historical radar issue: TSBC-1137.",
+    "opencode-laguna-s-2.1-free": "Updated 2026-07-26: served `opencode_local` still includes `opencode/laguna-s-2.1-free`, and the catalog count is now 112 after adding `opencode/ling-3.0-flash-free`. New radar issue: TSBC-1295.",
+    "claude-mythos-5": "Unchanged 2026-07-27: docs and `claude_local` still list it, but Claude Code still returns a model/no-access error on this lane; this still matches limited-availability positioning rather than a public GA flip.",
+    "codex-gpt-5.6-base-id-gate": "Unchanged 2026-07-27: the adapter catalog still lists `gpt-5.6` and the docs front-door still route `gpt-5.6` to Sol, but the ChatGPT-backed Codex lane still rejects base `gpt-5.6` while `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` return OK. Keep explicit family ids in matrices and smoke tests.",
+    "claude-opus-5": "Updated 2026-07-28: direct Ireland Claude Code probes for `claude-opus-5` are now quota-gated with `You've hit your weekly limit · resets 9am (Europe/Dublin)`, while the served `claude_local` catalog still advertises that id. Treat Tuesday as a live lane-gate event rather than a catalog removal. Radar lineage: TSBC-1293, TSBC-1298, and TSBC-1341.",
+    "gemini-3.5-flash-lite": "Updated 2026-07-28: Google docs still mark `gemini-3.5-flash-lite` generally available, but Tuesday's Ireland AGY 1.1.8 lane still routes raw `gemini-3.5-flash-lite` to plain `Gemini 3.6 Flash`, and the served `gemini_local` catalog still omits the GA id. Radar issues: TSBC-1296, TSBC-1309, and TSBC-1340.",
+    "opencode-ling-3.0-flash-free": "New 2026-07-26: served `opencode_local` added `opencode/ling-3.0-flash-free`, increasing the visible catalog count from 111 to 112 ids. Radar issue: TSBC-1295.",
+    "claude-code-weekly-limit-gate": "New 2026-07-28: the Ireland Claude Code subscription lane now returns `You've hit your weekly limit · resets 9am (Europe/Dublin)` for `claude-fable-5`, `claude-sonnet-5`, `claude-opus-5`, and `claude-haiku-4-5`. This is a live lane-capacity gate rather than a docs or catalog removal. Radar issue: TSBC-1341.",
+    "opencode-claude-opus-5": "New 2026-07-28: served `opencode_local` added `cloudflare-ai-gateway/anthropic/claude-opus-5`, increasing the visible catalog count from 112 to 113 ids on the Ireland host. Direct OpenCode gateway proof remains blocked by TSBC-1300. Radar issue: TSBC-1342."
   },
   "changesSincePrevious": [
-    "Google retirement drift routed on Monday, July 20, 2026: official docs mark `gemini-2.0-flash` and `gemini-2.0-flash-lite` shut down, but `gemini_local` still advertises both IDs and AGY reroutes both to Gemini 3.5 Flash. Radar issue: TSBC-1111.",
-    "Monday local catalog observation recovered on July 20, 2026: Ollama responded again and shows `gemma3:12b` and `qwen3:8b` installed; no separate local-model alert opened."
+    "Tuesday, July 28, 2026: the Ireland AGY lane moved from 1.1.7 to 1.1.8, shifted execution truth again, and the served antigravity_local catalog now surfaces explicit model labels while live routing remains unstable. TSBC radar issue: TSBC-1340.",
+    "Tuesday, July 28, 2026: the Ireland Claude Code subscription lane hit a weekly-limit gate across claude-fable-5, claude-sonnet-5, claude-opus-5, and claude-haiku-4-5. TSBC radar issue: TSBC-1341.",
+    "Tuesday, July 28, 2026: served opencode_local added cloudflare-ai-gateway/anthropic/claude-opus-5, increasing the visible catalog count from 112 to 113 ids. Direct OpenCode proof remains blocked by TSBC-1300. TSBC radar issue: TSBC-1342."
   ],
   "weeklyLiveness": {
     "fireDates": [
-      "2026-07-20"
+      "2026-07-27",
+      "2026-07-28"
     ],
-    "firesThisWeek": 1,
-    "changesThisWeek": 1,
-    "line": "model-watch alive: 1/7 fires this week, changes: 1"
+    "firesThisWeek": 2,
+    "changesThisWeek": 2,
+    "line": "model-watch alive: 2/7 fires this week, changes: 2"
   }
 }

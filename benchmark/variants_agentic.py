@@ -208,9 +208,11 @@ def main():
     models = [m for m in models if m.get("adapter") == "antigravity"]
     if skipped:
         print(f"  [skipping non-antigravity models (this eval is antigravity-only): {', '.join(skipped)}]")
+    models, held_models = benchlib.filter_models_for_active_holds(models, _cfg)
+    if held_models:
+        print(benchlib.format_model_hold_skip(held_models))
     if not models:
-        print("  no antigravity models selected — nothing to do. "
-              "Pick gemini-* model ids (adapter=antigravity).")
+        print("  no antigravity models remain after TSBC model guards — nothing to do.")
         return
 
     plan = []

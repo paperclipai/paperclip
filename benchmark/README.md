@@ -19,6 +19,7 @@ python3 bench.py all --dry-run            # plan + CLI-call estimate, runs nothi
 python3 bench.py all                      # full sweep -> results/run-<ts>/
 python3 bench.py all --max-tasks-per-role 1   # smoke (1 task/role, all models)
 python3 bench.py all --roles intake,engineer
+python3 bench.py all --roles ops --models grok-4.3,grok-4.20 --reps 3
 python3 bench.py all --models grok-4.3,grok-4.20   # just the grok showdown
 python3 bench.py report run-<ts>          # re-render report from a finished run
 ```
@@ -64,6 +65,36 @@ local agent harness. (Measuring the harness — skills/tools — is #16's job.)
 The normalized per-run record mirrors Paperclip's `usage_json`
 (`inputTokens`/`outputTokens`/`model`/`costUsd`) so the agent-scorecard and
 tiering tooling speak the same dialect.
+
+The shared ledger stores two model-eval record shapes:
+
+- `model_eval_pass` — one row per task repetition, including `rep`, `reps`,
+  requested/served model, verification flag, pass/fail, failure reason, token
+  counts, duration, and start/finish timestamps.
+- `model_eval` — one aggregate row per role/model/run. Aggregates retain the
+  historical query surface, but the current harness derives them from pass rows
+  instead of replacing the pass evidence.
+
+Historical rows that lack explicit run metadata use `unknown`, not guessed
+values. Antigravity (`agy`) runs must capture a same-run model self-report
+beside the requested pin; a self-report mismatch is recorded as
+`failure_reason: served_model_mismatch` and is never scored.
+
+## Publication gates
+
+The harness enforces three publication gates before a recommendation can become
+decision-grade:
+
+- Success-rate floor: `config.json -> recommendation.min_success_rate_for_quality`
+  defaults to `0.8`. Below that, quality and q/1k are emitted as `null` with a
+  `suppressed_reason`; the cell is failed, not absent.
+- Repetitions: `config.json -> run.reps` defaults to `3`, and
+  `recommendation.min_reps_for_decision` defaults to `3`. Runs may be lower for
+  smoke work, but under-repeated cells are capped at `candidate` and cannot
+  produce a decision-grade pick.
+- Incumbent baseline: roles listed in `incumbent_baselines` must include the
+  deployed agent + adapter + served-model row in the same run. If that baseline
+  is missing or only represented by an assumed model name, the verdict is `void`.
 
 ## Scoring
 

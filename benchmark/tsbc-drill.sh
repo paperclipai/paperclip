@@ -16,8 +16,12 @@ export PATH="/Users/glad0s/.local/bin:/opt/homebrew/bin:/usr/local/bin:/Users/gl
 cd /Users/glad0s/paperclip/benchmark || exit 1
 PY=/Library/Frameworks/Python.framework/Versions/3.14/bin/python3
 LOG=/Users/glad0s/paperclip/.devlogs/tsbc-drill.log
+AGY_LAST_RUN=/Users/glad0s/paperclip/.devlogs/tsbc-drill-agy-last-run.log
 CHEAP="grok-4.1-fast,grok-4-fast,gpt-5.4-mini,gpt-5.6-luna"
 TASKS=(content book-chapter video-hook social-post designer summarize-extract cv-review intake ops)
+AGY="agy-claude-opus-4.6,agy-claude-sonnet-4.6,agy-gpt-oss-120b"
+AGY_TASKS=(engineer ceo cto ledger auditor quant)
+AGY_TARGET=1
 # with-skills (#17) layer: roles that are BOTH a drill task AND a configured variants.json role
 # (have minimal+current agent-files + skillsDir). Once the bare base matrix is full, the drill
 # fills the production-config grid (current:none vs current:all) so we can see the skill's marginal lift.
@@ -37,6 +41,28 @@ VTASKS=(content book-chapter designer cv-review intake ops)
 VCHEAP="grok-4.1-fast,grok-4-fast,gpt-5.4-mini,gpt-5.6-luna"
 TARGET=10
 ts(){ date '+%F %T'; }
+quota_sleep_seconds(){
+  "$PY" - "$1" <<'PYEOF'
+import re, sys
+try:
+    text = open(sys.argv[1], errors="ignore").read()
+except FileNotFoundError:
+    print(0)
+    raise SystemExit
+if "Individual quota reached" not in text and "RESOURCE_EXHAUSTED" not in text:
+    print(0)
+    raise SystemExit
+matches = re.findall(r"Resets in (?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", text)
+if not matches:
+    print(1800)
+    raise SystemExit
+h, m, s = matches[-1]
+seconds = int(h or 0) * 3600 + int(m or 0) * 60 + int(s or 0)
+# AGY quota resets can now be multi-day. Sleep through the provider's stated
+# reset window instead of hammering every few hours while the lane is exhausted.
+print(max(300, min(seconds + 300, 604800)))
+PYEOF
+}
 
 echo "$(ts) tsbc-drill START (target=$TARGET samples/cell, models=$CHEAP)" >>"$LOG"
 while true; do
@@ -69,6 +95,59 @@ PYEOF
     pm="$("$PY" -c "import json;p=json.load(open('.tsbc-power.json'));print(p['mode'],p['maxWorkers'])" 2>/dev/null || echo "?")"
     echo "$(ts) drilling base: $NEXT  (power=$pm; bench self-caps)" >>"$LOG"
     "$PY" bench.py all --roles "$NEXT" --models "$CHEAP" --max-tasks-per-role 1 >>"$LOG" 2>&1 || echo "$(ts) bench pass error (continuing)" >>"$LOG"
+    sleep 30; continue
+  fi
+
+  # AGY pack: the Saturday, July 25, 2026 AGY sweep proved the model pins work, but
+  # quota exhaustion left the matrix partial and the cheap drill would otherwise sleep
+  # forever because it only tracks the old cheap pack. Refill the missing AGY role pack
+  # whenever a role lacks one publishable (success-floor-clearing) sample per AGY model.
+  NEXT_AGY="$("$PY" - "$AGY" "$AGY_TARGET" "${AGY_TASKS[@]}" <<'PYEOF'
+import collections, json, sys
+
+models = [m for m in sys.argv[1].split(",") if m]
+target = int(sys.argv[2])
+roles = sys.argv[3:]
+cfg = json.load(open("config.json"))
+threshold = float((cfg.get("recommendation", {}) or {}).get("min_success_rate_for_quality", 0.8))
+cnt = collections.defaultdict(lambda: collections.defaultdict(int))
+try:
+    for line in open("ledger/results.jsonl"):
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        metrics = row.get("metrics", {}) or {}
+        model = row.get("model")
+        role = row.get("test_class")
+        quality = metrics.get("quality")
+        success = float(metrics.get("successRate") or 0.0)
+        if model in models and role in roles and quality is not None and success >= threshold:
+            cnt[role][model] += 1
+except FileNotFoundError:
+    pass
+
+best = None
+best_min = 10 ** 9
+for role in roles:
+    role_min = min(cnt[role].get(model, 0) for model in models)
+    if role_min < target and role_min < best_min:
+        best_min = role_min
+        best = role
+print(best or "")
+PYEOF
+)"
+  if [ -n "$NEXT_AGY" ]; then
+    pm="$("$PY" -c "import json;p=json.load(open('.tsbc-power.json'));print(p['mode'],p['maxWorkers'])" 2>/dev/null || echo "?")"
+    echo "$(ts) drilling AGY: $NEXT_AGY  (target=$AGY_TARGET role-pass/model; power=$pm)" >>"$LOG"
+    "$PY" bench.py all --roles "$NEXT_AGY" --models "$AGY" >"$AGY_LAST_RUN" 2>&1 || echo "$(ts) agy pass error (continuing)" >>"$LOG"
+    cat "$AGY_LAST_RUN" >>"$LOG"
+    quota_sleep="$(quota_sleep_seconds "$AGY_LAST_RUN" 2>/dev/null || echo 0)"
+    if [ "${quota_sleep:-0}" -gt 0 ]; then
+      echo "$(ts) AGY quota halt detected — sleeping ${quota_sleep}s before retry" >>"$LOG"
+      sleep "$quota_sleep"
+      continue
+    fi
     sleep 30; continue
   fi
 
