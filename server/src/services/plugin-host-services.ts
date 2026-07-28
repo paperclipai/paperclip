@@ -34,7 +34,7 @@ import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
-import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { creatorHandoffActivitySource, issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -2518,11 +2518,15 @@ export function buildHostServices(
 
         const actor = { userId: params.actorUserId };
         let resolved: typeof current;
-        let continuationTarget = {
-          id: issue.id,
-          assigneeAgentId: issue.assigneeAgentId,
-          status: issue.status,
-        };
+        // Non-null only when the resolution handed the issue back to the asking
+        // agent. Kept whole rather than folded straight into the wake target,
+        // because the audit entry below needs the new user assignee too.
+        let handoffIssue: {
+          id: string;
+          assigneeAgentId?: string | null;
+          assigneeUserId?: string | null;
+          status: string;
+        } | null = null;
         if (params.action === "accept") {
           const result = await interactions.acceptInteraction(
             {
@@ -2537,13 +2541,7 @@ export function buildHostServices(
             actor,
           );
           resolved = result.interaction as typeof current;
-          if (result.continuationIssue) {
-            continuationTarget = {
-              id: result.continuationIssue.id,
-              assigneeAgentId: result.continuationIssue.assigneeAgentId,
-              status: result.continuationIssue.status,
-            };
-          }
+          handoffIssue = result.continuationIssue ?? null;
         } else {
           const result = await interactions.rejectInteraction(
             { id: issue.id, companyId, status: issue.status },
@@ -2554,14 +2552,20 @@ export function buildHostServices(
           resolved = result.interaction as typeof current;
           // A decline hands the issue back to the asking agent on the same terms
           // as an acceptance, so the continuation wake has to follow it there.
-          if (result.continuationIssue) {
-            continuationTarget = {
-              id: result.continuationIssue.id,
-              assigneeAgentId: result.continuationIssue.assigneeAgentId,
-              status: result.continuationIssue.status,
-            };
-          }
+          handoffIssue = result.continuationIssue ?? null;
         }
+
+        const continuationTarget = handoffIssue
+          ? {
+              id: handoffIssue.id,
+              assigneeAgentId: handoffIssue.assigneeAgentId ?? null,
+              status: handoffIssue.status,
+            }
+          : {
+              id: issue.id,
+              assigneeAgentId: issue.assigneeAgentId,
+              status: issue.status,
+            };
 
         await logPluginActivity({
           companyId,
@@ -2578,6 +2582,34 @@ export function buildHostServices(
             interactionStatus: resolved.status,
           },
         });
+
+        // The handoff reassigns the issue from a human to an agent and moves its
+        // status. That is an ownership change, not an interaction detail, so it
+        // gets its own `issue.updated` entry with the previous state — otherwise
+        // the issue silently changes hands with nothing in the activity history
+        // to explain it. Mirrors `logInteractionCreatorHandoff` on the HTTP path.
+        if (handoffIssue) {
+          await logPluginActivity({
+            companyId,
+            action: "issue.updated",
+            entityType: "issue",
+            entityId: issue.id,
+            actor: { actorUserId: params.actorUserId },
+            details: {
+              identifier: issue.identifier,
+              status: handoffIssue.status,
+              assigneeAgentId: handoffIssue.assigneeAgentId ?? null,
+              assigneeUserId: handoffIssue.assigneeUserId ?? null,
+              source: creatorHandoffActivitySource(resolved.kind, resolved.status),
+              interactionId: resolved.id,
+              _previous: {
+                status: issue.status,
+                assigneeAgentId: issue.assigneeAgentId ?? null,
+                assigneeUserId: issue.assigneeUserId ?? null,
+              },
+            },
+          });
+        }
 
         queuePluginInteractionContinuationWakeup({
           issue: continuationTarget,

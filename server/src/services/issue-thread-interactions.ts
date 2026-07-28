@@ -609,6 +609,30 @@ function wouldQueueResolvedContinuationWakeup(continuationPolicy: string, resolv
 }
 
 /**
+ * Activity `source` for a creator-agent handoff, keyed by kind *and* resolved
+ * status: each eligible kind hands the issue back on both its acceptance and its
+ * refusal path, and a decline logged as `..._accept` would misreport why the
+ * issue moved.
+ *
+ * Lives next to the eligibility rules rather than in the route layer because the
+ * plugin host records the same handoff and has to label it identically.
+ */
+const CREATOR_HANDOFF_ACTIVITY_SOURCES: Record<string, string> = {
+  "request_confirmation:accepted": "request_confirmation_accept",
+  "request_confirmation:rejected": "request_confirmation_reject",
+  "request_checkbox_confirmation:accepted": "request_confirmation_accept",
+  "request_checkbox_confirmation:rejected": "request_confirmation_reject",
+  "suggest_tasks:accepted": "suggest_tasks_accept",
+  "suggest_tasks:rejected": "suggest_tasks_reject",
+  "ask_user_questions:answered": "ask_user_questions_answer",
+  "ask_user_questions:cancelled": "ask_user_questions_cancel",
+};
+
+export function creatorHandoffActivitySource(kind: string, status: string): string {
+  return CREATOR_HANDOFF_ACTIVITY_SOURCES[`${kind}:${status}`] ?? "interaction_resolved";
+}
+
+/**
  * Which resolutions can hand a user-assigned issue back to the agent that created
  * the interaction.
  *
