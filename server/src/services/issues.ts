@@ -7840,23 +7840,40 @@ export function issueService(db: Db) {
       // The LIKE prefilter is broader than mention parsing (a raw agent id in
       // plain text matches it), so scan candidates in bounded batches instead
       // of a bare limit(1) — the first candidate row is not always a mention.
+      // Keyset pagination (not OFFSET): a comment deleted between batches
+      // shifts the filtered rows, and an OFFSET scan would skip one.
       const MENTION_SCAN_BATCH = 100;
-      for (let offset = 0; ; offset += MENTION_SCAN_BATCH) {
-        const comments = await db
-          .select({ body: issueComments.body })
+      let cursor: { createdAt: Date; id: string } | null = null;
+      for (;;) {
+        const comments: Array<{ id: string; createdAt: Date; body: string }> = await db
+          .select({
+            id: issueComments.id,
+            createdAt: issueComments.createdAt,
+            body: issueComments.body,
+          })
           .from(issueComments)
           .where(and(
             eq(issueComments.issueId, issueId),
             isNull(issueComments.deletedAt),
             like(issueComments.body, `%${agentId}%`),
+            cursor
+              ? or(
+                gt(issueComments.createdAt, cursor.createdAt),
+                and(
+                  eq(issueComments.createdAt, cursor.createdAt),
+                  gt(issueComments.id, cursor.id),
+                ),
+              )
+              : undefined,
           ))
           .orderBy(asc(issueComments.createdAt), asc(issueComments.id))
-          .limit(MENTION_SCAN_BATCH)
-          .offset(offset);
+          .limit(MENTION_SCAN_BATCH);
         if (comments.some((comment) => extractAgentMentionIds(comment.body).includes(agentId))) {
           return true;
         }
         if (comments.length < MENTION_SCAN_BATCH) return false;
+        const last = comments[comments.length - 1];
+        cursor = { createdAt: last.createdAt, id: last.id };
       }
     },
 
