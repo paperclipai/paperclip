@@ -521,10 +521,17 @@ export function createIssueImageGenerationJobService(
         last_error = NULL
       FROM candidate
       WHERE jobs.id = candidate.id
-      RETURNING jobs.*
+      RETURNING jobs.id
     `);
-    const row = Array.isArray(rows) ? rows[0] : (rows as { rows?: unknown[] }).rows?.[0];
-    return row ? selectShape(row as JobRow) : null;
+    const row = Array.isArray(rows) ? rows[0] : (rows as { rows?: Array<{ id?: string }> }).rows?.[0];
+    const jobId = row?.id;
+    if (!jobId) return null;
+    const job = await db
+      .select()
+      .from(issueImageGenerationJobs)
+      .where(eq(issueImageGenerationJobs.id, jobId))
+      .then((claimedRows) => claimedRows[0] ?? null);
+    return job ? selectShape(job) : null;
   }
 
   async function renewLease(job: JobSelect): Promise<boolean> {
