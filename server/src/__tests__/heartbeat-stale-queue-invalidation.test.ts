@@ -1476,6 +1476,67 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBeNull();
   });
 
+  it("runs a named manager unblock wake on a report-owned issue without first-class blockers", async () => {
+    const { companyId, agentId: managerAgentId } = await seedCompanyAndAgent({ agentName: "ManagerAgent" });
+    const reportAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: reportAgentId,
+      companyId,
+      name: "ReportAgent",
+      role: "engineer",
+      status: "active",
+      reportsTo: managerAgentId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    const blockedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockedIssueId,
+      companyId,
+      title: "Blocked report-owned task without issue relation",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: reportAgentId,
+      unblockDescriptor: {
+        owner: { agentId: managerAgentId },
+        action: "Choose the recovery path",
+      },
+      blockedTransitionAt: new Date(),
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId: managerAgentId,
+      issueId: blockedIssueId,
+      wakeReason: "issue_unblock_requested",
+      invocationSource: "automation",
+      contextExtras: { source: "issue.blocked" },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
   it("runs a named manager unblock wake on a report-owned issue with unresolved blockers", async () => {
     const { companyId, agentId: managerAgentId } = await seedCompanyAndAgent({ agentName: "ManagerAgent" });
     const reportAgentId = randomUUID();
