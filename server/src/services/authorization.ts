@@ -461,15 +461,14 @@ function activeActorMembership(
   return memberships?.find((membership) => membership.companyId === companyId && membership.status === "active") ?? null;
 }
 
-function activeResponsibleUserCanAuthorizeIssueAction(
-  action: AuthorizationAction,
+function activeResponsibleUserCanDeferUnsupportedAction(
+  _action: AuthorizationAction,
   membership: ResponsibleUserSnapshot["activeMembership"],
 ) {
   return Boolean(
     membership &&
     membership.status === "active" &&
-    membership.membershipRole !== "viewer" &&
-    (action === "issue:comment" || action === "issue:mutate")
+    membership.membershipRole !== "viewer"
   );
 }
 
@@ -1675,6 +1674,7 @@ export function authorizationService(db: Db) {
     if (
       input.action === "agent:read" ||
       input.action === "company_scope:read" ||
+      input.action === "issue:comment" ||
       input.action === "issue:read" ||
       input.action === "project:read" ||
       input.action === "runtime:manage" ||
@@ -1725,7 +1725,7 @@ export function authorizationService(db: Db) {
       });
     }
 
-    if (input.action === "issue:comment" || input.action === "issue:mutate") {
+    if (input.action === "issue:mutate") {
       const resource = input.resource.type === "issue" ? input.resource : null;
       if (resource?.assigneeAgentId === actorAgentId) {
         return allow({
@@ -1740,19 +1740,6 @@ export function authorizationService(db: Db) {
           reason: "allow_company_agent",
           explanation: "Allowed because the issue has no agent assignee.",
         });
-      }
-      if (
-        input.action === "issue:comment" &&
-        resource?.issueId &&
-        await agentHasMentionGrantOnIssue({
-          action: input.action,
-          companyId,
-          issueId: resource.issueId,
-          issueAssigneeAgentId: resource.assigneeAgentId ?? null,
-          actorAgentId,
-        })
-      ) {
-        return allowIssueMentionGrant(input.action);
       }
     }
     if (
@@ -1886,7 +1873,7 @@ export function authorizationService(db: Db) {
     if (
       !userDecision.allowed &&
       userDecision.reason === "deny_unsupported_action" &&
-      activeResponsibleUserCanAuthorizeIssueAction(input.action, snapshot.activeMembership)
+      activeResponsibleUserCanDeferUnsupportedAction(input.action, snapshot.activeMembership)
     ) {
       return agentDecision;
     }

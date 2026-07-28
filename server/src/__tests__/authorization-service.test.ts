@@ -71,6 +71,7 @@ async function createIssue(
   input: {
     id?: string;
     title?: string;
+    status?: string;
     projectId?: string | null;
     parentId?: string | null;
     assigneeAgentId?: string | null;
@@ -84,7 +85,7 @@ async function createIssue(
       id: input.id ?? randomUUID(),
       companyId,
       title: input.title ?? `Issue ${randomUUID()}`,
-      status: "todo",
+      status: input.status ?? "todo",
       priority: "medium",
       projectId: input.projectId ?? null,
       parentId: input.parentId ?? null,
@@ -430,6 +431,44 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("simple mode");
   });
 
+  it("allows standard peer agents to comment company-wide without granting issue mutation", async () => {
+    const company = await createCompany(db, "StandardPeerComment");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const peerAgent = await createAgent(db, company.id, { role: "qa" });
+    const issue = await createIssue(db, company.id, {
+      title: "Peer-owned active issue",
+      status: "in_progress",
+      assigneeAgentId: ownerAgent.id,
+    });
+    const authz = authorizationService(db);
+    const actor = { type: "agent" as const, agentId: peerAgent.id, companyId: company.id, source: "agent_key" as const };
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    };
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_company_agent",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
   it("denies delegated protected assignment when the responsible user lacks matching authority", async () => {
     const company = await createCompany(db, "ResponsibleUserDenied");
     const actorAgent = await createAgent(db, company.id, { role: "engineer" });
@@ -501,6 +540,34 @@ describeEmbeddedPostgres("authorization service", () => {
         issueId: issue.id,
         assigneeAgentId: actorAgent.id,
       },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_self",
+    });
+  });
+
+  it("does not let responsible-user unsupported-action decisions veto agent-allowed self config reads", async () => {
+    const company = await createCompany(db, "ResponsibleUserUnsupportedConfigRead");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const responsibleUserId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: actorAgent.id },
     })).resolves.toMatchObject({
       allowed: true,
       reason: "allow_self",

@@ -792,6 +792,40 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("allows company-scope peer agents to post comments but not patch another agent's active issue", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment" || input.action === "issue:read",
+      action: input.action,
+      reason:
+        input.action === "issue:comment" || input.action === "issue:read"
+          ? "allow_company_agent"
+          : "deny_missing_grant",
+      explanation:
+        input.action === "issue:comment" || input.action === "issue:read"
+          ? "Allowed by standard same-company agent visibility."
+          : "Missing permission.",
+    }));
+
+    const app = await createApp(peerActor());
+    const comment = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Company-scoped QA note." });
+    expect(comment.status, JSON.stringify(comment.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Company-scoped QA note.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+
+    const patch = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked" });
+    expect(patch.status, JSON.stringify(patch.body)).toBe(403);
+    expect(patch.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("rejects non-mentioned peer agents from posting comments", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:read",
