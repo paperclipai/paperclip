@@ -1359,6 +1359,13 @@
       "when": 1785170000001,
       "tag": "0195_built_in_agent_unique_marker",
       "breakpoints": true
+    },
+    {
+      "idx": 196,
+      "version": "7",
+      "when": 1785170000002,
+      "tag": "0196_agent_wakeup_idempotency_key_unique",
+      "breakpoints": true
     }
   ]
 }

@@ -22,7 +22,11 @@ export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
 export { agentRuntimeState } from "./agent_runtime_state.js";
 export { agentTaskSessions } from "./agent_task_sessions.js";
-export { agentWakeupRequests } from "./agent_wakeup_requests.js";
+export {
+  agentWakeupRequests,
+  IDEMPOTENT_AGENT_WAKEUP_STATUSES,
+  type IdempotentAgentWakeupStatus,
+} from "./agent_wakeup_requests.js";
 export { projects } from "./projects.js";
 export { projectMemberships } from "./project_memberships.js";
 export { documentMemberships } from "./document_memberships.js";

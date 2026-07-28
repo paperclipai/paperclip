@@ -1,6 +1,30 @@
-import { pgTable, uuid, text, timestamp, jsonb, integer, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, timestamp, jsonb, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
+
+/**
+ * Wake statuses in which a request still represents a wake that took effect,
+ * so a second request carrying the same idempotency key must not create a
+ * second run.
+ *
+ * Deliberately excludes every status that means "this wake did NOT happen"
+ * (`skipped`, `coalesced`, `failed`, `cancelled`): suppressing a later wake
+ * because an earlier one was skipped would silently drop work, which is a
+ * worse failure than an occasional duplicate run.
+ */
+export const IDEMPOTENT_AGENT_WAKEUP_STATUSES = [
+  "queued",
+  "claimed",
+  "deferred_issue_execution",
+  "completed",
+] as const;
+
+export type IdempotentAgentWakeupStatus = (typeof IDEMPOTENT_AGENT_WAKEUP_STATUSES)[number];
+
+const idempotentStatusList = sql.raw(
+  IDEMPOTENT_AGENT_WAKEUP_STATUSES.map((status) => `'${status}'`).join(", "),
+);
 
 export const agentWakeupRequests = pgTable(
   "agent_wakeup_requests",
@@ -36,5 +60,12 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    // Makes the idempotency key enforceable instead of decorative: the enqueue
+    // path checks for a live wake with the same key first, and this index wins
+    // the race the check cannot see (two concurrent enqueues both missing the
+    // other's uncommitted row).
+    companyIdempotencyKeyUq: uniqueIndex("agent_wakeup_requests_company_idempotency_key_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} is not null and ${table.status} in (${idempotentStatusList})`),
   }),
 );
