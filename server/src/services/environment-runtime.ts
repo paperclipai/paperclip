@@ -189,7 +189,7 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   stdin?: string;
   timeoutMs?: number;
   /**
-   * Skip the Daytona login-shell profile sourcing for commands that already
+   * Skip login-shell profile sourcing for commands that already
    * resolve on the sandbox default PATH.
    */
   noProfile?: boolean;

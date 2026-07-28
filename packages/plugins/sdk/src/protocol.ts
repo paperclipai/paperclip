@@ -651,7 +651,7 @@ export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverB
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
-  /** Skip the Daytona login-shell profile sourcing when the command already resolves on the sandbox default PATH. */
+  /** Skip login-shell profile sourcing when the command already resolves on the sandbox default PATH. */
   noProfile?: boolean;
 }
 
