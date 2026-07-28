@@ -48,6 +48,51 @@ PREAMBLE = (
     "To change a rule, edit ../shared/GENESIS-WEBSITE-GUARDRAILS.md — DO NOT edit the inlined copy."
 )
 
+DANGEROUS_CANONICAL_PATTERNS = {
+    r"GENESIS_SAFETY_BYPASS\s*=\s*1": "executable safety-bypass assignment",
+    r"putenv\([^\n]*GENESIS_SAFETY_BYPASS": "PHP safety-bypass recipe",
+    r"remove_all_filters\(\s*[\"']wp_insert_post_data": "content-safety filter removal",
+    r"(?im)^\s*\d+\.\s+Drop L2 trigger": "instruction to drop the database guard",
+    r"(?im)^\s*\d+\.\s+Rename L1 mu-plugins": "instruction to disable the application guard",
+    r"cloudflare-genesis\.json": "retired persisted Cloudflare credential-file recipe",
+    r"(?im)^\s*(?:OR\s+)?post_content\s+LIKE\s+[\"']%rn %": "false-positive-prone rn-space detector",
+}
+
+
+def validate_canonical_semantics(body: str) -> list[str]:
+    """Reject known fail-open recipes before propagating them to every agent."""
+    errors = []
+    for pattern, description in DANGEROUS_CANONICAL_PATTERNS.items():
+        if re.search(pattern, body):
+            errors.append(description)
+    required = (
+        "## 0.1 Implementation-lane gate (Hailey-first)",
+        "never drop, disable, rename or bypass a Wall layer",
+        "GENESIS_PROTECTED posts (no bypass permitted)",
+        "wpseo_sitemap_urlimages",
+        "A sitemap-only crawl is not a full archive audit.",
+        "genesis-converted-gif-background-video-js",
+        "genesis-converted-gif-background-video-css",
+        "update only `wp_posts.post_excerpt`",
+        "CLOUDFLARE_ZONE_ID",
+        "CLOUDFLARE_API_TOKEN",
+        "CLOUDFLARE_API_KEY",
+        "Yoast may strip an unknown cache-buster",
+        "header/logo boxes",
+        "fail-safe dark boot shield",
+        "generation tokens and cancelled timers",
+        "visible follower is 24 px",
+        "Scope Jarallax overrides",
+        "visible “GEO section” is not required",
+        "Never strip the letter `t` globally",
+        "Compare deployed mu-plugin SHA-256 values",
+        "scripts/sync-genesis-overlay.py --apply",
+    )
+    for text in required:
+        if text not in body:
+            errors.append(f"missing required fail-closed clause: {text}")
+    return errors
+
 
 def build_canonical_block() -> str:
     """Build the full marker block (BEGIN + preamble + canonical body + END).
@@ -126,6 +171,13 @@ def main(argv: list[str]) -> int:
         print(f"ERROR: canonical file not found at {CANONICAL_PATH}", file=sys.stderr)
         return 2
 
+    canonical_body = CANONICAL_PATH.read_text(encoding="utf-8")
+    semantic_errors = validate_canonical_semantics(canonical_body)
+    if semantic_errors:
+        for error in semantic_errors:
+            print(f"ERROR: unsafe canonical semantics: {error}", file=sys.stderr)
+        return 2
+
     new_block = build_canonical_block()
 
     agent_files = list(find_agent_markdown_files())
@@ -133,7 +185,7 @@ def main(argv: list[str]) -> int:
         print(f"ERROR: no agent AGENTS.md found under {COMPANY_DIR / 'agents'}", file=sys.stderr)
         return 2
 
-    changed = unchanged = missing = 0
+    changed = unchanged = missing = unsafe = 0
     for path in agent_files:
         text = path.read_text(encoding="utf-8")
         existing = current_block(text)
@@ -141,7 +193,16 @@ def main(argv: list[str]) -> int:
             print(f"MISSING marker: {path.relative_to(REPO_ROOT)}")
             missing += 1
             continue
-        if existing.strip() == new_block.strip():
+        in_sync = existing.strip() == new_block.strip()
+        prospective_text = text if in_sync else apply_block(text, new_block)
+        entry_errors = validate_canonical_semantics(prospective_text)
+        if entry_errors:
+            rel = path.relative_to(REPO_ROOT)
+            for error in entry_errors:
+                print(f"ERROR: unsafe full agent entry {rel}: {error}", file=sys.stderr)
+            unsafe += 1
+            continue
+        if in_sync:
             unchanged += 1
             continue
         changed += 1
@@ -149,8 +210,7 @@ def main(argv: list[str]) -> int:
         if args.check:
             print(f"OUT-OF-DATE: {rel}")
         elif args.apply:
-            new_text = apply_block(text, new_block)
-            path.write_text(new_text, encoding="utf-8")
+            path.write_text(prospective_text, encoding="utf-8")
             print(f"UPDATED: {rel}")
         else:
             print(f"OUT-OF-DATE: {rel}")
@@ -165,7 +225,11 @@ def main(argv: list[str]) -> int:
                 for line in diff:
                     print(f"  {line}", end="")
 
-    print(f"\nSummary: changed={changed} unchanged={unchanged} missing-marker={missing}")
+    print(f"\nSummary: changed={changed} unchanged={unchanged} missing-marker={missing} unsafe-entry={unsafe}")
+
+    if unsafe:
+        print("SYNC BLOCKED — remove fail-open recipes from the complete AGENTS.md entry files.", file=sys.stderr)
+        return 2
 
     if args.check and (changed or missing):
         print("CHECK FAILED — run scripts/sync-genesis-overlay.py --apply to bring in sync.", file=sys.stderr)
