@@ -21,6 +21,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { authorizationService } from "../services/authorization.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1647,6 +1648,70 @@ describeEmbeddedPostgres("authorization service", () => {
       },
       scope: { allowIssueUnblockOwner: true },
     })).resolves.toMatchObject({ allowed: false });
+  });
+
+  it("atomically rejects stale unblock-owner issue writes and comments", async () => {
+    const company = await createCompany(db, "UnblockOwnerWriteRace");
+    const assignee = await createAgent(db, company.id);
+    const owner = await createAgent(db, company.id);
+    const replacementOwner = await createAgent(db, company.id);
+    const issue = await createIssue(db, company.id, {
+      status: "blocked",
+      assigneeAgentId: assignee.id,
+      unblockDescriptor: {
+        owner: { agentId: owner.id },
+        action: "Perform the unblock action",
+      },
+    });
+    const svc = issueService(db);
+    const writeOptions = { expectedBlockedUnblockOwnerAgentId: owner.id };
+
+    await db.update(issues).set({
+      unblockDescriptor: {
+        owner: { agentId: replacementOwner.id },
+        action: "Replacement owner action",
+      },
+    }).where(eq(issues.id, issue.id));
+
+    await expect(svc.update(issue.id, { status: "todo" }, db, writeOptions)).resolves.toBeNull();
+    await expect(svc.addComment(
+      issue.id,
+      "Stale owner comment",
+      { agentId: owner.id },
+      writeOptions,
+    )).rejects.toMatchObject({ status: 409 });
+    await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issue.id)))
+      .resolves.toHaveLength(0);
+
+    await db.update(issues).set({
+      status: "todo",
+      unblockDescriptor: {
+        owner: { agentId: owner.id },
+        action: "Owner action after status change",
+      },
+    }).where(eq(issues.id, issue.id));
+    await expect(svc.addComment(
+      issue.id,
+      "Comment after issue left blocked",
+      { agentId: owner.id },
+      writeOptions,
+    )).rejects.toMatchObject({ status: 409 });
+
+    await db.update(issues).set({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: { agentId: owner.id },
+        action: "Current owner action",
+      },
+    }).where(eq(issues.id, issue.id));
+    await expect(svc.addComment(
+      issue.id,
+      "Current owner comment",
+      { agentId: owner.id },
+      writeOptions,
+    )).resolves.toMatchObject({ body: "Current owner comment" });
+    await expect(svc.update(issue.id, { status: "todo" }, db, writeOptions))
+      .resolves.toMatchObject({ status: "todo" });
   });
 
   it("allows mentioned agents to read and comment on assigned issues without granting issue mutation", async () => {

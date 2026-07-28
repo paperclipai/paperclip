@@ -7543,6 +7543,7 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
+      options?: { expectedBlockedUnblockOwnerAgentId?: string },
     ) => {
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications = postCommitActivityPublications ?? ownedActivityPublications;
@@ -7740,10 +7741,17 @@ export function issueService(db: Db) {
           projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
+        const updatePredicate = options?.expectedBlockedUnblockOwnerAgentId
+          ? and(
+              eq(issues.id, id),
+              eq(issues.status, "blocked"),
+              sql`${issues.unblockDescriptor}->'owner'->>'agentId' = ${options.expectedBlockedUnblockOwnerAgentId}`,
+            )
+          : eq(issues.id, id);
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(eq(issues.id, id))
+          .where(updatePredicate)
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
@@ -8706,107 +8714,131 @@ export function issueService(db: Db) {
         authorizationReason?: string | null;
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
+        expectedBlockedUnblockOwnerAgentId?: string;
       },
       dbOrTx: any = db,
     ) => {
-      const issue = await dbOrTx
-        .select({ companyId: issues.companyId })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
+      const runAddComment = async (executor: any) => {
+        const expectedOwnerAgentId = options?.expectedBlockedUnblockOwnerAgentId;
+        const issue = expectedOwnerAgentId
+          ? await executor
+              .update(issues)
+              .set({ updatedAt: new Date() })
+              .where(and(
+                eq(issues.id, issueId),
+                eq(issues.status, "blocked"),
+                sql`${issues.unblockDescriptor}->'owner'->>'agentId' = ${expectedOwnerAgentId}`,
+              ))
+              .returning({ companyId: issues.companyId })
+              .then((rows: Array<{ companyId: string }>) => rows[0] ?? null)
+          : await executor
+              .select({ companyId: issues.companyId })
+              .from(issues)
+              .where(eq(issues.id, issueId))
+              .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
 
-      if (!issue) throw notFound("Issue not found");
-
-      const currentUserRedactionOptions = {
-        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
-      };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
-      const authorType = issueCommentAuthorTypeSchema.parse(
-        options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
-      );
-      assertIssueCommentAuthorTypeAllowed(actor, authorType);
-      const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
-      const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
-      // Invalid/stale run ids must not 500 the insert — null out unknowns.
-      const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
-      if (actor.runId && !createdByRunId) {
-        logger.warn(
-          { issueId, companyId: issue.companyId, runId: actor.runId },
-          "dropping invalid createdByRunId for issue comment insert",
-        );
-      }
-      const onBehalfOfUserId = actor.agentId
-        ? await resolveCommentResponsibleUserId(
-            dbOrTx,
-            issue.companyId,
-            createdByRunId,
-            actor.onBehalfOfUserId,
-          )
-        : null;
-      const metadata = issueCommentMetadataSchema.nullable().parse(
-        actor.agentId
-          ? withAgentCommentAuthorizationMetadata(options?.metadata ?? null, options?.authorizationReason)
-          : options?.metadata ?? null,
-      );
-      const [comment] = await dbOrTx
-        .insert(issueComments)
-        .values({
-          companyId: issue.companyId,
-          issueId,
-          authorAgentId: actor.agentId ?? null,
-          authorUserId: actor.userId ?? null,
-          onBehalfOfUserId,
-          authorType,
-          createdByRunId,
-          body: redactedBody,
-          presentation,
-          metadata,
-          sourceTrust: options?.sourceTrust ?? null,
-          ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
-        })
-        .returning();
-
-      // Update issue's updatedAt so comment activity is reflected in recency sorting
-      await dbOrTx
-        .update(issues)
-        .set({ updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
-
-      if (
-        authorType === "user" &&
-        actor.userId &&
-        actor.userId !== "board-concierge" &&
-        !createdByRunId
-      ) {
-        const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
-        const expiredInteractions = await issueThreadInteractionService(dbOrTx)
-          .expireRequestConfirmationsSupersededByComment(
-            { id: issueId, companyId: issue.companyId },
-            comment,
-            { agentId: actor.agentId, userId: actor.userId },
-          );
-        for (const interaction of expiredInteractions) {
-          await logActivity(dbOrTx, {
-            companyId: issue.companyId,
-            actorType: "user",
-            actorId: actor.userId,
-            agentId: actor.agentId ?? null,
-            runId: createdByRunId,
-            action: "issue.thread_interaction_expired",
-            entityType: "issue",
-            entityId: issueId,
-            details: {
-              interactionId: interaction.id,
-              interactionKind: interaction.kind,
-              interactionStatus: interaction.status,
-              source: "issue.comment.service",
-              result: interaction.result ?? null,
-            },
-          });
+        if (!issue) {
+          if (expectedOwnerAgentId) throw conflict("Unblock owner authorization became stale");
+          throw notFound("Issue not found");
         }
-      }
 
-      return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+        const currentUserRedactionOptions = {
+          enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+        };
+        const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+        const authorType = issueCommentAuthorTypeSchema.parse(
+          options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
+        );
+        assertIssueCommentAuthorTypeAllowed(actor, authorType);
+        const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
+        const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+        // Invalid/stale run ids must not 500 the insert — null out unknowns.
+        const createdByRunId = await resolveCommentCreatedByRunId(executor, issue.companyId, actor.runId);
+        if (actor.runId && !createdByRunId) {
+          logger.warn(
+            { issueId, companyId: issue.companyId, runId: actor.runId },
+            "dropping invalid createdByRunId for issue comment insert",
+          );
+        }
+        const onBehalfOfUserId = actor.agentId
+          ? await resolveCommentResponsibleUserId(
+              executor,
+              issue.companyId,
+              createdByRunId,
+              actor.onBehalfOfUserId,
+            )
+          : null;
+        const metadata = issueCommentMetadataSchema.nullable().parse(
+          actor.agentId
+            ? withAgentCommentAuthorizationMetadata(options?.metadata ?? null, options?.authorizationReason)
+            : options?.metadata ?? null,
+        );
+        const [comment] = await executor
+          .insert(issueComments)
+          .values({
+            companyId: issue.companyId,
+            issueId,
+            authorAgentId: actor.agentId ?? null,
+            authorUserId: actor.userId ?? null,
+            onBehalfOfUserId,
+            authorType,
+            createdByRunId,
+            body: redactedBody,
+            presentation,
+            metadata,
+            sourceTrust: options?.sourceTrust ?? null,
+            ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
+          })
+          .returning();
+
+        if (!expectedOwnerAgentId) {
+          // The conditional owner update above already records comment recency.
+          await executor
+            .update(issues)
+            .set({ updatedAt: new Date() })
+            .where(eq(issues.id, issueId));
+        }
+
+        if (
+          authorType === "user" &&
+          actor.userId &&
+          actor.userId !== "board-concierge" &&
+          !createdByRunId
+        ) {
+          const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+          const expiredInteractions = await issueThreadInteractionService(executor)
+            .expireRequestConfirmationsSupersededByComment(
+              { id: issueId, companyId: issue.companyId },
+              comment,
+              { agentId: actor.agentId, userId: actor.userId },
+            );
+          for (const interaction of expiredInteractions) {
+            await logActivity(executor, {
+              companyId: issue.companyId,
+              actorType: "user",
+              actorId: actor.userId,
+              agentId: actor.agentId ?? null,
+              runId: createdByRunId,
+              action: "issue.thread_interaction_expired",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                interactionId: interaction.id,
+                interactionKind: interaction.kind,
+                interactionStatus: interaction.status,
+                source: "issue.comment.service",
+                result: interaction.result ?? null,
+              },
+            });
+          }
+        }
+
+        return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+      };
+
+      return options?.expectedBlockedUnblockOwnerAgentId && dbOrTx === db
+        ? db.transaction(runAddComment)
+        : runAddComment(dbOrTx);
     },
 
     createAttachment: async (input: {
