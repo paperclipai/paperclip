@@ -462,18 +462,75 @@ describe("environment routes", () => {
       expect(res.body[0].metadata).toMatchObject({ managedByPaperclip: true });
     });
 
-    it("floors the update response so writes cannot read secrets back", async () => {
+    it("rejects updates to platform-provisioned rows, including for instance admins", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app).patch("/api/environments/env-managed-1").send({ name: "Renamed" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects marker-stripping patches based on the persisted row, not the payload", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1")
+        .send({ metadata: { managedByPaperclip: false, managedKubernetesSandbox: false } });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects deletes of platform-provisioned rows, including for instance admins", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app).delete("/api/environments/env-managed-1");
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+      expect(mockEnvironmentService.getDeleteBlastRadius).not.toHaveBeenCalled();
+      expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+    });
+
+    it("still updates tenant-created environments for instance admins on cloud-managed instances", async () => {
+      const tenantEnvironment = {
+        ...createPlatformSandboxEnvironment(),
+        id: "env-tenant-1",
+        metadata: { source: "manual" },
+      };
+      mockEnvironmentService.getById.mockResolvedValue(tenantEnvironment);
+      mockEnvironmentService.update.mockResolvedValue({ ...tenantEnvironment, name: "Renamed" });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app).patch("/api/environments/env-tenant-1").send({ name: "Renamed" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.name).toBe("Renamed");
+      expect(mockEnvironmentService.update).toHaveBeenCalled();
+    });
+
+    it("does not floor writes to platform-marked rows on self-hosted instances", async () => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
       const existing = createPlatformSandboxEnvironment();
       mockEnvironmentService.getById.mockResolvedValue(existing);
       mockEnvironmentService.update.mockResolvedValue({ ...existing, name: "Renamed" });
-      const app = createApp(ownerAdminActor);
+      const app = createApp({
+        type: "board",
+        userId: "admin-1",
+        source: "session",
+        isInstanceAdmin: true,
+      });
 
       const res = await request(app).patch("/api/environments/env-managed-1").send({ name: "Renamed" });
 
       expect(res.status).toBe(200);
       expect(res.body.name).toBe("Renamed");
-      expect(res.body.envVars).toEqual({});
-      expect(JSON.stringify(res.body)).not.toContain("must-never-echo");
     });
 
     it("leaves tenant-created environments unfloored for instance admins", async () => {

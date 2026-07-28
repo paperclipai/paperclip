@@ -108,6 +108,22 @@ export function applyPlatformProvisionedEnvironmentFloor<T extends {
   };
 }
 
+/**
+ * Floor: on cloud-managed instances, platform-provisioned rows are
+ * platform-owned runtime state — no actor, including instance admins, may
+ * update or delete them. Binds to the persisted row's markers, so a patch
+ * cannot strip the marker to lift the floor.
+ */
+function assertPlatformProvisionedEnvironmentWritable(environment: {
+  metadata: Record<string, unknown> | null;
+}): void {
+  if (isCloudManagedInstance() && isPlatformProvisionedEnvironment(environment)) {
+    throw forbidden("Platform-provisioned environments are platform-managed on cloud-managed instances", {
+      code: "environment_platform_managed",
+    });
+  }
+}
+
 export function environmentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -792,6 +808,7 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment not found" });
       return;
     }
+    assertPlatformProvisionedEnvironmentWritable(existing);
     const actor = getActorInfo(req);
     const nextDriver = req.body.driver ?? existing.driver;
     const nextName = req.body.name ?? existing.name;
@@ -889,6 +906,7 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment not found" });
       return;
     }
+    assertPlatformProvisionedEnvironmentWritable(existing);
     const actor = getActorInfo(req);
     const impact = await svc.getDeleteBlastRadius(existing.id);
     if (!impact) {
