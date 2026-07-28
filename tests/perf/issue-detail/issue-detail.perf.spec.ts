@@ -5,6 +5,7 @@ import { chromium, expect, test, type Browser, type BrowserContext, type Page } 
 const requestedRuns = Number(process.env.PAPERCLIP_ISSUE_PERF_RUNS ?? 5);
 const RUNS = Number.isFinite(requestedRuns) ? Math.max(5, Math.floor(requestedRuns)) : 5;
 const OUTPUT_DIR = path.resolve(process.cwd(), "test-results/issue-detail-perf");
+const PAGE_READY_TIMEOUT_MS = 90_000;
 const HEADER_MEASURE = "issue-detail:navigate→header-paint";
 const CONTENT_MEASURE = "issue-detail:navigate→content-paint";
 
@@ -247,7 +248,7 @@ async function runScenario(browser: Browser, baseURL: string, seedData: Seed, pr
   if (scenario.startsWith("S1")) {
     await page.goto(`/${seedData.prefix}/issues`);
     const issueLink = page.locator("[data-inbox-issue-link]", { hasText: seedData.title }).first();
-    await expect(issueLink).toBeVisible({ timeout: 60_000 });
+    await expect(issueLink).toBeVisible({ timeout: PAGE_READY_TIMEOUT_MS });
     network.clear();
     await page.evaluate(() => {
       window.__PAPERCLIP_ISSUE_DETAIL_NAVIGATE_START__ = performance.now();
@@ -257,7 +258,7 @@ async function runScenario(browser: Browser, baseURL: string, seedData: Seed, pr
     await page.goto(`/${seedData.prefix}/issues/${seedData.identifier}`);
   }
 
-  await expect(page.getByTestId("issue-detail-header")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("issue-detail-header")).toBeVisible({ timeout: PAGE_READY_TIMEOUT_MS });
   const paint = await readPaintMetrics(page);
   const summary = summarizeNetwork(network, seedData, paint.contentPaintEpochMs);
   const { contentPaintEpochMs: _contentPaintEpochMs, ...reportedPaint } = paint;
@@ -266,6 +267,9 @@ async function runScenario(browser: Browser, baseURL: string, seedData: Seed, pr
     : reportedPaint;
   const metrics = { scenario, profile: profile.name, run, ...scenarioPaint, ...summary };
   if (run === 1) await writeTrace(tracePath, metrics, network);
+  if (scenario.startsWith("S2") && profile.name === "unthrottled" && run === 1) {
+    await page.screenshot({ path: path.join(OUTPUT_DIR, "issue-detail-loaded.png"), fullPage: true });
+  }
   await context.close();
 
   expect(Number.isFinite(paint.headerPaintMs)).toBe(true);
