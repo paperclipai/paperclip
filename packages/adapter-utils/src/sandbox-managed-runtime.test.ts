@@ -1363,12 +1363,12 @@ describe("sandbox managed runtime", () => {
     expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
   });
 
-  // Regression lock (PAP-3159 #4): a representative `codex_local` start stages
-  // its inbound bytes — git history, workspace overlay, and the managed Codex
-  // `home` asset (auth.json merge) — as EXACTLY ONE `syncIn` operation each. PR 3
-  // collapsed every inbound step onto `client.syncIn` (one native `uploadFiles`
-  // round-trip per operation, with the extract/merge carried as provider-executed
-  // `postUploadCommands`) and deleted the `usesCustomProvision` diversion. Assert
+  // Regression lock: a representative `codex_local` start stages its inbound
+  // bytes — git history, workspace overlay, and the managed Codex `home` asset
+  // (auth.json merge) — as EXACTLY ONE `syncIn` operation each. Every inbound step
+  // is routed through `client.syncIn` (one native `uploadFiles` round-trip per
+  // operation, with the extract/merge carried as provider-executed
+  // `postUploadCommands`), with no separate custom-provision diversion. Assert
   // the collapsed round-trip count so a future change that re-inlines a
   // `writeFile`+`run` sequence — or fans one staging step across multiple
   // operations — fails loudly here instead of silently regressing the start path.
@@ -1392,7 +1392,7 @@ describe("sandbox managed runtime", () => {
     await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
 
     // Managed Codex home with an auth.json that a custom post-upload command
-    // merges in-sandbox — the credential path PR 3 routed onto native uploadFiles.
+    // merges in-sandbox — the credential path is routed onto native uploadFiles.
     await mkdir(homeDir, { recursive: true });
     await writeFile(path.join(homeDir, "auth.json"), "{\"OPENAI_API_KEY\":\"sk-test\"}\n", "utf8");
     await writeFile(path.join(homeDir, "config.toml"), "model = \"gpt\"\n", "utf8");

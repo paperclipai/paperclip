@@ -863,12 +863,12 @@ describe("sandbox callback bridge", () => {
     ).resolves.toEqual([]);
   });
 
-  // PAP-3159 #2 (research A3): the process-session remote script is a static,
-  // Paperclip-authored `.mjs` written into the sandbox on every bridge start.
-  // `syncRemoteTextFileWithHashSkip` (which now backs that write, mirroring the
-  // bridge-entrypoint sha256 gate) content-hash-skips it so a warm start where
-  // the remote script already matches costs ZERO write execs instead of the
-  // prior ~3 (prepare/append/finalize base64 upload).
+  // The process-session remote script is a static, Paperclip-authored `.mjs`
+  // written into the sandbox on every bridge start. `syncRemoteTextFileWithHashSkip`
+  // (which now backs that write, mirroring the bridge-entrypoint sha256 gate)
+  // content-hash-skips it so a warm start where the remote script already matches
+  // costs ZERO write execs instead of the prior ~3 (prepare/append/finalize base64
+  // upload).
   it("test_process_session_script_skipped_when_remote_hash_matches: warm start with a matching remote hash writes 0 execs", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-hashskip-warm-"));
     cleanupDirs.push(rootDir);
