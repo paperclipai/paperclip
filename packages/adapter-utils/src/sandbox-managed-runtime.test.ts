@@ -1363,6 +1363,126 @@ describe("sandbox managed runtime", () => {
     expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
   });
 
+  // Regression lock (PAP-3159 #4): a representative `codex_local` start stages
+  // its inbound bytes — git history, workspace overlay, and the managed Codex
+  // `home` asset (auth.json merge) — as EXACTLY ONE `syncIn` operation each. PR 3
+  // collapsed every inbound step onto `client.syncIn` (one native `uploadFiles`
+  // round-trip per operation, with the extract/merge carried as provider-executed
+  // `postUploadCommands`) and deleted the `usesCustomProvision` diversion. Assert
+  // the collapsed round-trip count so a future change that re-inlines a
+  // `writeFile`+`run` sequence — or fans one staging step across multiple
+  // operations — fails loudly here instead of silently regressing the start path.
+  it("collapses a representative codex_local start to one syncIn round-trip per inbound staging step", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-roundtrip-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const homeDir = path.join(rootDir, "codex-home");
+
+    // Git-backed workspace → git history + workspace overlay are two staging steps.
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "tracked.txt"), "tracked\n", "utf8");
+    await git(sourceRepoDir, ["add", "tracked.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+
+    // Managed Codex home with an auth.json that a custom post-upload command
+    // merges in-sandbox — the credential path PR 3 routed onto native uploadFiles.
+    await mkdir(homeDir, { recursive: true });
+    await writeFile(path.join(homeDir, "auth.json"), "{\"OPENAI_API_KEY\":\"sk-test\"}\n", "utf8");
+    await writeFile(path.join(homeDir, "config.toml"), "model = \"gpt\"\n", "utf8");
+
+    // A native runner delegates every staging step to `syncIn`; ANY direct
+    // writeFile/run exec is a collapse regression.
+    const directWrites: string[] = [];
+    const directRuns: string[] = [];
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        directWrites.push(remotePath);
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        directRuns.push(command);
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+    const captured: SandboxSyncOperation[] = [];
+    attachNativeRecordingSyncIn(client, captured);
+
+    const q = (value: string) => `'${value.replace(/'/g, `'\"'\"'`)}'`;
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{
+        key: "home",
+        localDir: homeDir,
+        provision: {
+          stageFiles: [{ name: "home-merge.sh", contents: "#!/bin/sh\ntar -xf \"$2\" -C \"$1\"\n" }],
+          postUploadCommand: ({ assetTarPath, assetDir, runtimeRootDir }) =>
+            `mkdir -p ${q(assetDir)} && ` +
+            `sh ${q(path.posix.join(runtimeRootDir, "home-merge.sh"))} ${q(assetDir)} ${q(assetTarPath)} && ` +
+            `rm -f ${q(assetTarPath)}`,
+        },
+      }],
+    });
+
+    // The orchestrator delegated everything to syncIn: no re-inlined writeFile/run.
+    expect(directWrites).toEqual([]);
+    expect(directRuns).toEqual([]);
+
+    // The collapsed count: exactly three inbound round-trips — git, workspace, home.
+    expect(captured).toHaveLength(3);
+    const gitOp = captured.find((op) =>
+      op.files.some((mapping) => mapping.targetPath.endsWith("git-workspace-upload.tar")),
+    );
+    const workspaceOp = captured.find((op) =>
+      op.files.some((mapping) => mapping.targetPath.endsWith("workspace-upload.tar")),
+    );
+    const homeOp = captured.find((op) =>
+      op.files.some((mapping) => mapping.targetPath.endsWith("home-upload.tar")),
+    );
+    expect(gitOp).toBeDefined();
+    expect(workspaceOp).toBeDefined();
+    expect(homeOp).toBeDefined();
+
+    // Every operation is a single native uploadFiles (all `file` mappings) whose
+    // extract/merge rides as an ordered provider-executed post-upload command.
+    for (const op of captured) {
+      expect(op.files.length).toBeGreaterThanOrEqual(1);
+      expect(op.files.every((mapping) => mapping.kind === "file")).toBe(true);
+      expect(op.postUploadCommands ?? []).not.toHaveLength(0);
+    }
+    // Operation ids are distinct, so "3 operations" is 3 real round-trips.
+    expect(new Set(captured.map((op) => op.operationId)).size).toBe(3);
+
+    // The credential asset actually materialized through the native seam.
+    await expect(readFile(path.join(prepared.assetDirs.home, "auth.json"), "utf8"))
+      .resolves.toBe("{\"OPENAI_API_KEY\":\"sk-test\"}\n");
+  });
+
   it("keeps the sandbox runtime core free of Codex-specific string literals", async () => {
     const coreSource = await readFile(new URL("./sandbox-managed-runtime.ts", import.meta.url), "utf8");
     // The seam must be generic: no adapter (Codex) knowledge may live in the core.

@@ -22,6 +22,7 @@ import {
   sandboxCallbackBridgeDirectories,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
+  syncRemoteTextFileWithHashSkip,
 } from "./sandbox-callback-bridge.js";
 import {
   createSandboxRunLogTailFactory,
@@ -1258,11 +1259,33 @@ async function writeProcessSessionProxyScript(dir: string, port: number, token: 
   return proxyPath;
 }
 
+// Content-hash-skip the process-session remote script write, mirroring the
+// sandbox callback bridge entrypoint sha256 gate. The script is a static
+// Paperclip-authored `.mjs` that only changes when the build changes, so on a
+// warm start (same sandbox, script already present) the single sha-gate exec
+// skips the ~3-exec base64 upload entirely. `syncRemoteTextFileWithHashSkip`
+// fails loud on a check error rather than silently re-uploading.
 async function syncProcessSessionRemoteScript(input: {
-  client: ReturnType<typeof createCommandManagedSandboxCallbackBridgeQueueClient>;
+  runner: CommandManagedRuntimeRunner;
+  remoteCwd: string;
+  remoteScriptDir: string;
   remoteScriptPath: string;
-}): Promise<void> {
-  await input.client.writeTextFile(input.remoteScriptPath, getProcessSessionRemoteSource());
+  timeoutMs?: number | null;
+  shellCommand?: "bash" | "sh" | null;
+}): Promise<{ uploaded: boolean }> {
+  const { uploaded } = await syncRemoteTextFileWithHashSkip({
+    runner: input.runner,
+    remoteCwd: input.remoteCwd,
+    remoteDir: input.remoteScriptDir,
+    remotePath: input.remoteScriptPath,
+    body: getProcessSessionRemoteSource(),
+    label: "Process session remote script",
+    action: "sync process session remote script",
+    lockDir: path.posix.join(input.remoteScriptDir, ".paperclip-process-session-script.lock"),
+    timeoutMs: input.timeoutMs,
+    shellCommand: input.shellCommand,
+  });
+  return { uploaded };
 }
 
 async function readRemoteJsonFiles(input: {
@@ -1342,7 +1365,14 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   await client.makeDir(stdinDir);
   await client.makeDir(eventsDir);
-  await syncProcessSessionRemoteScript({ client, remoteScriptPath });
+  await syncProcessSessionRemoteScript({
+    runner,
+    remoteCwd: target.remoteCwd,
+    remoteScriptDir: bridgeRuntimeDir,
+    remoteScriptPath,
+    timeoutMs,
+    shellCommand,
+  });
 
   // Resolve the launch env AFTER the env-independent setup above, so a caller
   // can defer it until an upstream dependency (e.g. the paperclip bridge's env)
