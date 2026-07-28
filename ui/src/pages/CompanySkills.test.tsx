@@ -122,6 +122,9 @@ function makeVersion(revisionNumber: number, content: string): CompanySkillVersi
     companySkillId: "skill-1",
     revisionNumber,
     label: null,
+    releaseId: null,
+    releaseName: null,
+    releasedAt: null,
     fileInventory: [
       {
         path: "SKILL.md",

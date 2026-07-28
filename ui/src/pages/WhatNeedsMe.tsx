@@ -36,6 +36,7 @@ import {
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
+import { decisionTrainingHref } from "../lib/decisionTraining";
 import { cn } from "../lib/utils";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -423,12 +424,7 @@ export function WhatNeedsMe() {
   return (
     <div ref={rootRef} className="max-w-3xl space-y-4">
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center justify-between gap-4">
-          <h1 className="text-xl font-bold">Decisions</h1>
-          <Button variant="outline" size="sm" onClick={() => navigate("/training")}>
-            <GraduationCap className="size-4" /> Training
-          </Button>
-        </div>
+        <h1 className="text-xl font-bold">Decisions</h1>
         <div className="flex items-center gap-2">
           {visibleCount > 0 && (
             <span className="text-sm text-muted-foreground">
@@ -490,6 +486,17 @@ export function WhatNeedsMe() {
               </div>
             </PopoverContent>
           </Popover>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            title="Training"
+            aria-label="Training"
+            onClick={() => navigate(decisionTrainingHref())}
+          >
+            <GraduationCap className="h-3.5 w-3.5" />
+          </Button>
           {/* Sort */}
           <Popover>
             <PopoverTrigger asChild>

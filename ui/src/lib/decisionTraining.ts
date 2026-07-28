@@ -1,6 +1,10 @@
 import type { AttentionItem, DecisionTrainingSnapshotV1 } from "@paperclipai/shared";
 import type { DecisionTrainingTarget } from "../api/decisionTraining";
 
+export function decisionTrainingHref(exampleId?: string): string {
+  return exampleId ? `/decisions/training/${exampleId}` : "/decisions/training";
+}
+
 /**
  * Resolve the durable (source + issue) target a Decisions row would train
  * against, or `null` when the row is not trainable.

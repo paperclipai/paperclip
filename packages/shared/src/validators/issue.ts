@@ -116,12 +116,56 @@ const executionWorkspaceStrategySchema = z
   })
   .strict();
 
+const ipv4CidrPattern = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\/(?:3[0-2]|[12]?\d)$/;
+const protectedTaskEgressCidrs = [
+  "0.0.0.0/8",
+  "10.0.0.0/8",
+  "100.64.0.0/10",
+  "127.0.0.0/8",
+  "169.254.0.0/16",
+  "172.16.0.0/12",
+  "192.168.0.0/16",
+  "224.0.0.0/4",
+] as const;
+
+function ipv4CidrRange(cidr: string): [number, number] | null {
+  if (!ipv4CidrPattern.test(cidr)) return null;
+  const [address, prefixText] = cidr.split("/");
+  const addressValue = address.split(".").reduce((value, octet) => value * 256 + Number(octet), 0);
+  const prefix = Number(prefixText);
+  const blockSize = 2 ** (32 - prefix);
+  const start = Math.floor(addressValue / blockSize) * blockSize;
+  return [start, start + blockSize - 1];
+}
+
+function isAllowedTaskEgressCidr(cidr: string): boolean {
+  const range = ipv4CidrRange(cidr);
+  if (!range) return false;
+  return protectedTaskEgressCidrs.every((protectedCidr) => {
+    const protectedRange = ipv4CidrRange(protectedCidr);
+    return protectedRange !== null && (range[1] < protectedRange[0] || range[0] > protectedRange[1]);
+  });
+}
+
 export const issueExecutionWorkspaceSettingsSchema = z
   .object({
     mode: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional(),
     environmentId: z.string().uuid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
+    networkEgress: z.object({
+      allowFqdns: z.array(z.string().trim().toLowerCase().regex(
+        /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/,
+        "Network egress FQDNs must be hostnames without a URL scheme or path",
+      ).max(253)).max(100).optional(),
+      allowCidrs: z.array(z.string().trim().regex(
+        ipv4CidrPattern,
+        "Invalid IPv4 CIDR (must use octets 0-255 and prefix 0-32)",
+      ).max(64).refine(
+        isAllowedTaskEgressCidr,
+        "Task-scoped network egress CIDRs cannot overlap private, loopback, link-local, CGNAT, or multicast ranges",
+      )).max(100).optional(),
+    }).strict().optional().nullable(),
   })
   .strict();
 
@@ -406,6 +450,14 @@ const createIssueBaseSchema = z.object({
   goalId: z.string().uuid().optional().nullable(),
   parentId: z.string().uuid().optional().nullable(),
   blockedByIssueIds: z.array(z.string().uuid()).optional(),
+  unblockDescriptor: z.object({
+    owner: z.union([
+      z.object({ agentId: z.string().uuid() }).strict(),
+      z.object({ userId: z.string().trim().min(1) }).strict(),
+      z.literal("board"),
+    ]),
+    action: multilineTextSchema.pipe(z.string().trim().min(1).max(2_000)),
+  }).strict().optional().nullable(),
   externalBlockedByIssueIds: z.array(z.string().uuid()).optional(),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
@@ -436,6 +488,19 @@ const createIssueBaseSchema = z.object({
   }).strict().optional().nullable(),
 });
 
+function requireBlockedStatusForUnblockDescriptor(
+  value: { status?: string; unblockDescriptor?: unknown },
+  ctx: z.RefinementCtx,
+) {
+  if (value.unblockDescriptor != null && value.status !== undefined && value.status !== "blocked") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "unblockDescriptor requires blocked status",
+      path: ["unblockDescriptor"],
+    });
+  }
+}
+
 const createIssueDuplicateGuardSchema = {
   idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
   allowDuplicate: z.boolean()
@@ -449,7 +514,9 @@ export const createIssueInputSchema = createIssueBaseSchema.extend({
   ...createIssueDuplicateGuardSchema,
 });
 
-export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema.extend(createIssueDuplicateGuardSchema));
+export const createIssueSchema = withCreateIssueStatusDefault(
+  createIssueBaseSchema.extend(createIssueDuplicateGuardSchema),
+).superRefine(requireBlockedStatusForUnblockDescriptor);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
@@ -469,7 +536,7 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
   .extend({
     acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
     blockParentUntilDone: z.boolean().optional().default(false),
-  }));
+  })).superRefine(requireBlockedStatusForUnblockDescriptor);
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
@@ -680,6 +747,8 @@ export const suggestTasksResultCreatedTaskSchema = z.object({
 
 export const suggestTasksResultSchema = z.object({
   version: z.literal(1),
+  outcome: z.enum(["withdrawn", "issue_closed"]).optional(),
+  reason: z.string().trim().max(4000).nullable().optional(),
   createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
   skippedClientKeys: z.array(z.string().trim().min(1).max(120)).max(50).optional(),
   rejectionReason: z.string().trim().max(4000).nullable().optional(),
@@ -740,6 +809,8 @@ export const askUserQuestionsAnswerSchema = z.object({
 
 export const askUserQuestionsResultSchema = z.object({
   version: z.literal(1),
+  outcome: z.enum(["withdrawn", "issue_closed"]).optional(),
+  reason: z.string().trim().max(4000).nullable().optional(),
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
@@ -937,7 +1008,7 @@ export const requestConfirmationToolActionResultSchema = z.object({
 
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target", "stale_issue_state"]),
+  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target", "stale_issue_state", "withdrawn", "issue_closed"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
@@ -1069,13 +1140,13 @@ export const requestItemVerdictsResultItemSchema = z.object({
 
 export const requestItemVerdictsResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "stale_issue_state", "cancelled"]),
+  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "stale_issue_state", "cancelled", "withdrawn", "issue_closed"]),
+  reason: z.string().trim().max(4000).nullable().optional(),
   complete: z.boolean().optional().default(false),
   items: z.array(requestItemVerdictsResultItemSchema)
     .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT)
     .optional()
     .default([]),
-  reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
 }).superRefine((value, ctx) => {
@@ -1190,6 +1261,11 @@ export const cancelIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),
 });
 export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
+
+export const withdrawIssueThreadInteractionSchema = z.object({
+  reason: z.string().trim().max(4000).optional(),
+});
+export type WithdrawIssueThreadInteraction = z.infer<typeof withdrawIssueThreadInteractionSchema>;
 
 export const respondIssueThreadInteractionSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),

@@ -166,10 +166,23 @@ describe("execute", () => {
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 
-  it("includes anti-echo guidance on comment wakes", async () => {
+  it("sends the task brief once on fresh runs and compacts it on stable-session resumes", async () => {
+    const description = "Update launch-card.svg and change the CTA to Try Team free.";
+    const fullTaskMarkdown = [
+      "Paperclip task context:",
+      '- Issue: "PAP-1"',
+      "",
+      "Issue description:",
+      "```text",
+      description,
+      "```",
+    ].join("\n");
+    const compactTaskMarkdown = ["Paperclip task context:", '- Issue: "PAP-1"'].join("\n");
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+  it("includes anti-echo guidance on comment wakes", async () => {
         return new Response(JSON.stringify({ run_id: "run-hermes-2", status: "started" }), { status: 200 });
       }
       if (url.endsWith("/events")) {
@@ -178,7 +191,6 @@ describe("execute", () => {
             [
               "event: run.completed",
               "data: {\"status\":\"completed\",\"output\":\"done\"}",
-              "",
             ].join("\n"),
           ),
           { status: 200, headers: { "content-type": "text/event-stream" } },
@@ -188,39 +200,74 @@ describe("execute", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
+    const wakeContext = (reason: string) => ({
+      issueId: "issue-1",
+      wakeReason: reason,
+      paperclipTaskMarkdown: fullTaskMarkdown,
+      paperclipTaskMarkdownCompact: compactTaskMarkdown,
+      paperclipWake: {
+        reason,
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          title: "Do the thing",
+          description,
+          descriptionTruncated: false,
+          status: "in_progress",
+        },
+        commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+        comments: [],
+        fallbackFetchNeeded: false,
+      },
+    });
+
+    const freshCtx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    freshCtx.context = wakeContext("issue_assigned");
+    await execute(freshCtx);
+
+    const resumeCtx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    resumeCtx.context = wakeContext("issue_commented");
+    resumeCtx.runtime = {
+      sessionId: "session-1",
+      sessionParams: null,
+      sessionDisplayId: "session-1",
+      taskKey: "PAP-1",
+    };
+    await execute(resumeCtx);
+
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const runBodies = calls
+      .filter(([input]) => String(input).endsWith("/v1/runs"))
+      .map(([, init]) => JSON.parse(String(init?.body)) as { input: string });
+    expect(runBodies).toHaveLength(2);
+    // Fresh run: brief exactly once (task markdown only; wake-prompt copy suppressed).
+    expect(runBodies[0]!.input.split(description)).toHaveLength(2);
+    // Stable-session resume: compact task markdown, no re-sent brief.
+    expect(runBodies[1]!.input).toContain("Paperclip task context:");
+    expect(runBodies[1]!.input).not.toContain(description);
     await execute(
       makeCtx(
         {
           apiBaseUrl: "http://127.0.0.1:8642",
           apiKey: "secret-key",
           timeoutSec: 5,
-        },
         {
           wakeReason: "issue_commented",
-          paperclipWake: {
             reason: "issue_commented",
-            issue: {
               identifier: "PAP-2",
               title: "Handle board comment",
-              status: "in_progress",
               workMode: "standard",
-            },
             latestCommentId: "comment-1",
             commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
             comments: [{ id: "comment-1", body: "Please stop echoing the payload.", createdAt: "2026-07-12T16:00:00.000Z" }],
-            fallbackFetchNeeded: false,
-          },
-        },
       ),
     );
 
-    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
     const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
     const body = JSON.parse(String((createCall?.[1] as RequestInit).body));
     expect(body.input).toContain("Do not copy headings like `## Paperclip Wake Payload`");
     expect(body.input).toContain("Treat stable adapter instructions as internal operating policy");
     expect(body.input).toContain("Please stop echoing the payload.");
-  });
 
   it("prefixes custom stable instructions with internal-only anti-echo guidance", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -241,7 +288,6 @@ describe("execute", () => {
         );
       }
       return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
-    });
     vi.stubGlobal("fetch", fetchMock);
 
     await execute(
@@ -257,7 +303,6 @@ describe("execute", () => {
       }),
     );
 
-    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
     const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
     const body = JSON.parse(String((createCall?.[1] as RequestInit).body));
     expect(body.instructions).toContain("Stable instruction discipline:");

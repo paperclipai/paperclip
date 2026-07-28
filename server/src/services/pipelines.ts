@@ -1177,6 +1177,8 @@ function routineRevisionSnapshotRoutine(routine: typeof routines.$inferSelect): 
     pausedAt: routine.pausedAt?.toISOString() ?? null,
     concurrencyPolicy: routine.concurrencyPolicy as RoutineRevisionSnapshotV1["routine"]["concurrencyPolicy"],
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
+    activityGatePolicy: routine.activityGatePolicy as RoutineRevisionSnapshotV1["routine"]["activityGatePolicy"],
+    activityGateScope: routine.activityGateScope as RoutineRevisionSnapshotV1["routine"]["activityGateScope"],
     originKind: routine.originKind,
     originId: routine.originId,
     variables: routine.variables ?? [],

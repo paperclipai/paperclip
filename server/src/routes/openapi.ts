@@ -17,6 +17,11 @@ import {
   builtInAgentProvisionSchema,
   generateSummarySlotSchema,
   writeSummarySlotSchema,
+  createStatusCardSchema,
+  patchStatusCardSchema,
+  refreshStatusCardSchema,
+  writeStatusCardQuerySchema,
+  writeStatusCardSummarySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
@@ -153,6 +158,7 @@ import {
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
+  updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
   // Document annotations
   createDocumentAnnotationCommentSchema,
@@ -162,6 +168,7 @@ import {
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
   cancelIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
   updateSecretProviderConfigSchema,
@@ -176,6 +183,7 @@ import {
   updateToolApplicationSchema,
   createToolConnectionSchema,
   connectionTokenRequestSchema,
+  startConnectionAuthorizationSchema,
   createToolStdioCommandTemplateSchema,
   disableToolStdioCommandTemplateSchema,
   finishToolAppSchema,
@@ -730,6 +738,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/bootstrap/claim",
   "GET /api/companies/{companyId}/resource-memberships/me",
   "PUT /api/companies/{companyId}/resource-memberships/me/agents/{agentId}",
+  "PUT /api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
   "PUT /api/companies/{companyId}/resource-memberships/me/projects/{projectId}",
   "GET /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/secret-provider-configs",
@@ -775,7 +784,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/tool-applications/{applicationId}",
   "GET /api/companies/{companyId}/tools/connections",
   "POST /api/companies/{companyId}/tools/connections",
+  "POST /api/companies/{companyId}/tools/connections/{connectionId}/start-authorization",
   "GET /api/tool-connections/{connectionId}",
+  "GET /api/tool-connections/{connectionId}/grants",
+  "POST /api/tool-connections/{connectionId}/grants/installations",
+  "DELETE /api/tool-connections/{connectionId}/grants/{grantId}",
+  "GET /api/tool-connections/{connectionId}/usage",
   "PATCH /api/tool-connections/{connectionId}",
   "DELETE /api/tool-connections/{connectionId}",
   "POST /api/tool-connections/{connectionId}/health-check",
@@ -786,6 +800,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/tool-connections/{connectionId}/test-agents",
   "POST /api/tool-connections/{connectionId}/test-calls",
   "GET /api/tool-connections/{connectionId}/test-calls/{actionRequestId}",
+  "POST /api/agents/me/connections/{connectionId}/start-authorization",
   "POST /api/agents/me/connections/{connectionId}/token",
   "POST /api/tools/oauth/{connectionId}/start",
   "GET /api/tools/oauth/callback",
@@ -1434,6 +1449,67 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/status-cards",
+  tags: ["status-cards"],
+  summary: "List status cards",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/status-cards",
+  tags: ["status-cards"],
+  summary: "Create a status card",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(createStatusCardSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+for (const route of [
+  ["get", "/api/status-cards/{id}", "Get a status card"],
+  ["delete", "/api/status-cards/{id}", "Delete a status card"],
+  ["post", "/api/status-cards/{id}/recompile", "Recompile a status card query"],
+  ["get", "/api/status-cards/{id}/dry-run", "Execute stored status card queries without an LLM"],
+  ["get", "/api/status-cards/{id}/updates", "List status card updates"],
+  ["get", "/api/status-cards/{id}/summary-revisions", "List status card summary revisions"],
+] as const) {
+  registerCurrentRoute({ method: route[0], path: route[1], tags: ["status-cards"], summary: route[2] });
+}
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/status-cards/{id}",
+  tags: ["status-cards"],
+  summary: "Update, archive, or restore a status card",
+  body: patchStatusCardSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/status-cards/{id}/refresh",
+  tags: ["status-cards"],
+  summary: "Refresh a status card",
+  body: refreshStatusCardSchema,
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/status-cards/{id}/query",
+  tags: ["status-cards"],
+  summary: "Write a compiled status card query",
+  body: writeStatusCardQuerySchema,
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/status-cards/{id}/summary",
+  tags: ["status-cards"],
+  summary: "Write a generated status card summary",
+  body: writeStatusCardSummarySchema,
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/agents",
   tags: ["agents"],
   summary: "List agents in a company",
@@ -1528,6 +1604,47 @@ registry.registerPath({
   tags: ["agents"],
   summary: "Get current agent inbox (lite)",
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+const AgentSecretListResponseSchema = z.object({
+  secrets: z.array(z.object({
+    key: z.string(),
+    name: z.string(),
+    description: z.string().nullable(),
+    delivery: z.enum(["env", "api", "both"]),
+    projectionClass: z.string(),
+    latestVersion: z.number().int().nonnegative(),
+    versionSelector: z.union([z.literal("latest"), z.number().int().positive()]),
+    resolvedVersion: z.number().int().positive(),
+  })),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/me/secrets",
+  tags: ["secrets"],
+  summary: "List secrets accessible to the current agent run",
+  responses: {
+    200: { description: "Accessible secret metadata", content: { "application/json": { schema: AgentSecretListResponseSchema } } },
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/me/secrets/{key}/value",
+  tags: ["secrets"],
+  summary: "Fetch one secret value for the current agent run",
+  request: { params: z.object({ key: z.string() }) },
+  responses: {
+    200: {
+      description: "Decrypted secret value",
+      content: { "application/json": { schema: z.object({ key: z.string(), value: z.string(), version: z.number().int().positive() }) } },
+    },
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
 });
 
 registry.registerPath({
@@ -5458,6 +5575,14 @@ registerCurrentRoute({
   summary: "Get issue cost summary",
 });
 
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
+  tags: ["resource-memberships"],
+  summary: "Star or unstar a document resource",
+  body: updateDocumentResourceMembershipSchema,
+});
+
 for (const route of [
   ["get", "/api/companies/{companyId}/resource-memberships/me", "List current user's resource memberships"],
   ["put", "/api/companies/{companyId}/resource-memberships/me/agents/{agentId}", "Join or leave an agent resource"],
@@ -5829,6 +5954,14 @@ registerCurrentRoute({
   body: cancelIssueThreadInteractionSchema,
 });
 
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/withdraw",
+  tags: ["issues"],
+  summary: "Withdraw a pending issue thread interaction",
+  body: withdrawIssueThreadInteractionSchema,
+});
+
 for (const route of [
   ["get", "/api/routines/{id}/revisions", "List routine revisions"],
   ["post", "/api/routines/{id}/revisions/{revisionId}/restore", "Restore a routine revision"],
@@ -6007,6 +6140,51 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Get a tool connection",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/connections/{connectionId}/start-authorization",
+  tags: ["tool-access"],
+  summary: "Start user authorization for a tool connection",
+  body: startConnectionAuthorizationSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/agents/me/connections/{connectionId}/start-authorization",
+  tags: ["tool-access"],
+  summary: "Start user authorization for an agent tool connection",
+  body: startConnectionAuthorizationSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/grants",
+  tags: ["tool-access"],
+  summary: "List tool connection grants",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/grants/installations",
+  tags: ["tool-access"],
+  summary: "Add an installation grant to a tool connection",
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-connections/{connectionId}/grants/{grantId}",
+  tags: ["tool-access"],
+  summary: "Revoke a tool connection grant",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/usage",
+  tags: ["tool-access"],
+  summary: "Get tool connection usage",
 });
 
 registerCurrentRoute({

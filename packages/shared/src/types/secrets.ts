@@ -128,6 +128,7 @@ export interface SecretProviderDescriptor {
   requiresExternalRef: boolean;
   supportsManagedValues?: boolean;
   supportsExternalReferences?: boolean;
+  supportsExternalValueWrites?: boolean;
   configured?: boolean;
 }
 
@@ -290,7 +291,7 @@ export interface SecretAccessEvent {
   credentialSubjectId: string | null;
   actorType: "agent" | "user" | "system" | "plugin";
   actorId: string | null;
-  consumerType: SecretBindingTargetType | "plugin_worker";
+  consumerType: SecretBindingTargetType | "agent_api" | "plugin_worker";
   consumerId: string;
   configPath: string | null;
   issueId: string | null;

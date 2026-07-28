@@ -197,6 +197,25 @@ describe("copyBackCodexAuth", () => {
     }
   });
 
+  it("creates a missing shared Codex home before staging copy-back", async () => {
+    const rootDir = await makeHostDir();
+    const hostDir = path.join(rootDir, "missing-codex-home");
+    const hostAuthPath = path.join(hostDir, "auth.json");
+    const logs: string[] = [];
+
+    const outcome = await copyBackCodexAuth({
+      readSandboxAuth: async () => Buffer.from(apiKeyAuth("sandbox-only"), "utf8"),
+      hostAuthPath,
+      log: (line) => {
+        logs.push(line);
+      },
+    });
+
+    expect(outcome).toBe("kept-host");
+    expect(await readdir(hostDir)).toEqual([]);
+    expect(logs.join("\n")).not.toContain("sandbox-only");
+  });
+
   it("preserves the host file atomically when the install cannot be staged (no partial write, no leaked temp)", async () => {
     // Make the host directory read-only so staging the same-filesystem temp fails
     // with EACCES. The host credential must be left byte-for-byte intact and no

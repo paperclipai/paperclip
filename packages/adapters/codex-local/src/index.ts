@@ -43,7 +43,6 @@ export const models = [
   { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
-  { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
   { id: "gpt-5", label: "gpt-5" },
   { id: "o3", label: "o3" },
   { id: "o4-mini", label: "o4-mini" },
@@ -57,6 +56,8 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
+    description: "Use an explicitly configured lower-cost Codex model without changing the primary model.",
+    adapterConfig: {},
     description: "Use the fast ChatGPT-auth-safe Codex local lane without changing the primary model.",
     adapterConfig: {
       model: "gpt-5.4",
@@ -104,7 +105,7 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
-- outputInactivityTimeoutMs (number | null, optional): inactivity monitor around the codex child. Resets whenever the child emits stdout or stderr bytes, including non-JSON progress from long-running verification commands. Defaults to 30 * 60_000 ms when unset or non-positive. Set to \`null\` to disable the monitor entirely (only do this for known-slow tasks; the platform-level 1h silent-run safety net still applies). On fire, the adapter sends SIGTERM to the process group, waits 5s, then SIGKILL, and surfaces the run as failed with errorMessage "monitor: no codex output for {N}m {S}s".
+- outputInactivityTimeoutMs (number | null, optional): inactivity monitor around the codex child. Resets whenever the child emits stdout/stderr bytes or, on Linux, its process group shows meaningful CPU, disk I/O, or child-process churn during a silent build. Defaults to 30 * 60_000 ms when unset or non-positive. Set to \`null\` to disable the monitor entirely (only do this for known-slow tasks; the platform-level 1h silent-run safety net still applies). On fire, the adapter sends SIGTERM to the process group, waits 5s, then SIGKILL, and surfaces the run as failed with errorMessage "monitor: no codex activity (output or process) for {N}m {S}s".
 - agentCommand (string, optional): ACP server command override used only when engine="acp"; defaults to the package-local codex-acp binary
 - mode (string, optional): ACP session mode when engine="acp"; persistent or oneshot
 - nonInteractivePermissions (string, optional): ACP non-interactive permission fallback when engine="acp"; deny or fail

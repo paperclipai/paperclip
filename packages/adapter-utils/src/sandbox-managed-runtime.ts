@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -55,7 +56,7 @@ export interface SandboxRemoteExecutionSpec {
 }
 
 /**
- * Remote paths handed to an asset's `provision.extractCommand`. All are POSIX
+ * Remote paths handed to an asset's `provision.postUploadCommand`. All are POSIX
  * paths inside the sandbox: `assetTarPath` is the uploaded asset tarball,
  * `assetDir` is where the asset should be materialized, and `runtimeRootDir`
  * is the directory any `stageFiles` were written into.
@@ -68,23 +69,32 @@ export interface SandboxManagedRuntimeAssetProvisionContext {
 
 /**
  * Per-asset inbound provisioning contribution. The core is adapter-agnostic:
- * an asset that supplies neither `stageFiles` nor `extractCommand` is extracted
- * with a plain `tar -xf`. An adapter that needs custom provisioning (e.g. a
- * credential merge) supplies helper files via `stageFiles` and the shell
- * command that consumes them via `extractCommand`.
+ * an asset that supplies neither `stageFiles` nor `postUploadCommand` is
+ * materialized with a plain destroy-then-replace `tar -xf`. An adapter that
+ * needs custom provisioning (e.g. a credential merge) supplies helper files via
+ * `stageFiles` and the shell command that consumes them via `postUploadCommand`.
+ *
+ * Both contributions ride the unified {@link SandboxSyncOperation} the core
+ * builds per asset: `stageFiles` become additional `files` mappings placed
+ * alongside the asset tar, and `postUploadCommand` becomes the operation's
+ * ordered `postUploadCommands`. See {@link SandboxPostUploadCommand} for the
+ * command-origin / confinement security contract (C1–C3).
  */
 export interface SandboxManagedRuntimeAssetProvision {
   /**
-   * Extra files written into `runtimeRootDir` (alongside the asset tar) before
-   * the extract command runs — typically helper scripts the extract command
+   * Extra files placed into `runtimeRootDir` (alongside the asset tar) before
+   * the post-upload command runs — typically helper scripts the command
    * invokes. Contents may be raw bytes or a UTF-8 string.
    */
   stageFiles?: { name: string; contents: Buffer | string }[];
   /**
-   * Builds the shell command that materializes the uploaded asset tar into
-   * `assetDir`. Defaults to a plain `tar -xf` extraction when omitted.
+   * Builds the opaque, adapter-authored shell command that materializes the
+   * uploaded asset tar into `assetDir`, run as the operation's ordered
+   * post-upload command after every mapping has landed. Defaults to a plain
+   * destroy-then-replace `tar -xf` extraction when omitted. Any path embedded in
+   * the command MUST be built from already-confined paths and shell-quoted (C3).
    */
-  extractCommand?: (ctx: SandboxManagedRuntimeAssetProvisionContext) => string;
+  postUploadCommand?: (ctx: SandboxManagedRuntimeAssetProvisionContext) => string;
 }
 
 /**
@@ -121,6 +131,73 @@ export interface SandboxTransferProgressOptions {
   onProgress?: (transferredBytes: number, totalBytes: number | null) => void | Promise<void>;
 }
 
+/**
+ * A single source→target file or directory transfer within a sync operation.
+ * Mirrors the plugin SDK `PluginSyncFileMapping`; kept as a local structural
+ * type so `adapter-utils` does not depend on the plugin SDK. For `syncIn`,
+ * `sourcePath` is a host path and `targetPath` a sandbox path; for `syncOut` the
+ * direction is reversed. Sandbox paths are POSIX.
+ */
+export interface SandboxSyncFileMapping {
+  sourcePath: string;
+  targetPath: string;
+  kind: "file" | "directory";
+  mode?: number;
+  exclude?: string[];
+  followSymlinks?: boolean;
+}
+
+/**
+ * A control command run against the sandbox after a sync operation's files have
+ * landed. Mirrors the plugin SDK `PluginPostUploadCommand`; kept as a local
+ * structural type so `adapter-utils` does not depend on the plugin SDK. Ordered
+ * within {@link SandboxSyncOperation.postUploadCommands} and executed in array
+ * order, fail-fast (first non-zero exit or timeout aborts the operation).
+ *
+ * SECURITY — command origin (Stage-1 design review, condition C1). `command` is
+ * a **Paperclip/adapter-authored control operation**: it may be supplied ONLY by
+ * core/adapter code. No server route, issue/comment content, project/workspace
+ * file content, provider-plugin callback, or arbitrary adapter config may supply
+ * a raw `command` string; any path embedded in it MUST be built by adapter/core
+ * helpers from already-confined paths and shell-quoted (C3). Providers treat the
+ * command as **opaque** — execute or reject, never rewrite/concatenate/append.
+ */
+export interface SandboxPostUploadCommand {
+  /** The opaque, adapter-authored shell command to run after upload. */
+  command: string;
+  /**
+   * Working directory for the command. When present, MUST be an absolute POSIX
+   * path confined under the operation's allowed sandbox target root (C2). When
+   * absent, defaults to the runtime's stable command cwd — never a process
+   * default cwd.
+   */
+  cwd?: string;
+  /** Optional per-command timeout in milliseconds. */
+  timeoutMs?: number;
+}
+
+/**
+ * An ordered, opaque unit of work handed to the native sync transport. The
+ * `operationId` is an opaque, non-sensitive token authored by the orchestrator
+ * (never a caller/asset identifier that could leak intent); a provider MUST NOT
+ * interpret it.
+ */
+export interface SandboxSyncOperation {
+  operationId: string;
+  files: SandboxSyncFileMapping[];
+  /**
+   * Optional ordered control commands run after this operation's files land, in
+   * array order, fail-fast. Absent means "no commands" — byte-identical to a
+   * pre-contract operation. See {@link SandboxPostUploadCommand} for the command
+   * origin/confinement security contract (C1–C4).
+   */
+  postUploadCommands?: SandboxPostUploadCommand[];
+}
+
+export interface SandboxSyncResult {
+  operations: { operationId: string; filesTransferred: number; bytesTransferred: number }[];
+}
+
 export interface SandboxManagedRuntimeClient {
   makeDir(remotePath: string): Promise<void>;
   writeFile(remotePath: string, bytes: ArrayBuffer, options?: SandboxTransferProgressOptions): Promise<void>;
@@ -130,7 +207,50 @@ export interface SandboxManagedRuntimeClient {
   ): Promise<Buffer | Uint8Array | ArrayBuffer>;
   listFiles(remotePath: string): Promise<string[]>;
   remove(remotePath: string): Promise<void>;
-  run(command: string, options: { timeoutMs: number }): Promise<void>;
+  run(command: string, options: { timeoutMs: number; noProfile?: boolean }): Promise<void>;
+  /**
+   * Optional native inbound transfer. Present only when the sandbox provider
+   * advertises both `environmentSyncIn` and `environmentSyncOut`; otherwise the
+   * orchestrator falls back to the tar + base64 `writeFile`/`run` path so
+   * behavior is byte-identical to a provider that never opted in.
+   */
+  syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  /** Optional native outbound transfer. See {@link syncIn}. */
+  syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+}
+
+/**
+ * Host-side complete-mediation guard for native sync operations. The orchestrator
+ * authors every `targetPath`, but the native transport crosses the host↔sandbox
+ * trust boundary, so we canonicalize and confine each mapping's source and target
+ * to an orchestrator-owned root before handing the operation to a provider.
+ * Absolute escapes and `..` traversal are rejected fail-closed. Sandbox and host
+ * paths on the server are POSIX.
+ */
+export function assertSyncOperationsConfined(
+  operations: SandboxSyncOperation[],
+  roots: { sourceRoots: string[]; targetRoots: string[] },
+): void {
+  const confine = (candidate: string, allowed: string[], label: string): void => {
+    const normalized = path.posix.normalize(candidate);
+    if (!path.posix.isAbsolute(normalized) || normalized === ".." || normalized.includes("/../") || normalized.endsWith("/..")) {
+      throw new Error(`sync operation ${label} path is not a confined absolute path: ${candidate}`);
+    }
+    const within = allowed.some((root) => {
+      const normalizedRoot = path.posix.normalize(root);
+      const prefix = normalizedRoot.endsWith("/") ? normalizedRoot : `${normalizedRoot}/`;
+      return normalized === normalizedRoot || normalized.startsWith(prefix);
+    });
+    if (!within) {
+      throw new Error(`sync operation ${label} path escapes its confinement root: ${candidate}`);
+    }
+  };
+  for (const operation of operations) {
+    for (const mapping of operation.files) {
+      confine(mapping.sourcePath, roots.sourceRoots, "source");
+      confine(mapping.targetPath, roots.targetRoots, "target");
+    }
+  }
 }
 
 export interface PreparedSandboxManagedRuntime {
@@ -168,6 +288,43 @@ function buildDefaultExtractRuntimeAssetCommand(input: {
     `mkdir -p ${shellQuote(input.remoteAssetDir)} && ` +
     `tar -xf ${shellQuote(input.remoteAssetTar)} -C ${shellQuote(input.remoteAssetDir)} && ` +
     `rm -f ${shellQuote(input.remoteAssetTar)}`;
+}
+
+// Named builder (Security Condition C3): extract an uploaded workspace tarball
+// into `workspaceRemoteDir`, then remove the tarball. When `wipeExceptNames` is
+// present the target's direct children (except the preserved names) are removed
+// before extraction (destroy-then-replace); when null the tarball is overlaid on
+// top of the existing tree (e.g. a git overlay merge). Every path is
+// shell-quoted; no untrusted value is concatenated into the shell (C1/C3).
+function buildWorkspaceTarExtractCommand(input: {
+  workspaceRemoteDir: string;
+  remoteTar: string;
+  wipeExceptNames: string[] | null;
+}): string {
+  const wipe = input.wipeExceptNames
+    ? ` && find ${shellQuote(input.workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ` +
+      `${preserveFindArgs(input.wipeExceptNames)} -exec rm -rf -- {} +`
+    : "";
+  return (
+    `mkdir -p ${shellQuote(input.workspaceRemoteDir)}${wipe} && ` +
+    `tar -xf ${shellQuote(input.remoteTar)} -C ${shellQuote(input.workspaceRemoteDir)} && ` +
+    `rm -f ${shellQuote(input.remoteTar)}`
+  );
+}
+
+// Named builder (C3): remove paths deleted in the host git worktree from the
+// sandbox workspace. Every path is shell-quoted; the caller supplies only
+// already-confined relative paths from the git snapshot.
+function buildRemoveDeletedPathsCommand(input: {
+  remoteDir: string;
+  deletedPaths: string[];
+}): string {
+  const quotedPaths = input.deletedPaths.map((entry) => shellQuote(entry)).join(" ");
+  return `cd ${shellQuote(input.remoteDir)} && rm -rf -- ${quotedPaths}`;
+}
+
+function buildUniqueStagingPath(input: { targetPath: string; suffix: string }): string {
+  return `${input.targetPath}${input.suffix}.${randomUUID()}`;
 }
 
 export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteExecutionSpec | null {
@@ -240,7 +397,7 @@ async function execTar(args: string[]): Promise<void> {
   });
 }
 
-async function createTarballFromDirectory(input: {
+export async function createTarballFromDirectory(input: {
   localDir: string;
   archivePath: string;
   exclude?: string[];
@@ -323,10 +480,17 @@ async function copyWorkspaceEntry(sourceRoot: string, targetRoot: string, relati
     return;
   }
 
-  await fs.copyFile(sourcePath, targetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
-    await fs.copyFile(sourcePath, targetPath);
-  });
-  await fs.chmod(targetPath, stats.mode);
+  const stagedTargetPath = buildUniqueStagingPath({ targetPath, suffix: ".paperclip-copy" });
+  await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+  try {
+    await fs.copyFile(sourcePath, stagedTargetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+      await fs.copyFile(sourcePath, stagedTargetPath);
+    });
+    await fs.chmod(stagedTargetPath, stats.mode);
+    await fs.rename(stagedTargetPath, targetPath);
+  } finally {
+    await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 export async function mirrorDirectory(
@@ -367,10 +531,6 @@ async function copySelectedWorkspaceEntries(input: {
     if (!sourceStats) continue;
     await copyWorkspaceEntry(input.sourceDir, input.targetDir, relative);
   }
-}
-
-function toArrayBuffer(bytes: Buffer): ArrayBuffer {
-  return Uint8Array.from(bytes).buffer;
 }
 
 function toBuffer(bytes: Buffer | Uint8Array | ArrayBuffer): Buffer {
@@ -417,20 +577,6 @@ function mergeExcludes(...groups: Array<string[] | undefined>): string[] {
 
 function preserveFindArgs(entries: string[]): string {
   return entries.map((entry) => `! -name ${shellQuote(entry)}`).join(" ");
-}
-
-async function removeDeletedPathsInSandbox(input: {
-  client: SandboxManagedRuntimeClient;
-  spec: SandboxRemoteExecutionSpec;
-  remoteDir: string;
-  deletedPaths: string[];
-}): Promise<void> {
-  if (input.deletedPaths.length === 0) return;
-  const quotedPaths = input.deletedPaths.map((entry) => shellQuote(entry)).join(" ");
-  await input.client.run(
-    `sh -c ${shellQuote(`cd ${shellQuote(input.remoteDir)} && rm -rf -- ${quotedPaths}`)}`,
-    { timeoutMs: input.spec.timeoutMs },
-  );
 }
 
 // Bridge a single byte-level transfer to the throttled progress reporter. The
@@ -487,6 +633,7 @@ export async function prepareSandboxManagedRuntime(input: {
   client: SandboxManagedRuntimeClient;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  syncWorkspace?: boolean;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: SandboxManagedRuntimeAsset[];
@@ -497,7 +644,8 @@ export async function prepareSandboxManagedRuntime(input: {
 }): Promise<PreparedSandboxManagedRuntime> {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
-  const gitSnapshot = await readGitWorkspaceSnapshot(input.workspaceLocalDir);
+  const syncWorkspace = input.syncWorkspace !== false;
+  const gitSnapshot = syncWorkspace ? await readGitWorkspaceSnapshot(input.workspaceLocalDir) : null;
   const gitIgnoredExcludes = gitSnapshot?.ignoredPaths;
   const workspaceArchiveExclude = mergeExcludes(
     SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
@@ -513,9 +661,46 @@ export async function prepareSandboxManagedRuntime(input: {
     input.workspaceExclude,
     gitIgnoredExcludes,
   );
-  const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
-    exclude: restoreExclude,
-  });
+  const baselineSnapshot = syncWorkspace
+    ? await captureDirectorySnapshot(input.workspaceLocalDir, { exclude: restoreExclude })
+    : null;
+
+  // Every inbound staging step delegates to the provider through `client.syncIn`:
+  // the orchestrator no longer inlines `writeFile`+`run` or chooses a transport,
+  // and there is no `usesCustomProvision` native-diversion gate. `syncIn` is
+  // ALWAYS present in production — the command-managed client exposes a native
+  // transport (Daytona/Kubernetes `uploadFiles` + provider-executed post-upload
+  // commands) or a byte-identical base64-tar fallback that reproduces the prior
+  // `writeFile`+`run` sequence. Require it explicitly so a misconfigured client
+  // fails loud rather than silently skipping staging. `syncOut` stays optional
+  // (native-only) with a tar fallback on the restore path below.
+  const syncIn = input.client.syncIn;
+  if (typeof syncIn !== "function") {
+    throw new Error(
+      "prepareSandboxManagedRuntime requires a client that exposes syncIn " +
+        "(createCommandManagedRuntimeClient provides a native-or-fallback implementation).",
+    );
+  }
+  const nativeSyncOut = typeof input.client.syncOut === "function";
+  let syncOperationSeq = 0;
+  // Opaque, ordered, non-sensitive operation tokens — never a caller/asset id.
+  const nextSyncOperationId = () => `sync-op-${++syncOperationSeq}`;
+
+  // Every delegated post-upload command (extract/wipe/remove-deleted/asset merge)
+  // must run under the run-specific timeout (`spec.timeoutMs`), not the provider
+  // sync client's default timeout — the two can differ, and before staging was
+  // routed through `syncIn` each of these ran via
+  // `client.run(cmd, { timeoutMs: spec.timeoutMs })`. When they mismatch, a
+  // command left without a `timeoutMs` outlives (or is killed under) the wrong
+  // limit. Stamp the run timeout onto every delegated command, preserving any
+  // command that already carries its own explicit timeout.
+  const withRunTimeout = (
+    commands: SandboxPostUploadCommand[],
+  ): SandboxPostUploadCommand[] =>
+    commands.map((command) => ({
+      ...command,
+      timeoutMs: command.timeoutMs ?? input.spec.timeoutMs,
+    }));
 
   await withTempDir("paperclip-sandbox-sync-", async (tempDir) => {
     const preservedNames = new Set([
@@ -523,97 +708,125 @@ export async function prepareSandboxManagedRuntime(input: {
       ...(gitSnapshot ? [".git"] : []),
       ...(input.preserveAbsentOnRestore ?? []),
     ]);
-    if (gitSnapshot) {
+
+    // Build one `SandboxSyncOperation` uploading a host tarball as a single file
+    // mapping (rides native `uploadFiles`, or the base64-tar fallback) with the
+    // extract/wipe/merge steps carried as ordered `postUploadCommands`, confine
+    // it, and delegate to `syncIn`. `finish` emits the terminal progress line.
+    const stageTarball = async (input2: {
+      tarPath: string;
+      remoteTar: string;
+      postUploadCommands: SandboxPostUploadCommand[];
+      progressLabel: string;
+      statusPhase: RuntimeStatusPhase;
+    }): Promise<void> => {
+      const tarSize = (await fs.stat(input2.tarPath)).size;
+      const operations: SandboxSyncOperation[] = [{
+        operationId: nextSyncOperationId(),
+        files: [{ sourcePath: input2.tarPath, targetPath: input2.remoteTar, kind: "file" }],
+        postUploadCommands: withRunTimeout(input2.postUploadCommands),
+      }];
+      assertSyncOperationsConfined(operations, {
+        sourceRoots: [tempDir],
+        targetRoots: [runtimeRootDir],
+      });
+      const upload = makeTransferProgress(
+        input.onProgress,
+        "Syncing",
+        "to",
+        input2.progressLabel,
+        { sink: input.onRuntimeProgress, phase: input2.statusPhase },
+      );
+      await syncIn(operations);
+      await upload.finish(tarSize, tarSize);
+    };
+
+    if (syncWorkspace && gitSnapshot) {
       await emitRuntimeStatus(input.onRuntimeProgress, "git_sync", "Syncing git history to sandbox");
       await withShallowGitWorkspaceClone({
         localDir: input.workspaceLocalDir,
         snapshot: gitSnapshot,
       }, async (cloneDir) => {
+        // git-workspace preserves `.paperclip-runtime` on the target and the
+        // workspace overlay merges on top rather than replacing — expressed as
+        // the operation's ordered post-upload commands, not a plain replace.
         const gitTarPath = path.join(tempDir, "git-workspace.tar");
         await createTarballFromDirectory({
           localDir: cloneDir,
           archivePath: gitTarPath,
           exclude: [".paperclip-runtime"],
         });
-        const gitTarBytes = await fs.readFile(gitTarPath);
         const remoteGitTar = path.posix.join(runtimeRootDir, "git-workspace-upload.tar");
-        await input.client.makeDir(runtimeRootDir);
-        const gitUpload = makeTransferProgress(
-          input.onProgress,
-          "Syncing",
-          "to",
-          "git history",
-          { sink: input.onRuntimeProgress, phase: "git_sync" },
-        );
-        await input.client.writeFile(remoteGitTar, toArrayBuffer(gitTarBytes), gitUpload.options);
-        await gitUpload.finish(gitTarBytes.byteLength, gitTarBytes.byteLength);
-        await input.client.run(
-          `sh -c ${shellQuote(
-            `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
-              `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${preserveFindArgs([".paperclip-runtime"])} -exec rm -rf -- {} + && ` +
-              `tar -xf ${shellQuote(remoteGitTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
-              `rm -f ${shellQuote(remoteGitTar)}`,
-          )}`,
-          { timeoutMs: input.spec.timeoutMs },
-        );
+        await stageTarball({
+          tarPath: gitTarPath,
+          remoteTar: remoteGitTar,
+          postUploadCommands: [{
+            command: buildWorkspaceTarExtractCommand({
+              workspaceRemoteDir,
+              remoteTar: remoteGitTar,
+              wipeExceptNames: [".paperclip-runtime"],
+            }),
+          }],
+          progressLabel: "git history",
+          statusPhase: "git_sync",
+        });
       });
     }
 
-    const workspaceTarPath = path.join(tempDir, "workspace.tar");
-    const workspaceArchiveDir = gitSnapshot ? path.join(tempDir, "workspace-overlay") : input.workspaceLocalDir;
-    await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing workspace to sandbox");
-    if (gitSnapshot) {
-      await copySelectedWorkspaceEntries({
-        sourceDir: input.workspaceLocalDir,
-        targetDir: workspaceArchiveDir,
-        relativePaths: gitSnapshot.overlayPaths,
-        exclude: workspaceArchiveExclude,
+    if (syncWorkspace) {
+      const workspaceTarPath = path.join(tempDir, "workspace.tar");
+      const workspaceArchiveDir = gitSnapshot ? path.join(tempDir, "workspace-overlay") : input.workspaceLocalDir;
+      await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing workspace to sandbox");
+      if (gitSnapshot) {
+        await copySelectedWorkspaceEntries({
+          sourceDir: input.workspaceLocalDir,
+          targetDir: workspaceArchiveDir,
+          relativePaths: gitSnapshot.overlayPaths,
+          exclude: workspaceArchiveExclude,
+        });
+      }
+      await createTarballFromDirectory({
+        localDir: workspaceArchiveDir,
+        archivePath: workspaceTarPath,
+        exclude: gitSnapshot ? undefined : workspaceArchiveExclude,
       });
-    }
-    await createTarballFromDirectory({
-      localDir: workspaceArchiveDir,
-      archivePath: workspaceTarPath,
-      exclude: gitSnapshot ? undefined : workspaceArchiveExclude,
-    });
-    const workspaceTarBytes = await fs.readFile(workspaceTarPath);
-    const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-upload.tar");
-    await input.client.makeDir(runtimeRootDir);
-    const workspaceUpload = makeTransferProgress(
-      input.onProgress,
-      "Syncing",
-      "to",
-      "workspace",
-      { sink: input.onRuntimeProgress, phase: "config_sync" },
-    );
-    await input.client.writeFile(
-      remoteWorkspaceTar,
-      toArrayBuffer(workspaceTarBytes),
-      workspaceUpload.options,
-    );
-    await workspaceUpload.finish(workspaceTarBytes.byteLength, workspaceTarBytes.byteLength);
-    const extractWorkspaceTarCommand = gitSnapshot
-      ? `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
-        `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
-        `rm -f ${shellQuote(remoteWorkspaceTar)}`
-      : `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
-        `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${preserveFindArgs([...preservedNames])} -exec rm -rf -- {} + && ` +
-        `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
-        `rm -f ${shellQuote(remoteWorkspaceTar)}`;
-    await input.client.run(
-      `sh -c ${shellQuote(extractWorkspaceTarCommand)}`,
-      { timeoutMs: input.spec.timeoutMs },
-    );
-    if (gitSnapshot) {
-      await removeDeletedPathsInSandbox({
-        client: input.client,
-        spec: input.spec,
-        remoteDir: workspaceRemoteDir,
-        deletedPaths: gitSnapshot.deletedPaths,
+      const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-upload.tar");
+      // git overlay merges on top of the just-extracted git tree (no wipe);
+      // non-git workspace wipes every child except the preserved names first.
+      const workspacePostUploadCommands: SandboxPostUploadCommand[] = [{
+        command: buildWorkspaceTarExtractCommand({
+          workspaceRemoteDir,
+          remoteTar: remoteWorkspaceTar,
+          wipeExceptNames: gitSnapshot ? null : [...preservedNames],
+        }),
+      }];
+      if (gitSnapshot && gitSnapshot.deletedPaths.length > 0) {
+        workspacePostUploadCommands.push({
+          command: buildRemoveDeletedPathsCommand({
+            remoteDir: workspaceRemoteDir,
+            deletedPaths: gitSnapshot.deletedPaths,
+          }),
+        });
+      }
+      await stageTarball({
+        tarPath: workspaceTarPath,
+        remoteTar: remoteWorkspaceTar,
+        postUploadCommands: workspacePostUploadCommands,
+        progressLabel: "workspace",
+        statusPhase: "config_sync",
       });
     }
 
     for (const asset of input.assets ?? []) {
       await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing runtime assets to sandbox");
+      const remoteAssetDir = path.posix.join(runtimeRootDir, asset.key);
+      const remoteAssetTar = path.posix.join(runtimeRootDir, `${asset.key}-upload.tar`);
+      // Every asset — default OR custom-provisioned (e.g. an adapter credential
+      // merge) — rides one `syncIn` operation: the asset tar plus any staged
+      // helper files as `files` mappings, and the extract/merge command as the
+      // ordered post-upload command. There is no native-diversion gate; a
+      // custom-provisioned asset's bytes now ride native `uploadFiles` and its
+      // command runs as a provider-executed post-upload command.
       const assetTarPath = path.join(tempDir, `${asset.key}.tar`);
       await createTarballFromDirectory({
         localDir: asset.localDir,
@@ -621,9 +834,42 @@ export async function prepareSandboxManagedRuntime(input: {
         followSymlinks: asset.followSymlinks,
         exclude: asset.exclude,
       });
-      const assetTarBytes = await fs.readFile(assetTarPath);
-      const remoteAssetDir = path.posix.join(runtimeRootDir, asset.key);
-      const remoteAssetTar = path.posix.join(runtimeRootDir, `${asset.key}-upload.tar`);
+      const files: SandboxSyncFileMapping[] = [
+        { sourcePath: assetTarPath, targetPath: remoteAssetTar, kind: "file" },
+      ];
+      // Stage provision helper files (e.g. the merge scripts) into the temp dir
+      // and map them alongside the asset tar so they ride the same native upload.
+      for (const stageFile of asset.provision?.stageFiles ?? []) {
+        const safeName = stageFile.name;
+        if (/[\\/]|\.\.(\.|$)/.test(safeName) || safeName === "..") {
+          throw new Error(`provision stageFile.name must be a simple basename, got: ${safeName}`);
+        }
+        const stageBytes = typeof stageFile.contents === "string"
+          ? Buffer.from(stageFile.contents)
+          : stageFile.contents;
+        const stageHostPath = path.join(tempDir, `${asset.key}.stage.${safeName}`);
+        await fs.writeFile(stageHostPath, stageBytes);
+        files.push({
+          sourcePath: stageHostPath,
+          targetPath: path.posix.join(runtimeRootDir, safeName),
+          kind: "file",
+        });
+      }
+      const postUploadCommand = asset.provision?.postUploadCommand?.({
+        assetTarPath: remoteAssetTar,
+        assetDir: remoteAssetDir,
+        runtimeRootDir,
+      }) ?? buildDefaultExtractRuntimeAssetCommand({ remoteAssetDir, remoteAssetTar });
+      const operations: SandboxSyncOperation[] = [{
+        operationId: nextSyncOperationId(),
+        files,
+        postUploadCommands: withRunTimeout([{ command: postUploadCommand }]),
+      }];
+      assertSyncOperationsConfined(operations, {
+        sourceRoots: [tempDir],
+        targetRoots: [runtimeRootDir],
+      });
+      const assetTarSize = (await fs.stat(assetTarPath)).size;
       const assetUpload = makeTransferProgress(
         input.onProgress,
         "Syncing",
@@ -631,30 +877,8 @@ export async function prepareSandboxManagedRuntime(input: {
         asset.key,
         { sink: input.onRuntimeProgress, phase: "config_sync" },
       );
-      await input.client.writeFile(remoteAssetTar, toArrayBuffer(assetTarBytes), assetUpload.options);
-      await assetUpload.finish(assetTarBytes.byteLength, assetTarBytes.byteLength);
-      for (const stageFile of asset.provision?.stageFiles ?? []) {
-        const stageBytes = typeof stageFile.contents === "string"
-          ? Buffer.from(stageFile.contents)
-          : stageFile.contents;
-        const safeName = stageFile.name;
-        if (/[\\/]|\.\.(\.|$)/.test(safeName) || safeName === "..") {
-          throw new Error(`provision stageFile.name must be a simple basename, got: ${safeName}`);
-        }
-        await input.client.writeFile(
-          path.posix.join(runtimeRootDir, safeName),
-          toArrayBuffer(stageBytes),
-        );
-      }
-      const extractCommand = asset.provision?.extractCommand?.({
-        assetTarPath: remoteAssetTar,
-        assetDir: remoteAssetDir,
-        runtimeRootDir,
-      }) ?? buildDefaultExtractRuntimeAssetCommand({ remoteAssetDir, remoteAssetTar });
-      await input.client.run(
-        `sh -c ${shellQuote(extractCommand)}`,
-        { timeoutMs: input.spec.timeoutMs },
-      );
+      await syncIn(operations);
+      await assetUpload.finish(assetTarSize, assetTarSize);
     }
   });
 
@@ -670,6 +894,16 @@ export async function prepareSandboxManagedRuntime(input: {
     assetDirs,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
       const restoreSink = onProgress ?? input.onProgress;
+      if (!syncWorkspace) {
+        for (const asset of input.assets ?? []) {
+          if (!asset.restore) continue;
+          await asset.restore({
+            assetDir: path.posix.join(runtimeRootDir, asset.key),
+            readFile: async (remotePath) => toBuffer(await input.client.readFile(remotePath)),
+          });
+        }
+        return;
+      }
       await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
         let importedRef: string | null = null;
         let importedHead: string | null = null;
@@ -718,37 +952,68 @@ export async function prepareSandboxManagedRuntime(input: {
             });
           }
 
-          const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
           await emitRuntimeStatus(input.onRuntimeProgress, "restore", "Restoring workspace from sandbox");
-          await input.client.run(
-            `sh -c ${shellQuote(createRemoteTarballFromDirectoryCommand({
-              remoteDir: workspaceRemoteDir,
-              archivePath: remoteWorkspaceTar,
-              exclude: restoreExclude,
-            }))}`,
-            { timeoutMs: input.spec.timeoutMs },
-          );
-          const workspaceRestore = makeTransferProgress(
-            restoreSink,
-            "Restoring",
-            "from",
-            "workspace",
-            { sink: input.onRuntimeProgress, phase: "restore" },
-          );
-          const archiveBytes = await input.client.readFile(remoteWorkspaceTar, workspaceRestore.options);
-          const archiveBuffer = toBuffer(archiveBytes);
-          await workspaceRestore.finish(archiveBuffer.byteLength, archiveBuffer.byteLength);
-          await input.client.remove(remoteWorkspaceTar).catch(() => undefined);
-          const localArchivePath = path.join(tempDir, "workspace.tar");
           const extractedDir = path.join(tempDir, "workspace");
-          await fs.writeFile(localArchivePath, archiveBuffer);
-          await extractTarballToDirectory({
-            archivePath: localArchivePath,
-            localDir: extractedDir,
-          });
+          if (nativeSyncOut) {
+            // Native outbound: the provider materializes the sandbox workspace into
+            // a fresh host directory. It is a clean destroy-then-replace into a
+            // temp dir the orchestrator just created, so it maps exactly to a
+            // generic directory file mapping; the host-side baseline merge below is
+            // unchanged.
+            const operations: SandboxSyncOperation[] = [{
+              operationId: nextSyncOperationId(),
+              files: [{
+                sourcePath: workspaceRemoteDir,
+                targetPath: extractedDir,
+                kind: "directory",
+                exclude: restoreExclude,
+              }],
+            }];
+            assertSyncOperationsConfined(operations, {
+              sourceRoots: [workspaceRemoteDir],
+              targetRoots: [extractedDir],
+            });
+            await fs.mkdir(extractedDir, { recursive: true });
+            const workspaceRestore = makeTransferProgress(
+              restoreSink,
+              "Restoring",
+              "from",
+              "workspace",
+              { sink: input.onRuntimeProgress, phase: "restore" },
+            );
+            await input.client.syncOut!(operations);
+            await workspaceRestore.finish(0, 0);
+          } else {
+            const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
+            await input.client.run(
+              `sh -c ${shellQuote(createRemoteTarballFromDirectoryCommand({
+                remoteDir: workspaceRemoteDir,
+                archivePath: remoteWorkspaceTar,
+                exclude: restoreExclude,
+              }))}`,
+              { timeoutMs: input.spec.timeoutMs },
+            );
+            const workspaceRestore = makeTransferProgress(
+              restoreSink,
+              "Restoring",
+              "from",
+              "workspace",
+              { sink: input.onRuntimeProgress, phase: "restore" },
+            );
+            const archiveBytes = await input.client.readFile(remoteWorkspaceTar, workspaceRestore.options);
+            const archiveBuffer = toBuffer(archiveBytes);
+            await workspaceRestore.finish(archiveBuffer.byteLength, archiveBuffer.byteLength);
+            await input.client.remove(remoteWorkspaceTar).catch(() => undefined);
+            const localArchivePath = path.join(tempDir, "workspace.tar");
+            await fs.writeFile(localArchivePath, archiveBuffer);
+            await extractTarballToDirectory({
+              archivePath: localArchivePath,
+              localDir: extractedDir,
+            });
+          }
           const gitHeadToIntegrate = importedHead;
           await mergeDirectoryWithBaseline({
-            baseline: baselineSnapshot,
+            baseline: baselineSnapshot!,
             sourceDir: extractedDir,
             targetDir: input.workspaceLocalDir,
             beforeApply: gitHeadToIntegrate
