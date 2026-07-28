@@ -1,4 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
+import {
+  bumpIssueVersions,
+  versionedIssuePatch,
+} from "./issue-versioning.js";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -741,11 +745,23 @@ export function agentService(db: Db) {
       }
 
       return db.transaction(async (tx) => {
+        const commentIssueIds = await tx
+          .selectDistinct({ issueId: issueComments.issueId })
+          .from(issueComments)
+          .where(eq(issueComments.authorAgentId, id))
+          .then((rows) => rows.map((row) => row.issueId));
         await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
-        await tx
+        const directlyUpdatedIssueIds = await tx
           .update(issues)
-          .set({ assigneeAgentId: null, createdByAgentId: null })
-          .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
+          .set(versionedIssuePatch({ assigneeAgentId: null, createdByAgentId: null }))
+          .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)))
+          .returning({ id: issues.id })
+          .then((rows) => rows.map((row) => row.id));
+        const directlyUpdated = new Set(directlyUpdatedIssueIds);
+        await bumpIssueVersions(
+          tx,
+          commentIssueIds.filter((issueId) => !directlyUpdated.has(issueId)),
+        );
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
         await tx.delete(activityLog).where(

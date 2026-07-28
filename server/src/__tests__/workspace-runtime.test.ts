@@ -4631,6 +4631,8 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
     expect(comments[0]?.body).toContain("Dirty file count: `2`");
     expect(comments[0]?.body).toContain("`untracked.txt`");
     expect(comments[0]?.body).toContain("- Claimant: none");
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, ids.sourceIssueId));
+    expect(sourceIssue?.version).toBe(2);
 
     const activityRows = await db
       .select()

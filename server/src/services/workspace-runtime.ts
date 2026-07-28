@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { runIssueMutation } from "./issue-versioning.js";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -1176,44 +1177,50 @@ async function writeDirtyQuarantineAuditComments(input: {
   let claimantAuditCommentId: string | null = null;
   const now = new Date();
   if (input.evidence.sourceIssueId) {
-    const [sourceComment] = await input.db
-      .insert(issueComments)
-      .values({
-        companyId: input.companyId,
-        issueId: input.evidence.sourceIssueId,
-        authorAgentId: null,
-        authorUserId: null,
-        authorType: "system",
-        createdByRunId: input.heartbeatRunId,
-        body,
-      })
-      .returning({ id: issueComments.id });
-    sourceAuditCommentId = sourceComment?.id ?? null;
-    await input.db
-      .update(issues)
-      .set({ updatedAt: now })
-      .where(eq(issues.id, input.evidence.sourceIssueId));
+    const mutation = await runIssueMutation(input.db, {
+      issueId: input.evidence.sourceIssueId,
+      now,
+      mutate: async (tx) => {
+        const [sourceComment] = await tx
+          .insert(issueComments)
+          .values({
+            companyId: input.companyId,
+            issueId: input.evidence.sourceIssueId!,
+            authorAgentId: null,
+            authorUserId: null,
+            authorType: "system",
+            createdByRunId: input.heartbeatRunId,
+            body,
+          })
+          .returning({ id: issueComments.id });
+        return { result: sourceComment?.id ?? null };
+      },
+    });
+    sourceAuditCommentId = mutation?.result ?? null;
   }
 
   const claimantIssueId = input.evidence.contention?.claimedByIssueId ?? null;
   if (claimantIssueId && claimantIssueId !== input.evidence.sourceIssueId) {
-    const [claimantComment] = await input.db
-      .insert(issueComments)
-      .values({
-        companyId: input.companyId,
-        issueId: claimantIssueId,
-        authorAgentId: null,
-        authorUserId: null,
-        authorType: "system",
-        createdByRunId: input.heartbeatRunId,
-        body,
-      })
-      .returning({ id: issueComments.id });
-    claimantAuditCommentId = claimantComment?.id ?? null;
-    await input.db
-      .update(issues)
-      .set({ updatedAt: now })
-      .where(eq(issues.id, claimantIssueId));
+    const mutation = await runIssueMutation(input.db, {
+      issueId: claimantIssueId,
+      now,
+      mutate: async (tx) => {
+        const [claimantComment] = await tx
+          .insert(issueComments)
+          .values({
+            companyId: input.companyId,
+            issueId: claimantIssueId,
+            authorAgentId: null,
+            authorUserId: null,
+            authorType: "system",
+            createdByRunId: input.heartbeatRunId,
+            body,
+          })
+          .returning({ id: issueComments.id });
+        return { result: claimantComment?.id ?? null };
+      },
+    });
+    claimantAuditCommentId = mutation?.result ?? null;
   }
 
   return { sourceAuditCommentId, claimantAuditCommentId };

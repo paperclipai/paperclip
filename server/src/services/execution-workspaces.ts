@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { versionedIssuePatch } from "./issue-versioning.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -1819,6 +1820,7 @@ export function executionWorkspaceService(db: Db) {
 
         let restoredSourceIssue: ExecutionWorkspaceBranchReconcileResult["restoredSourceIssue"] = null;
         let sourceIssueStatusChanged = false;
+        let sourceIssueVersionAdvanced = false;
         if (input.mode === "quarantine_restore") {
           const [sourceBefore] = await tx
             .select({
@@ -1867,6 +1869,7 @@ export function executionWorkspaceService(db: Db) {
             tx,
           );
           if (!updatedIssue) throw notFound("Source issue not found");
+          sourceIssueVersionAdvanced = true;
           restoredSourceIssue = {
             id: updatedIssue.id,
             companyId: updatedIssue.companyId,
@@ -1896,10 +1899,12 @@ export function executionWorkspaceService(db: Db) {
           })
           .returning({ id: issueComments.id });
 
-        await tx
-          .update(issues)
-          .set({ updatedAt: now })
-          .where(eq(issues.id, lockedWorkspace.sourceIssueId));
+        if (!sourceIssueVersionAdvanced) {
+          await tx
+            .update(issues)
+            .set(versionedIssuePatch({}, now))
+            .where(eq(issues.id, lockedWorkspace.sourceIssueId));
+        }
 
         return {
           workspace: toExecutionWorkspace(updatedRow, lockedRuntimeServices),

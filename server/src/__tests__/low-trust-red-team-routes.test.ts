@@ -847,6 +847,16 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     const fixture = await seedLowTrustFixture(db);
     const app = createApp(db, boardActor(fixture));
     const unblockDescriptor = { owner: "board", action: "Review the low-trust stop" } as const;
+    const initialReviewRootVersion = await db
+      .select({ version: issues.version })
+      .from(issues)
+      .where(eq(issues.id, fixture.issues.reviewRoot.id))
+      .then((rows) => rows[0]!.version);
+    const initialGrandparentVersion = await db
+      .select({ version: issues.version })
+      .from(issues)
+      .where(eq(issues.id, fixture.issues.reviewGrandparent.id))
+      .then((rows) => rows[0]!.version);
 
     await db
       .delete(issueApprovals)
@@ -914,6 +924,19 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expect(reparentedRelayComments).toHaveLength(1);
     expect(reparentedRelayComments[0]?.body).toContain("transitioned to `blocked`");
     expect(reparentedRelayComments[0]?.body).not.toContain(fixture.canaries.raw);
+
+    const reviewRootVersion = await db
+      .select({ version: issues.version })
+      .from(issues)
+      .where(eq(issues.id, fixture.issues.reviewRoot.id))
+      .then((rows) => rows[0]!.version);
+    const grandparentVersion = await db
+      .select({ version: issues.version })
+      .from(issues)
+      .where(eq(issues.id, fixture.issues.reviewGrandparent.id))
+      .then((rows) => rows[0]!.version);
+    expect(reviewRootVersion).toBe(initialReviewRootVersion + 2);
+    expect(grandparentVersion).toBe(initialGrandparentVersion + 1);
   });
 
   it("allows mentioned low-trust agents to comment on out-of-bound assigned issues", async () => {
@@ -1562,6 +1585,66 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expect(rejectedPromotion.status, JSON.stringify(rejectedPromotion.body)).toBe(404);
     expect(rejectedPromotion.body.error).toBe("Low-trust source artifact not found");
 
+    const [rawIssue] = await db.insert(issues).values({
+      companyId: fixture.company.id,
+      parentId: fixture.issues.assignedReview.id,
+      title: "Quarantined child issue",
+      status: "done",
+      priority: "medium",
+      sourceTrust: {
+        preset: LOW_TRUST_REVIEW_PRESET,
+        disposition: "quarantined",
+        sourceIssueId: fixture.issues.assignedReview.id,
+        sourceRunId: fixture.runs.lowTrust.id,
+        sourceAgentId: fixture.agents.lowTrust.id,
+      },
+    }).returning();
+    const issuePromotion = await request(app)
+      .post(`/api/issues/${fixture.issues.assignedReview.id}/low-trust/promotions`)
+      .send({
+        sourceArtifactKind: "issue",
+        sourceArtifactId: rawIssue!.id,
+        title: "Sanitized child finding",
+        summary: "Sanitized child issue summary.",
+      });
+    expect(issuePromotion.status, JSON.stringify(issuePromotion.body)).toBe(201);
+    const [promotedIssue] = await db
+      .select({ sourceTrust: issues.sourceTrust, version: issues.version })
+      .from(issues)
+      .where(eq(issues.id, rawIssue!.id));
+    expect(promotedIssue).toMatchObject({
+      sourceTrust: { disposition: "promoted" },
+      version: 2,
+    });
+
+    const [rawComment] = await db.insert(issueComments).values({
+      companyId: fixture.company.id,
+      issueId: fixture.issues.assignedReview.id,
+      authorAgentId: fixture.agents.lowTrust.id,
+      body: fixture.canaries.raw,
+      sourceTrust: {
+        preset: LOW_TRUST_REVIEW_PRESET,
+        disposition: "quarantined",
+        sourceIssueId: fixture.issues.assignedReview.id,
+        sourceRunId: fixture.runs.lowTrust.id,
+        sourceAgentId: fixture.agents.lowTrust.id,
+      },
+    }).returning();
+    const commentPromotion = await request(app)
+      .post(`/api/issues/${fixture.issues.assignedReview.id}/low-trust/promotions`)
+      .send({
+        sourceArtifactKind: "comment",
+        sourceArtifactId: rawComment!.id,
+        title: "Sanitized comment finding",
+        summary: "Sanitized comment summary.",
+      });
+    expect(commentPromotion.status, JSON.stringify(commentPromotion.body)).toBe(201);
+    const [promotedComment] = await db
+      .select({ sourceTrust: issueComments.sourceTrust })
+      .from(issueComments)
+      .where(eq(issueComments.id, rawComment!.id));
+    expect(promotedComment?.sourceTrust).toMatchObject({ disposition: "promoted" });
+
     const promotion = await request(app)
       .post(`/api/issues/${fixture.issues.assignedReview.id}/low-trust/promotions`)
       .send({
@@ -1611,6 +1694,11 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       promotedByActorType: "user",
       promotedByActorId: "board-user",
     });
+    const [promotedSourceIssue] = await db
+      .select({ version: issues.version })
+      .from(issues)
+      .where(eq(issues.id, fixture.issues.assignedReview.id));
+    expect(promotedSourceIssue?.version).toBe(4);
 
     const duplicatePromotion = await request(app)
       .post(`/api/issues/${fixture.issues.assignedReview.id}/low-trust/promotions`)

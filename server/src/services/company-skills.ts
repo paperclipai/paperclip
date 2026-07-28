@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { versionedIssuePatch } from "./issue-versioning.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6525,7 +6526,7 @@ export function companySkillService(db: Db) {
       await db.transaction(async (tx) => {
         await tx
           .update(issues)
-          .set({ hiddenAt: now, updatedAt: now })
+          .set(versionedIssuePatch({ hiddenAt: now }, now))
           .where(and(eq(issues.companyId, companyId), eq(issues.id, row.issueId), eq(issues.harnessKind, "skill_test")));
         await tx
           .update(companySkillTestRuns)

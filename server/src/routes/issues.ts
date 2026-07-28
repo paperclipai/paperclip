@@ -170,6 +170,20 @@ import {
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import {
+  formatIssueEtag,
+  InvalidIssueEtagError,
+  parseOptionalIssueIfMatch,
+} from "../http/issue-etag.js";
+import {
+  bumpIssueVersions,
+  type DbOrTx,
+  type DbTransaction,
+  type IssueMutationPatch,
+  IssueVersionConflictError,
+  runIssueMutation,
+  versionedIssuePatch,
+} from "../services/issue-versioning.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
   createCompanySearchRateLimiter,
@@ -198,6 +212,16 @@ import {
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
+
+function setIssueVersionHeaders(res: Response, version: number) {
+  res.setHeader("Cache-Control", "no-transform");
+  res.setHeader("ETag", formatIssueEtag(version));
+}
+
+function respondIssueVersionConflict(res: Response, currentVersion: number) {
+  setIssueVersionHeaders(res, currentVersion);
+  res.status(412).json({ error: "Issue version conflict" });
+}
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -2136,13 +2160,6 @@ function buildExecutionStageWakeup(input: {
   return null;
 }
 
-class AutoApprovalIssueMissingError extends Error {
-  constructor() {
-    super("Issue not found during auto-approval transaction");
-    this.name = "AutoApprovalIssueMissingError";
-  }
-}
-
 function toCompactIssue(issue: any): CompactIssue {
   return {
     id: issue.id,
@@ -2893,13 +2910,36 @@ export function issueRoutes(
     scheduledRetryRunId: string | null | undefined;
     issue: { id: string; companyId: string };
     actor: ReturnType<typeof getActorInfo>;
+    tx: DbTransaction;
   }) {
     const scheduledRetryRunId = readNonEmptyString(input.scheduledRetryRunId);
     if (!scheduledRetryRunId) return null;
 
     try {
-      const cancelled = await heartbeat.cancelRun(scheduledRetryRunId);
-      const cancelledRunId = cancelled?.id ?? scheduledRetryRunId;
+      const cancelled = await heartbeat.cancelScheduledRetryInTransaction(
+        input.tx,
+        scheduledRetryRunId,
+        "Superseded by a human issue comment",
+      );
+      return {
+        agentId: cancelled?.agentId ?? null,
+        runId: cancelled?.id ?? scheduledRetryRunId,
+      };
+    } catch (err) {
+      logger.error(
+        { err, issueId: input.issue.id, runId: scheduledRetryRunId },
+        "failed to cancel scheduled retry superseded by issue comment",
+      );
+      throw err;
+    }
+  }
+
+  async function finalizeScheduledRetryCancellation(input: {
+    cancellation: { agentId: string | null; runId: string };
+    issue: { id: string; companyId: string };
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    try {
       await logActivity(db, {
         companyId: input.issue.companyId,
         actorType: input.actor.actorType,
@@ -2909,20 +2949,26 @@ export function issueRoutes(
         agentApiKeyId: input.actor.agentApiKeyId,
         action: "heartbeat.cancelled",
         entityType: "heartbeat_run",
-        entityId: cancelledRunId,
+        entityId: input.cancellation.runId,
         issueId: input.issue.id,
         details: {
           source: "issue_comment_scheduled_retry_superseded",
           issueId: input.issue.id,
         },
       });
-      return cancelledRunId;
     } catch (err) {
       logger.error(
-        { err, issueId: input.issue.id, runId: scheduledRetryRunId },
-        "failed to cancel scheduled retry superseded by issue comment",
+        { err, issueId: input.issue.id, runId: input.cancellation.runId },
+        "failed to log committed scheduled retry cancellation",
       );
-      throw err;
+    }
+    try {
+      await heartbeat.finalizeScheduledRetryCancellation(input.cancellation.runId);
+    } catch (err) {
+      logger.error(
+        { err, issueId: input.issue.id, runId: input.cancellation.runId },
+        "scheduled retry cancellation committed but post-commit finalization failed",
+      );
     }
   }
 
@@ -3556,6 +3602,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options: { deferCheckoutNormalization?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3626,27 +3673,37 @@ export function issueRoutes(
     }
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
+    if (options.deferCheckoutNormalization) return true;
     const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId);
     if (ownership.adoptedFromRunId) {
-      const actor = getActorInfo(req);
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.checkout_lock_adopted",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          previousCheckoutRunId: ownership.adoptedFromRunId,
-          checkoutRunId: runId,
-          reason: "stale_checkout_run",
-        },
-      });
+      await logCheckoutLockAdopted(req, issue, runId, ownership.adoptedFromRunId);
     }
     return true;
+  }
+
+  async function logCheckoutLockAdopted(
+    req: Request,
+    issue: { id: string; companyId: string },
+    checkoutRunId: string,
+    previousCheckoutRunId: string,
+  ) {
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.checkout_lock_adopted",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        previousCheckoutRunId,
+        checkoutRunId,
+        reason: "stale_checkout_run",
+      },
+    });
   }
 
   async function assertFreshTaskWatchdogSourceMutation(
@@ -5472,6 +5529,7 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    setIssueVersionHeaders(res, issue.version);
     res.json({
       ...issue,
       ...inboxArchiveFields,
@@ -6590,7 +6648,7 @@ export function issueRoutes(
         if (req.body.sourceArtifactKind === "issue") {
           return tx
             .update(issueRows)
-            .set(markPromoted)
+            .set(versionedIssuePatch(markPromoted))
             .where(and(
               eq(issueRows.id, req.body.sourceArtifactId),
               eq(issueRows.sourceTrust, sourceTrust),
@@ -6629,6 +6687,12 @@ export function issueRoutes(
           .returning({ id: issueWorkProducts.id });
       })();
       if (!updatedSource[0]) return null;
+      if (
+        req.body.sourceArtifactKind !== "issue" ||
+        req.body.sourceArtifactId !== issue.id
+      ) {
+        await bumpIssueVersions(tx, [issue.id], promotedAt);
+      }
 
       return tx
         .insert(issueWorkProducts)
@@ -7700,11 +7764,30 @@ export function issueRoutes(
   });
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
+    let expectedVersion: number | undefined;
+    try {
+      expectedVersion = parseOptionalIssueIfMatch(req.headers["if-match"]);
+    } catch (err) {
+      if (err instanceof InvalidIssueEtagError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(
+      await assertAgentIssueMutationAllowed(req, res, existing, {
+        deferCheckoutNormalization: expectedVersion !== undefined,
+      })
+    )) return;
+    if (expectedVersion !== undefined && expectedVersion !== existing.version) {
+      respondIssueVersionConflict(res, existing.version);
+      return;
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -7818,6 +7901,7 @@ export function issueRoutes(
       return;
     }
     let interruptedRunId: string | null = null;
+    let runToInterrupt: Awaited<ReturnType<typeof resolveActiveIssueRun>> = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
     const isAgentWorkUpdate =
       req.actor.type === "agent" && (Object.keys(updateFields).length > 0 || reviewRequest !== undefined);
@@ -7837,36 +7921,7 @@ export function issueRoutes(
         return;
       }
 
-      const runToInterrupt = await resolveActiveIssueRun(existing);
-      if (runToInterrupt) {
-        const cancelled = await heartbeat.cancelRun(
-          runToInterrupt.id,
-          "Interrupted by board comment",
-          operatorInterruptCancelOptions({ issueId: existing.id, actor }),
-        );
-        if (cancelled) {
-          interruptedRunId = cancelled.id;
-          await logActivity(db, {
-            companyId: cancelled.companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            agentApiKeyId: actor.agentApiKeyId,
-            action: "heartbeat.cancelled",
-            entityType: "heartbeat_run",
-            entityId: cancelled.id,
-            issueId: existing.id,
-            details: {
-              agentId: cancelled.agentId,
-              source: "issue_comment_interrupt",
-              issueId: existing.id,
-              cancellationKind: "operator_interrupted",
-              operatorInterrupted: true,
-            },
-          });
-        }
-      }
+      runToInterrupt = await resolveActiveIssueRun(existing);
     }
 
     const runToCancelForCancelledStatus = shouldCancelActiveRunForCancelledStatus
@@ -7885,16 +7940,19 @@ export function issueRoutes(
       updateFields.status = "todo";
     }
     let cancelledScheduledRetryRunId: string | null = null;
-    if (
-      commentBody &&
+    const shouldCancelScheduledRetry =
+      Boolean(commentBody) &&
       shouldResumeInProgressScheduledRetry &&
-      updateFields.status === "todo"
-    ) {
-      cancelledScheduledRetryRunId = await cancelScheduledRetrySupersededByComment({
-        scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
-        issue: existing,
-        actor,
-      });
+      updateFields.status === "todo";
+    if (shouldCancelScheduledRetry) {
+      if (existing.executionRunId === scheduledRetryForHumanComment?.runId) {
+        updateFields.executionRunId = null;
+        updateFields.executionAgentNameKey = null;
+        updateFields.executionLockedAt = null;
+      }
+      if (existing.checkoutRunId === scheduledRetryForHumanComment?.runId) {
+        updateFields.checkoutRunId = null;
+      }
     }
     if (req.body.executionPolicy !== undefined) {
       updateFields.executionPolicy = applyActorMonitorScheduledBy(
@@ -8088,23 +8146,82 @@ export function issueRoutes(
     const stopRelayResult: {
       value: Awaited<ReturnType<typeof svc.addStopRelayCommentIfNeeded>>;
     } = { value: null };
-    let issue: Awaited<ReturnType<typeof svc.update>>;
-    try {
+    let issue: Awaited<ReturnType<typeof svc.update>> = null;
+    let committedComment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
+    const issueUpdateInput = {
+      ...updateFields,
+      actorAgentId: actor.agentId ?? null,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      expectedVersion,
+    };
+    const scheduledRetryCancellation = {
+      value: null as Awaited<ReturnType<typeof cancelScheduledRetrySupersededByComment>>,
+    };
+    const inlineComment = commentBody
+      ? {
+          body: commentBody,
+          actor: {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+            runId: actor.runId,
+          },
+          options: {
+            sourceTrust: await sourceTrustForActorWrite(existing, actor),
+          },
+          beforeCommit: shouldCancelScheduledRetry
+            ? async (tx: DbTransaction) => {
+                scheduledRetryCancellation.value = await cancelScheduledRetrySupersededByComment({
+                  scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
+                  issue: existing,
+                  actor,
+                  tx,
+                });
+              }
+            : undefined,
+        }
+      : null;
+    const performIssueMutation = async (
+      dbOrTx: DbOrTx,
+      ownershipPatch: IssueMutationPatch = {},
+    ) => {
+      const joinsExistingTransaction = "rollback" in dbOrTx;
+      const effectiveIssueUpdateInput = { ...issueUpdateInput, ...ownershipPatch };
+      let updatedIssue: Awaited<ReturnType<typeof svc.update>> = null;
+      let updatedComment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
       if (transition.decision && decisionId) {
         const decision = transition.decision;
-        issue = await db.transaction(async (tx) => {
-          const updated = await svc.update(
-            id,
-            {
-              ...updateFields,
-              actorAgentId: actor.agentId ?? null,
-              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        if (inlineComment) {
+          const commentInput = {
+            ...inlineComment,
+            afterUpdate: async (
+              tx: DbTransaction,
+              updated: typeof issueRows.$inferSelect,
+            ) => {
+              await tx.insert(issueExecutionDecisions).values({
+                id: decisionId,
+                companyId: updated.companyId,
+                issueId: updated.id,
+                stageId: decision.stageId,
+                stageType: decision.stageType,
+                actorAgentId: actor.agentId ?? null,
+                actorUserId: actor.actorType === "user" ? actor.actorId : null,
+                outcome: decision.outcome,
+                body: decision.body,
+                createdByRunId: actor.runId ?? null,
+              });
             },
-            tx,
-          );
-          if (!updated) return null;
-
-          await tx.insert(issueExecutionDecisions).values({
+          };
+          const result = joinsExistingTransaction
+            ? await svc.updateWithInlineComment(id, effectiveIssueUpdateInput, commentInput, dbOrTx)
+            : await svc.updateWithInlineComment(id, effectiveIssueUpdateInput, commentInput);
+          updatedIssue = result?.issue ?? null;
+          updatedComment = result?.comment ?? null;
+        } else {
+          const updated = joinsExistingTransaction
+            ? await svc.update(id, effectiveIssueUpdateInput, dbOrTx)
+            : await svc.update(id, effectiveIssueUpdateInput);
+          if (!updated) return { issue: null, comment: null };
+          await dbOrTx.insert(issueExecutionDecisions).values({
             id: decisionId,
             companyId: updated.companyId,
             issueId: updated.id,
@@ -8116,32 +8233,63 @@ export function issueRoutes(
             body: decision.body,
             createdByRunId: actor.runId ?? null,
           });
-
-          if (shouldRelayStop) {
-            stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
-          }
-
-          return updated;
-        });
-      } else if (shouldRelayStop) {
-        issue = await db.transaction(async (tx) => {
-          const updated = await svc.update(id, {
-            ...updateFields,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.actorType === "user" ? actor.actorId : null,
-          }, tx);
-          if (!updated) return null;
-          stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
-          return updated;
-        });
+          updatedIssue = updated;
+        }
+      } else if (inlineComment) {
+        const result = joinsExistingTransaction
+          ? await svc.updateWithInlineComment(id, effectiveIssueUpdateInput, inlineComment, dbOrTx)
+          : await svc.updateWithInlineComment(id, effectiveIssueUpdateInput, inlineComment);
+        updatedIssue = result?.issue ?? null;
+        updatedComment = result?.comment ?? null;
       } else {
-        issue = await svc.update(id, {
-          ...updateFields,
-          actorAgentId: actor.agentId ?? null,
-          actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        });
+        updatedIssue = joinsExistingTransaction
+          ? await svc.update(id, effectiveIssueUpdateInput, dbOrTx)
+          : await svc.update(id, effectiveIssueUpdateInput);
+      }
+      if (updatedIssue && shouldRelayStop) {
+        stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updatedIssue, dbOrTx);
+      }
+      return { issue: updatedIssue, comment: updatedComment };
+    };
+    let adoptedFromRunId: string | null = null;
+    try {
+      const normalizeCheckoutInTransaction =
+        expectedVersion !== undefined &&
+        req.actor.type === "agent" &&
+        existing.status === "in_progress" &&
+        existing.assigneeAgentId === actor.agentId;
+      const requiresOuterTransaction =
+        normalizeCheckoutInTransaction ||
+        shouldRelayStop ||
+        Boolean(transition.decision && decisionId && !inlineComment);
+      const result = requiresOuterTransaction
+        ? await db.transaction(async (tx) => {
+            if (!normalizeCheckoutInTransaction) {
+              return performIssueMutation(tx);
+            }
+            const ownership = await svc.assertCheckoutOwnerInTransaction(
+              id,
+              actor.agentId!,
+              actor.runId!,
+              expectedVersion!,
+              tx,
+            );
+            adoptedFromRunId = ownership.adoptedFromRunId;
+            return performIssueMutation(tx, ownership.issuePatch);
+          })
+        : await performIssueMutation(db);
+      issue = result.issue;
+      committedComment = result.comment;
+      if (adoptedFromRunId && actor.runId) {
+        await logCheckoutLockAdopted(req, existing, actor.runId, adoptedFromRunId);
+      } else {
+        adoptedFromRunId = null;
       }
     } catch (err) {
+      if (err instanceof IssueVersionConflictError) {
+        respondIssueVersionConflict(res, err.currentVersion);
+        return;
+      }
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(
           {
@@ -8168,6 +8316,44 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    if (scheduledRetryCancellation.value) {
+      cancelledScheduledRetryRunId = scheduledRetryCancellation.value.runId;
+      await finalizeScheduledRetryCancellation({
+        cancellation: scheduledRetryCancellation.value,
+        issue: existing,
+        actor,
+      });
+    }
+
+    if (runToInterrupt) {
+      const cancelled = await heartbeat.cancelRun(
+        runToInterrupt.id,
+        "Interrupted by board comment",
+        operatorInterruptCancelOptions({ issueId: existing.id, actor }),
+      );
+      if (cancelled) {
+        interruptedRunId = cancelled.id;
+        await logActivity(db, {
+          companyId: cancelled.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "heartbeat.cancelled",
+          entityType: "heartbeat_run",
+          entityId: cancelled.id,
+          issueId: existing.id,
+          details: {
+            agentId: cancelled.agentId,
+            source: "issue_comment_interrupt",
+            issueId: existing.id,
+            cancellationKind: "operator_interrupted",
+            operatorInterrupted: true,
+          },
+        });
+      }
+    }
 
     if (enteringBlocked) {
       const blockedIssue = issue;
@@ -8180,11 +8366,16 @@ export function issueRoutes(
         },
       });
       if (ownerNotifiedAt) {
-        await db.update(issueRows).set({ blockedOwnerNotifiedAt: ownerNotifiedAt }).where(and(
-          eq(issueRows.id, blockedIssue.id),
-          eq(issueRows.companyId, blockedIssue.companyId),
-        ));
-        issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
+        const notificationUpdate = await runIssueMutation(db, {
+          issueId: blockedIssue.id,
+          mutate: () => ({
+            issuePatch: { blockedOwnerNotifiedAt: ownerNotifiedAt },
+            result: null,
+          }),
+        });
+        if (notificationUpdate) {
+          issue = { ...blockedIssue, ...notificationUpdate.issue };
+        }
       }
     }
 
@@ -8561,17 +8752,19 @@ export function issueRoutes(
       }
     }
 
-    let comment = null;
+    let comment = committedComment;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      comment = await svc.addComment(id, commentBody, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-      }, {
-        sourceTrust: await sourceTrustForActorWrite(issue, actor),
-      });
+      if (!comment) {
+        comment = await svc.addComment(id, commentBody, {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+        }, {
+          sourceTrust: await sourceTrustForActorWrite(issue, actor),
+        });
+      }
       await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -8628,6 +8821,7 @@ export function issueRoutes(
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
+        { touchIssueVersion: false },
       );
       await logExpiredRequestConfirmations({
         issue,
@@ -9007,6 +9201,14 @@ export function issueRoutes(
     })();
 
     await queueTaskWatchdogEvaluation(issue, actor.runId);
+    const latestIssue = await svc.getById(issue.id);
+    if (latestIssue && latestIssue.version > issue.version) {
+      issueResponse = { ...issueResponse, ...latestIssue };
+    }
+    setIssueVersionHeaders(
+      res,
+      latestIssue && latestIssue.version > issue.version ? latestIssue.version : issue.version,
+    );
     res.json({ ...issueResponse, comment });
   });
 
@@ -9043,7 +9245,7 @@ export function issueRoutes(
       entityType: "issue",
       entityId: issue.id,
     });
-
+    await queueTaskWatchdogEvaluation(existing, actor.runId);
     await queueTaskWatchdogEvaluation(existing, actor.runId);
     res.json(issue);
   });
@@ -9746,11 +9948,30 @@ export function issueRoutes(
   });
 
   router.delete("/issues/:id/comments/:commentId", async (req, res) => {
+    let expectedVersion: number | undefined;
+    try {
+      expectedVersion = parseOptionalIssueIfMatch(req.headers["if-match"]);
+    } catch (err) {
+      if (err instanceof InvalidIssueEtagError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+
     const id = req.params.id as string;
     const commentId = req.params.commentId as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(
+      await assertAgentIssueMutationAllowed(req, res, issue, {
+        deferCheckoutNormalization: expectedVersion !== undefined,
+      })
+    )) return;
+    if (expectedVersion !== undefined && expectedVersion !== issue.version) {
+      respondIssueVersionConflict(res, issue.version);
+      return;
+    }
 
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {
@@ -9759,6 +9980,33 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const mutateWithConditionalOwnership = async <T>(
+      mutation: (dbOrTx: DbOrTx, ownershipPatch: IssueMutationPatch) => Promise<T>,
+    ): Promise<T> => {
+      const normalizeCheckoutInTransaction =
+        expectedVersion !== undefined &&
+        req.actor.type === "agent" &&
+        issue.status === "in_progress" &&
+        issue.assigneeAgentId === actor.agentId;
+      if (!normalizeCheckoutInTransaction) return mutation(db, {});
+
+      let adoptedFromRunId: string | null = null;
+      const result = await db.transaction(async (tx) => {
+        const ownership = await svc.assertCheckoutOwnerInTransaction(
+          issue.id,
+          actor.agentId!,
+          actor.runId!,
+          expectedVersion!,
+          tx,
+        );
+        adoptedFromRunId = ownership.adoptedFromRunId;
+        return mutation(tx, ownership.issuePatch);
+      });
+      if (adoptedFromRunId && actor.runId) {
+        await logCheckoutLockAdopted(req, issue, actor.runId, adoptedFromRunId);
+      }
+      return result;
+    };
     const actorOwnsComment =
       actor.actorType === "agent"
         ? comment.authorAgentId === actor.agentId
@@ -9783,11 +10031,27 @@ export function issueRoutes(
         return;
       }
 
-      const removed = await svc.removeComment(commentId);
-      if (!removed) {
+      let removedResult;
+      try {
+        removedResult = await mutateWithConditionalOwnership((dbOrTx, ownershipPatch) =>
+          svc.removeCommentVersioned(
+            commentId,
+            "rollback" in dbOrTx
+              ? { expectedVersion, dbOrTx, issuePatch: ownershipPatch }
+              : { expectedVersion },
+          ));
+      } catch (err) {
+        if (err instanceof IssueVersionConflictError) {
+          respondIssueVersionConflict(res, err.currentVersion);
+          return;
+        }
+        throw err;
+      }
+      if (!removedResult) {
         res.status(404).json({ error: "Comment not found" });
         return;
       }
+      const removed = removedResult.comment;
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -9809,6 +10073,7 @@ export function issueRoutes(
         },
       });
 
+      setIssueVersionHeaders(res, removedResult.issue.version);
       res.json(removed);
       return;
     }
@@ -9819,51 +10084,65 @@ export function issueRoutes(
     }
 
     if (comment.deletedAt) {
+      setIssueVersionHeaders(res, issue.version);
       res.json(comment);
       return;
     }
 
     let annotationCleanup = { deletedCommentIds: [] as string[], resolvedThreadIds: [] as string[] };
-    const deleted = await svc.tombstoneComment(
-      commentId,
-      {
-        actorType: actor.actorType,
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-        runId: actor.runId,
-      },
-      {
-        afterTombstone: async (deletedComment, tx) => {
-          await issueReferencesSvc.syncComment(deletedComment.id, tx);
-          await externalObjectsSvc.syncCommentSafely(deletedComment.id, tx);
-          annotationCleanup = await documentAnnotationsSvc.cleanupForIssueCommentDeletion(issue.id, deletedComment.id, {
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            userId: actor.actorType === "user" ? actor.actorId : null,
-            runId: actor.runId,
-          }, tx);
-          await Promise.all(
-            annotationCleanup.deletedCommentIds.map((annotationCommentId) =>
-              Promise.all([
-                issueReferencesSvc.deleteCommentSource(annotationCommentId, tx),
-                externalObjectsSvc.syncCommentSafely(annotationCommentId, tx),
-              ])
-            ),
-          );
-          await decisionTrainingSvc.scrubDeletedComments({
-            companyId: issue.companyId,
-            issueId: issue.id,
-            commentIds: [deletedComment.id, ...annotationCleanup.deletedCommentIds],
-            deletedAt: deletedComment.deletedAt ?? new Date(),
-          }, tx);
+    let deletedResult;
+    try {
+      deletedResult = await mutateWithConditionalOwnership((dbOrTx, ownershipPatch) =>
+        svc.tombstoneCommentVersioned(
+        commentId,
+        {
+          actorType: actor.actorType,
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId,
         },
-      },
-    );
-    if (!deleted) {
+        {
+          expectedVersion,
+          ...("rollback" in dbOrTx ? { dbOrTx, issuePatch: ownershipPatch } : {}),
+          afterTombstone: async (deletedComment, tx) => {
+            await issueReferencesSvc.syncComment(deletedComment.id, tx);
+            await externalObjectsSvc.syncCommentSafely(deletedComment.id, tx);
+            annotationCleanup = await documentAnnotationsSvc.cleanupForIssueCommentDeletion(issue.id, deletedComment.id, {
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              userId: actor.actorType === "user" ? actor.actorId : null,
+              runId: actor.runId,
+            }, tx);
+            await Promise.all(
+              annotationCleanup.deletedCommentIds.map((annotationCommentId) =>
+                Promise.all([
+                  issueReferencesSvc.deleteCommentSource(annotationCommentId, tx),
+                  externalObjectsSvc.syncCommentSafely(annotationCommentId, tx),
+                ])
+              ),
+            );
+            await decisionTrainingSvc.scrubDeletedComments({
+              companyId: issue.companyId,
+              issueId: issue.id,
+              commentIds: [deletedComment.id, ...annotationCleanup.deletedCommentIds],
+              deletedAt: deletedComment.deletedAt ?? new Date(),
+            }, tx);
+          },
+        },
+      ));
+    } catch (err) {
+      if (err instanceof IssueVersionConflictError) {
+        respondIssueVersionConflict(res, err.currentVersion);
+        return;
+      }
+      throw err;
+    }
+    if (!deletedResult) {
       res.status(404).json({ error: "Comment not found" });
       return;
     }
+    const deleted = deletedResult.comment;
 
     await logActivity(db, {
       companyId: issue.companyId,
@@ -9890,6 +10169,7 @@ export function issueRoutes(
       },
     });
 
+    setIssueVersionHeaders(res, deletedResult.issue.version);
     res.json(deleted);
   });
 
@@ -9966,6 +10246,17 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
+    let expectedVersion: number | undefined;
+    try {
+      expectedVersion = parseOptionalIssueIfMatch(req.headers["if-match"]);
+    } catch (err) {
+      if (err instanceof InvalidIssueEtagError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
@@ -10060,6 +10351,16 @@ export function issueRoutes(
     let issueBeforeCommentDecision = issue;
     let commentDecisionStageWakeup: ReturnType<typeof buildExecutionStageWakeup> | null = null;
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+    const plannedCommentIssuePatch: {
+      checkoutRunId?: string | null;
+      executionAgentNameKey?: string | null;
+      executionLockedAt?: Date | null;
+      executionRunId?: string | null;
+      expectedVersion?: number;
+      status?: string;
+    } = {
+      expectedVersion,
+    };
 
     let scheduledRetrySupersededByComment = false;
     let cancelledScheduledRetryRunId: string | null = null;
@@ -10068,22 +10369,196 @@ export function issueRoutes(
       (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers) || shouldResumeInProgressScheduledRetry)
     ) {
       scheduledRetrySupersededByComment = shouldResumeInProgressScheduledRetry && issue.status === "in_progress";
-      cancelledScheduledRetryRunId = scheduledRetrySupersededByComment
-        ? await cancelScheduledRetrySupersededByComment({
+      reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
+      reopenFromStatus = reopened ? issue.status : null;
+      plannedCommentIssuePatch.status = "todo";
+    }
+    if (scheduledRetrySupersededByComment) {
+      if (issue.executionRunId === scheduledRetryForHumanComment?.runId) {
+        plannedCommentIssuePatch.executionRunId = null;
+        plannedCommentIssuePatch.executionAgentNameKey = null;
+        plannedCommentIssuePatch.executionLockedAt = null;
+      }
+      if (issue.checkoutRunId === scheduledRetryForHumanComment?.runId) {
+        plannedCommentIssuePatch.checkoutRunId = null;
+      }
+    }
+
+    let runToInterrupt: Awaited<ReturnType<typeof resolveActiveIssueRun>> = null;
+    if (interruptRequested) {
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
+        return;
+      }
+
+      runToInterrupt = await resolveActiveIssueRun(currentIssue);
+    }
+
+    const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
+    const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
+    const shouldAutoApproveReviewComment =
+      currentIssue.status === "in_review" &&
+      currentExecutionState?.status === "pending" &&
+      actorMatchesExecutionParticipant(actor, currentExecutionState.currentParticipant ?? null) &&
+      isApprovalReviewComment(req.body.body);
+
+    const commentActor = {
+      agentId: actor.agentId ?? undefined,
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      runId: actor.runId,
+    };
+    const commentOptions = {
+      authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+      presentation: req.body.presentation ?? null,
+      metadata: req.body.metadata ?? null,
+      sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+    };
+    const scheduledRetryCancellation = {
+      value: null as Awaited<ReturnType<typeof cancelScheduledRetrySupersededByComment>>,
+    };
+    const cancelScheduledRetryBeforeCommit = scheduledRetrySupersededByComment
+      ? async (tx: DbTransaction) => {
+          scheduledRetryCancellation.value = await cancelScheduledRetrySupersededByComment({
             scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
             issue,
             actor,
-          })
-        : null;
-      const reopenedIssue = await svc.update(id, { status: "todo" });
-      if (!reopenedIssue) {
-        res.status(404).json({ error: "Issue not found" });
+            tx,
+          });
+        }
+      : undefined;
+    let comment: Awaited<ReturnType<typeof svc.addComment>>;
+    try {
+      if (shouldAutoApproveReviewComment) {
+        const transition = applyIssueExecutionPolicyTransition({
+          issue: currentIssue,
+          policy: currentExecutionPolicy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: {
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          commentBody: req.body.body,
+        });
+        const decisionId = transition.decision ? randomUUID() : null;
+        if (decisionId) {
+          const nextExecutionState = transition.patch.executionState;
+          if (!nextExecutionState || typeof nextExecutionState !== "object") {
+            throw new Error("Execution policy decision patch is missing executionState");
+          }
+          transition.patch.executionState = {
+            ...nextExecutionState,
+            lastDecisionId: decisionId,
+          };
+        }
+
+        issueBeforeCommentDecision = currentIssue;
+        const result = await svc.updateWithInlineComment(
+          id,
+          {
+            ...plannedCommentIssuePatch,
+            ...transition.patch,
+            status: typeof transition.patch.status === "string" ? transition.patch.status : "done",
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          {
+            body: req.body.body,
+            actor: commentActor,
+            options: commentOptions,
+            beforeCommit: cancelScheduledRetryBeforeCommit,
+            afterUpdate: transition.decision && decisionId
+              ? async (tx, updated) => {
+                  await tx.insert(issueExecutionDecisions).values({
+                    id: decisionId,
+                    companyId: updated.companyId,
+                    issueId: updated.id,
+                    stageId: transition.decision!.stageId,
+                    stageType: transition.decision!.stageType,
+                    actorAgentId: actor.agentId ?? null,
+                    actorUserId: actor.actorType === "user" ? actor.actorId : null,
+                    outcome: transition.decision!.outcome,
+                    body: transition.decision!.body,
+                    createdByRunId: actor.runId ?? null,
+                  });
+                }
+              : undefined,
+          },
+        );
+        if (!result) {
+          res.status(404).json({ error: "Issue not found" });
+          return;
+        }
+        comment = result.comment;
+        currentIssue = result.issue;
+      } else {
+        const result = await svc.updateWithInlineComment(
+          id,
+          plannedCommentIssuePatch,
+          {
+            body: req.body.body,
+            actor: commentActor,
+            options: commentOptions,
+            beforeCommit: cancelScheduledRetryBeforeCommit,
+          },
+        );
+        if (!result) {
+          res.status(404).json({ error: "Issue not found" });
+          return;
+        }
+        comment = result.comment;
+        currentIssue = result.issue;
+      }
+    } catch (err) {
+      if (err instanceof IssueVersionConflictError) {
+        respondIssueVersionConflict(res, err.currentVersion);
         return;
       }
-      reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
-      reopenFromStatus = reopened ? issue.status : null;
-      currentIssue = reopenedIssue;
+      throw err;
+    }
+    if (scheduledRetryCancellation.value) {
+      cancelledScheduledRetryRunId = scheduledRetryCancellation.value.runId;
+      await finalizeScheduledRetryCancellation({
+        cancellation: scheduledRetryCancellation.value,
+        issue,
+        actor,
+      });
+    }
 
+    if (runToInterrupt) {
+      const cancelled = await heartbeat.cancelRun(
+        runToInterrupt.id,
+        "Interrupted by board comment",
+        operatorInterruptCancelOptions({ issueId: currentIssue.id, actor }),
+      );
+      if (cancelled) {
+        interruptedRunId = cancelled.id;
+        await logActivity(db, {
+          companyId: cancelled.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "heartbeat.cancelled",
+          entityType: "heartbeat_run",
+          entityId: cancelled.id,
+          issueId: currentIssue.id,
+          details: {
+            agentId: cancelled.agentId,
+            source: "issue_comment_interrupt",
+            issueId: currentIssue.id,
+            cancellationKind: "operator_interrupted",
+            operatorInterrupted: true,
+          },
+        });
+      }
+    }
+
+    if (
+      plannedCommentIssuePatch.status === "todo" &&
+      issue.status !== currentIssue.status
+    ) {
       await logActivity(db, {
         companyId: currentIssue.companyId,
         actorType: actor.actorType,
@@ -10111,140 +10586,7 @@ export function issueRoutes(
       });
     }
 
-    if (interruptRequested) {
-      if (req.actor.type !== "board") {
-        res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
-        return;
-      }
-
-      const runToInterrupt = await resolveActiveIssueRun(currentIssue);
-      if (runToInterrupt) {
-        const cancelled = await heartbeat.cancelRun(
-          runToInterrupt.id,
-          "Interrupted by board comment",
-          operatorInterruptCancelOptions({ issueId: currentIssue.id, actor }),
-        );
-        if (cancelled) {
-          interruptedRunId = cancelled.id;
-          await logActivity(db, {
-            companyId: cancelled.companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            agentApiKeyId: actor.agentApiKeyId,
-            action: "heartbeat.cancelled",
-            entityType: "heartbeat_run",
-            entityId: cancelled.id,
-            issueId: currentIssue.id,
-            details: {
-              agentId: cancelled.agentId,
-              source: "issue_comment_interrupt",
-              issueId: currentIssue.id,
-              cancellationKind: "operator_interrupted",
-              operatorInterrupted: true,
-            },
-          });
-        }
-      }
-    }
-
-    const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
-    const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
-    const shouldAutoApproveReviewComment =
-      currentIssue.status === "in_review" &&
-      currentExecutionState?.status === "pending" &&
-      actorMatchesExecutionParticipant(actor, currentExecutionState.currentParticipant ?? null) &&
-      isApprovalReviewComment(req.body.body);
-
-    // Persist the comment and the auto-approval state transition atomically when both apply.
-    // Without a single transaction, a 422 (or any error) thrown by the status update after the
-    // comment is inserted would leave an orphan comment without the corresponding state change.
-    let comment: Awaited<ReturnType<typeof svc.addComment>>;
     if (shouldAutoApproveReviewComment) {
-      const transition = applyIssueExecutionPolicyTransition({
-        issue: currentIssue,
-        policy: currentExecutionPolicy,
-        requestedStatus: "done",
-        requestedAssigneePatch: {},
-        actor: {
-          agentId: actor.agentId ?? null,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        },
-        commentBody: req.body.body,
-      });
-      const decisionId = transition.decision ? randomUUID() : null;
-      if (decisionId) {
-        const nextExecutionState = transition.patch.executionState;
-        if (!nextExecutionState || typeof nextExecutionState !== "object") {
-          throw new Error("Execution policy decision patch is missing executionState");
-        }
-        transition.patch.executionState = {
-          ...nextExecutionState,
-          lastDecisionId: decisionId,
-        };
-      }
-
-      issueBeforeCommentDecision = currentIssue;
-      const updatePatch = {
-        ...transition.patch,
-        status: typeof transition.patch.status === "string" ? transition.patch.status : "done",
-        actorAgentId: actor.agentId ?? null,
-        actorUserId: actor.actorType === "user" ? actor.actorId : null,
-      };
-
-      const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
-      const commentOptions = {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-        presentation: req.body.presentation ?? null,
-        metadata: req.body.metadata ?? null,
-        sourceTrust,
-      };
-      let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
-      try {
-        txResult = await db.transaction(async (tx) => {
-          const insertedComment = await svc.addComment(
-            id,
-            req.body.body,
-            {
-              agentId: actor.agentId ?? undefined,
-              userId: actor.actorType === "user" ? actor.actorId : undefined,
-              runId: actor.runId,
-            },
-            commentOptions,
-            tx,
-          );
-          const updated = await svc.update(id, updatePatch, tx);
-          // Throw (not return null) so drizzle rolls back the inserted comment when the issue
-          // has been concurrently deleted between the initial fetch and the in-transaction update.
-          if (!updated) throw new AutoApprovalIssueMissingError();
-
-          if (transition.decision && decisionId) {
-            await tx.insert(issueExecutionDecisions).values({
-              id: decisionId,
-              companyId: updated.companyId,
-              issueId: updated.id,
-              stageId: transition.decision.stageId,
-              stageType: transition.decision.stageType,
-              actorAgentId: actor.agentId ?? null,
-              actorUserId: actor.actorType === "user" ? actor.actorId : null,
-              outcome: transition.decision.outcome,
-              body: transition.decision.body,
-              createdByRunId: actor.runId ?? null,
-            });
-          }
-
-          return { comment: insertedComment, issue: updated };
-        });
-      } catch (err) {
-        if (err instanceof AutoApprovalIssueMissingError) {
-          res.status(404).json({ error: "Issue not found" });
-          return;
-        }
-        throw err;
-      }
-      comment = txResult.comment;
-      currentIssue = txResult.issue;
       // Mirror the normal status-change audit trail: every other in_review -> done path
       // emits an `issue.updated` activity, so emit one here too for the auto-approval path.
       if (issueBeforeCommentDecision.status !== currentIssue.status) {
@@ -10273,17 +10615,6 @@ export function issueRoutes(
         interruptedRunId,
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
-      });
-    } else {
-      comment = await svc.addComment(id, req.body.body, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-      }, {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-        presentation: req.body.presentation ?? null,
-        metadata: req.body.metadata ?? null,
-        sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
       });
     }
 
@@ -10343,6 +10674,7 @@ export function issueRoutes(
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       },
+      { touchIssueVersion: false },
     );
     await logExpiredRequestConfirmations({
       issue: currentIssue,
@@ -10596,6 +10928,11 @@ export function issueRoutes(
     })();
 
     await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
+    const latestIssue = await svc.getById(currentIssue.id);
+    if (latestIssue && latestIssue.version > currentIssue.version) {
+      currentIssue = latestIssue;
+    }
+    setIssueVersionHeaders(res, currentIssue.version);
     res.status(201).json(comment);
   });
 

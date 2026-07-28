@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { versionedIssuePatch } from "../issue-versioning.js";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -1611,12 +1612,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       await tx
         .update(issues)
-        .set({
+        .set(versionedIssuePatch({
           executionRunId: null,
           executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: input.now,
-        })
+          executionLockedAt: null
+        }, input.now))
         .where(
           and(
             eq(issues.id, input.sourceIssue.id),
@@ -5346,13 +5346,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       const updated = await db
         .update(issues)
-        .set({
+        .set(versionedIssuePatch({
           checkoutRunId: null,
           executionRunId: null,
           executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: new Date(),
-        })
+          executionLockedAt: null
+        }, new Date()))
         .where(
           and(
             eq(issues.id, issue.id),

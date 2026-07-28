@@ -206,6 +206,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.originFingerprint).toBe(`productivity-review:${seeded.issueId}`);
     expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
+    expect(reviews[0]?.version).toBe(2);
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
   });
@@ -253,6 +254,8 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(cappedRefresh.updated).toBe(0);
     expect(cappedRefresh.existing).toBe(1);
     expect(await listRefreshComments(review!.id)).toHaveLength(DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS);
+    const [refreshedReview] = await db.select().from(issues).where(eq(issues.id, review!.id));
+    expect(refreshedReview?.version).toBe(5);
   });
 
   it("allows only one productivity review per source issue in 24 hours", async () => {

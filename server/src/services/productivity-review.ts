@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { versionedIssuePatch } from "./issue-versioning.js";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
@@ -391,16 +392,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     body: string,
     generatedAt: Date,
   ) {
-    const comment = await issuesSvc.addComment(reviewIssueId, body, {});
-    await db
-      .update(issueComments)
-      .set({ createdAt: generatedAt, updatedAt: generatedAt })
-      .where(eq(issueComments.id, comment.id));
-    await db
-      .update(issues)
-      .set({ updatedAt: generatedAt })
-      .where(eq(issues.id, reviewIssueId));
-    return comment;
+    return await issuesSvc.addComment(reviewIssueId, body, {}, { createdAt: generatedAt });
   }
 
   async function countIssueRunsSince(companyId: string, agentId: string, issueId: string, since: Date) {
@@ -777,7 +769,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     }
     await db
       .update(issues)
-      .set({ createdAt: evidence.generatedAt, updatedAt: evidence.generatedAt })
+      .set(versionedIssuePatch({ createdAt: evidence.generatedAt }, evidence.generatedAt))
       .where(eq(issues.id, review.id));
 
     await logActivity(db, {

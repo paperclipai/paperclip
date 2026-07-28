@@ -15,6 +15,7 @@ import { validate } from "../middleware/validate.js";
 import { accessService, executionWorkspaceService, heartbeatService, logActivity, workspaceOperationService } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
+import { versionedIssuePatch } from "../services/issue-versioning.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -646,10 +647,9 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       if (existing.mode === "shared_workspace") {
         await db
           .update(issues)
-          .set({
-            executionWorkspaceId: null,
-            updatedAt: new Date(),
-          })
+          .set(versionedIssuePatch({
+            executionWorkspaceId: null
+          }, new Date()))
           .where(
             and(
               eq(issues.companyId, existing.companyId),

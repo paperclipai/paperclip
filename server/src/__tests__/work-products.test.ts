@@ -30,7 +30,8 @@ function createWorkProductRow(overrides: Partial<Record<string, unknown>> = {}) 
 
 describe("workProductService", () => {
   it("uses a transaction when creating a new primary work product", async () => {
-    const updatedWhere = vi.fn(async () => undefined);
+    const updateReturning = vi.fn(async () => [{ id: "issue-1" }]);
+    const updatedWhere = vi.fn(() => ({ returning: updateReturning }));
     const updateSet = vi.fn(() => ({ where: updatedWhere }));
     const txUpdate = vi.fn(() => ({ set: updateSet }));
 
@@ -56,7 +57,7 @@ describe("workProductService", () => {
     });
 
     expect(transaction).toHaveBeenCalledTimes(1);
-    expect(txUpdate).toHaveBeenCalledTimes(1);
+    expect(txUpdate).toHaveBeenCalledTimes(2);
     expect(txInsert).toHaveBeenCalledTimes(1);
     expect(result?.id).toBe("work-product-1");
   });
@@ -64,7 +65,8 @@ describe("workProductService", () => {
   it("uses a transaction when promoting an existing work product to primary", async () => {
     const existingRow = createWorkProductRow({ isPrimary: false });
 
-    const selectWhere = vi.fn(async () => [existingRow]);
+    const selectFor = vi.fn(async () => [existingRow]);
+    const selectWhere = vi.fn(() => ({ for: selectFor }));
     const selectFrom = vi.fn(() => ({ where: selectWhere }));
     const txSelect = vi.fn(() => ({ from: selectFrom }));
 
@@ -89,7 +91,8 @@ describe("workProductService", () => {
 
     expect(transaction).toHaveBeenCalledTimes(1);
     expect(txSelect).toHaveBeenCalledTimes(1);
-    expect(txUpdate).toHaveBeenCalledTimes(2);
+    expect(selectFor).toHaveBeenCalledWith("update");
+    expect(txUpdate).toHaveBeenCalledTimes(3);
     expect(result?.reviewState).toBe("ready_for_review");
   });
 });

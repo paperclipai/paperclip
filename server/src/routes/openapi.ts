@@ -216,6 +216,7 @@ type OpenApiPathRegistration = {
   request?: {
     params?: z.ZodTypeAny;
     query?: z.ZodTypeAny;
+    headers?: z.ZodTypeAny;
     body?: {
       content: Record<string, { schema: unknown }>;
       required?: boolean;
@@ -409,7 +410,7 @@ function normalizeResponses(responses: Record<string, OpenApiResponse> = {}) {
   );
 }
 
-function parametersFromSchema(schema: z.ZodTypeAny, location: "path" | "query") {
+function parametersFromSchema(schema: z.ZodTypeAny, location: "path" | "query" | "header") {
   const objectSchema = unwrapSchema(schema);
   if (zodTypeName(objectSchema) !== "ZodObject") return [];
   const shape = objectSchema._def.shape();
@@ -448,6 +449,12 @@ class OpenAPIRegistry {
         normalizedOperation.parameters = [
           ...((normalizedOperation.parameters as unknown[]) ?? []),
           ...parametersFromSchema(request.query, "query"),
+        ];
+      }
+      if (request?.headers) {
+        normalizedOperation.parameters = [
+          ...((normalizedOperation.parameters as unknown[]) ?? []),
+          ...parametersFromSchema(request.headers, "header"),
         ];
       }
       if (request?.body) {
@@ -502,6 +509,20 @@ const responses = {
     description: "Conflict",
     content: { "application/json": { schema: ErrorSchema } },
   },
+  preconditionFailed: {
+    description: "Issue version conflict",
+    content: { "application/json": { schema: ErrorSchema } },
+    headers: {
+      ETag: {
+        description: "Current strong Paperclip issue ETag",
+        schema: { type: "string", example: "\"issue-v42\"" },
+      },
+      "Cache-Control": {
+        description: "Prevents intermediaries from transforming the strong ETag response",
+        schema: { type: "string", example: "no-transform" },
+      },
+    },
+  },
   unprocessable: {
     description: "Unprocessable entity",
     content: { "application/json": { schema: ErrorSchema } },
@@ -522,6 +543,23 @@ const jsonBody = (schema: z.ZodTypeAny) => ({
 });
 
 const r = responses;
+const optionalIssueIfMatchHeaders = z.object({
+  "if-match": z.string().optional(),
+});
+const issueVersionHeaders = {
+  ETag: {
+    description: "Strong Paperclip issue ETag",
+    schema: { type: "string", example: "\"issue-v42\"" },
+  },
+  "Cache-Control": {
+    description: "Prevents intermediaries from transforming the strong ETag response",
+    schema: { type: "string", example: "no-transform" },
+  },
+};
+const issueVersionedOk = (schema: z.ZodTypeAny = z.record(z.unknown())) => ({
+  ...r.ok(schema),
+  headers: issueVersionHeaders,
+});
 
 const externalObjectSummariesBodySchema = z.object({
   issueIds: z.array(z.string().uuid()).max(1000),
@@ -1976,7 +2014,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "Get an issue",
   request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+  responses: { 200: issueVersionedOk(), 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -1986,9 +2024,16 @@ registry.registerPath({
   summary: "Update an issue",
   request: {
     params: z.object({ id: z.string() }),
+    headers: optionalIssueIfMatchHeaders,
     body: jsonBody(updateIssueSchema.partial()),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+  responses: {
+    200: issueVersionedOk(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+    412: r.preconditionFailed,
+  },
 });
 
 registry.registerPath({
@@ -2157,9 +2202,15 @@ registry.registerPath({
   summary: "Add a comment to an issue",
   request: {
     params: z.object({ id: z.string() }),
+    headers: optionalIssueIfMatchHeaders,
     body: jsonBody(addIssueCommentSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: {
+    200: issueVersionedOk(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    412: r.preconditionFailed,
+  },
 });
 
 registry.registerPath({
@@ -2167,8 +2218,16 @@ registry.registerPath({
   path: "/api/issues/{id}/comments/{commentId}",
   tags: ["issues"],
   summary: "Delete an issue comment",
-  request: { params: z.object({ id: z.string(), commentId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: {
+    params: z.object({ id: z.string(), commentId: z.string() }),
+    headers: optionalIssueIfMatchHeaders,
+  },
+  responses: {
+    200: issueVersionedOk(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    412: r.preconditionFailed,
+  },
 });
 
 registry.registerPath({

@@ -41,6 +41,18 @@ export {
   type IssueFilters,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
+export {
+  bumpIssueVersions,
+  IssueVersionConflictError,
+  runIssueMutation,
+  versionedIssuePatch,
+  type DbOrTx,
+  type DbTransaction,
+  type IssueMutationPatch,
+  type IssueMutationPlan,
+  type IssueMutationResult,
+  type RunIssueMutationInput,
+} from "./issue-versioning.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";

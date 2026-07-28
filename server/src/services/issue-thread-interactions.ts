@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { versionedIssuePatch } from "./issue-versioning.js";
 import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -232,7 +233,7 @@ function hydrateInteraction(
 async function touchIssue(db: IssueTouchDb, issueId: string) {
   await db
     .update(issues)
-    .set({ updatedAt: new Date() })
+    .set(versionedIssuePatch({}, new Date()))
     .where(eq(issues.id, issueId));
 }
 
@@ -1701,6 +1702,7 @@ export function issueThreadInteractionService(db: Db) {
       issue: { id: string; companyId: string },
       comment: { id: string; createdAt: Date | string; authorUserId?: string | null; createdByRunId?: string | null },
       actor: InteractionActor,
+      options: { touchIssueVersion?: boolean } = {},
     ) => {
       if (!comment.authorUserId) return [];
       // Local-CLI adapters post under user auth, so authorUserId can't tell a human from a
@@ -1753,7 +1755,9 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       if (expired.length > 0) {
-        await touchIssue(db, issue.id);
+        if (options.touchIssueVersion !== false) {
+          await touchIssue(db, issue.id);
+        }
         await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
@@ -1976,6 +1980,7 @@ export function issueThreadInteractionService(db: Db) {
     expirePendingInteractionsForTerminalIssue: async (
       issue: { id: string; companyId: string; status: string },
       actor: InteractionActor = {},
+      options: { touchIssueVersion?: boolean } = {},
     ) => {
       if (!isTerminalIssueStatus(issue.status)) return [];
       const rows = await db
@@ -2030,7 +2035,9 @@ export function issueThreadInteractionService(db: Db) {
         if (updated) expired.push(hydrateInteraction(updated));
       }
       if (expired.length > 0) {
-        await touchIssue(db, issue.id);
+        if (options.touchIssueVersion !== false) {
+          await touchIssue(db, issue.id);
+        }
         await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;

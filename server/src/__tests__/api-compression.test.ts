@@ -93,6 +93,11 @@ function buildApp() {
     res.setHeader("ETag", "\"fixture-etag\"");
     res.json(issueListFixture(500));
   });
+  app.get("/api/issue-etag", (_req, res) => {
+    res.setHeader("Cache-Control", "no-transform");
+    res.setHeader("ETag", "\"issue-v7\"");
+    res.json(issueListFixture(500));
+  });
   app.get("/api/download", (_req, res) => {
     res.setHeader("Content-Type", "application/octet-stream");
     res.write("chunk-one:");
@@ -183,6 +188,18 @@ describe("API compression middleware", () => {
     expect(res.headers["content-encoding"]).toBe("gzip");
     expect(res.headers.etag).toBe("W/\"fixture-etag\"");
     expect(JSON.parse(gunzipSync(res.body).toString("utf8"))).toHaveLength(500);
+  });
+
+  it("preserves strong issue ETags when no-transform is set", async () => {
+    const res = await requestRaw(buildApp(), "/api/issue-etag", {
+      "accept-encoding": "gzip",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-transform");
+    expect(res.headers["content-encoding"]).toBeUndefined();
+    expect(res.headers.etag).toBe("\"issue-v7\"");
+    expect(JSON.parse(res.body.toString("utf8"))).toHaveLength(500);
   });
 
   it("passes streamed non-JSON responses through without compression", async () => {
