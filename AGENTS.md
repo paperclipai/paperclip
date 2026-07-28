@@ -84,6 +84,36 @@ Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` ali
 5. Keep repo plan docs dated and centralized.
 When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
 
+## 5.1 GLM-5.2 quota rerouting (authoritative Cillco policy)
+
+When a GLM-5.2-backed agent is confirmed to have hit a provider quota, apply the
+same reroute procedure for both session-limit and weekly-limit events. Do not
+trigger this procedure for a generic transient capacity failure, timeout, or
+other unclassified upstream error; first confirm the provider's quota/session or
+weekly-limit condition.
+
+1. Enumerate the affected agent's open `todo`, `in_progress`, `in_review`, and
+   `blocked` issues.
+2. Select an available Codex-backed replacement with the same discipline and
+   capability tier. When same-tier peers exist, use the existing within-tier
+   active-workload rule. Exclude paused, budget-limited, or otherwise unavailable
+   candidates. If no eligible peer is available, queue or escalate capacity;
+   never route down-tier merely to keep work moving.
+3. Preserve `todo`, `in_review`, and `blocked` statuses. Reset abandoned
+   `in_progress` work to `todo` before reassignment. Never reopen or reassign
+   terminal `done` or `cancelled` issues.
+4. If no same-role Codex review peer exists, route only allowlisted coordination
+   or final-sign-off work to the CTO. For all other work, create a capacity or
+   escalation issue rather than making an unapproved role substitution.
+5. Add an audit comment for every reassignment naming the original and new
+   assignee, discipline/capability tier, confirmed quota reason (session or
+   weekly), whether status was preserved or reset, and the done criteria. Keep
+   the existing GitHub restrictions: do not request GitHub reviewers, post
+   internal-review commentary on GitHub, or merge pull requests from an agent.
+
+The operator checklist and recovery guidance are in
+[`doc/agent-routing-quota-runbook.md`](doc/agent-routing-quota-runbook.md).
+
 ## 6. Database Change Workflow
 
 When changing data model:
