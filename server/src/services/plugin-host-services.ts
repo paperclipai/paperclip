@@ -2545,12 +2545,22 @@ export function buildHostServices(
             };
           }
         } else {
-          resolved = (await interactions.rejectInteraction(
+          const result = await interactions.rejectInteraction(
             { id: issue.id, companyId, status: issue.status },
             params.interactionId,
             { reason: params.reason ?? undefined },
             actor,
-          )) as typeof current;
+          );
+          resolved = result.interaction as typeof current;
+          // A decline hands the issue back to the asking agent on the same terms
+          // as an acceptance, so the continuation wake has to follow it there.
+          if (result.continuationIssue) {
+            continuationTarget = {
+              id: result.continuationIssue.id,
+              assigneeAgentId: result.continuationIssue.assigneeAgentId,
+              status: result.continuationIssue.status,
+            };
+          }
         }
 
         await logPluginActivity({

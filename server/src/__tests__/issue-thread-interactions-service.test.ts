@@ -875,7 +875,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     });
 
-    const cancelled = await interactionsSvc.cancelQuestions({
+    const { interaction: cancelled } = await interactionsSvc.cancelQuestions({
       id: issueId,
       companyId,
     }, created.id, {
@@ -2469,7 +2469,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  describe("creator-agent handoff for answered questions and accepted task suggestions", () => {
+  describe("creator-agent handoff for user-resolved interactions", () => {
     // A `wake_assignee` interaction on a user-assigned issue has no live wake
     // path: the continuation wakeup needs an `assigneeAgentId`, and the issue
     // cannot carry one while the human still owes the answer. The handoff has to
@@ -2752,6 +2752,313 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         status: "in_review",
         assigneeAgentId: null,
         assigneeUserId: "local-board",
+      });
+    });
+
+    describe("refusal paths", () => {
+      // A refusal ends the agent's wait exactly as an acceptance does, and it is
+      // the refusal that most needs the agent back: someone has to revise the
+      // proposal. Left with the person who said no, the issue simply stops.
+      // The rule is uniform with the acceptance paths — hand off precisely when
+      // `queueResolvedInteractionContinuationWakeup` would fire.
+      function createConfirmation(args: {
+        companyId: string;
+        issueId: string;
+        creatorAgentId: string;
+        continuationPolicy?: "none" | "wake_assignee" | "wake_assignee_on_accept";
+      }) {
+        return interactionsSvc.create({
+          id: args.issueId,
+          companyId: args.companyId,
+        }, {
+          kind: "request_confirmation",
+          continuationPolicy: args.continuationPolicy ?? "wake_assignee",
+          payload: {
+            version: 1,
+            prompt: "Approve this plan?",
+            acceptLabel: "Approve plan",
+            rejectLabel: "Ask for changes",
+          },
+        }, {
+          agentId: args.creatorAgentId,
+        });
+      }
+
+      function createSuggestedTasks(args: {
+        companyId: string;
+        issueId: string;
+        creatorAgentId: string;
+        continuationPolicy?: "none" | "wake_assignee" | "wake_assignee_on_accept";
+      }) {
+        return interactionsSvc.create({
+          id: args.issueId,
+          companyId: args.companyId,
+        }, {
+          kind: "suggest_tasks",
+          continuationPolicy: args.continuationPolicy ?? "wake_assignee",
+          payload: {
+            version: 1,
+            tasks: [{ clientKey: "follow-up", title: "Do the follow-up" }],
+          },
+        }, {
+          agentId: args.creatorAgentId,
+        });
+      }
+
+      it("returns a declined request_confirmation to the creating agent when a board user was the assignee", async () => {
+        const { companyId, issueId, creatorAgentId } = await seedHandoffFixture();
+        const created = await createConfirmation({ companyId, issueId, creatorAgentId });
+
+        const rejected = await interactionsSvc.rejectInteraction({
+          id: issueId,
+          companyId,
+        }, created.id, {
+          reason: "Split it into two steps first",
+        }, {
+          userId: "local-board",
+        });
+
+        expect(rejected.interaction.status).toBe("rejected");
+        expect(rejected.continuationIssue).toEqual({
+          id: issueId,
+          assigneeAgentId: creatorAgentId,
+          assigneeUserId: null,
+          status: "todo",
+        });
+
+        const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+        expect(updatedIssue).toMatchObject({
+          status: "todo",
+          assigneeAgentId: creatorAgentId,
+          assigneeUserId: null,
+        });
+      });
+
+      it("leaves the human owner in place when a declined confirmation only wakes on accept", async () => {
+        // `wake_assignee_on_accept` queues no wakeup for a refusal, so a handoff
+        // would park the issue on an agent that is never woken — strictly worse
+        // than leaving it with the person who declined.
+        const { companyId, issueId, creatorAgentId } = await seedHandoffFixture();
+        const created = await createConfirmation({
+          companyId,
+          issueId,
+          creatorAgentId,
+          continuationPolicy: "wake_assignee_on_accept",
+        });
+
+        const rejected = await interactionsSvc.rejectInteraction({
+          id: issueId,
+          companyId,
+        }, created.id, { reason: "Not now" }, {
+          userId: "local-board",
+        });
+
+        expect(rejected.continuationIssue).toBeNull();
+
+        const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+        expect(updatedIssue).toMatchObject({
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: "local-board",
+        });
+      });
+
+      it("leaves the human owner in place when a declined confirmation declared no continuation", async () => {
+        const { companyId, issueId, creatorAgentId } = await seedHandoffFixture();
+        const created = await createConfirmation({
+          companyId,
+          issueId,
+          creatorAgentId,
+          continuationPolicy: "none",
+        });
+
+        const rejected = await interactionsSvc.rejectInteraction({
+          id: issueId,
+          companyId,
+        }, created.id, { reason: "Logged for the record" }, {
+          userId: "local-board",
+        });
+
+        expect(rejected.continuationIssue).toBeNull();
+
+        const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+        expect(updatedIssue).toMatchObject({
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: "local-board",
+        });
+      });
+
+      it("keeps a blocked issue blocked when handing a declined confirmation back", async () => {
+        const { companyId, issueId, creatorAgentId } = await seedHandoffFixture({ status: "blocked" });
+        const created = await createConfirmation({ companyId, issueId, creatorAgentId });
+
+        const rejected = await interactionsSvc.rejectInteraction({
+          id: issueId,
+          companyId,
+        }, created.id, { reason: "Blocked on the vendor" }, {
+          userId: "local-board",
+        });
+
+        expect(rejected.continuationIssue).toMatchObject({
+          assigneeAgentId: creatorAgentId,
+          status: "blocked",
+        });
+      });
+
+      it("leaves an agent-owned issue with its assignee when a board user declines", async () => {
+        const { companyId, issueId, creatorAgentId, owningAgentId } = await seedHandoffFixture({
+          assignee: "agent",
+        });
+        const created = await createConfirmation({ companyId, issueId, creatorAgentId });
+
+        const rejected = await interactionsSvc.rejectInteraction({
+          id: issueId,
+          companyId,
+        }, created.id, { reason: "Board business" }, {
+          userId: "local-board",
+        });
+
+        expect(rejected.continuationIssue).toBeNull();
+
+        const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+        expect(updatedIssue).toMatchObject({
+          status: "in_review",
+          assigneeAgentId: owningAgentId,
+          assigneeUserId: null,
+        });
+      });
+
+      it("returns rejected suggest_tasks to the creating agent when a board user was the assignee", async () => {
+        const { companyId, issueId, creatorAgentId } = await seedHandoffFixture();
+        const created = await createSuggestedTasks({ companyId, issueId, creatorAgentId });
+
+        const rejected = await interactionsSvc.rejectInteraction({
+          id: issueId,
+          companyId,
+        }, created.id, { reason: "Not the right breakdown" }, {
+          userId: "local-board",
+        });
+
+        expect(rejected.interaction.status).toBe("rejected");
+        expect(rejected.continuationIssue).toEqual({
+          id: issueId,
+          assigneeAgentId: creatorAgentId,
+          assigneeUserId: null,
+          status: "todo",
+        });
+
+        const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+        expect(updatedIssue).toMatchObject({
+          status: "todo",
+          assigneeAgentId: creatorAgentId,
+          assigneeUserId: null,
+        });
+      });
+
+      it("leaves the human owner in place when rejected suggest_tasks only wake on accept", async () => {
+        const { companyId, issueId, creatorAgentId } = await seedHandoffFixture();
+        const created = await createSuggestedTasks({
+          companyId,
+          issueId,
+          creatorAgentId,
+          continuationPolicy: "wake_assignee_on_accept",
+        });
+
+        const rejected = await interactionsSvc.rejectInteraction({
+          id: issueId,
+          companyId,
+        }, created.id, { reason: "Not now" }, {
+          userId: "local-board",
+        });
+
+        expect(rejected.continuationIssue).toBeNull();
+
+        const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+        expect(updatedIssue).toMatchObject({
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: "local-board",
+        });
+      });
+
+      it("returns cancelled ask_user_questions to the creating agent when a board user was the assignee", async () => {
+        // Cancelling still ends the wait: the agent has to proceed without the
+        // answer it asked for, and it can only do that if it holds the issue.
+        const { companyId, issueId, creatorAgentId } = await seedHandoffFixture();
+        const created = await createQuestions({ companyId, issueId, creatorAgentId });
+
+        const cancelled = await interactionsSvc.cancelQuestions({
+          id: issueId,
+          companyId,
+        }, created.id, {
+          reason: "Decided offline",
+        }, {
+          userId: "local-board",
+        });
+
+        expect(cancelled.interaction.status).toBe("cancelled");
+        expect(cancelled.continuationIssue).toEqual({
+          id: issueId,
+          assigneeAgentId: creatorAgentId,
+          assigneeUserId: null,
+          status: "todo",
+        });
+
+        const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+        expect(updatedIssue).toMatchObject({
+          status: "todo",
+          assigneeAgentId: creatorAgentId,
+          assigneeUserId: null,
+        });
+      });
+
+      it("leaves the human owner in place when cancelled questions declared no continuation", async () => {
+        const { companyId, issueId, creatorAgentId } = await seedHandoffFixture();
+        const created = await createQuestions({
+          companyId,
+          issueId,
+          creatorAgentId,
+          continuationPolicy: "none",
+        });
+
+        const cancelled = await interactionsSvc.cancelQuestions({
+          id: issueId,
+          companyId,
+        }, created.id, { reason: "Decided offline" }, {
+          userId: "local-board",
+        });
+
+        expect(cancelled.continuationIssue).toBeNull();
+
+        const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+        expect(updatedIssue).toMatchObject({
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: "local-board",
+        });
+      });
+
+      it("leaves the human owner in place when an agent declines its own confirmation", async () => {
+        // No user resolved anything here, so there is no human hand-back to make.
+        const { companyId, issueId, creatorAgentId, owningAgentId } = await seedHandoffFixture();
+        const created = await createConfirmation({ companyId, issueId, creatorAgentId });
+
+        const rejected = await interactionsSvc.rejectInteraction({
+          id: issueId,
+          companyId,
+        }, created.id, { reason: "Superseded by my own finding" }, {
+          agentId: owningAgentId,
+        });
+
+        expect(rejected.continuationIssue).toBeNull();
+
+        const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+        expect(updatedIssue).toMatchObject({
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: "local-board",
+        });
       });
     });
   });

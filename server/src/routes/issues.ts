@@ -2069,11 +2069,20 @@ function buildRequestItemVerdictsWakeIdempotencyKey(args: {
  * that moved the issue; `request_checkbox_confirmation` deliberately keeps the
  * long-standing `request_confirmation_accept` source.
  */
+/**
+ * Keyed by `kind:status`, not by kind alone: the same three kinds hand the issue
+ * back on both their acceptance and their refusal paths, and an activity entry
+ * labelled `..._accept` for a decline would misreport why the issue moved.
+ */
 const INTERACTION_CREATOR_HANDOFF_ACTIVITY_SOURCES: Record<string, string> = {
-  request_confirmation: "request_confirmation_accept",
-  request_checkbox_confirmation: "request_confirmation_accept",
-  suggest_tasks: "suggest_tasks_accept",
-  ask_user_questions: "ask_user_questions_answer",
+  "request_confirmation:accepted": "request_confirmation_accept",
+  "request_confirmation:rejected": "request_confirmation_reject",
+  "request_checkbox_confirmation:accepted": "request_confirmation_accept",
+  "request_checkbox_confirmation:rejected": "request_confirmation_reject",
+  "suggest_tasks:accepted": "suggest_tasks_accept",
+  "suggest_tasks:rejected": "suggest_tasks_reject",
+  "ask_user_questions:answered": "ask_user_questions_answer",
+  "ask_user_questions:cancelled": "ask_user_questions_cancel",
 };
 
 async function logInteractionCreatorHandoff(db: Db, input: {
@@ -2086,7 +2095,7 @@ async function logInteractionCreatorHandoff(db: Db, input: {
     assigneeUserId?: string | null;
   };
   continuationIssue: { status: string; assigneeAgentId?: string | null; assigneeUserId?: string | null };
-  interaction: { id: string; kind: string };
+  interaction: { id: string; kind: string; status: string };
   actor: ReturnType<typeof getActorInfo>;
 }) {
   await logActivity(db, {
@@ -2104,7 +2113,9 @@ async function logInteractionCreatorHandoff(db: Db, input: {
       status: input.continuationIssue.status,
       assigneeAgentId: input.continuationIssue.assigneeAgentId ?? null,
       assigneeUserId: input.continuationIssue.assigneeUserId ?? null,
-      source: INTERACTION_CREATOR_HANDOFF_ACTIVITY_SOURCES[input.interaction.kind] ?? "interaction_resolved",
+      source: INTERACTION_CREATOR_HANDOFF_ACTIVITY_SOURCES[
+        `${input.interaction.kind}:${input.interaction.status}`
+      ] ?? "interaction_resolved",
       interactionId: input.interaction.id,
       _previous: {
         status: input.issue.status,
@@ -11620,12 +11631,17 @@ export function issueRoutes(
       const { interactionSvc, resolutionAuthorization } = authorizedResolution;
 
       const actor = getActorInfo(req);
-      const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        runId: actor.runId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-        resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
-      });
+      const { interaction, continuationIssue } = await interactionSvc.rejectInteraction(
+        issue,
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          runId: actor.runId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
+        },
+      );
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -11658,10 +11674,17 @@ export function issueRoutes(
         },
       });
 
+      if (continuationIssue) {
+        await logInteractionCreatorHandoff(db, { issue, continuationIssue, interaction, actor });
+      }
+
       await queueResolvedInteractionContinuationWakeup({
         db,
         heartbeat,
-        issue,
+        // A decline hands a user-assigned issue back to the asking agent too — it
+        // has to revise the proposal — so the wake targets the post-handoff
+        // assignee rather than the stale pre-resolution row.
+        issue: continuationIssue ?? issue,
         interaction,
         actor,
         source: "issue.interaction.reject",
@@ -11897,10 +11920,15 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      const { interaction, continuationIssue } = await issueThreadInteractionService(db).cancelQuestions(
+        issue,
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -11923,10 +11951,16 @@ export function issueRoutes(
         },
       });
 
+      if (continuationIssue) {
+        await logInteractionCreatorHandoff(db, { issue, continuationIssue, interaction, actor });
+      }
+
       await queueResolvedInteractionContinuationWakeup({
         db,
         heartbeat,
-        issue,
+        // Cancelling the questions still ends the agent's wait, so the wake has to
+        // follow the issue to the agent it was just handed back to.
+        issue: continuationIssue ?? issue,
         interaction,
         actor,
         source: "issue.interaction.cancel",
